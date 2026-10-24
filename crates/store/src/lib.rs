@@ -209,6 +209,17 @@ pub struct StoreData {
     /// "never configured" case to keep apart from it.
     #[serde(default)]
     pub runner_roster: Vec<RunnerRosterRecord>,
+    /// The runner labels the operator groups runners by, in priority order: a
+    /// runner joins the group of the first listed label it carries, and one
+    /// carrying none of them is `other` (`viewmodel::dashboard::runner_group`).
+    ///
+    /// Empty is the plain OS · architecture grouping, and it is what a store
+    /// that never set any holds. Nothing is seeded, for the reason
+    /// [`StoreData::container_rules`] seeds nothing: labels are whatever one
+    /// operator's fleet uses, and a shipped label would group a stranger's
+    /// runners by a rule they never wrote.
+    #[serde(default)]
+    pub runner_group_labels: Vec<String>,
     /// The user's cockpit arrangement: one [`LayoutProfile`] per width band,
     /// each an ordered list of panel/span slots plus its host-overflow mode.
     ///
@@ -245,6 +256,7 @@ impl Default for StoreData {
             container_rules: None,
             container_presence: BTreeMap::new(),
             runner_roster: Vec::new(),
+            runner_group_labels: Vec::new(),
             layout: None,
             dashboard: None,
         }
@@ -744,6 +756,18 @@ impl Store {
         let changed = roster != self.data.runner_roster;
         self.data.runner_roster = roster;
         changed
+    }
+
+    /// The runner labels to group by, in priority order. Validation is the
+    /// Settings surface's; this is the stored list as it stands.
+    #[must_use]
+    pub fn runner_group_labels(&self) -> &[String] {
+        &self.data.runner_group_labels
+    }
+
+    /// Replaces the group-label list. Call [`Store::save`] to persist.
+    pub fn set_runner_group_labels(&mut self, labels: Vec<String>) {
+        self.data.runner_group_labels = labels;
     }
 
     /// Replaces one org's records, leaving every other org's memory untouched
@@ -1556,6 +1580,7 @@ mod tests {
             store.runner_roster(),
             [RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "mac-s1".into(),
                 os: "macOS".into(),
                 last_seen: 100,
@@ -1726,6 +1751,37 @@ mod tests {
         assert!(
             store.status_vendors().is_empty(),
             "an absent section is an install that never added a vendor, not a parse failure"
+        );
+    }
+
+    /// Group labels are the operator's alone: a file written before they
+    /// existed opens with none — the plain OS · architecture grouping — and
+    /// nothing is seeded in their place.
+    #[test]
+    fn a_store_written_before_runner_group_labels_opens_with_none() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":3,"settings":{},"hosts":[],"repos":[]}"#,
+        )
+        .expect("write");
+        let store = Store::open_in(dir.path(), false).expect("open");
+        assert!(store.runner_group_labels().is_empty());
+    }
+
+    /// The list's order is the grouping priority, so a save and reopen must
+    /// hand it back in exactly the order it was set.
+    #[test]
+    fn runner_group_labels_round_trip_in_their_order() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        store.set_runner_group_labels(vec!["runner-large".into(), "gpu".into()]);
+        store.save().expect("save");
+
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
+        assert_eq!(
+            reopened.runner_group_labels(),
+            ["runner-large".to_owned(), "gpu".to_owned()]
         );
     }
 
@@ -2124,6 +2180,7 @@ mod tests {
         let roster = vec![
             RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "mac-s1".into(),
                 os: "macOS".into(),
                 last_seen: 1_700_000_000,
@@ -2131,6 +2188,7 @@ mod tests {
             },
             RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "ubu-1".into(),
                 os: "linux".into(),
                 last_seen: 1_700_000_060,
@@ -2152,6 +2210,7 @@ mod tests {
     fn roster_record(name: &str, org: &str, last_seen: u64) -> RunnerRosterRecord {
         RunnerRosterRecord {
             architecture: None,
+            labels: None,
             name: name.into(),
             os: "linux".into(),
             last_seen,

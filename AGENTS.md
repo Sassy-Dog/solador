@@ -56,6 +56,20 @@ detailed than this file.
   `missing`. A refused walk takes the failure path, rows and absence clocks
   frozen, and its footer says so (`runners_error_message`) instead of the
   PAT-scope hint.
+  Runner groups are OS · architecture, split by the operator's **runner group
+  labels** (`store.json`'s `runner_group_labels`, Settings → Preferences): a
+  runner joins the group of the first listed label it carries (ASCII
+  case-insensitive, as GitHub matches `runs-on`), one carrying none is
+  `other`, and one whose labels are unknown — a roster entry from before
+  labels were remembered — is `labels unknown`, never `other`. Nothing is
+  seeded, for the container rules' reason. `viewmodel::dashboard::runner_group`
+  decides a row's group once, in `runner_row`, and every view reads its
+  `groupId`/`groupLabel`/`groupRank` rather than re-deriving it — which is
+  what keeps a group opening onto the runners it counted. A group's colour is
+  its load, busy ÷ online (`group_load_color`, value `2/3 busy`): gray idle,
+  green, amber from half busy, red once no runner is free — all busy, or none
+  online. Saturation is colour only; a missing runner is still the one thing
+  that raises attention. Individual rows keep their state colours.
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
@@ -1084,9 +1098,11 @@ the bundle's floor.
   rows only, in `tile_view`; status, attention and Detail are unchanged. Each
   machine renders as an inset card. GitHub tiles persist row limits
   (including All); Repos also persists selected repository identities and column
-  sorting, and Runners supports OS + architecture groups. `viewmodel::dashboard`
-  owns sorting/aggregation. Architecture is carried from GitHub's standard labels
-  through the runner roster so absences retain their type; unknown stays unknown.
+  sorting, and Runners supports OS + architecture groups, split by the runner
+  group labels above. `viewmodel::dashboard` owns sorting/aggregation.
+  Architecture is carried from GitHub's standard labels through the runner
+  roster so absences retain their type, and every label is carried the same way
+  so absences retain their group; unknown stays unknown.
   See `app/README.md` for controls, count meanings and responsive behavior.
 - Settings → Preferences has shared CPU/RAM alert thresholds; Connections has
   per-machine overrides, including the local machine. Defaults remain 70/90%.
@@ -1115,7 +1131,8 @@ the bundle's floor.
   tables, with a Table/List choice persisted per source in `detailViews`.
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
-  OS/architecture group identity; membership and counts refresh together.
+  group identity each runner row carries (`groupId`, label split included);
+  membership and counts refresh together.
   Open full panel retains the group, and Full's All runners clears that filter.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.

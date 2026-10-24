@@ -579,6 +579,33 @@ impl GitHubState {
         Some(github::runners::summarize(&registered))
     }
 
+    /// Every runner's labels, registered and remembered alike, for Settings'
+    /// "carried by N runners" line beside each group label. `None` while no
+    /// org has heard anything — the same test as [`Self::merged_summary`] —
+    /// because "no runner carries this label" is a claim only a reading can
+    /// make. A runner whose labels are unknown is left out, never counted as
+    /// carrying none.
+    #[must_use]
+    pub fn runner_labels(&self) -> Option<Vec<Vec<String>>> {
+        if self
+            .org_runners
+            .values()
+            .all(|entry| entry.summary.is_none())
+        {
+            return None;
+        }
+        Some(
+            self.org_runners
+                .values()
+                .flat_map(|entry| {
+                    let registered = entry.runners.iter().filter_map(|r| r.labels.clone());
+                    let absent = entry.absent.iter().filter_map(|a| a.labels.clone());
+                    registered.chain(absent)
+                })
+                .collect(),
+        )
+    }
+
     /// A pass read a non-empty token from the credential store.
     ///
     /// Called the moment the credential is in hand, **before** the first
@@ -1248,7 +1275,10 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
     })
 }
 
-pub fn runners_view(state: &GitHubState, now: u64) -> Value {
+/// `group_labels` is the operator's group-label list (`store.json`'s
+/// `runner_group_labels`), in priority order; empty is the plain
+/// OS · architecture grouping.
+pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> Value {
     // `credential_error` holds this branch back: the zero-credential payload
     // asserts there is no token *and* blanks the rows, and neither survives
     // "we could not ask". Everything the last good fetch left — stats, chips,
@@ -1309,7 +1339,7 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         .flat_map(|(org, entry)| {
             roster::display_rows(&entry.runners, &entry.absent)
                 .iter()
-                .map(|row| runner_row(org, row))
+                .map(|row| runner_row(org, row, group_labels))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -1485,7 +1515,7 @@ fn os_chips(summary: RunnerSummary) -> Vec<Value> {
 /// Every row carries its org: the Forget command is org-qualified (a name two
 /// orgs share must only be forgotten where the operator clicked), so the org
 /// is data on every row while `showOrgTags` decides whether it is *painted*.
-fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
+fn runner_row(org: &str, row: &GhRunnerDisplayRow, group_labels: &[String]) -> Value {
     let attention = match row {
         GhRunnerDisplayRow::Registered(_) => false,
         GhRunnerDisplayRow::Absent(absence) => {
@@ -1532,7 +1562,20 @@ fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
         // what keeps the OS chips in one column while one runner recycles.
         "statusWidth": RUNNER_STATUS_W,
     });
-    value["groupId"] = json!(viewmodel::dashboard::runner_group_id(&value));
+    // The row's group is decided here, once; every view that groups or
+    // filters runners reads these three fields rather than re-deriving them.
+    let group = viewmodel::dashboard::runner_group(
+        value["os"].as_str().unwrap_or("Unknown OS"),
+        value["architecture"].as_str(),
+        match row {
+            GhRunnerDisplayRow::Registered(r) => r.labels.as_deref(),
+            GhRunnerDisplayRow::Absent(r) => r.labels.as_deref(),
+        },
+        group_labels,
+    );
+    value["groupId"] = json!(group.id);
+    value["groupLabel"] = json!(group.label);
+    value["groupRank"] = json!(group.rank);
     value["platform"] = json!(format!(
         "{} · {}",
         value["os"].as_str().unwrap_or("Unknown OS"),
@@ -1578,6 +1621,7 @@ pub fn roster_from_records(records: &[RunnerRosterRecord]) -> Vec<RunnerRosterEn
                 .and_then(|secs| DateTime::from_timestamp(secs, 0))?;
             Some(RunnerRosterEntry {
                 architecture: record.architecture.clone(),
+                labels: record.labels.clone(),
                 name: record.name.clone(),
                 os: github::RunnerOs::from_raw(&record.os),
                 last_seen,
@@ -1610,6 +1654,7 @@ pub fn roster_to_records(entries: &[RunnerRosterEntry], org: &str) -> Vec<Runner
         .iter()
         .map(|entry| RunnerRosterRecord {
             architecture: entry.architecture.clone(),
+            labels: entry.labels.clone(),
             name: entry.name.clone(),
             os: entry.os.as_raw().to_owned(),
             // Pre-epoch is not a time a runner was seen; 0 is the honest floor.
@@ -1747,12 +1792,14 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     let roster = [
         RunnerRosterEntry {
             architecture: Some("ARM64".into()),
+            labels: None,
             name: "mac-s3".to_owned(),
             os: RunnerOs::MacOs,
             last_seen: now - chrono::TimeDelta::seconds(40),
         },
         RunnerRosterEntry {
             architecture: Some("ARM64".into()),
+            labels: None,
             name: "ubu-1".to_owned(),
             os: RunnerOs::Linux,
             last_seen: now - chrono::TimeDelta::seconds(720),
@@ -1912,6 +1959,7 @@ fn fixture_runner(
 ) -> GhRunner {
     GhRunner {
         architecture: Some("ARM64".into()),
+        labels: None,
         id,
         name: name.to_owned(),
         os,
@@ -2060,7 +2108,10 @@ mod tests {
     fn a_token_in_hand_reads_as_loading_for_the_whole_of_the_fetch() {
         let mut state = GitHubState::new();
         state.apply_token_present();
-        for view in [repos_view(&state, now()), runners_view(&state, now_unix())] {
+        for view in [
+            repos_view(&state, now()),
+            runners_view(&state, &[], now_unix()),
+        ] {
             assert_ne!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
             assert_eq!(view["loading"], true);
         }
@@ -3132,6 +3183,7 @@ mod tests {
     fn runner(name: &str, os: RunnerOs, state: RunnerState) -> GhRunner {
         GhRunner {
             architecture: None,
+            labels: None,
             id: 1,
             name: name.to_owned(),
             os,
@@ -3157,6 +3209,7 @@ mod tests {
     fn forgetting_an_absent_runner_drops_its_row_and_the_missing_count() {
         let roster = [RunnerRosterEntry {
             architecture: None,
+            labels: None,
             name: "ubu-9ec2".to_owned(),
             os: RunnerOs::Linux,
             // Well past grace, well short of the 24h age-out: a red
@@ -3166,12 +3219,12 @@ mod tests {
         let registered = [runner("ubu-1", RunnerOs::Linux, RunnerState::Idle)];
         let mut state = with_runners(&registered, &roster);
 
-        let before = runners_view(&state, now_unix());
+        let before = runners_view(&state, &[], now_unix());
         assert_eq!(row_names(&before), vec!["ubu-1", "ubu-9ec2"]);
         assert_eq!(before["trailing"], "1/1 · 1 missing");
 
         state.forget_absent("acme", "ubu-9ec2");
-        let after = runners_view(&state, now_unix());
+        let after = runners_view(&state, &[], now_unix());
         assert_eq!(row_names(&after), vec!["ubu-1"]);
         assert_eq!(after["trailing"], "1/1");
     }
@@ -3180,7 +3233,7 @@ mod tests {
     /// the same first frame, and the same line this used to get wrong.
     #[test]
     fn the_runners_panel_says_loading_before_it_has_looked_for_a_token() {
-        let view = runners_view(&GitHubState::new(), now_unix());
+        let view = runners_view(&GitHubState::new(), &[], now_unix());
         assert_eq!(view["message"]["text"], RUNNERS_LOADING_MESSAGE);
         assert_eq!(view["loading"], true);
         assert!(view["trailing"].is_null());
@@ -3200,10 +3253,11 @@ mod tests {
             name: "gone".into(),
             os: RunnerOs::Linux,
             architecture: Some("ARM64".into()),
+            labels: None,
             last_seen: now() - TimeDelta::seconds(720),
         };
         let state = with_runners(&[arm, x64], &[missing]);
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         let groups = view["groups"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0]["id"], "group:LINUX:ARM64");
@@ -3223,11 +3277,82 @@ mod tests {
             .all(|r| r["platform"].as_str().unwrap().contains("LINUX · ")));
     }
 
+    /// Under group labels each group must open onto exactly the runners it
+    /// counted: the Full panel and Detail filter rows by `groupId`, so a row
+    /// whose id no group carries — or a group whose total its rows do not
+    /// reach — is a group that opens empty or short.
+    #[test]
+    fn group_labels_split_groups_and_every_group_opens_onto_the_runners_it_counted() {
+        let labels = |extra: &[&str]| {
+            Some(
+                ["self-hosted", "Linux", "X64"]
+                    .iter()
+                    .chain(extra)
+                    .map(|label| (*label).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let registered = |name: &str, extra: &[&str]| {
+            let mut r = runner(name, RunnerOs::Linux, RunnerState::Idle);
+            r.architecture = Some("X64".into());
+            r.labels = labels(extra);
+            r
+        };
+        let remembered = |name: &str, labels: Option<Vec<String>>| RunnerRosterEntry {
+            name: name.into(),
+            os: RunnerOs::Linux,
+            architecture: Some("X64".into()),
+            labels,
+            last_seen: now() - TimeDelta::seconds(60),
+        };
+        let state = with_runners(
+            &[
+                registered("large-1", &["runner-large"]),
+                registered("large-2", &["runner-large"]),
+                registered("small-1", &[]),
+            ],
+            &[
+                remembered("large-3", labels(&["runner-large"])),
+                remembered("before-labels", None),
+            ],
+        );
+
+        let view = runners_view(&state, &["runner-large".to_owned()], now_unix());
+        let groups = view["groups"].as_array().unwrap();
+        let totals: Vec<_> = groups
+            .iter()
+            .map(|g| {
+                (
+                    g["label"].as_str().unwrap(),
+                    g["summary"]["total"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            totals,
+            vec![
+                ("LINUX · X64 · runner-large", 3),
+                ("LINUX · X64 · other", 1),
+                ("LINUX · X64 · labels unknown", 1),
+            ]
+        );
+        let rows = view["rows"].as_array().unwrap();
+        for group in groups {
+            let members = rows.iter().filter(|r| r["groupId"] == group["id"]).count();
+            assert_eq!(
+                Some(members as u64),
+                group["summary"]["total"].as_u64(),
+                "{} opens onto the rows it counted",
+                group["id"]
+            );
+        }
+    }
+
     #[test]
     fn the_runners_panel_asks_for_a_token_once_a_pass_finds_none() {
         let mut state = GitHubState::new();
         state.apply_unauthenticated();
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
         assert_eq!(view["loading"], false, "we looked; this is not loading");
         assert!(view["trailing"].is_null());
@@ -3246,7 +3371,7 @@ mod tests {
         let mut state = GitHubState::new();
         state.apply_token_present();
         state.apply_runner_selection(&[]);
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["message"]["text"], NO_ORGS_SELECTED_MESSAGE);
         assert_ne!(
             view["message"]["text"], UNAUTHENTICATED_MESSAGE,
@@ -3264,7 +3389,7 @@ mod tests {
     fn an_unread_org_selection_reads_as_loading_rather_than_as_misconfigured() {
         let mut state = GitHubState::new();
         state.apply_token_present();
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_ne!(view["message"]["text"], NO_ORGS_SELECTED_MESSAGE);
         assert_eq!(view["loading"], true);
     }
@@ -3281,7 +3406,7 @@ mod tests {
         let mut state = GitHubState::new();
         state.apply_unauthenticated();
         state.apply_runner_selection(&[]);
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
     }
 
@@ -3289,7 +3414,7 @@ mod tests {
     fn the_runners_panel_says_loading_between_the_token_and_the_first_fetch() {
         let mut state = GitHubState::new();
         state.apply_repos(Vec::new()); // authenticates without a runners fetch
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["message"]["text"], RUNNERS_LOADING_MESSAGE);
         assert_eq!(view["loading"], true);
         assert!(view["footer"].is_null());
@@ -3306,7 +3431,7 @@ mod tests {
             ],
             &[],
         );
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["trailing"], "3/4");
         // No ONLINE stat — the trailing above already says 3/4. OFFLINE is the
         // count it does not give you: 4 registered, 3 online.
@@ -3337,7 +3462,7 @@ mod tests {
             &[],
         );
         assert_eq!(
-            runners_view(&state, now_unix())["chips"],
+            runners_view(&state, &[], now_unix())["chips"],
             json!(["macOS 1/1", "Linux 0/0", "Windows 0/0", "Other 0/1"])
         );
     }
@@ -3347,7 +3472,7 @@ mod tests {
     #[test]
     fn a_resting_org_dims_the_busy_and_offline_stats() {
         let state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["stats"][0]["label"], "BUSY");
         assert_eq!(view["stats"][0]["color"], color::hex(color::MUTED));
         assert_eq!(view["stats"][2]["label"], "OFFLINE");
@@ -3372,7 +3497,7 @@ mod tests {
             ],
             &[],
         );
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(
             rows(&view)
                 .iter()
@@ -3410,19 +3535,21 @@ mod tests {
             &[
                 RunnerRosterEntry {
                     architecture: None,
+                    labels: None,
                     name: "mac-s2".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(40),
                 },
                 RunnerRosterEntry {
                     architecture: None,
+                    labels: None,
                     name: "mac-s3".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(720),
                 },
             ],
         );
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         let rows = rows(&view);
         assert_eq!(rows.len(), 5, "idle, busy, offline, recycling and missing");
         for row in rows {
@@ -3481,19 +3608,21 @@ mod tests {
             &[
                 RunnerRosterEntry {
                     architecture: None,
+                    labels: None,
                     name: "mac-s2".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(40),
                 },
                 RunnerRosterEntry {
                     architecture: None,
+                    labels: None,
                     name: "mac-s3".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(720),
                 },
             ],
         );
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         let rows = rows(&view);
         assert_eq!(
             rows.iter()
@@ -3526,16 +3655,17 @@ mod tests {
             &[runner("mac-s1", RunnerOs::MacOs, RunnerState::Busy)],
             &[RunnerRosterEntry {
                 architecture: None,
+                labels: None,
                 name: "mac-s2".to_owned(),
                 os: RunnerOs::MacOs,
                 last_seen: now() - TimeDelta::seconds(40),
             }],
         );
-        let before = runners_view(&state, now_unix());
+        let before = runners_view(&state, &[], now_unix());
 
         state.apply_org_runners_error("acme", RUNNERS_ERROR_MESSAGE);
         // An hour later, still failing.
-        let after = runners_view(&state, now_unix() + 3_600);
+        let after = runners_view(&state, &[], now_unix() + 3_600);
 
         assert_eq!(after["rows"], before["rows"], "an outage ages nothing");
         assert_eq!(after["stats"], before["stats"]);
@@ -3560,17 +3690,18 @@ mod tests {
             &[runner("mac-s1", RunnerOs::MacOs, RunnerState::Busy)],
             &[RunnerRosterEntry {
                 architecture: None,
+                labels: None,
                 name: "mac-s2".to_owned(),
                 os: RunnerOs::MacOs,
                 last_seen: now() - TimeDelta::seconds(40),
             }],
         );
-        let before = runners_view(&state, now_unix());
+        let before = runners_view(&state, &[], now_unix());
 
         let refused = github::GitHubError::TooManyToCount("acme has more than 1000 runners".into());
         let message = runners_error_message(&refused);
         state.apply_org_runners_error("acme", message.clone());
-        let after = runners_view(&state, now_unix());
+        let after = runners_view(&state, &[], now_unix());
 
         assert_eq!(after["rows"], before["rows"]);
         assert_eq!(after["stats"], before["stats"]);
@@ -3590,9 +3721,11 @@ mod tests {
     #[test]
     fn a_stale_but_unbroken_panel_warns_only_past_its_own_window() {
         let state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
-        assert!(runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS)["footer"].is_null());
+        assert!(
+            runners_view(&state, &[], now_unix() + RUNNERS_STALE_AFTER_SECS)["footer"].is_null()
+        );
         assert_eq!(
-            runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["footer"]["text"],
+            runners_view(&state, &[], now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["footer"]["text"],
             "⚠ stale · updated 2m ago"
         );
     }
@@ -3603,7 +3736,7 @@ mod tests {
     fn clearing_the_token_clears_the_runner_rows() {
         let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
         state.apply_unauthenticated();
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
         assert!(rows(&view).is_empty());
         assert!(view["stats"].as_array().expect("stats").is_empty());
@@ -3615,10 +3748,10 @@ mod tests {
     #[test]
     fn an_unreadable_credential_store_keeps_the_runner_rows_and_names_the_cause() {
         let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
-        let before = runners_view(&state, now_unix());
+        let before = runners_view(&state, &[], now_unix());
 
         state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
-        let after = runners_view(&state, now_unix());
+        let after = runners_view(&state, &[], now_unix());
 
         assert_eq!(
             after["message"]["text"],
@@ -3642,7 +3775,7 @@ mod tests {
         state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
 
         let repos = repos_view(&state, now());
-        let runners = runners_view(&state, now_unix());
+        let runners = runners_view(&state, &[], now_unix());
         for view in [&repos, &runners] {
             assert_eq!(
                 view["message"]["text"],
@@ -3669,15 +3802,63 @@ mod tests {
             github::presence::DEFAULT_GRACE_SECS,
         );
         state.apply_org_runners("acme", &update, now_unix());
-        assert!(runners_view(&state, now_unix())["message"].is_null());
+        assert!(runners_view(&state, &[], now_unix())["message"].is_null());
 
         // …and the same for the branch that clears it by dropping back to the
         // zero-credential state.
         state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
         state.apply_unauthenticated();
         assert_eq!(
-            runners_view(&state, now_unix())["message"]["text"],
+            runners_view(&state, &[], now_unix())["message"]["text"],
             UNAUTHENTICATED_MESSAGE
+        );
+    }
+
+    /// Settings' "carried by N runners" reads this, so it must not answer
+    /// before anything was read, and a runner whose labels are unknown is left
+    /// out rather than counted as carrying none.
+    #[test]
+    fn runner_labels_are_unknown_until_read_and_skip_unknown_runners() {
+        assert_eq!(
+            GitHubState::new().runner_labels(),
+            None,
+            "no org has been read, so no label count can be claimed"
+        );
+
+        let labelled = |name: &str, labels: &[&str]| GhRunner {
+            labels: Some(labels.iter().map(|&l| l.to_owned()).collect()),
+            ..runner(name, RunnerOs::Linux, RunnerState::Idle)
+        };
+        let remembered = |name: &str, labels: Option<Vec<String>>| RunnerRosterEntry {
+            architecture: None,
+            labels,
+            name: name.to_owned(),
+            os: RunnerOs::Linux,
+            last_seen: now() - TimeDelta::seconds(40),
+        };
+        let state = with_runners(
+            &[
+                labelled("ubu-large", &["self-hosted", "large"]),
+                runner("ubu-unknown", RunnerOs::Linux, RunnerState::Idle),
+            ],
+            &[
+                remembered(
+                    "ubu-small",
+                    Some(vec!["self-hosted".into(), "small".into()]),
+                ),
+                remembered("ubu-old", None),
+            ],
+        );
+
+        let mut labels = state.runner_labels().expect("an org was read");
+        labels.sort();
+        assert_eq!(
+            labels,
+            vec![
+                vec!["self-hosted".to_owned(), "large".to_owned()],
+                vec!["self-hosted".to_owned(), "small".to_owned()],
+            ],
+            "registered and remembered labels both count; unknown labels count as nothing"
         );
     }
 
@@ -3688,18 +3869,24 @@ mod tests {
         let entries = vec![
             RunnerRosterEntry {
                 architecture: Some("ARM64".into()),
+                // Remembered labels are what keep an absent runner in its
+                // group across a restart; dropping them on either side of the
+                // bridge would read every one back as `labels unknown`.
+                labels: Some(vec!["self-hosted".into(), "large".into()]),
                 name: "mac-s1".to_owned(),
                 os: RunnerOs::MacOs,
                 last_seen: now(),
             },
             RunnerRosterEntry {
                 architecture: None,
+                labels: None,
                 name: "ubu-1".to_owned(),
                 os: RunnerOs::Linux,
                 last_seen: now() - TimeDelta::seconds(60),
             },
             RunnerRosterEntry {
                 architecture: None,
+                labels: None,
                 name: "win-1".to_owned(),
                 os: RunnerOs::Other,
                 last_seen: now(),
@@ -3728,6 +3915,7 @@ mod tests {
         let records = vec![
             RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "mac-s1".to_owned(),
                 os: "macOS".to_owned(),
                 last_seen: u64::MAX,
@@ -3735,6 +3923,7 @@ mod tests {
             },
             RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "ubu-1".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
@@ -3752,6 +3941,7 @@ mod tests {
     fn an_unrecognised_stored_os_reads_as_other() {
         let roster = roster_from_records(&[RunnerRosterRecord {
             architecture: None,
+            labels: None,
             name: "bsd-1".to_owned(),
             os: "freebsd".to_owned(),
             last_seen: now_unix(),
@@ -3767,6 +3957,7 @@ mod tests {
         let records = vec![
             RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "ubu-9ec2".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
@@ -3774,6 +3965,7 @@ mod tests {
             },
             RunnerRosterRecord {
                 architecture: None,
+                labels: None,
                 name: "ubu-29ca".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
@@ -3794,6 +3986,7 @@ mod tests {
     fn forgetting_a_runner_forgets_it_in_one_org_only() {
         let shared = |org: &str| RunnerRosterRecord {
             architecture: None,
+            labels: None,
             name: "runner-x".to_owned(),
             os: "linux".to_owned(),
             last_seen: now_unix(),
@@ -3853,6 +4046,7 @@ mod tests {
 
         let runners = runners_view(
             &state,
+            &[],
             u64::try_from(now().timestamp()).expect("post-epoch"),
         );
         let kinds: Vec<&str> = super::tests::rows(&runners)
@@ -3903,7 +4097,10 @@ mod tests {
     #[test]
     fn both_panels_carry_the_availability_chip() {
         let state = linux_dark();
-        for view in [repos_view(&state, now()), runners_view(&state, now_unix())] {
+        for view in [
+            repos_view(&state, now()),
+            runners_view(&state, &[], now_unix()),
+        ] {
             assert!(
                 view["availability"]["label"].is_string(),
                 "every payload carries a verdict"
@@ -3917,7 +4114,7 @@ mod tests {
     fn operational_github_with_a_dark_platform_is_red_and_blames_us() {
         let mut state = linux_dark();
         state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
-        let chip = &runners_view(&state, now_unix())["availability"];
+        let chip = &runners_view(&state, &[], now_unix())["availability"];
         assert_eq!(chip["label"], github::status::ITS_US_LABEL);
         assert_eq!(chip["color"], color::hex(color::RED));
         assert!(
@@ -3938,7 +4135,7 @@ mod tests {
                 impact: "critical".to_owned(),
             }),
         });
-        let chip = &runners_view(&state, now_unix())["availability"];
+        let chip = &runners_view(&state, &[], now_unix())["availability"];
         assert_eq!(chip["label"], github::status::MAJOR_OUTAGE_LABEL);
         assert_eq!(chip["color"], color::hex(color::RED));
         // Red is shared with `Fleet Down`; the label is what says whose problem
@@ -3961,7 +4158,8 @@ mod tests {
         let mut state = linux_dark();
         state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
 
-        let fresh = &runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS)["availability"];
+        let fresh =
+            &runners_view(&state, &[], now_unix() + RUNNERS_STALE_AFTER_SECS)["availability"];
         assert_eq!(
             fresh["label"],
             github::status::ITS_US_LABEL,
@@ -3970,7 +4168,7 @@ mod tests {
         assert_eq!(fresh["color"], color::hex(color::RED));
 
         let stale =
-            &runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["availability"];
+            &runners_view(&state, &[], now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["availability"];
         assert_ne!(
             stale["label"],
             github::status::ITS_US_LABEL,
@@ -3996,7 +4194,7 @@ mod tests {
         ] {
             let mut state = linux_dark();
             state.apply_service_status(service_status(actions));
-            let chip = &runners_view(&state, now_unix())["availability"];
+            let chip = &runners_view(&state, &[], now_unix())["availability"];
             assert_eq!(chip["label"], github::status::DEGRADED_LABEL, "{actions:?}");
             assert_eq!(chip["color"], color::hex(color::AMBER), "{actions:?}");
         }
@@ -4008,7 +4206,7 @@ mod tests {
     fn a_healthy_fleet_under_a_healthy_github_is_dim_green() {
         let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
         state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
-        let chip = &runners_view(&state, now_unix())["availability"];
+        let chip = &runners_view(&state, &[], now_unix())["availability"];
         assert_eq!(chip["label"], github::status::ALL_GOOD_LABEL);
         assert_eq!(chip["color"], color::hex(color::GREEN_DIM));
     }
@@ -4018,7 +4216,7 @@ mod tests {
     #[test]
     fn an_unread_status_page_is_muted_and_never_green() {
         let state = linux_dark();
-        let chip = &runners_view(&state, now_unix())["availability"];
+        let chip = &runners_view(&state, &[], now_unix())["availability"];
         assert_eq!(chip["label"], github::status::UNKNOWN_LABEL);
         assert_eq!(chip["color"], color::hex(color::MUTED));
         assert_ne!(chip["color"], color::hex(color::GREEN_DIM));
@@ -4033,7 +4231,7 @@ mod tests {
         let mut state = linux_dark();
         state.apply_service_status(service_status(servicestatus::ComponentStatus::MajorOutage));
         state.apply_service_status_error("couldn't reach GitHub's status page");
-        let chip = &runners_view(&state, now_unix())["availability"];
+        let chip = &runners_view(&state, &[], now_unix())["availability"];
         assert_eq!(
             chip["label"],
             github::status::MAJOR_OUTAGE_LABEL,
@@ -4056,7 +4254,7 @@ mod tests {
         let mut state = GitHubState::new();
         state.apply_unauthenticated();
         state.apply_service_status(service_status(servicestatus::ComponentStatus::MajorOutage));
-        let view = runners_view(&state, now_unix());
+        let view = runners_view(&state, &[], now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
         assert_eq!(
             view["availability"]["label"],

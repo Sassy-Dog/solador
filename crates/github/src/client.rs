@@ -1882,6 +1882,7 @@ mod tests {
 
         let seeded = vec![RunnerRosterEntry {
             architecture: None,
+            labels: None,
             name: "mac-s2".into(),
             os: RunnerOs::MacOs,
             last_seen: now(),
@@ -1915,6 +1916,7 @@ mod tests {
         // A runner remembered from an earlier poll that GitHub no longer lists.
         let seeded = vec![RunnerRosterEntry {
             architecture: None,
+            labels: None,
             name: "mac-gone".into(),
             os: RunnerOs::MacOs,
             last_seen: now() - chrono::TimeDelta::seconds(600),

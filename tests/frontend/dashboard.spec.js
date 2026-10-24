@@ -832,7 +832,7 @@ test('inline runner groups follow live membership and keep an empty group select
   await expect(subtitle).toHaveText(`${linux.value} · ${linux.detail}`);
   const added = {...source.rows.find(r => r.groupId === linux.id), id:'acme/new-runner', label:'new-runner'};
   source.rows.push(added);
-  linux.value = '2 online / 4';
+  linux.value = '0/2 busy';
   linux.detail = '0 busy · 2 idle · 1 offline · 1 missing';
   await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
   await expect(names).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare', 'new-runner']);
@@ -902,6 +902,43 @@ test("runner group Open full panel preserves the filter, tracks membership, and 
   await expect(page.locator('#runnersTitle')).toBeFocused();
   await page.locator('.db-chrome [data-action="allPanels"]').click();
   await expect(page.locator('#dashboardOverview')).toBeVisible();
+});
+
+test("label-split runner groups open Detail and the full panel onto exactly their runners", async ({ page, baseURL }) => {
+  // Rust stamps every runner row with its group; here two LINUX · ARM64
+  // runners carry runner-large and the third carries none. The frontend must
+  // follow the stamp — never parse an id or regroup by OS · architecture.
+  const large = { id: "group:LINUX:ARM64:label:runner-large", label: "LINUX · ARM64 · runner-large" };
+  const other = { id: "group:LINUX:ARM64:other", label: "LINUX · ARM64 · other" };
+  const largeNames = ["ubu-01", "ubu-1"];
+  const stamp = (rows) => rows.filter((r) => r.groupId === "group:LINUX:ARM64").forEach((r) => {
+    const group = largeNames.includes(r.label ?? r.name) ? large : other;
+    Object.assign(r, { groupId: group.id, groupLabel: group.label });
+  });
+  const split = (groups) => groups.flatMap((g) =>
+    g.id === "group:LINUX:ARM64" ? [{ ...g, ...large }, { ...g, ...other }] : [g]);
+  await openDashboard(page, baseURL, true, (view) => {
+    const source = view.sources.find((s) => s.id === "ghRunners");
+    stamp(source.rows);
+    source.groups = split(source.groups);
+    const runners = view.tiles.find((t) => t.source === "ghRunners");
+    runners.rows = split(runners.rows);
+  });
+  const inspector = page.locator("#dashboardInspector");
+  await tile(page, "ghRunners").getByRole("button", { name: /runner-large/ }).click();
+  await expect(inspector.getByRole("heading")).toHaveText(large.label);
+  await expect(inspector.locator(".db-table-name")).toHaveText(largeNames);
+  await tile(page, "ghRunners").getByRole("button", { name: /LINUX · ARM64 · other/ }).click();
+  await expect(inspector.getByRole("heading")).toHaveText(other.label);
+  await expect(inspector.locator(".db-table-name")).toHaveText(["ubu-spare"]);
+
+  const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
+  stamp(payload.rows);
+  payload.groups = split(payload.groups);
+  await page.evaluate((payload) => window.__SET_RUNNER_PAYLOAD__(payload), payload);
+  await action(page, "full").click();
+  await page.evaluate(() => refreshPanels());
+  await expect(page.locator("#runnersBody .gh-runner-name")).toHaveText(["ubu-spare"]);
 });
 
 test("repo checklist reconciles new readings without discarding the Configure draft", async ({ page, baseURL }) => {

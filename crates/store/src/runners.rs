@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 pub struct RunnerRosterRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<String>,
+    /// Every label of the last sighting, so a remembered runner keeps its
+    /// group-label group while absent. Omitted when unknown — a record from
+    /// before labels were stored loads as `None`, never as an empty list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     /// The runner's registered name — the identity, since an ephemeral runner
     /// gets a fresh numeric id on every re-registration.
     pub name: String,
@@ -54,6 +59,7 @@ mod tests {
     fn round_trips_through_json() {
         let record = RunnerRosterRecord {
             architecture: None,
+            labels: None,
             name: "mac-s2".into(),
             os: "macOS".into(),
             last_seen: 1_700_000_000,
@@ -72,6 +78,7 @@ mod tests {
     fn the_stored_keys_are_the_documented_ones() {
         let json = serde_json::to_string(&RunnerRosterRecord {
             architecture: None,
+            labels: None,
             name: "ubu-1".into(),
             os: "linux".into(),
             last_seen: 42,
@@ -82,6 +89,30 @@ mod tests {
             json,
             r#"{"name":"ubu-1","os":"linux","last_seen":42,"org":"acme"}"#
         );
+    }
+
+    /// Labels are stored once known, and a record from before they were
+    /// remembered loads as unknown — the key's absence, not an empty list.
+    #[test]
+    fn labels_are_stored_when_known_and_read_back_as_unknown_when_absent() {
+        let json = serde_json::to_string(&RunnerRosterRecord {
+            architecture: None,
+            labels: Some(vec!["self-hosted".into(), "runner-large".into()]),
+            name: "ubu-1".into(),
+            os: "linux".into(),
+            last_seen: 42,
+            org: "acme".into(),
+        })
+        .expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"labels":["self-hosted","runner-large"],"name":"ubu-1","os":"linux","last_seen":42,"org":"acme"}"#
+        );
+
+        let older: RunnerRosterRecord =
+            serde_json::from_str(r#"{"name":"ubu-1","os":"linux","last_seen":42,"org":"acme"}"#)
+                .expect("deserialize");
+        assert_eq!(older.labels, None);
     }
 
     #[test]

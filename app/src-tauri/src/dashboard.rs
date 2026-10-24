@@ -594,10 +594,18 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     field("OS", &v["os"]),
                     field("Architecture", &v["architecture"])
                 ]);
-                for key in ["os", "architecture", "runnerState"] {
+                // The group is copied, never recomputed: the payload row's is
+                // the one the Full panel and Detail filter by.
+                for key in [
+                    "os",
+                    "architecture",
+                    "runnerState",
+                    "groupId",
+                    "groupLabel",
+                    "groupRank",
+                ] {
                     r[key] = v[key].clone();
                 }
-                r["groupId"] = json!(viewmodel::dashboard::runner_group_id(&r));
                 add_scope(&mut r, string(v, "os"));
                 r
             })
@@ -1230,7 +1238,7 @@ fn labels() -> Value {
         ("all", "All"),
         ("runnerView", "Runner view"),
         ("list", "Individual runners"),
-        ("grouped", "By OS + architecture"),
+        ("grouped", "By OS, architecture and group labels"),
         ("showDisk", "Disk strip"),
         ("diskShown", "Show"),
         ("diskHidden", "Hide"),
@@ -1514,6 +1522,48 @@ mod tests {
                 .count();
             assert_eq!(group["summary"]["total"], members);
         }
+    }
+
+    /// A grouped tile's groups are the payload rows' own: the tile's group id
+    /// is what inline Detail and Open full panel filter the source rows by, so
+    /// a tile that regrouped by OS · architecture under a label split would
+    /// open every split group onto nothing.
+    #[test]
+    fn a_grouped_tile_keeps_the_label_split_its_rows_carry() {
+        let large = (
+            "group:LINUX:X64:label:runner-large",
+            "LINUX · X64 · runner-large",
+            0,
+        );
+        let other = ("group:LINUX:X64:other", "LINUX · X64 · other", 1);
+        let row = |name: &str, (id, label, rank): (&str, &str, u64)| {
+            json!({"org":"acme","name":name,"status":"idle","dotColor":"#34C759","attention":false,
+                "os":"LINUX","architecture":"X64","runnerState":"idle",
+                "groupId":id,"groupLabel":label,"groupRank":rank})
+        };
+        let payload = json!({"id":"ghRunners","rows":[
+            row("small-1", other), row("large-1", large), row("large-2", large)
+        ]});
+        let source = source_view("ghRunners", "Runners", &payload);
+        let tile = configured_tile(
+            "ghRunners",
+            json!({"runnerView":"grouped","rowLimit":"all"}),
+        );
+        let view = tile_view(&tile, &source);
+        let groups: Vec<_> = list(&view, "rows")
+            .iter()
+            .map(|g| {
+                (
+                    string(g, "id"),
+                    string(g, "label"),
+                    g["summary"]["total"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            groups,
+            vec![(large.0, large.1, json!(2)), (other.0, other.1, json!(1)),]
+        );
     }
 
     #[test]

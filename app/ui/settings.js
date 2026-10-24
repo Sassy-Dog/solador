@@ -366,7 +366,50 @@ function generalTab(g) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box, machineAlertsGroup(g.machineAlerts), panelIntervalsGroup(g.panelIntervals), crashReportingGroup(g.crashReporting)];
+  return [box, machineAlertsGroup(g.machineAlerts), panelIntervalsGroup(g.panelIntervals),
+    runnerGroupLabelsGroup(g.runnerGroupLabels), crashReportingGroup(g.crashReporting)];
+}
+
+/**
+ * Runner Group Labels: the stored list, each label beside how many runners
+ * carry it, plus the Add field. The Runner organizations editor's shape — every
+ * click round-trips through Rust and the re-render paints what was persisted.
+ */
+function runnerGroupLabelsGroup(t) {
+  const box = group(t.heading);
+  box.dataset.runnerGroupLabels = "";
+  if (t.rows.length === 0) box.appendChild(node("span", "result", t.empty));
+  for (const row of t.rows) {
+    const line = node("div", "row");
+    line.dataset.groupLabel = row.label;
+    const remove = button(t.removeLabel, "group-label-remove");
+    remove.addEventListener("click", () =>
+      mutate("settings_remove_runner_group_label", { label: row.label })
+    );
+    line.append(node("span", "result", row.label), node("span", "help", row.carriers),
+      node("span", "grow"), remove);
+    box.appendChild(line);
+  }
+  const input = textInput("");
+  const add = button(t.addLabel, "group-label-add");
+  // A hint, not the validation: Rust trims, refuses blanks and duplicates, in
+  // its own words.
+  const sync = () => {
+    add.disabled = input.value.trim() === "";
+  };
+  input.addEventListener("input", sync);
+  sync();
+  const submit = () => {
+    const label = input.value;
+    input.value = "";
+    mutate("settings_add_runner_group_label", { label });
+  };
+  add.addEventListener("click", submit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !add.disabled) submit();
+  });
+  box.append(field("runner-group-label", t.inputLabel, input), actionRow(add), help(t.help));
+  return box;
 }
 
 function machineAlertsGroup(g) {
