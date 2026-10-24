@@ -6142,7 +6142,11 @@ fn dump_github(empty: bool, runners: bool) -> Value {
         github::fixture_state(now)
     };
     if runners {
-        github::runners_view(&state, &[], u64::try_from(now.timestamp()).unwrap_or(0))
+        github::runners_view(
+            &state,
+            &[github::FIXTURE_GROUP_LABEL.to_owned()],
+            u64::try_from(now.timestamp()).unwrap_or(0),
+        )
     } else {
         github::repos_view(&state, now)
     }

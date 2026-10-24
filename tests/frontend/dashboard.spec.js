@@ -99,6 +99,25 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               }
               return project();
             }
+            if (command.startsWith("runner_group_label_")) {
+              if (window.__FAIL_GROUP_LABEL__) throw "Could not save the group labels.";
+              // The list edit only; carriers counts and grouping are Rust's
+              // and are not re-derived here.
+              const editor = original.sources.find(s => s.id === "ghRunners").groupLabels;
+              const labels = editor.rows.map(r => r.label);
+              if (command === "runner_group_label_add") labels.push(args.label.trim());
+              if (command === "runner_group_label_remove") labels.splice(labels.indexOf(args.label), 1);
+              if (command === "runner_group_label_move") {
+                const at = labels.indexOf(args.label), to = at + (args.up ? -1 : 1);
+                [labels[at], labels[to]] = [labels[to], labels[at]];
+              }
+              editor.rows = labels.map((label, i) => ({
+                label, first: i === 0, last: i === labels.length - 1,
+                carriers: editor.rows.find(r => r.label === label)?.carriers || "carried by 1 runner",
+              }));
+              editor.seen = editor.seen.filter(seen => !labels.some(l => l.toLowerCase() === seen.toLowerCase()));
+              return project();
+            }
             if (command === "dashboard_preview") {
               const preview = project(args.tile).tiles[0];
               if (window.__HOLD_PREVIEW__) {
@@ -379,7 +398,7 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
   const panel = page.locator('#runnersPanel');
   await expect(page.locator('#cockpitView > .topbar')).toBeHidden();
   await expect(panel.locator('.db-detail-table')).toBeVisible();
-  await expect(panel.locator('thead th')).toHaveText(['Runner', 'Organization', 'OS', 'Architecture', 'Status']);
+  await expect(panel.locator('thead th')).toHaveText(['Runner', 'Organization', 'OS', 'Architecture', 'Labels', 'Status']);
   const list = panel.getByRole('button', {name:'List', exact:true});
   await list.click();
   await expect(list).toHaveAttribute('aria-pressed', 'true');
@@ -717,6 +736,91 @@ test("GitHub tile row limits and runner grouping are saved independently", async
   await tile(page, "ghRunners").locator('[data-action="configure"]').click();
   await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("list");
   await expect(page.getByLabel("Rows to show", { exact: true })).toHaveValue("all");
+});
+
+const commandArgs = (page, command) =>
+  page.evaluate((c) => window.__CALLS__.filter(call => call.command === c).map(call => call.args), command);
+async function configureRunners(page) {
+  await page.locator('#dashboardOverview [data-action="edit"]').click();
+  await tile(page, "ghRunners").locator('[data-action="configure"]').click();
+  return page.locator("[data-group-labels]");
+}
+
+test("the Runners Configure lists group labels with counts and the shared note", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const editor = model.sources.find(s => s.id === "ghRunners").groupLabels;
+  const section = await configureRunners(page);
+  await expect(section.locator("legend")).toHaveText(editor.heading);
+  const row = section.locator('[data-group-label="runner-large"]');
+  await expect(row).toContainText("runner-large");
+  await expect(row).toContainText(editor.rows[0].carriers);
+  await expect(section).toContainText(editor.firstMatch);
+  await expect(section).toContainText("Shared · saved immediately · applies everywhere runners appear: every Runners tile and the Full view.");
+  await expect(section.locator('[data-action="group-label-seen"]')).toHaveText(editor.seen);  // The labels decide Detail's and Full's groups too, so a list tile shows them.
+  await page.getByLabel("Runner view", { exact: true }).selectOption("list");
+  await expect(section).toBeVisible();
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  await expect(page.locator("[data-group-labels]")).toHaveCount(0);
+});
+
+test("group label buttons round-trip through Rust and save on the click", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureRunners(page);
+  const input = page.locator("#dashboard-group-label");
+  const add = section.locator('[data-action="group-label-add"]');
+  await expect(add).toBeDisabled();
+  await input.fill("gpu");
+  await expect(add).toBeEnabled();
+  await input.press("Enter");
+  await expect.poll(() => commandArgs(page, "runner_group_label_add"))
+    .toEqual([{ label: "gpu", width: expect.any(Number) }]);
+  await expect(input).toHaveValue("");
+  const names = section.locator(".db-group-label-name");
+  await expect(names).toHaveText(["runner-large", "gpu"]);
+  await expect(section.locator('[data-group-label="runner-large"] [data-direction="up"]')).toBeDisabled();
+  await expect(section.locator('[data-group-label="gpu"] [data-direction="down"]')).toBeDisabled();
+  await section.locator('[data-group-label="gpu"] [data-direction="up"]').click();
+  await expect.poll(() => commandArgs(page, "runner_group_label_move"))
+    .toEqual([{ label: "gpu", up: true, width: expect.any(Number) }]);
+  await expect(names).toHaveText(["gpu", "runner-large"]);
+  await section.locator('[data-action="group-label-seen"]', { hasText: "xcode-16" }).click();
+  await expect.poll(async () => (await commandArgs(page, "runner_group_label_add")).at(-1))
+    .toEqual({ label: "xcode-16", width: expect.any(Number) });
+  await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
+  await expect.poll(() => commandArgs(page, "runner_group_label_remove"))
+    .toEqual([{ label: "runner-large", width: expect.any(Number) }]);
+  await expect(names).toHaveText(["gpu", "xcode-16"]);
+  // Saved by Rust on the click: never part of the tile's Apply.
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("label edits keep the Configure draft and refresh the preview", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureRunners(page);
+  const previews = () => page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_preview").map(c => c.args.tile));
+  await page.locator("#dashboard-title").fill("Build fleet");
+  await page.locator("#dashboard-width").selectOption("wide");
+  await expect.poll(async () => (await previews()).at(-1)).toMatchObject({ title: "Build fleet", width: "wide" });
+  const before = (await previews()).length;
+  await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
+  await expect(section.locator("[data-group-label]")).toHaveCount(0);
+  await expect(page.locator("#dashboard-title")).toHaveValue("Build fleet");
+  await expect(page.locator("#dashboard-width")).toHaveValue("wide");
+  await expect.poll(async () => (await previews()).length).toBeGreaterThan(before);
+  expect((await previews()).at(-1)).toMatchObject({ title: "Build fleet", width: "wide" });
+});
+
+test("a failed label save says so beside the section", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await page.evaluate(() => { window.__FAIL_GROUP_LABEL__ = true; });
+  const section = await configureRunners(page);
+  await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
+  await expect(section.locator(".db-action-error")).toHaveText("Could not save the group labels.");
+  await expect(section.locator("[data-group-label]")).toHaveCount(1);
+  await page.evaluate(() => { window.__FAIL_GROUP_LABEL__ = false; });
+  await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
+  await expect(section.locator("[data-group-label]")).toHaveCount(0);
+  await expect(section.locator(".db-action-error")).toHaveCount(0);
 });
 
 test("a fresh dashboard groups Runners by OS and architecture, and an added Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {

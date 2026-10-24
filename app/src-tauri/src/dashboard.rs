@@ -1230,6 +1230,7 @@ fn labels() -> Value {
         ("volumeHidden", "Volume hidden. It no longer counts toward Disk or attention."),
         ("volumeUnhidden", "Volume shown again."),
         ("volumeHideFailed", "Could not save the volume change. Nothing was changed."),
+        ("groupLabelsFailed", "Could not save the group labels. Nothing was changed."),
         ("expandDetails", "Expand or collapse resource details"),
         ("configure", "Configure"),
         ("hide", "Hide"),

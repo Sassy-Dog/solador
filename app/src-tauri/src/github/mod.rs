@@ -1831,10 +1831,25 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     ]));
 
     let runner = fixture_runner;
+    // Two custom labels beside GitHub's own: what "Seen on your runners"
+    // offers, and what a Labels chip shows undimmed.
+    let tagged = |mut runner: GhRunner, label: &str| {
+        runner
+            .labels
+            .get_or_insert_with(Vec::new)
+            .push(label.to_owned());
+        runner
+    };
     let registered = [
-        runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
+        tagged(
+            runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
+            "xcode-16",
+        ),
         runner(2, "mac-s2", RunnerOs::MacOs, RunnerState::Idle),
-        runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
+        tagged(
+            runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
+            "gpu",
+        ),
         runner(4, "ubu-spare", RunnerOs::Linux, RunnerState::Offline),
     ];
     // Two remembered names that are not registered right now: one inside the
@@ -2001,6 +2016,11 @@ fn fixture_counts(
     }
 }
 
+/// The group label the runner fixtures list. No fixture runner carries it, so
+/// it shows its count line ("no runner carries this label") without splitting
+/// a group the suite's assertions name.
+pub const FIXTURE_GROUP_LABEL: &str = "runner-large";
+
 fn fixture_runner(
     id: i64,
     name: &str,
@@ -2009,7 +2029,12 @@ fn fixture_runner(
 ) -> GhRunner {
     GhRunner {
         architecture: Some("ARM64".into()),
-        labels: None,
+        // The labels GitHub assigns every self-hosted runner.
+        labels: Some(vec![
+            "self-hosted".into(),
+            os.label().into(),
+            "ARM64".into(),
+        ]),
         id,
         name: name.to_owned(),
         os,
@@ -4318,6 +4343,41 @@ mod tests {
     }
 
     // MARK: - Fixture
+
+    /// The runner fixture carries what the label UI paints — a custom label, a
+    /// GitHub one, a remembered absence nobody recorded labels for, a listed
+    /// group label and labels a click could add — and splits nothing, because
+    /// its listed label is one no runner carries. The suite's group assertions
+    /// read the plain `OS · ARCH` groups.
+    #[test]
+    fn the_runner_fixture_covers_every_label_rendering() {
+        let view = runners_view(
+            &fixture_state(now()),
+            &[FIXTURE_GROUP_LABEL.to_owned()],
+            now_unix(),
+        );
+        let editor = &view["groupLabels"];
+        assert_eq!(editor["rows"][0]["label"], FIXTURE_GROUP_LABEL);
+        assert_eq!(
+            editor["rows"][0]["carriers"],
+            "no runner carries this label"
+        );
+        assert_eq!(editor["seen"], json!(["gpu", "xcode-16"]));
+        let rows = rows(&view);
+        assert!(rows
+            .iter()
+            .all(|row| !row["groupSplit"].as_bool().unwrap_or(true)));
+        assert!(rows
+            .iter()
+            .any(|row| row["labelsText"] == viewmodel::dashboard::LABELS_NOT_RECORDED));
+        let kinds: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row["labelChips"].as_array())
+            .flatten()
+            .filter_map(|chip| chip["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"custom") && kinds.contains(&"standard"));
+    }
 
     /// The dumped fixtures are what the Playwright suite renders, so the state
     /// behind them has to actually contain the cases those tests claim to

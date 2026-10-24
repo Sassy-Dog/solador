@@ -556,6 +556,20 @@
 #dashboardOverview .db-repo-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 8px; margin-top: 10px; }
 #dashboardOverview .db-repo-choices label { flex-direction: row; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 #dashboardOverview .db-repo-choices input { flex: none; }
+/* The runner group labels: the repo selection's frame, one row per label. */
+#dashboardOverview .db-group-labels { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-group-labels legend { font-size: 12px; }
+#dashboardOverview .db-group-labels p { margin: 0; }
+#dashboardOverview .db-group-label-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+#dashboardOverview .db-group-label { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; font-size: 12px; }
+#dashboardOverview .db-group-label-name { overflow-wrap: anywhere; }
+#dashboardOverview .db-group-label-carriers { margin-right: auto; font-size: 11px; }
+#dashboardOverview .db-group-label-entry { display: flex; gap: 8px; }
+#dashboardOverview .db-group-label-entry input { flex: 1; }
+#dashboardOverview .db-group-label-seen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
+#dashboardOverview .db-group-labels-shared { font-size: 11px; }
+/* A runner label as a pill: Seen on your runners, and Detail's Labels cells. */
+#dashboardOverview .db-label-chip { display: inline-block; font-size: 11px; line-height: 1.4; padding: 1px 7px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; overflow-wrap: anywhere; }
 #dashboardOverview .db-tile-content { container: tile / inline-size; }
 #dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation] .db-runner-group .db-row-description { height: auto; min-height: 33px; white-space: normal; overflow: visible; }
 #dashboardOverview .db-tools {
