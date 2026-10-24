@@ -436,6 +436,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-runner-filter { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
 .gh-runner-filter strong { font-size:12px; font-weight:500; }
 .gh-group-summary { color:var(--muted); font-size:11px; margin:0 0 12px; }
+.gh-group-summary:has(+ .gh-group-match) { margin-bottom:2px; }
+.gh-group-match { color:var(--muted); font-size:11px; margin:0 0 12px; }
+/* The List row's labels shrink and wrap beside the OS and status columns. */
+.gh-row > .db-label-chips { flex:0 1 auto; }
 /* The width is Rust's `statusWidth`, applied via CSSOM, and there is no
    `min-width` fallback on purpose: a minimum is what let "recycling 1m" grow
    its own column and shove the OS chip left on that one row (#206). `overflow`

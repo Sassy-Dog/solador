@@ -936,6 +936,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
                 "Thermal" => 90,
                 "DEPENDABOT" => 95,
                 "Organization" => 180,
+                "Labels" => 320,
                 "OS" | "Architecture" | "LONGEST" => 120,
                 _ => 80,
             },
@@ -1007,6 +1008,16 @@ mod detail_table_tests {
         assert_eq!(columns[3]["section"], "details");
         assert_eq!(detail_columns("sentryCrons", &[])[1]["label"], "Broken for");
         assert_eq!(detail_columns("azureCost", &[])[1]["label"], "Value");
+    }
+
+    #[test]
+    fn the_labels_column_fits_a_typical_runner_on_one_line() {
+        let rows = vec![
+            json!({"details":[{"label":"Labels","value":"self-hosted, macOS, ARM64, xcode-16"}]}),
+        ];
+        let columns = detail_columns("ghRunners", &rows);
+        let labels = columns.iter().find(|c| c["label"] == "Labels").unwrap();
+        assert_eq!(labels["width"], 320);
     }
 }
 

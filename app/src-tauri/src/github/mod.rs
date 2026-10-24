@@ -1279,7 +1279,7 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
         "footer": Value::Null,
         "groups": [],
         "allRunnersLabel": "All runners",
-        "emptyGroupMessage": "No runners currently match this type.",
+        "emptyGroupMessage": "No runners currently match this group.",
         "detailLabels": runner_detail_labels(),
     })
 }
@@ -1398,7 +1398,7 @@ fn runners_payload(state: &GitHubState, group_labels: &[String], now: u64) -> Va
         "rows": rows,
         "groups": groups,
         "allRunnersLabel": "All runners",
-        "emptyGroupMessage": "No runners currently match this type.",
+        "emptyGroupMessage": "No runners currently match this group.",
         "detailLabels": runner_detail_labels(),
         "showOrgTags": show_org_tags,
         // The absent rows' context-menu label. From here rather than authored
@@ -1411,7 +1411,7 @@ fn runners_payload(state: &GitHubState, group_labels: &[String], now: u64) -> Va
 fn runner_detail_labels() -> Value {
     json!({"table":"Table", "list":"List", "view":"Detail view",
         "columns":["Runner", "Organization", "OS", "Architecture", "Labels", "Status"],
-        "widths":[260,180,110,120,280,180],
+        "widths":[260,180,110,120,320,180],
         "failed":"Could not save the view. Try again."})
 }
 

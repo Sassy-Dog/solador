@@ -953,19 +953,19 @@ test('inline runner groups follow live membership and keep an empty group select
   await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
   await expect(names).toHaveCount(0);
   await expect(inspector.getByRole('heading')).toHaveText('LINUX · ARM64');
-  await expect(inspector).toContainText('No runners currently match this type.');
+  await expect(inspector).toContainText('No runners currently match this group.');
   await expect(subtitle).toBeEmpty();
   await expect(page.locator('#dashboardOverview')).toBeVisible();
   await inspector.getByRole('button', {name:'List', exact:true}).click();
   await expect(inspector.locator('.db-detail-resource')).toHaveCount(0);
-  await expect(inspector).toContainText('No runners currently match this type.');
+  await expect(inspector).toContainText('No runners currently match this group.');
   // A connection problem must not look like a successfully read empty group.
   source.rows = [];
   source.groups = [];
   source.message = 'Configure a GitHub token in Settings to see runners.';
   await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
   await expect(inspector).toContainText(source.message);
-  await expect(inspector).not.toContainText('No runners currently match this type.');
+  await expect(inspector).not.toContainText('No runners currently match this group.');
 });
 
 test("runner group Open full panel preserves the filter, tracks membership, and clears it", async ({ page, baseURL }) => {
@@ -999,7 +999,7 @@ test("runner group Open full panel preserves the filter, tracks membership, and 
   changed.groups = [];
   await page.evaluate(async payload => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, changed);
   await expect(runners).toHaveCount(0);
-  await expect(page.locator('#runnersBody')).toContainText('No runners currently match this type.');
+  await expect(page.locator('#runnersBody')).toContainText('No runners currently match this group.');
   await page.evaluate(async payload => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, payload);
   await page.getByRole('button', {name:'All runners', exact:true}).click();
   await expect(runners).toHaveCount(6);
@@ -1043,6 +1043,127 @@ test("label-split runner groups open Detail and the full panel onto exactly thei
   await action(page, "full").click();
   await page.evaluate(() => refreshPanels());
   await expect(page.locator("#runnersBody .gh-runner-name")).toHaveText(["ubu-spare"]);
+});
+
+// ubu-01 carries runner-large, stamped as Rust would: the row's group, its
+// chips with the one that matched marked, and each group's match line. The
+// frontend paints these and derives none of them. Returns `groups` split.
+function stampRunnerLarge(rows, groups) {
+  const large = { id: "group:LINUX:ARM64:label:runner-large", label: "LINUX · ARM64 · runner-large", match: "matched by runner-large" };
+  const other = { id: "group:LINUX:ARM64:other", label: "LINUX · ARM64 · other", match: "carries none of your group labels · 1 not recorded" };
+  const chips = ["self-hosted", "Linux", "ARM64"].map(text => ({ text, kind: "standard" }))
+    .concat([{ text: "runner-large", kind: "match" }]);
+  for (const r of rows.filter(r => r.groupId === "group:LINUX:ARM64")) {
+    const carries = (r.label ?? r.name) === "ubu-01", group = carries ? large : other;
+    Object.assign(r, { groupId: group.id, groupLabel: group.label, groupMatch: carries ? "runner-large" : null, groupSplit: true });
+    if (!carries) continue;
+    Object.assign(r, { labelChips: chips, labelsText: chips.map(c => c.text).join(", ") });
+    const field = r.details?.find(d => d.label === "Labels");
+    if (field) Object.assign(field, { chips, value: r.labelsText });
+  }
+  return groups.flatMap(g => g.id === "group:LINUX:ARM64" ? [{ ...g, ...large }, { ...g, ...other }] : [g]);
+}
+function splitRunnerFixture(view) {
+  const source = view.sources.find(s => s.id === "ghRunners");
+  source.groups = stampRunnerLarge(source.rows, source.groups);
+  const runners = view.tiles.find(t => t.source === "ghRunners");
+  runners.rows = stampRunnerLarge([], runners.rows);
+}
+
+test("Detail shows each runner's labels with the match highlighted", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, true, splitRunnerFixture);
+  const inspector = page.locator("#dashboardInspector");
+  await tile(page, "ghRunners").locator('.db-tile-footer [data-action="details"]').click();
+  await expect(inspector.locator("thead th")).toContainText(["Labels"]);
+  for (const view of ["Table", "List"]) {
+    await inspector.getByRole("button", { name: view, exact: true }).click();
+    const large = inspector.locator('[data-resource="acme/ubu-01"] .db-label-chips').first();
+    await expect(large.locator('.db-label-chip[data-kind="match"]')).toHaveText("runner-large");
+    await expect(large.locator('.db-label-chip[data-kind="standard"]').first()).toHaveText("self-hosted");
+    await expect(inspector.locator('[data-resource="acme/ubu-1"]').first()).toContainText("— not recorded");
+    await expect(inspector.locator('[data-resource="acme/ubu-1"] .db-label-chips')).toHaveCount(0);
+  }
+});
+
+test("Detail opened on a group says what matched", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, true, splitRunnerFixture);
+  const subtitle = page.locator("#dashboardInspector .db-inspector-head .db-sub");
+  await tile(page, "ghRunners").getByRole("button", { name: /runner-large/ }).click();
+  await expect(subtitle).toContainText("matched by runner-large");
+  await tile(page, "ghRunners").getByRole("button", { name: /LINUX · ARM64 · other/ }).click();
+  await expect(subtitle).toContainText("carries none of your group labels · 1 not recorded");
+  // A plain, unsplit group has no match line.
+  await tile(page, "ghRunners").getByRole("button", { name: /MACOS · ARM64/ }).click();
+  await expect(subtitle).not.toContainText("matched");
+  await expect(subtitle).not.toContainText("carries none");
+});
+
+test("a long group label wraps inside a small tile", async ({ page, baseURL }) => {
+  const long = `LINUX · ARM64 · ${"x".repeat(48)}`;
+  expect(long).toHaveLength(64);
+  await openDashboard(page, baseURL, false, (view) => {
+    view.layout.tiles.find(t => t.source === "ghRunners").width = "small";
+    view.tiles.find(t => t.source === "ghRunners").rows[0].label = long;
+  });
+  await page.setViewportSize({ width: 1200, height: 900 });
+  const runners = tile(page, "ghRunners");
+  const name = runners.locator(".db-item-name").first();
+  await expect(name).toHaveText(long);
+  const box = await name.evaluate(el => ({ height: el.getBoundingClientRect().height, line: parseFloat(getComputedStyle(el).lineHeight) }));
+  expect(box.height).toBeGreaterThan(box.line * 1.5);
+  expect(await runners.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
+
+test("Full runners table and list show labels", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, true);
+  const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
+  const mac = payload.rows.find(r => r.name === "mac-s1");
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  const panel = page.locator("#runnersPanel");
+  await expect(panel.locator("thead th")).toContainText(["Labels"]);
+  const cell = panel.locator(`tr[data-runner='${JSON.stringify(["acme", "mac-s1"])}'] .db-label-chip`);
+  await expect(cell).toHaveText(mac.labelChips.map(c => c.text));
+  await expect(cell.last()).toHaveAttribute("data-kind", "custom");
+  await expect(panel.locator(`tr[data-runner='${JSON.stringify(["acme", "mac-s3"])}']`)).toContainText("— not recorded");
+  await panel.getByRole("button", { name: "List", exact: true }).click();
+  const row = panel.locator("#runnersBody .gh-row", { has: page.locator(".gh-runner-name", { hasText: "mac-s1" }) });
+  await expect(row.locator(".db-label-chips .db-label-chip")).toHaveText(mac.labelChips.map(c => c.text));
+});
+
+test("Full filtered to a group says what matched", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, true, splitRunnerFixture);
+  const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
+  payload.groups = stampRunnerLarge(payload.rows, payload.groups);
+  await page.evaluate((payload) => window.__SET_RUNNER_PAYLOAD__(payload), payload);
+  await tile(page, "ghRunners").getByRole("button", { name: /runner-large/ }).click();
+  await action(page, "full").click();
+  await page.evaluate(() => refreshPanels());
+  await expect(page.locator("#runnersBody .gh-group-match")).toHaveText("matched by runner-large");
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await tile(page, "ghRunners").getByRole("button", { name: /MACOS · ARM64/ }).click();
+  await action(page, "full").click();
+  await expect(page.locator("#runnersBody .gh-runner-filter")).toContainText("MACOS · ARM64");
+  await expect(page.locator("#runnersBody .gh-group-match")).toHaveCount(0);
+});
+
+test("a vanished group in Full shows the empty-group message", async ({ page, baseURL }) => {
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await openDashboard(page, baseURL, true);
+  const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
+  await tile(page, "ghRunners").getByRole("button", { name: /LINUX · ARM64/ }).click();
+  await action(page, "full").click();
+  await expect(page.locator("#runnersBody .gh-runner-name")).toHaveText(["ubu-01", "ubu-1", "ubu-spare"]);
+  // The group's identity moved (a label now splits it), so the stored filter
+  // names a group this frame does not have.
+  const moved = structuredClone(payload);
+  moved.groups = moved.groups.filter(g => g.id !== "group:LINUX:ARM64");
+  moved.rows = moved.rows.filter(r => r.groupId !== "group:LINUX:ARM64");
+  await page.evaluate(async (payload) => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, moved);
+  await expect(page.locator("#runnersBody .gh-runner-filter strong")).toHaveText("LINUX · ARM64");
+  await expect(page.locator("#runnersBody")).toContainText(payload.emptyGroupMessage);
+  await expect(page.locator("#runnersBody .gh-runner-name")).toHaveCount(0);
+  expect(errors).toEqual([]);
 });
 
 test("repo checklist reconciles new readings without discarding the Configure draft", async ({ page, baseURL }) => {

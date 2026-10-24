@@ -568,8 +568,16 @@
 #dashboardOverview .db-group-label-entry input { flex: 1; }
 #dashboardOverview .db-group-label-seen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
 #dashboardOverview .db-group-labels-shared { font-size: 11px; }
-/* A runner label as a pill: Seen on your runners, and Detail's Labels cells. */
-#dashboardOverview .db-label-chip { display: inline-block; font-size: 11px; line-height: 1.4; padding: 1px 7px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; overflow-wrap: anywhere; }
+#dashboardOverview button.db-label-chip { font: inherit; font-size: 11px; line-height: 1.4; padding: 1px 7px; white-space: normal; overflow-wrap: anywhere; }
+/* A runner label as a pill, in Configure, Detail and Full. The label that put
+   the runner in its group is highlighted; GitHub's own labels are dimmed, never
+   hidden. Chips wrap inside a fixed column rather than clip, so no label is cut
+   off — a runner with more labels than fit gets a taller row, not fewer labels. */
+:is(#dashboardOverview, #cockpitView) .db-label-chips { display: flex; flex-wrap: wrap; gap: 2px 4px; min-width: 0; }
+:is(#dashboardOverview, #cockpitView) .db-label-chip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; white-space: nowrap; }
+:is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="match"] { color: var(--db-blue); border-color: var(--db-blue); }
+:is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="standard"] { color: var(--db-muted); border-style: dashed; }
+:is(#dashboardOverview, #cockpitView) .db-label-none { color: var(--db-muted); }
 #dashboardOverview .db-tile-content { container: tile / inline-size; }
 #dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation] .db-runner-group .db-row-description { height: auto; min-height: 33px; white-space: normal; overflow: visible; }
 #dashboardOverview .db-tools {
@@ -918,6 +926,9 @@
 /* Status text is a column, never a reason to wrap a resource name. Full text
    is on the row's title and in its Details view. */
 #dashboardOverview .db-item-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* A runner group's name is the whole answer (OS · arch · label), so it wraps
+   rather than losing the label that tells two groups apart. */
+#dashboardOverview .db-runner-group .db-item-name { white-space:normal; overflow-wrap:anywhere; text-overflow:clip; }
 #dashboardOverview .db-item > .db-value {
   width:18ch;
   max-width:48%;

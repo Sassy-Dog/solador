@@ -1028,7 +1028,8 @@
     const selected = active.tile && model.tiles.find(t => t.id === active.tile);
     const group = active.group && s.groups?.find(g => g.id === active.group.id);
     const title = active.group ? group?.label || active.group.label : active.row ? rows[0]?.label || s.title : s.title;
-    const subtitle = active.group ? [group?.value, group?.detail].filter(Boolean).join(" · ") : s.trailing || "";
+    // A split group says what put its runners there; a plain one has no match.
+    const subtitle = active.group ? [group?.value, group?.detail, group?.match].filter(Boolean).join(" · ") : s.trailing || "";
     const empty = (active.group ? s.message || s.emptyGroupMessage : selected?.empty || s.message) || L("missingReading");
     const signature = JSON.stringify([view, rows, s.detailColumns, s.warnings, s.message, title, subtitle, empty]);
     if (active.signature === signature) return;
@@ -1069,7 +1070,9 @@
       const primary = node("dl", "db-detail-primary");
       const field = m => {
         const pair = node("div", "db-detail-field");
-        pair.append(node("dt", "db-muted", m.header ?? m.label), colored("dd", "", m.value ?? "—", m.color));
+        const value = m.chips === undefined ? colored("dd", "", m.value ?? "—", m.color) : node("dd");
+        if (m.chips !== undefined) value.append(labelChips(m.chips, m.value));
+        pair.append(node("dt", "db-muted", m.header ?? m.label), value);
         const badge = acknowledgementBadge(m, true);
         if (badge) pair.lastElementChild.append(" ", badge);
         return pair;
@@ -1131,6 +1134,7 @@
       const expanded = active.expanded.has(row.id), extraId = `db-resource-extra-${index}`;
       for (const column of columns) {
         const cell = node(column.key === "name" ? "th" : "td", column.numeric ? "db-numeric" : "");
+        let title = null;
         if (column.key === "name") {
           cell.scope = "row";
           const toggle = button("", "detail-toggle", row.id, "db-table-toggle");
@@ -1150,11 +1154,15 @@
           cell.append(context);
         } else {
           const field = row[column.section]?.find(m => (m.header ?? m.label) === column.label);
-          cell.append(colored("span", "", field?.value ?? "—", field?.color));
+          if (field?.chips !== undefined) {
+            cell.append(labelChips(field.chips, field.value));
+            // Chips carry no separators in textContent; Rust's joined text does.
+            title = field.value;
+          } else cell.append(colored("span", "", field?.value ?? "—", field?.color));
           const badge = acknowledgementBadge(field, true);
           if (badge) cell.append(" ", badge);
         }
-        cell.title = cell.textContent;
+        cell.title = title ?? cell.textContent;
         tr.append(cell);
       }
       const more = node("tr", "db-table-extra");
