@@ -2084,10 +2084,11 @@ async fn poll_github(app: &Arc<App>) {
                 Ok(update) => state.apply_org_runners(org, update, panel::now_unix()),
                 // The transport error is logged, not shown: a 403 for a missing
                 // scope is what this almost always is, and "HTTP 403" sends the
-                // operator to check the network instead of the PAT.
+                // operator to check the network instead of the PAT. A walk
+                // refused for size is the exception and says so itself.
                 Err(e) => {
                     eprintln!("org runners fetch failed for {org}: {e}");
-                    state.apply_org_runners_error(org, github::RUNNERS_ERROR_MESSAGE);
+                    state.apply_org_runners_error(org, github::runners_error_message(e));
                 }
             }
         }

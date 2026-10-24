@@ -30,7 +30,8 @@ const VENDOR: &str = "GitHub";
 
 /// How many runs the Repos panel classifies per repo.
 const RUNS_PER_PAGE: &str = "30";
-/// One page covers every self-hosted runner an org of this size registers.
+/// Page size of the org-runners walk; the walk follows `Link: rel="next"`, so
+/// an org with more runners than this is read page by page, never truncated.
 const RUNNERS_PER_PAGE: &str = "100";
 
 /// The discovery walk's page backstop: 10 pages × 100 per page = 1,000 repos,
@@ -40,6 +41,11 @@ pub const DISCOVERY_PAGE_CAP: usize = 10;
 /// Pages of 100 the open-PR walk reads before refusing: 1,000 open PRs. Past
 /// it the walk reports [`GitHubError::TooManyToCount`], never a truncation.
 pub const PULLS_PAGE_CAP: usize = 10;
+/// Pages of 100 the org-runners walk reads before refusing: 1,000 runners, as
+/// [`PULLS_PAGE_CAP`] is 1,000 PRs. Past it the walk reports
+/// [`GitHubError::TooManyToCount`] rather than hand the roster a partial list
+/// it would read as the whole registered set.
+pub const RUNNERS_PAGE_CAP: usize = 10;
 /// The author Dependabot's pull requests carry: its GitHub App's bot login.
 pub const DEPENDABOT_LOGIN: &str = "dependabot[bot]";
 
@@ -538,15 +544,44 @@ impl GitHubClient {
     }
 
     /// Every self-hosted runner registered with the org.
+    ///
+    /// A walk of `/orgs/{org}/actions/runners`, 100 per page, following the
+    /// `Link: rel="next"` header; past [`RUNNERS_PAGE_CAP`] pages it refuses
+    /// with [`GitHubError::TooManyToCount`] and never returns a partial list
+    /// as `Ok`, because the roster reads the result as the complete registered
+    /// set and would mark every runner beyond it absent.
+    ///
+    /// This is not a snapshot: the endpoint pages by offset and runners
+    /// register and deregister while the walk runs, so a deregistration
+    /// between two page reads can shift a runner across a page boundary.
+    /// Runners are de-duplicated by `id`; one skipped by a shift reads as
+    /// absent (amber `recycling`) for a single poll, which the roster's grace
+    /// window absorbs.
     pub async fn org_runners(&self, org: &str) -> Result<Vec<runners::GhRunner>, GitHubError> {
-        let body = self
-            .get_raw(
-                &format!("/orgs/{org}/actions/runners"),
-                &[("per_page", RUNNERS_PER_PAGE)],
-            )
-            .await?;
-        let resp: RunnersResponse = serde_json::from_str(&body).map_err(decode_failed)?;
-        Ok(runners::map(&resp.runners))
+        let mut all: Vec<runners::GhRunner> = Vec::new();
+        for page in 1..=RUNNERS_PAGE_CAP {
+            let page_query = page.to_string();
+            let resp = self
+                .get(
+                    &format!("/orgs/{org}/actions/runners"),
+                    &[("per_page", RUNNERS_PER_PAGE), ("page", &page_query)],
+                )
+                .await?;
+            let decoded: RunnersResponse =
+                serde_json::from_str(&resp.body).map_err(decode_failed)?;
+            for runner in runners::map(&decoded.runners) {
+                if !all.iter().any(|seen| seen.id == runner.id) {
+                    all.push(runner);
+                }
+            }
+            if !link::has_next_page(resp.link.as_deref()) {
+                return Ok(all);
+            }
+        }
+        Err(GitHubError::TooManyToCount(format!(
+            "{org} has more than {} self-hosted runners",
+            RUNNERS_PAGE_CAP * 100
+        )))
     }
 
     /// Fetch the org's runners and fold them into `roster`.
@@ -1747,6 +1782,93 @@ mod tests {
         assert_eq!(runners.len(), 4);
         assert_eq!(runners[0].os, RunnerOs::MacOs);
         assert_eq!(runners[0].state, RunnerState::Busy);
+    }
+
+    fn runners_page(ids: &[i64]) -> String {
+        let entries: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                format!(
+                    "{{\"id\":{id},\"name\":\"r{id}\",\"os\":\"Linux\",\"status\":\"online\",\"busy\":false,\"labels\":[]}}"
+                )
+            })
+            .collect();
+        format!(
+            "{{\"total_count\":{},\"runners\":[{}]}}",
+            ids.len(),
+            entries.join(",")
+        )
+    }
+
+    const NEXT_LINK: &str = "<https://api.github.com/x?per_page=100&page=2>; rel=\"next\"";
+
+    #[tokio::test]
+    async fn org_runners_walks_every_advertised_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/acme/actions/runners"))
+            .and(query_param("page", "1"))
+            .respond_with(json(&runners_page(&[1, 2])).insert_header("link", NEXT_LINK))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/acme/actions/runners"))
+            .and(query_param("page", "2"))
+            .respond_with(json(&runners_page(&[3])))
+            .mount(&server)
+            .await;
+        let runners = GitHubClient::with_base_url(server.uri(), "t")
+            .org_runners("acme")
+            .await
+            .expect("runners");
+        let ids: Vec<i64> = runners.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// A deregistration between page reads shifts a runner across the boundary
+    /// and lists it twice; it must count once.
+    #[tokio::test]
+    async fn org_runners_lists_a_runner_seen_on_two_pages_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/acme/actions/runners"))
+            .and(query_param("page", "1"))
+            .respond_with(json(&runners_page(&[1, 2])).insert_header("link", NEXT_LINK))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/acme/actions/runners"))
+            .and(query_param("page", "2"))
+            .respond_with(json(&runners_page(&[2, 3])))
+            .mount(&server)
+            .await;
+        let runners = GitHubClient::with_base_url(server.uri(), "t")
+            .org_runners("acme")
+            .await
+            .expect("runners");
+        let ids: Vec<i64> = runners.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    /// Past the cap the walk refuses: a partial list read as the whole set
+    /// would walk every runner beyond it from `recycling` to `missing`.
+    #[tokio::test]
+    async fn org_runners_refuses_past_its_page_cap() {
+        let server = github_replying(
+            "/orgs/acme/actions/runners",
+            json(&runners_page(&[1])).insert_header("link", NEXT_LINK),
+        )
+        .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .org_runners("acme")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitHubError::TooManyToCount(_)), "got {err:?}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            RUNNERS_PAGE_CAP
+        );
     }
 
     /// The clock-freeze contract at the client boundary: a failed fetch returns

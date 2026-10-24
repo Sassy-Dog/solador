@@ -49,6 +49,13 @@ detailed than this file.
   than truncated), not the `per_page=1` trick, because the walk also yields how
   many Dependabot opened: the PRs count's tooltip (`7 open PRs · 5 from
   Dependabot`) and a **DEPENDABOT** column after PRS in Repos Detail.
+  The org's runners are walked the same way (`org_runners`: 100 per page,
+  `Link: rel="next"`, de-duplicated by `id`, refused past `RUNNERS_PAGE_CAP`
+  pages with `TooManyToCount`): the roster reads a fetch as the complete
+  registered set, so a partial list would walk every runner beyond it to
+  `missing`. A refused walk takes the failure path, rows and absence clocks
+  frozen, and its footer says so (`runners_error_message`) instead of the
+  PAT-scope hint.
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
