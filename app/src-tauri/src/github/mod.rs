@@ -1288,6 +1288,15 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
 /// `runner_group_labels`), in priority order; empty is the plain
 /// OS · architecture grouping.
 pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> Value {
+    let mut view = runners_payload(state, group_labels, now);
+    // On every payload, setup ones included: a Runners tile's Configure edits
+    // the list before a token is connected too.
+    view["groupLabels"] =
+        crate::runner_groups::section(group_labels, state.runner_labels().as_deref());
+    view
+}
+
+fn runners_payload(state: &GitHubState, group_labels: &[String], now: u64) -> Value {
     // `credential_error` holds this branch back: the zero-credential payload
     // asserts there is no token *and* blanks the rows, and neither survives
     // "we could not ask". Everything the last good fetch left — stats, chips,
@@ -3757,6 +3766,37 @@ mod tests {
         assert_eq!(old["labelChips"], Value::Null);
         assert_eq!(old["labelsText"], viewmodel::dashboard::LABELS_NOT_RECORDED);
         assert_eq!(old["attention"], true);
+    }
+
+    /// The label editor rides on every runners payload, setup ones included:
+    /// Configure must show the stored list even before a token is connected,
+    /// and the carriers count must come from the same runners the rows do.
+    #[test]
+    fn the_group_label_editor_rides_on_every_runners_payload() {
+        let listed = ["runner-large".to_owned()];
+        let mut setup = GitHubState::new();
+        setup.apply_unauthenticated();
+        let view = runners_view(&setup, &listed, now_unix());
+        assert_eq!(view["groupLabels"]["rows"][0]["label"], "runner-large");
+        assert_eq!(
+            view["groupLabels"]["rows"][0]["carriers"],
+            "runners not read yet"
+        );
+        let state = with_org_runners(&[(
+            "acme",
+            &[labelled(
+                "ubu-large",
+                RunnerOs::Linux,
+                "X64",
+                &["self-hosted", "runner-large", "gpu"],
+            )][..],
+        )]);
+        let view = runners_view(&state, &listed, now_unix());
+        assert_eq!(
+            view["groupLabels"]["rows"][0]["carriers"],
+            "carried by 1 runner"
+        );
+        assert_eq!(view["groupLabels"]["seen"], json!(["gpu"]));
     }
 
     #[test]

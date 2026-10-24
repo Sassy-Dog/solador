@@ -886,6 +886,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         // of the tile's scope and row limit.
         source["groups"] = payload["groups"].clone();
         source["emptyGroupMessage"] = payload["emptyGroupMessage"].clone();
+        source["groupLabels"] = payload["groupLabels"].clone();
     }
     source
 }
@@ -1655,6 +1656,18 @@ mod tests {
 
     /// Detail's Labels column is a field like OS and Architecture, carrying
     /// the chips beside the text; unrecorded labels say so, muted.
+    /// Configure reads the label editor off the source, so the dashboard
+    /// copies it rather than asking a second command for it.
+    #[test]
+    fn the_runners_source_carries_the_group_label_editor() {
+        let editor = json!({"heading":"Group by labels","rows":[],"seen":["gpu"]});
+        let payload = json!({"id":"ghRunners","rows":[],"groupLabels":editor});
+        assert_eq!(
+            source_view("ghRunners", "Runners", &payload)["groupLabels"],
+            editor
+        );
+    }
+
     #[test]
     fn a_runner_row_details_carry_labels_with_chips() {
         let chips = json!([
