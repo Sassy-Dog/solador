@@ -103,6 +103,19 @@ pub const RUNNERS_LOADING_MESSAGE: &str = "loading runners…";
 pub const RUNNERS_ERROR_MESSAGE: &str =
     "couldn't read runners — token needs org self-hosted runners (read)";
 
+/// The footer sentence for a failed org-runners fetch. The scope hint
+/// ([`RUNNERS_ERROR_MESSAGE`]) is for the errors it describes; a walk refused
+/// for being too large says so instead, since the token is fine and sending
+/// the operator to re-check it would be wrong.
+pub fn runners_error_message(error: &github::GitHubError) -> String {
+    match error {
+        github::GitHubError::TooManyToCount(_) => {
+            format!("couldn't read runners — {}", error.user_message())
+        }
+        _ => RUNNERS_ERROR_MESSAGE.to_owned(),
+    }
+}
+
 /// `PanelStatusFooter(..., staleAfter: 150)` on the Runners panel — 2.5× the
 /// default 60s refresh interval, so one missed poll is not yet a warning.
 pub const RUNNERS_STALE_AFTER_SECS: u64 = 150;
@@ -3535,6 +3548,42 @@ mod tests {
         assert!(
             after["message"].is_null(),
             "a failure is not a loading state"
+        );
+    }
+
+    /// A refused walk (too many runners to count) takes the failure path with
+    /// its own sentence: rows and stats stay as the last good fetch left them
+    /// and the footer is not the PAT-scope hint.
+    #[test]
+    fn a_refused_runner_walk_keeps_rows_and_does_not_blame_the_token() {
+        let mut state = with_runners(
+            &[runner("mac-s1", RunnerOs::MacOs, RunnerState::Busy)],
+            &[RunnerRosterEntry {
+                architecture: None,
+                name: "mac-s2".to_owned(),
+                os: RunnerOs::MacOs,
+                last_seen: now() - TimeDelta::seconds(40),
+            }],
+        );
+        let before = runners_view(&state, now_unix());
+
+        let refused = github::GitHubError::TooManyToCount("acme has more than 1000 runners".into());
+        let message = runners_error_message(&refused);
+        state.apply_org_runners_error("acme", message.clone());
+        let after = runners_view(&state, now_unix());
+
+        assert_eq!(after["rows"], before["rows"]);
+        assert_eq!(after["stats"], before["stats"]);
+        assert_ne!(message, RUNNERS_ERROR_MESSAGE);
+        assert!(!message.contains("token"), "got {message}");
+        assert!(message.contains("more than"), "got {message}");
+        let footer = after["footer"]["text"].as_str().expect("footer");
+        assert!(footer.contains(&message), "got {footer}");
+        assert!(!footer.contains(RUNNERS_ERROR_MESSAGE), "got {footer}");
+        assert_eq!(
+            runners_error_message(&github::GitHubError::HttpStatus(403)),
+            RUNNERS_ERROR_MESSAGE,
+            "the scope hint stays for the errors it describes"
         );
     }
 
