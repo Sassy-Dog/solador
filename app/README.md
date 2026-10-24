@@ -146,7 +146,13 @@ the tile's scope; leaving every checkbox clear includes all repos, including
 new ones. Click Repo, Issues, Ready, PRs or Status to sort; click again to reverse.
 Counts use raw numeric values, unknowns stay last in either direction, and ties
 use repository identity. Status sorts Unreadable, Failed, Waiting (a run held at
-an approval gate), Running, Healthy. The column and direction are saved per tile; numeric columns
+an approval gate), Running, Healthy. A repo with any run in flight, on any branch
+(an unrelated PR or Dependabot run included), reads Running, or Waiting at a gate,
+even when its last main or PR run failed; it reads Failed again once nothing is
+running. The panel header still counts the failure (`1 running · 1 failed`). A
+Running repo leaves **Needs Attention** while its runs are in flight; a Waiting one
+stays, because a human must act. Only a run queued past the stuck threshold keeps
+a busy repo Failed. The column and direction are saved per tile; numeric columns
 start descending, Repo and Status ascending.
 
 Runners default to **By OS, architecture and group labels** (the shipped overview tile and any
