@@ -589,10 +589,18 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     v["attention"].as_bool().unwrap_or(false),
                 );
                 r["detail"] = json!(format!("{} · {}", string(v, "org"), string(v, "os")));
+                let mut labels = field("Labels", &v["labelsText"]);
+                labels["chips"] = v["labelChips"].clone();
+                if v["labelChips"].is_null() {
+                    // "— not recorded" is a statement about the roster, not a
+                    // label, so it must not read like one.
+                    labels["color"] = json!(color::hex(color::MUTED));
+                }
                 r["details"] = json!([
                     field("Organization", &v["org"]),
                     field("OS", &v["os"]),
-                    field("Architecture", &v["architecture"])
+                    field("Architecture", &v["architecture"]),
+                    labels
                 ]);
                 // The group is copied, never recomputed: the payload row's is
                 // the one the Full panel and Detail filter by.
@@ -600,9 +608,12 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     "os",
                     "architecture",
                     "runnerState",
+                    "labels",
                     "groupId",
                     "groupLabel",
                     "groupRank",
+                    "groupMatch",
+                    "groupSplit",
                 ] {
                     r[key] = v[key].clone();
                 }
@@ -1057,7 +1068,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         })
         .sum();
     let more = if grouped {
-        let noun = if hidden == 1 { "type" } else { "types" };
+        let noun = if hidden == 1 { "group" } else { "groups" };
         if hidden_attention > 0 {
             format!("{hidden} more {noun} · {hidden_attention} runners need attention →")
         } else {
@@ -1102,8 +1113,9 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         (string(source, "message"), Some("manage"))
     };
     let footer = if grouped {
+        let noun = if shown.len() == 1 { "group" } else { "groups" };
         format!(
-            "{} types shown · {resource_count} runners · {problems} need attention",
+            "{} {noun} shown · {resource_count} runners · {problems} need attention",
             shown.len()
         )
     } else {
@@ -1586,7 +1598,7 @@ mod tests {
         assert_eq!(arm["label"], "LINUX · ARM64");
         assert_eq!(
             arm["summary"],
-            json!({"total":4,"busy":1,"idle":1,"offline":1,"missing":1,"recycling":0,"unknown":0})
+            json!({"total":4,"busy":1,"idle":1,"offline":1,"missing":1,"recycling":0,"unknown":0,"notRecorded":0})
         );
         assert_eq!(view["rows"][1]["summary"]["recycling"], 1);
         assert!(string(&view, "footer").contains("5 runners"));
@@ -1610,8 +1622,74 @@ mod tests {
         assert_eq!(view["moreCount"], 1);
         assert_eq!(
             view["moreLabel"],
-            "1 more type · 2 runners need attention →"
+            "1 more group · 2 runners need attention →"
         );
+    }
+
+    #[test]
+    fn the_grouped_footer_counts_groups() {
+        let rows: Vec<_> = ["ARM64", "X64", "X86"]
+            .into_iter()
+            .map(|arch| json!({"os":"LINUX","architecture":arch,"runnerState":"idle"}))
+            .collect();
+        let view = |rows: &[Value], limit: &str| {
+            let tile = configured_tile(
+                "ghRunners",
+                json!({"runnerView":"grouped","rowLimit":limit}),
+            );
+            tile_view(&tile, &json!({ "rows": rows }))
+        };
+        assert_eq!(
+            view(&rows, "all")["footer"],
+            "3 groups shown · 3 runners · 0 need attention"
+        );
+        assert_eq!(view(&rows, "2")["moreLabel"], "1 more group →");
+        let mut more = rows.clone();
+        more.push(json!({"os":"MACOS","architecture":"ARM64","runnerState":"idle"}));
+        assert_eq!(view(&more, "2")["moreLabel"], "2 more groups →");
+        assert_eq!(
+            view(&rows[..1], "all")["footer"],
+            "1 group shown · 1 runners · 0 need attention"
+        );
+    }
+
+    /// Detail's Labels column is a field like OS and Architecture, carrying
+    /// the chips beside the text; unrecorded labels say so, muted.
+    #[test]
+    fn a_runner_row_details_carry_labels_with_chips() {
+        let chips = json!([
+            {"text":"self-hosted","kind":"standard"},
+            {"text":"runner-large","kind":"match"}
+        ]);
+        let payload = json!({"id":"ghRunners","rows":[
+            {"org":"acme","name":"large-1","status":"idle","dotColor":"#34C759","attention":false,
+             "os":"LINUX","architecture":"X64","runnerState":"idle",
+             "labels":["self-hosted","runner-large"],"labelsText":"self-hosted, runner-large",
+             "labelChips":chips,
+             "groupId":"group:LINUX:X64:label:runner-large","groupLabel":"LINUX · X64 · runner-large",
+             "groupRank":0,"groupMatch":"runner-large","groupSplit":true},
+            {"org":"acme","name":"old","status":"missing 3d","dotColor":"#FF3B30","attention":true,
+             "os":"LINUX","architecture":"X64","runnerState":"missing",
+             "labels":null,"labelsText":"— not recorded","labelChips":null,
+             "groupId":"group:LINUX:X64:other","groupLabel":"LINUX · X64 · other","groupRank":1,
+             "groupMatch":null,"groupSplit":true}
+        ]});
+        let source = source_view("ghRunners", "Runners", &payload);
+        let large = &source["rows"][0];
+        assert_eq!(
+            large["details"][3],
+            json!({"label":"Labels","value":"self-hosted, runner-large","fraction":null,"chips":chips})
+        );
+        for key in ["labels", "groupMatch", "groupSplit"] {
+            assert_eq!(large[key], payload["rows"][0][key], "{key} is copied");
+        }
+        let old = &source["rows"][1]["details"][3];
+        assert_eq!(old["value"], "— not recorded");
+        assert_eq!(old["chips"], Value::Null);
+        assert_eq!(old["color"], color::hex(color::MUTED));
+        assert!(list(&source, "detailColumns")
+            .iter()
+            .any(|c| c["label"] == "Labels"));
     }
 
     #[test]

@@ -267,7 +267,12 @@ pub fn group_runners(rows: &[&Value]) -> Vec<Value> {
         if recycling > 0 { detail.push_str(&format!(" · {recycling} recycling")); }
         if missing > 0 { detail.push_str(&format!(" · {missing} missing")); }
         if unknown > 0 { detail.push_str(&format!(" · {unknown} unknown")); }
-        let not_recorded = members.iter().filter(|r| r["labels"].is_null()).count();
+        // Only an explicit `null` is "not recorded": a row with no `labels`
+        // key made no claim about the roster either way.
+        let not_recorded = members
+            .iter()
+            .filter(|r| r.get("labels") == Some(&Value::Null))
+            .count();
         let matched = members.first().and_then(|r| r["groupMatch"].as_str());
         let split = members.first().is_some_and(|r| r["groupSplit"] == true);
         let match_line = group_match_line(matched, split, total, not_recorded);
