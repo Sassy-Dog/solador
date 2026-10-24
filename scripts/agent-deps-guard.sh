@@ -49,6 +49,13 @@ if grep -q '^solador-hostsetup ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves solador-hostsetup — that crate is the COCKPIT's command mode and hand-off socket; the agent must never carry it"
     exit 1
 fi
+# The one crate that reads a credential another program owns (Claude Code's
+# and Codex's saved sign-ins, for the Usage panel's plan rows) is app-only:
+# a daemon on a host has no operator to opt in, and no business near those.
+if grep -q '^solador-subscription ' <<< "$agent_tree"; then
+    echo "::error::agent/ resolves solador-subscription — that crate reads Claude Code's and Codex's saved sign-ins for the cockpit's Usage panel; the agent must never carry it"
+    exit 1
+fi
 # The other absence AGENTS.md names, asserted the same way now that the
 # agent has an HTTP stack and a failure enum that make "report a failed
 # update to Sentry" the obvious next shortcut (#393): crates/crashreport is
@@ -71,4 +78,4 @@ if grep -qE '^(aws-lc-rs|aws-lc-sys) ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves aws-lc-rs or aws-lc-sys — agent/Cargo.toml pins rcgen/rustls/axum-server onto the ring crypto provider specifically to avoid this second backend and its C/cmake build; check that pin rather than adding a workaround here"
     exit 1
 fi
-echo "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-hostsetup, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."
+echo "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-hostsetup, solador-subscription, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."

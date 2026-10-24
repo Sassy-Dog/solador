@@ -1,10 +1,16 @@
-//! The poll cadence control in a tile's Configure (#614).
+//! The poll cadence controls in a tile's Configure (#614).
 //!
 //! A cadence belongs to the source, not to a tile, so the control is shared by
 //! every tile of that source and the Full view. It says so, and saves on the
 //! click through `panel_interval_save` / `panel_interval_clear`, outside the
 //! tile's Apply and the dashboard's undo history. The floor and its reason are
 //! Rust's sentences; the webview paints them and decides nothing.
+//!
+//! A source carries a **list** of them, `cadences`, because one tile can be fed
+//! by more than one poll: the Usage tile shows the metered providers and the
+//! plans' limit windows, which are separate requests to separate vendors with
+//! separate floors. Folding them into one number would make one vendor's floor
+//! the other's.
 //!
 //! There is deliberately no control for the 1 Hz host poll or the 10s
 //! agent-health poll. Neither has a [`PanelInterval`] to name it, because the
@@ -22,17 +28,23 @@ pub fn source_id(panel: PanelInterval) -> &'static str {
         PanelInterval::UsageProviders => "claudeUsage",
         PanelInterval::AzureCost => "azureCost",
         PanelInterval::Crons => "sentryCrons",
+        PanelInterval::PlanUsage => "claudeUsage",
     }
 }
 
-/// Attaches each source's cadence section to its payload (matched by `id`).
-/// Used by both `dashboard_view` and the `--dump-dashboard` fixture, so the two
-/// cannot differ.
+/// Attaches each source's cadence sections to its payload (matched by `id`),
+/// as `cadences` in [`PanelInterval::ALL`]'s order. A source no cadence feeds
+/// gets no key at all. Used by both `dashboard_view` and the `--dump-dashboard`
+/// fixture, so the two cannot differ.
 pub fn attach(payloads: &mut [Value], settings: &Settings) {
     for panel in PanelInterval::ALL {
         let id = source_id(panel);
         if let Some(payload) = payloads.iter_mut().find(|p| p["id"] == id) {
-            payload["cadence"] = section(settings, panel, source_title(id));
+            let section = section(settings, panel, source_title(id));
+            match payload["cadences"].as_array_mut() {
+                Some(list) => list.push(section),
+                None => payload["cadences"] = json!([section]),
+            }
         }
     }
 }
@@ -98,19 +110,47 @@ mod tests {
     fn every_settable_cadence_is_attached_to_its_source_and_nothing_else_is() {
         let mut all = payloads();
         attach(&mut all, &Settings::default());
-        let mut got: Vec<&str> = all
+        let mut got: Vec<(&str, &str)> = all
             .iter()
-            .filter(|p| !p["cadence"].is_null())
-            .map(|p| p["id"].as_str().unwrap())
+            .flat_map(|p| {
+                let source = p["id"].as_str().unwrap();
+                p["cadences"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |c| (source, c["id"].as_str().unwrap()))
+            })
             .collect();
-        let mut wanted: Vec<&str> = PanelInterval::ALL.into_iter().map(source_id).collect();
+        let mut wanted: Vec<(&str, &str)> = PanelInterval::ALL
+            .into_iter()
+            .map(|panel| (source_id(panel), panel.spec().key))
+            .collect();
         wanted.sort_unstable();
         got.sort_unstable();
         assert_eq!(got, wanted);
         assert!(
-            !got.contains(&"hosts"),
+            all.iter()
+                .filter(|p| p["cadences"].is_null())
+                .any(|p| p["id"] == "hosts"),
             "the host poll must not be settable"
         );
+    }
+
+    /// The Usage tile is fed by two polls, so its Configure carries both, the
+    /// metered providers first, in [`PanelInterval::ALL`]'s order. Neither
+    /// overwrites the other, which is what a single `cadence` key did.
+    #[test]
+    fn the_usage_tile_carries_the_providers_and_the_plans_cadences() {
+        let mut all = payloads();
+        attach(&mut all, &Settings::default());
+        let usage = all.iter().find(|p| p["id"] == "claudeUsage").unwrap();
+        let ids: Vec<&str> = usage["cadences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["usage_providers", "plan_usage"]);
     }
 
     /// An unconfigured store shows today's constant and says it is the default,

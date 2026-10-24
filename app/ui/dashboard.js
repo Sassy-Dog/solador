@@ -494,7 +494,8 @@
       if (choices && draft) fillRepoChoices(choices, source(draft.source), draft.selectedRepos);
       if (draft) fillGroupLabels(q("[data-group-labels]"), source(draft.source));
       if (draft) fillContainerRules(q("[data-container-rules]"), source(draft.source));
-      if (draft) fillCadence(q("[data-cadence]"), source(draft.source));
+      if (draft) for (const box of root.querySelectorAll("[data-cadence]"))
+        fillCadence(box, source(draft.source)?.cadences?.find((c) => c.id === box.dataset.cadence));
       if (draft) fillMachineAlerts(q("[data-machine-alerts]"), source(draft.source));
     }
     if (active?.kind === "details") fillDetails();
@@ -769,15 +770,15 @@
     add.disabled = disabled;
     box.querySelector(".db-rule-actions").replaceChildren(add);
   }
-  // The source's poll cadence is shared by every tile of it and the Full view
-  // (#614), so it is not part of the tile: the input has no name (formTile()
-  // never reads it) and sits outside any form, so the tile's Apply neither
-  // validates nor sends it. It saves on its own button through Rust, which
-  // refuses a below-floor value in its own words. The input is built once and
-  // its text is left alone while the source's saved value is unchanged, so a
-  // poll's repaint, or a refusal, never clears what is being typed.
-  function fillCadence(box, s) {
-    const c = s?.cadence;
+  // Each of the source's poll cadences is shared by every tile of it and the
+  // Full view (#614), so it is not part of the tile: the input has no name
+  // (formTile() never reads it) and sits outside any form, so the tile's Apply
+  // neither validates nor sends it. It saves on its own button through Rust,
+  // which refuses a below-floor value in its own words. The input is built once
+  // and its text is left alone while the saved value is unchanged, so a poll's
+  // repaint, or a refusal, never clears what is being typed. A source fed by
+  // two polls (Usage) has one box per cadence, each keyed by `data-cadence`.
+  function fillCadence(box, c) {
     if (!box || !c) return;
     const disabled = busy || !window.__TAURI__;
     if (!box.childElementCount) {
@@ -788,7 +789,7 @@
       input.step = "1";
       input.setAttribute("form", "dashboard-cadence-no-form");
       input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") { event.preventDefault(); q('[data-action="cadence-apply"]')?.click(); }
+        if (event.key === "Enter") { event.preventDefault(); box.querySelector('[data-action="cadence-apply"]')?.click(); }
       });
       const line = node("div", "db-cadence-line");
       line.append(input, button(c.applyLabel, "cadence-apply"), button(c.resetLabel, "cadence-reset"));
@@ -810,7 +811,6 @@
     text(box.querySelector(".db-cadence-status"), c.status);
     text(box.querySelector(".db-cadence-help"), c.help);
     text(box.querySelector(".db-cadence-shared"), c.shared);
-    box.dataset.panel = c.id;
     input.disabled = disabled;
     box.querySelector('[data-action="cadence-apply"]').disabled = disabled;
     box.querySelector('[data-action="cadence-reset"]').disabled = disabled || !c.configured;
@@ -1066,10 +1066,10 @@
         fillGroupLabels(groupLabels, s);
         fields.append(groupLabels);
       }
-      if (source(t.source)?.cadence) {
+      for (const c of source(t.source)?.cadences || []) {
         const cadence = node("fieldset", "db-cadence");
-        cadence.dataset.cadence = "";
-        fillCadence(cadence, s);
+        cadence.dataset.cadence = c.id;
+        fillCadence(cadence, c);
         fields.append(cadence);
       }
       if (t.source === "containers") {
@@ -1953,9 +1953,9 @@
       return;
     }
     if (action === "cadence-apply" || action === "cadence-reset") {
-      const box = q("[data-cadence]");
+      const box = b.closest("[data-cadence]");
       if (!box) return;
-      const panel = box.dataset.panel, selector = `[data-action="${action}"]`;
+      const panel = box.dataset.cadence, selector = `[data-cadence="${panel}"] [data-action="${action}"]`;
       if (action === "cadence-reset") {
         await cadenceChange("panel_interval_clear", { panel }, selector);
       } else {

@@ -8,4 +8,5 @@ pub mod format;
 pub mod freshness;
 pub mod history;
 pub mod layout;
+pub mod plan_usage;
 pub mod update;

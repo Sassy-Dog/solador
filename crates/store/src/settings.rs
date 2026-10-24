@@ -104,6 +104,8 @@ pub enum PanelInterval {
     AzureCost,
     /// The Sentry Crons panel.
     Crons,
+    /// The Usage panel's Claude and Codex plan windows (`crates/subscription`).
+    PlanUsage,
 }
 
 /// Everything that is true of one [`PanelInterval`], in one place.
@@ -152,11 +154,12 @@ pub struct IntervalSpec {
 
 impl PanelInterval {
     /// Every panel that has a settable cadence, in a stable order for UI.
-    pub const ALL: [PanelInterval; 4] = [
+    pub const ALL: [PanelInterval; 5] = [
         PanelInterval::Containers,
         PanelInterval::UsageProviders,
         PanelInterval::AzureCost,
         PanelInterval::Crons,
+        PanelInterval::PlanUsage,
     ];
 
     /// The key, default and floor for this panel.
@@ -179,6 +182,7 @@ impl PanelInterval {
     /// | `UsageProviders` | 1h | `usage::PROVIDER_POLL_INTERVAL_SECS` |
     /// | `AzureCost` | 4h | `azurecost::POLL_INTERVAL` |
     /// | Crons | 1h | *shares* `usage::PROVIDER_POLL_INTERVAL_SECS` |
+    /// | `PlanUsage` | 15m | new with the source; orca's own default |
     #[must_use]
     pub const fn spec(self) -> IntervalSpec {
         match self {
@@ -238,6 +242,21 @@ impl PanelInterval {
                 label: "Sentry Crons",
                 floor_reason:
                     "it shares Sentry's rate-limit budget with the Usage panel's read, and a monitor's health is a persistence watch rather than a real-time alarm",
+            },
+            // New with the source, so there is no older constant to mirror.
+            // Both numbers are orca's (`main/rate-limits/service/service-types.ts:96-100`):
+            // a 15-minute poll because "Claude's usage endpoint has a tight
+            // budget and quota is only informational; prefer a recent snapshot
+            // over polling into 429s", and a 5-minute floor, which is orca's
+            // debounce on a manual refresh. Both endpoints are private, so
+            // being a quiet client is the price of reading them at all.
+            PanelInterval::PlanUsage => IntervalSpec {
+                key: "plan_usage",
+                default_secs: 15 * 60,
+                floor_secs: 300,
+                label: "Usage — Claude and Codex plans",
+                floor_reason:
+                    "both plan endpoints are private and answer polling with rate limits, and a plan window moves over hours",
             },
         }
     }
@@ -518,6 +537,23 @@ pub struct Settings {
     /// `Settings::default()`, so there is exactly one place the answer lives and
     /// exactly one place to break.
     pub crash_reporting_enabled: bool,
+    /// Read Claude Code's saved sign-in to show the Claude plan's own limit
+    /// windows in the Usage panel (`crates/subscription`).
+    ///
+    /// **Off, and the Settings toggle is the only opt-in**, for the reason
+    /// [`Settings::crash_reporting_enabled`] gives plus one of its own: on a
+    /// Mac the sign-in is a keychain item another program owns, and reading it
+    /// can raise a keychain prompt. A prompt that appears unasked on launch is
+    /// not acceptable, so nothing reads it until the operator says so. Same
+    /// rule for the serde default: none at field level, so
+    /// [`Settings::default`] is the one place the answer lives.
+    ///
+    /// This is a preference, not a credential. The token itself is never
+    /// stored by Solador.
+    pub claude_plan_usage_enabled: bool,
+    /// Read Codex's saved ChatGPT sign-in (`~/.codex/auth.json`) to show the
+    /// Codex plan's limit windows. Off by default, for the same reasons.
+    pub codex_plan_usage_enabled: bool,
     /// Mount paths hidden from the *local* machine's Volumes section. Remote
     /// hosts carry their own list on [`crate::Host`].
     pub local_hidden_volume_mounts: Vec<String>,
@@ -621,6 +657,9 @@ impl Default for Settings {
             notify_on_service_change: true,
             // The one preference here that defaults *off*. See the field.
             crash_reporting_enabled: false,
+            // Off: reading another program's sign-in is opt-in. See the fields.
+            claude_plan_usage_enabled: false,
+            codex_plan_usage_enabled: false,
             local_hidden_volume_mounts: Vec::new(),
             // Empty, not pre-filled with the defaults — see the field's note.
             panel_intervals: BTreeMap::new(),
@@ -686,6 +725,7 @@ mod tests {
             !s.crash_reporting_enabled,
             "crash reporting is off by default and the toggle is the only opt-in"
         );
+        assert!(!s.claude_plan_usage_enabled && !s.codex_plan_usage_enabled);
         assert!(s.local_hidden_volume_mounts.is_empty());
     }
 
@@ -717,6 +757,30 @@ mod tests {
         let opted_in: Settings =
             serde_json::from_str(r#"{"crash_reporting_enabled":true}"#).expect("deserialize");
         assert!(opted_in.crash_reporting_enabled);
+    }
+
+    /// Reading another program's saved sign-in is opt-in per provider, and
+    /// a store file written before the keys existed — every one in the wild —
+    /// reads as **off**. The same argument as the crash key: an upgrade that
+    /// started reading Claude Code's keychain item would raise a prompt nobody
+    /// asked for.
+    #[test]
+    fn a_store_file_without_the_plan_usage_keys_reads_no_sign_in() {
+        for stored in [
+            r#"{}"#,
+            r#"{"crash_reporting_enabled":true,"neon_org_id":"org-1"}"#,
+        ] {
+            let s: Settings = serde_json::from_str(stored).expect("deserialize");
+            assert!(!s.claude_plan_usage_enabled, "{stored}");
+            assert!(!s.codex_plan_usage_enabled, "{stored}");
+        }
+        let claude_only: Settings =
+            serde_json::from_str(r#"{"claude_plan_usage_enabled":true}"#).expect("deserialize");
+        assert!(claude_only.claude_plan_usage_enabled);
+        assert!(
+            !claude_only.codex_plan_usage_enabled,
+            "the two sources are independent switches"
+        );
     }
 
     /// The two preferences with no UI on either side: a store file written
@@ -768,6 +832,8 @@ mod tests {
             notify_on_approval_needed: false,
             notify_on_service_change: false,
             crash_reporting_enabled: true,
+            claude_plan_usage_enabled: true,
+            codex_plan_usage_enabled: true,
             local_hidden_volume_mounts: vec!["/Volumes/Backup".into()],
             panel_intervals: BTreeMap::from([
                 ("containers".to_owned(), 30),
@@ -1210,7 +1276,13 @@ mod tests {
         let keys: Vec<&str> = PanelInterval::ALL.iter().map(|p| p.spec().key).collect();
         assert_eq!(
             keys,
-            ["containers", "usage_providers", "azure_cost", "crons"]
+            [
+                "containers",
+                "usage_providers",
+                "azure_cost",
+                "crons",
+                "plan_usage"
+            ]
         );
         let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
         assert_eq!(unique.len(), keys.len(), "duplicate panel_intervals key");

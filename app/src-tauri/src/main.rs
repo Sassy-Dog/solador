@@ -29,6 +29,7 @@ mod local;
 mod machine_alerts;
 mod openclaw;
 mod panel;
+mod plan_usage;
 mod resume;
 mod runner_groups;
 mod services;
@@ -269,6 +270,11 @@ struct App {
     /// section and then wait out the full hour before filling it — which reads
     /// exactly like the key having been rejected.
     usage_providers_due: std::sync::atomic::AtomicBool,
+    /// Cuts the plan-usage loop's sleep short: a Settings toggle or a cadence
+    /// edit. The plan rows live in [`App::usage`]; their loop is separate
+    /// because it runs on its own cadence and reads another program's sign-in,
+    /// which nothing else on the usage loop does.
+    plan_usage_wake: tokio::sync::Notify,
     /// The Sentry Crons panel's state, on the same fixed hourly cadence as the
     /// other Sentry read — not the store's shared refresh interval.
     ///
@@ -1077,6 +1083,10 @@ async fn resume_loop(app: Arc<App>) {
         wake_usage(&app, true);
         app.azure_wake.notify_one();
         app.containers_wake.notify_one();
+        // Costs nothing unless a read is due: the plan loop's gate compares the
+        // wall clock, which kept running through the sleep, against each
+        // provider's last attempt, and a provider that is off is never read.
+        app.plan_usage_wake.notify_one();
         wake_openclaw(&app);
     }
 }
@@ -3207,6 +3217,99 @@ async fn usage_loop(app: Arc<App>) {
     }
 }
 
+// MARK: the Usage panel's plan rows
+//
+// Their own loop rather than a fourth provider inside `poll_usage`: they run on
+// their own cadence, and they are the only reads in the app that borrow
+// another program's sign-in. Keeping them apart keeps the opt-in auditable in
+// one place (`plan_usage::poll`).
+
+/// The two plan opt-ins and their cadence, as the store holds them now.
+fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
+    let (claude, codex) = {
+        let store = store.lock().expect("store poisoned");
+        let settings = store.settings();
+        (
+            settings.claude_plan_usage_enabled,
+            settings.codex_plan_usage_enabled,
+        )
+    };
+    plan_usage::PlanInputs {
+        claude,
+        codex,
+        cadence_secs: panel_interval(store, PanelInterval::PlanUsage).as_secs(),
+    }
+}
+
+/// The plan rows' poll loop.
+///
+/// Every pass lets [`plan_usage::poll`] decide per provider, and each
+/// provider's opt-in is read from the store **at its own turn**, never once for
+/// the pass: Claude's reader runs first and may wait on a macOS keychain prompt
+/// for up to a minute (`subscription::keychain::DEFAULT_TIMEOUT`), and Codex
+/// turned off during that wait must not be read after it. A provider that is
+/// off is never read; nothing here reads a sign-in on its own. The credential
+/// readers run on the blocking pool, and the token they return goes straight
+/// into the one request and is dropped with it.
+async fn plan_usage_loop(app: Arc<App>) {
+    loop {
+        let cadence_secs = panel_interval(&app.store, PanelInterval::PlanUsage).as_secs();
+        plan_usage::poll(
+            &app.usage,
+            subscription::Provider::Claude,
+            || plan_inputs(&app.store).claude,
+            panel::now_unix(),
+            cadence_secs,
+            || async {
+                tokio::task::spawn_blocking(subscription::claude::read_this_machine)
+                    .await
+                    .unwrap_or(Err(subscription::PlanErrorKind::CredentialUnreadable))
+            },
+            |token| async move {
+                subscription::claude::Client::default()
+                    .usage(&token, github::now_utc())
+                    .await
+            },
+        )
+        .await;
+        plan_usage::poll(
+            &app.usage,
+            subscription::Provider::Codex,
+            || plan_inputs(&app.store).codex,
+            panel::now_unix(),
+            cadence_secs,
+            || async {
+                tokio::task::spawn_blocking(subscription::codex::read_this_machine)
+                    .await
+                    .unwrap_or(Err(subscription::PlanErrorKind::CredentialUnreadable))
+            },
+            |login| async move {
+                subscription::codex::Client::default()
+                    .usage(&login, github::now_utc())
+                    .await
+            },
+        )
+        .await;
+
+        let inputs = plan_inputs(&app.store);
+        let wait = {
+            let usage = app.usage.lock().expect("usage state poisoned");
+            plan_usage::next_wake(
+                [
+                    (inputs.claude, usage.plan(subscription::Provider::Claude)),
+                    (inputs.codex, usage.plan(subscription::Provider::Codex)),
+                ],
+                panel::now_unix(),
+                inputs.cadence_secs,
+            )
+        };
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = app.plan_usage_wake.notified() => {}
+        }
+    }
+}
+
 // MARK: the Sentry Crons panel
 //
 // Its own loop rather than a third provider inside `poll_usage`: it is a separate
@@ -3504,9 +3607,12 @@ fn usage(state: tauri::State<'_, Arc<App>>) -> Value {
     // it is what each section's freshness line is measured against, and a
     // shortened interval must re-date those sections now.
     let cadence_secs = panel_interval(&state.store, PanelInterval::UsageProviders).as_secs();
+    // The plan opt-ins, read here rather than by the poller: switching one off
+    // must hide its rows on this frame, not after the next pass drops them.
+    let plans = plan_inputs(&state.store);
     let payload = {
         let panel = state.usage.lock().expect("usage state poisoned");
-        usage::view(&panel, quota, rates, cadence_secs, panel::now_unix())
+        usage::view(&panel, quota, rates, plans, cadence_secs, panel::now_unix())
     };
     FIRST_USAGE_REQUEST.call_once(|| {
         let providers = payload["providers"].as_array().map_or(0, Vec::len);
@@ -3941,6 +4047,7 @@ fn wake_panel(app: &App, panel: PanelInterval) {
         PanelInterval::UsageProviders => wake_usage(app, false),
         PanelInterval::AzureCost => app.azure_wake.notify_one(),
         PanelInterval::Crons => app.crons_wake.notify_one(),
+        PanelInterval::PlanUsage => app.plan_usage_wake.notify_one(),
     }
 }
 
@@ -4050,6 +4157,65 @@ fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>
     if enabled && persisted {
         state.crash_reporting.set_consent(true);
     }
+    settings_response(&state, status)
+}
+
+/// One plan opt-in (`provider` is `"claude"` or `"codex"`). Saves on the
+/// spot, like the crash-reporting toggle, and for the same reason: consent is
+/// not a draft.
+///
+/// **Off is applied before the save and regardless of it.** The loop reads the
+/// in-memory store, so a provider switched off is never read again in this
+/// session even if the disk write fails. On is kept only if it persisted, so a
+/// failed save cannot leave this session reading a sign-in on the strength of a
+/// preference the next launch will not find.
+///
+/// Either direction resets the provider's in-memory state: off drops its
+/// reading, and on starts clean, which is also what un-parks a provider the
+/// keychain refused.
+#[tauri::command]
+fn settings_set_plan_usage(
+    provider: String,
+    enabled: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let provider = match provider.as_str() {
+        "claude" => subscription::Provider::Claude,
+        "codex" => subscription::Provider::Codex,
+        _ => return settings_response(&state, Some("Skipped — unknown provider.".into())),
+    };
+    let set = |store: &mut Store, on: bool| {
+        let settings = store.settings_mut();
+        match provider {
+            subscription::Provider::Claude => settings.claude_plan_usage_enabled = on,
+            subscription::Provider::Codex => settings.codex_plan_usage_enabled = on,
+        }
+    };
+    let name = provider.holder();
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        set(&mut store, enabled);
+        let status = save_status(
+            &store,
+            if enabled {
+                format!("Reading {name}'s sign-in for plan limits.")
+            } else {
+                format!("Stopped reading {name}'s sign-in.")
+            },
+        );
+        let persisted = status.as_deref().is_some_and(|s| !s.starts_with("Failed"));
+        if enabled && !persisted {
+            set(&mut store, false);
+        }
+        status
+    };
+    state
+        .usage
+        .lock()
+        .expect("usage state poisoned")
+        .plan_mut(provider)
+        .reset();
+    state.plan_usage_wake.notify_one();
     settings_response(&state, status)
 }
 
@@ -5742,6 +5908,17 @@ fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
     const NOW: u64 = 1_700_000_000;
     let cadence_secs = u64::from(PanelInterval::UsageProviders.spec().default_secs);
     let providers_at = if stale { NOW - 23 * 3_600 } else { NOW };
+    // The plan rows show on the fixture that holds a reading of them, stale or
+    // not: the stale dump must keep every row the healthy one has (only its
+    // clocks move), or the browser suite's equal-height check would be
+    // comparing two different bodies. Every other dump renders the panel as a
+    // store starts, both plans off, which puts the setup line in front of the
+    // browser suite.
+    let plans = if kind == usage::Fixture::Measured {
+        usage::FIXTURE_PLANS
+    } else {
+        plan_usage::PlanInputs::OFF
+    };
     usage::view(
         &usage::fixture_state(kind, NOW, providers_at),
         quota,
@@ -5749,6 +5926,7 @@ fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
             usd_per_cu_hour: 0.106,
             usd_per_gib_month: 0.35,
         },
+        plans,
         cadence_secs,
         NOW,
     )
@@ -6645,6 +6823,7 @@ fn main() {
         usage: Mutex::new(UsageState::new()),
         usage_wake: tokio::sync::Notify::new(),
         usage_providers_due: std::sync::atomic::AtomicBool::new(false),
+        plan_usage_wake: tokio::sync::Notify::new(),
         crons: Mutex::new(CronsState::new()),
         crons_wake: tokio::sync::Notify::new(),
         azure: Mutex::new(AzureState::new()),
@@ -6692,6 +6871,7 @@ fn main() {
     // Usage: Claude on the store's refresh interval, Neon and Sentry hourly
     // inside the same loop.
     rt.spawn(usage_loop(Arc::clone(&app)));
+    rt.spawn(plan_usage_loop(Arc::clone(&app)));
     // Sentry cron monitors, on the same fixed hourly cadence as the Sentry read
     // inside the usage loop — a persistence watch, not a real-time alarm.
     rt.spawn(crons_loop(Arc::clone(&app)));
@@ -6792,6 +6972,7 @@ fn main() {
             panel_interval_save,
             panel_interval_clear,
             settings_set_crash_reporting,
+            settings_set_plan_usage,
             settings_move_panel,
             settings_set_panel_span,
             settings_set_breakpoint_overflow,
@@ -7117,7 +7298,7 @@ mod tests {
     fn each_panels_default_cadence_is_the_constant_this_crate_declares() {
         let (_dir, store) = scratch_store();
         let store = Mutex::new(store);
-        let defaults: [(&str, PanelInterval, u64); 4] = [
+        let defaults: [(&str, PanelInterval, u64); 5] = [
             (
                 "containers",
                 PanelInterval::Containers,
@@ -7139,6 +7320,11 @@ mod tests {
                 "sentry crons",
                 PanelInterval::Crons,
                 usage::PROVIDER_POLL_INTERVAL_SECS,
+            ),
+            (
+                "plan usage",
+                PanelInterval::PlanUsage,
+                plan_usage::RECOMMENDED_POLL_INTERVAL_SECS,
             ),
         ];
         for (panel, kind, constant) in defaults {

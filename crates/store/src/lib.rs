@@ -1269,6 +1269,9 @@ mod tests {
             // one defaults off — so the round trip proves an operator's *yes*
             // survives the file rather than quietly reverting to opted-out.
             crash_reporting_enabled: true,
+            // Both opt-ins on, for the same reason: a *yes* must survive the file.
+            claude_plan_usage_enabled: true,
+            codex_plan_usage_enabled: true,
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
             // Same argument as the two notify flags above: an override the file
             // has to carry, so the round trip proves it persisted rather than

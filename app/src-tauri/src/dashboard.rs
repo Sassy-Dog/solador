@@ -152,9 +152,11 @@ fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
             ("WINDOWS", "Windows runners"),
         ]),
         "sentryCrons" => choices.push(("active", "Active issues")),
-        "claudeUsage" => {
-            choices.extend([("claude", "Claude Code"), ("providers", "Cloud providers")])
-        }
+        "claudeUsage" => choices.extend([
+            ("claude", "Claude Code"),
+            ("plans", "Subscription plans"),
+            ("providers", "Cloud providers"),
+        ]),
         _ => (),
     }
     choices
@@ -705,6 +707,23 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 add_scope(&mut r, "claude");
                 rows.push(r);
             }
+            // Plan windows, in the panel's order: after the rollups, before
+            // the metered providers. Only readings become rows; the setup
+            // line for a plan that is off stays on the panel and in Settings.
+            for plan in list(p, "plans") {
+                for v in list(plan, "rows") {
+                    let mut r = row(
+                        &format!("{}:{}", string(plan, "id"), string(v, "label")),
+                        string(v, "label"),
+                        string(v, "value"),
+                        tint(&v["valueColor"]),
+                        red(&v["valueColor"]),
+                    );
+                    add_scope(&mut r, "plans");
+                    r["detail"] = json!(string(plan, "id"));
+                    rows.push(r);
+                }
+            }
             for provider in list(p, "providers") {
                 for v in list(provider, "rows") {
                     let mut r = row(
@@ -873,7 +892,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "services" => "Connected providers and custom status pages",
         "sentryCrons" => "Scheduled jobs from your Sentry connection",
         "containers" => "Containers and virtual machines on monitored hosts",
-        "claudeUsage" => "Local Claude Code logs and connected cloud providers",
+        "claudeUsage" => "Local Claude Code logs, subscription plans and connected cloud providers",
         "azureCost" => "Cost exports from your Azure connection",
         "openclawAgents" => "Activity from your OpenClaw gateway",
         _ => "",
@@ -893,10 +912,10 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         source["emptyGroupMessage"] = payload["emptyGroupMessage"].clone();
         source["groupLabels"] = payload["groupLabels"].clone();
     }
-    if !payload["cadence"].is_null() {
-        // The poll cadence is the source's, shared by every tile of it and the
-        // Full view (#614), so it rides on the source, never on a tile.
-        source["cadence"] = payload["cadence"].clone();
+    if !payload["cadences"].is_null() {
+        // The poll cadences are the source's, shared by every tile of it and
+        // the Full view (#614), so they ride on the source, never on a tile.
+        source["cadences"] = payload["cadences"].clone();
     }
     if id == "containers" {
         // The rules decide what every Containers tile and the Full view show.
@@ -2502,6 +2521,38 @@ mod tests {
             .map(|c| format!("{} {}", c["value"].as_str().unwrap(), string(c, "label")))
             .collect();
         assert_eq!(strip, ["7 issues", "— ready", "2 PRs"]);
+    }
+
+    /// Plan rows join the Usage tile under their own scope, a plan at or past
+    /// its red edge needs attention, and the setup line for a plan that is off
+    /// is not a reading, so it is not a row.
+    #[test]
+    fn plan_windows_are_usage_rows_under_their_own_scope() {
+        let red = color::hex(color::RED);
+        let green = color::hex(color::GREEN);
+        let payload = json!({
+            "plans": [
+                {"id": "claude-plan", "rows": [
+                    {"label": "CLAUDE PLAN (5H)", "value": "92% · resets in 1h 0m", "valueColor": red,
+                     "bar": {"fraction": 0.92, "color": red}},
+                    {"label": "CLAUDE PLAN (WEEK)", "value": "40%", "valueColor": green,
+                     "bar": {"fraction": 0.4, "color": green}}
+                ]}
+            ],
+            "plansMessage": {"text": "Codex plan limits are off — turn on in Settings",
+                             "color": color::hex(color::MUTED)}
+        });
+        let source = source_view("claudeUsage", "Usage", &payload);
+        let rows = list(&source, "rows");
+        assert_eq!(rows.len(), 2, "the off line is not a row");
+        assert_eq!(rows[0]["id"], "claude-plan:CLAUDE PLAN (5H)");
+        assert_eq!(rows[0]["scopes"], json!(["plans"]));
+        assert_eq!(rows[0]["attention"], true);
+        assert_eq!(rows[1]["attention"], false);
+        assert!(list(&source, "scopes")
+            .iter()
+            .any(|s| s["value"] == "plans"));
+        assert_eq!(source["attentionCount"], 1);
     }
 
     #[test]

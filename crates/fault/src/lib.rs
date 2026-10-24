@@ -48,28 +48,31 @@
 //! response`) rather than `the {vendor} response`, which said "the the agent
 //! response" the first time a non-proper noun reached it.
 //!
-//! # Two vendor categories, and the one pairing that is not valid
+//! # Two vendor categories, and the two pairings that are not valid
 //!
 //! The slot is an untyped `&str` filled from two grammatical categories:
 //! **proper nouns** — `"Neon"`, `"Sentry"`, `"Vercel"`, `"GitHub"`,
-//! `"Azure CLI"`, `"Azure Storage"` — and **names that carry their own
-//! determiner** — `"the agent"`, `"the status page"`, `"that host"`. Ten of
-//! the eleven templates read correctly against both. [`Fault::ToolUnavailable`]
+//! `"Azure CLI"`, `"Azure Storage"`, `"Anthropic"`, `"ChatGPT"`,
+//! `"Claude Code"`, `"Codex"` — and **names that carry their own
+//! determiner** — `"the agent"`, `"the status page"`, `"that host"`. All but
+//! two of the templates read correctly against both. [`Fault::ToolUnavailable`]
 //! does not: it tells the operator to install what it names, and *"that host
 //! not found — install it and sign in"* is broken English about a machine
-//! nobody can install.
+//! nobody can install. [`Fault::SignInExpired`] is narrower still: it tells the
+//! operator to *run* what it names, so only a program holding a sign-in
+//! Solador borrows (`"Claude Code"`, `"Codex"`) fits it.
 //!
-//! Typing the vendor is deliberately **not** the fix (#364). Eleven sentences do
-//! not justify a vendor-category type, and the slot stays `&str`. What the
+//! Typing the vendor is deliberately **not** the fix (#364). A dozen sentences
+//! do not justify a vendor-category type, and the slot stays `&str`. What the
 //! constraint needed was to be *said*: the crate's own sweeps iterated the
-//! whole (state × vendor) cross product, so the one pairing production never
+//! whole (state × vendor) cross product, so a pairing production never
 //! produces was implicitly blessed — which is what made the broken sentence
 //! look tested. `is_rendered` in the tests below is the table those sweeps now
-//! iterate, and the pairing it excludes is asserted excluded, printing the
+//! iterate, and the pairings it excludes are asserted excluded, printing the
 //! sentence a widening would ship.
 //!
 //! No test here can see a caller in another crate; only a type could, and a
-//! type is not warranted at eleven sentences. This states the rule and stops
+//! type is not warranted at a dozen sentences. This states the rule and stops
 //! this crate from endorsing its violation.
 //!
 //! # The fallback is not a category
@@ -138,6 +141,20 @@ pub enum Fault {
     /// credential problem: the fix is to pair the host (check its certificate
     /// and trust it) in Settings, which moves it onto pinned TLS.
     PlainHttpRefused,
+    /// A sign-in **another program owns** — Claude Code's or Codex's, which
+    /// the Usage panel's plan rows borrow read-only — has expired or been
+    /// revoked: the service answered 401.
+    ///
+    /// Not [`Fault::CredentialRejected`], whose fix is "update it in Settings":
+    /// Solador holds no copy of this credential, never refreshes it (a refresh
+    /// rotates the owner's refresh token and would sign that program out), and
+    /// the only fix is to run the program, which renews its own login.
+    ///
+    /// **The second state whose template needs a particular kind of noun**, for
+    /// the same reason as [`Fault::ToolUnavailable`]: it tells the operator to
+    /// go and run what it names, so the vendor must be a program — `"Claude
+    /// Code"`, `"Codex"` — and never a service or a host.
+    SignInExpired,
     /// None of the above.
     ///
     /// Its sentence promises nothing except that something failed and the log
@@ -235,6 +252,7 @@ impl Fault {
             Fault::PlainHttpRefused => {
                 format!("{vendor} is unpaired, off-tailnet — pair it in Settings")
             }
+            Fault::SignInExpired => format!("{vendor}'s sign-in has expired — run it to refresh"),
             Fault::Unexpected => format!("{vendor} failed — details in the log"),
         }
     }
@@ -294,6 +312,7 @@ mod tests {
         Fault::CertificateChanged,
         Fault::NoTls,
         Fault::PlainHttpRefused,
+        Fault::SignInExpired,
         Fault::Unexpected,
     ];
 
@@ -307,7 +326,18 @@ mod tests {
         "GitHub",
         "Azure CLI",
         "Azure Storage",
+        // The Usage panel's plan rows (`crates/subscription`): the service each
+        // request goes to, and the program whose saved sign-in it borrows.
+        "Anthropic",
+        "ChatGPT",
+        "Claude Code",
+        "Codex",
     ];
+
+    /// The proper nouns that are **programs holding a sign-in Solador only
+    /// borrows** — the only names [`Fault::SignInExpired`] is rendered against,
+    /// because its sentence tells the operator to go and run what it names.
+    const SIGN_IN_HOLDERS: &[&str] = &["Claude Code", "Codex"];
 
     /// …and the ones that **carry their own determiner**. These three arrived
     /// with #354 and are the reason `Undecodable` is possessive.
@@ -334,6 +364,10 @@ mod tests {
             // The one template that needs a proper noun: it tells the operator
             // to go and install what it names, and a host is not installable.
             Fault::ToolUnavailable => PROPER_NOUN_VENDORS.contains(&vendor),
+            // The other one: it tells the operator to *run* what it names, and
+            // neither a database vendor nor a host is a program they run to
+            // renew a login.
+            Fault::SignInExpired => SIGN_IN_HOLDERS.contains(&vendor),
             // Everything else is a thing that can happen to anything this app
             // reads, through a template valid against both categories.
             _ => true,
@@ -404,7 +438,7 @@ mod tests {
         }
     }
 
-    /// The one pairing the sweeps above exclude, asserted directly so the
+    /// The first pairing the sweeps above exclude, asserted directly so the
     /// exclusion is a stated rule rather than a gap somebody has to notice.
     ///
     /// The failure prints the sentence a widening would ship, because that
@@ -434,13 +468,54 @@ mod tests {
         );
     }
 
-    /// …and it is the *only* exclusion. Narrowing any other state here would
-    /// quietly stop sweeping a pairing that does reach a panel, which is the
-    /// same defect as blessing one that cannot — in the other direction, and
+    /// [`Fault::SignInExpired`] tells the operator to run the program whose
+    /// sign-in expired, so it is rendered only against one of those. "Neon's
+    /// sign-in has expired — run it to refresh" is the sentence a widening
+    /// would ship, and Neon is an API key the operator saved, not a login some
+    /// other program renews.
+    #[test]
+    fn sign_in_expired_is_rendered_only_against_a_program_that_holds_one() {
+        for vendor in all_vendors().filter(|v| !SIGN_IN_HOLDERS.contains(v)) {
+            assert!(
+                !is_rendered(Fault::SignInExpired, vendor),
+                "would ship {:?}",
+                Fault::SignInExpired.message(vendor)
+            );
+        }
+        assert_eq!(
+            Fault::SignInExpired.message("Claude Code"),
+            "Claude Code's sign-in has expired — run it to refresh"
+        );
+        assert_eq!(
+            Fault::SignInExpired.message("Codex"),
+            "Codex's sign-in has expired — run it to refresh"
+        );
+    }
+
+    /// The reason the variant exists rather than borrowing
+    /// [`Fault::CredentialRejected`]: that sentence says "update it in
+    /// Settings", and Solador holds no copy of a borrowed sign-in to update.
+    /// The fix is to run the program that owns it.
+    #[test]
+    fn an_expired_borrowed_sign_in_never_points_at_settings() {
+        for vendor in SIGN_IN_HOLDERS {
+            let message = Fault::SignInExpired.message(vendor);
+            assert!(!message.contains("Settings"), "{message}");
+            assert_ne!(message, Fault::CredentialRejected.message(vendor));
+            assert_ne!(message, Fault::Unreachable.message(vendor));
+        }
+    }
+
+    /// …and those two are the *only* exclusions. Narrowing any other state here
+    /// would quietly stop sweeping a pairing that does reach a panel, which is
+    /// the same defect as blessing one that cannot — in the other direction, and
     /// harder to see because the sweeps would still be green.
     #[test]
     fn every_other_state_is_swept_against_both_vendor_categories() {
-        for fault in ALL.iter().filter(|f| **f != Fault::ToolUnavailable) {
+        for fault in ALL
+            .iter()
+            .filter(|f| !matches!(**f, Fault::ToolUnavailable | Fault::SignInExpired))
+        {
             for vendor in all_vendors() {
                 assert!(is_rendered(*fault, vendor), "{fault:?} for {vendor}");
             }

@@ -26,6 +26,19 @@ Credential Manager on Windows), never in `store.json`.
 | Vercel API token | Usage | read |
 | OpenClaw bearer + device key | OpenClaw | gateway-dependent |
 
+### Borrowed sign-ins (read, never stored)
+
+The Usage panel's **plan limits** are off until you tick **Claude plan limits**
+or **Codex plan limits** in Settings → Connections. While one is on, each poll
+reads that tool's *own* saved sign-in, sends one read-only request, and drops
+the token. Nothing is copied into Solador's credential store, and the sign-in
+is never written, refreshed or rotated.
+
+| Sign-in read | Where | Sent to |
+|---|---|---|
+| Claude Code | macOS keychain item `Claude Code-credentials`, else `~/.claude/.credentials.json` | `api.anthropic.com/api/oauth/usage` |
+| Codex | `$CODEX_HOME/auth.json`, else `~/.codex/auth.json` | `chatgpt.com/backend-api/wham/usage` |
+
 There is a test asserting the settings file holds no secret material, and the
 Azure blob client strips URLs out of transport errors on purpose — a SAS is a
 query string, and error text gets pasted into issues.

@@ -440,6 +440,48 @@ test("the crash-reporting toggle saves on the spot and paints Rust's sentence", 
   await expect(toggle).toBeChecked({ checked: c.value });
 });
 
+test("each plan opt-in is off in a fresh store, saves on the spot, and paints Rust's sentences", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+  const plans = settings.planUsage;
+  // The fixture is a store that never opted in: neither plan is a saved
+  // connection, so each is reached through the catalog, and each is off.
+  for (const kind of ["claudePlan", "codexPlan"]) {
+    expect(
+      settings.connections.rows.some((row) => row.kind === kind),
+      "an opt-in that is off claims no connection row"
+    ).toBe(false);
+  }
+
+  for (const [kind, provider] of [["claudePlan", "claude"], ["codexPlan", "codex"]]) {
+    const p = plans[provider];
+    expect(p.value, "a fresh store reads nobody's sign-in").toBe(false);
+    await addConnection(page, kind);
+    const toggle = page.locator(`#plan-usage-${provider}`);
+    await expect(toggle).toBeChecked({ checked: false });
+    // Both sentences are Rust's, verbatim: what is read (nothing, while off)
+    // and exactly which file or keychain item it would be.
+    await expect(page.locator(".plan-status")).toHaveText(p.status);
+    await expect(page.locator(".plan-status + .help")).toHaveText(p.help);
+
+    // No Apply, for the crash-reporting toggle's reason: ticking the box is
+    // the consent, and unticking it is the withdrawal. One click, one command,
+    // naming the provider in the command's own vocabulary.
+    await toggle.click();
+    expect(await calls(page, "settings_set_plan_usage")).toEqual([
+      { command: "settings_set_plan_usage", args: { provider, enabled: true } },
+    ]);
+    // The stub answers with the unchanged fixture, and the box paints Rust's
+    // answer rather than the click.
+    await expect(toggle).toBeChecked({ checked: false });
+    await page.evaluate(() => {
+      window.__CALLS__ = [];
+    });
+  }
+});
+
 /** The Layout tab, showing the band the editor has selected. */
 async function openLayout(page, baseURL) {
   const settings = await openSettings(page, baseURL);
