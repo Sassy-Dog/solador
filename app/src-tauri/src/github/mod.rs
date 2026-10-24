@@ -714,23 +714,27 @@ enum RepoStatus {
     /// Runs couldn't be fetched (auth/network) — muted, because we know
     /// nothing, which is not the same as knowing it is broken.
     Unreachable,
-    /// Main or last-PR failed, or a queued run has gone stale.
+    /// A queued run has gone stale, or main or last-PR failed with nothing in
+    /// flight.
     Failed,
     /// A run is parked at a deployment-protection gate: a human must act.
     NeedsApproval,
-    /// Actively executing, nothing wrong.
+    /// Actively executing. An earlier failure does not outrank it.
     Running,
     Healthy,
 }
 
+/// What is happening now outranks what already happened: a stuck run, a gate
+/// and a run in flight are all decided before an earlier failure. Any run in
+/// flight counts, on any branch — an unrelated PR or Dependabot run too, not
+/// only the one that would replace the failed slot — so a red repo reads
+/// Running whenever a job runs and Failed again once nothing does. A stuck run
+/// stays first, since nothing in flight can unstick it.
 fn status_of(health: &RepoWorkflowHealth) -> RepoStatus {
     if !health.reachable {
         return RepoStatus::Unreachable;
     }
-    if health.main.as_ref().is_some_and(RunRef::is_failed)
-        || health.last_pr.as_ref().is_some_and(RunRef::is_failed)
-        || !health.stuck.is_empty()
-    {
+    if !health.stuck.is_empty() {
         return RepoStatus::Failed;
     }
     if !health.needs_approval.is_empty() {
@@ -738,6 +742,11 @@ fn status_of(health: &RepoWorkflowHealth) -> RepoStatus {
     }
     if !health.running.is_empty() {
         return RepoStatus::Running;
+    }
+    if health.main.as_ref().is_some_and(RunRef::is_failed)
+        || health.last_pr.as_ref().is_some_and(RunRef::is_failed)
+    {
+        return RepoStatus::Failed;
     }
     RepoStatus::Healthy
 }
@@ -1119,8 +1128,8 @@ fn repo_row(
         "linkLabel": open_label(&health.repo),
         // Present only while a run is parked at a gate: the dashboard row opens
         // it instead of Detail. Rust decides the target; the webview opens it.
-        // Keyed on the status, not on `needs_approval` alone: a failed repo
-        // with a parked run reads Failed and keeps opening Detail.
+        // Keyed on the status, not on `needs_approval` alone: a repo with a
+        // stuck run and a parked one reads Failed and keeps opening Detail.
         "approvalUrl": if status == RepoStatus::NeedsApproval { approval_url(health) } else { None },
         // Dependabot's share of PRS, as the cell would print it: the
         // dashboard's Detail column reads this, never re-derives it.
@@ -2327,34 +2336,44 @@ mod tests {
         );
         assert_eq!(two["approvalUrl"], "https://github.com/acme/widget/actions");
 
-        for health in [
-            health_of("o/r", &[run("in_progress", None, 5)], RepoCounts::default()),
-            health_of(
-                "o/r",
-                &[run("completed", Some("success"), 5)],
-                RepoCounts::default(),
+        for (want, health) in [
+            (
+                "Running",
+                health_of("o/r", &[run("in_progress", None, 5)], RepoCounts::default()),
             ),
-            RepoWorkflowHealth::unreachable("o/r"),
-            // Failed outranks a parked run: it stays red and opens Detail. The
-            // parked run is a PR run so it does not supersede main's failure.
-            health_of(
-                "o/r",
-                &[
-                    run("completed", Some("failure"), 30),
-                    serde_json::from_value(json!({
-                        "id": 7, "name": "Deploy", "event": "pull_request",
-                        "status": "waiting", "conclusion": null,
-                        "head_branch": "feat/x", "html_url": "https://x",
-                        "created_at": now().to_rfc3339(),
-                    }))
-                    .expect("waiting pr run"),
-                ],
-                RepoCounts::default(),
+            (
+                "Healthy",
+                health_of(
+                    "o/r",
+                    &[run("completed", Some("success"), 5)],
+                    RepoCounts::default(),
+                ),
+            ),
+            ("Unreadable", RepoWorkflowHealth::unreachable("o/r")),
+            // A stuck run outranks a parked one: the repo stays red and opens
+            // Detail. (An earlier failure does not: see
+            // `an_approval_gate_outranks_an_earlier_failure`.)
+            (
+                "Failed",
+                health_of(
+                    "o/r",
+                    &[
+                        run("queued", None, 120),
+                        serde_json::from_value(json!({
+                            "id": 7, "name": "Deploy", "event": "pull_request",
+                            "status": "waiting", "conclusion": null,
+                            "head_branch": "feat/x", "html_url": "https://x",
+                            "created_at": now().to_rfc3339(),
+                        }))
+                        .expect("waiting pr run"),
+                    ],
+                    RepoCounts::default(),
+                ),
             ),
         ] {
             let row = only_row(&ready(vec![health]), now());
             assert!(row["approvalUrl"].is_null(), "{row}");
-            assert_ne!(row["statusLabel"], "Waiting");
+            assert_eq!(row["statusLabel"], want, "{row}");
         }
     }
 
@@ -2582,24 +2601,25 @@ mod tests {
         }
     }
 
-    /// A failure outranks a run in flight: a repo that is both broken and busy
-    /// is broken. Getting this backwards paints a red repo amber.
+    /// A run in flight outranks an earlier failure, so the dot says Running
+    /// until nothing is running. The failure is not hidden — the header still
+    /// counts it.
     ///
-    /// The in-flight run is deliberately a *PR* run. Two push runs would not
-    /// test this at all: the newer one simply takes the `main` slot and
-    /// supersedes the older failure, which is `crates/github`'s rule and the
-    /// right one — the repo really is no longer known to be broken.
+    /// The in-flight run is a merge-queue run, the shape that read Failed on a
+    /// real repo while its fix was in the queue. Two push runs would not test
+    /// this at all: the newer one takes the `main` slot and supersedes the
+    /// older failure. A queue run takes that slot only once it succeeds.
     #[test]
-    fn a_failure_outranks_a_run_in_flight() {
-        let pr_run: WorkflowRun = serde_json::from_value(json!({
-            "id": 2, "name": "CI", "event": "pull_request", "status": "in_progress",
-            "conclusion": null, "head_branch": "feat/x",
+    fn a_run_in_flight_outranks_an_earlier_failure() {
+        let queue_run: WorkflowRun = serde_json::from_value(json!({
+            "id": 2, "name": "CI", "event": "merge_group", "status": "in_progress",
+            "conclusion": null, "head_branch": "gh-readonly-queue/main/pr-7-abc",
             "html_url": "https://x", "created_at": now().to_rfc3339(),
         }))
         .expect("run");
         let health = health_of(
             "o/r",
-            &[run("completed", Some("failure"), 30), pr_run],
+            &[run("completed", Some("failure"), 30), queue_run],
             RepoCounts::default(),
         );
         assert!(
@@ -2609,6 +2629,76 @@ mod tests {
         assert!(
             health.main.as_ref().is_some_and(RunRef::is_failed),
             "precondition: main is red"
+        );
+        assert_eq!(status_of(&health), RepoStatus::Running);
+
+        let state = ready(vec![health]);
+        let row = &only_row(&state, now());
+        assert_eq!(row["statusLabel"], "Running");
+        assert_eq!(
+            row["attention"], false,
+            "a run in flight is not a problem yet"
+        );
+        assert_eq!(
+            repos_view(&state, now())["trailing"],
+            "1 running · 1 failed",
+            "the earlier failure is still counted"
+        );
+    }
+
+    /// A run parked at an approval gate outranks an earlier failure, as a
+    /// running one does. Unlike Running it still needs attention, because a
+    /// human must act, and the row still opens the gate.
+    #[test]
+    fn an_approval_gate_outranks_an_earlier_failure() {
+        let parked: WorkflowRun = serde_json::from_value(json!({
+            "id": 2, "name": "Release", "event": "workflow_run", "status": "waiting",
+            "conclusion": null, "head_branch": "main",
+            "html_url": "https://github.com/o/r/actions/runs/2",
+            "created_at": now().to_rfc3339(),
+        }))
+        .expect("run");
+        let health = health_of(
+            "o/r",
+            &[run("completed", Some("failure"), 30), parked],
+            RepoCounts::default(),
+        );
+        assert!(
+            health.main.as_ref().is_some_and(RunRef::is_failed),
+            "precondition: main is red"
+        );
+        assert_eq!(status_of(&health), RepoStatus::NeedsApproval);
+        let state = ready(vec![health]);
+        let row = &only_row(&state, now());
+        assert_eq!(row["statusLabel"], "Waiting");
+        assert_eq!(row["attention"], true, "a human must act");
+        assert!(row["approvalUrl"].is_string(), "{row}");
+        assert_eq!(
+            repos_view(&state, now())["trailing"],
+            "1 needs approval · 1 failed",
+            "the earlier failure is still counted"
+        );
+    }
+
+    /// A stuck run is a live problem, not history, so a run in flight beside it
+    /// does not turn the repo amber: nothing can tell a stuck queue to move.
+    #[test]
+    fn a_stuck_run_outranks_a_run_in_flight() {
+        let pr_run: WorkflowRun = serde_json::from_value(json!({
+            "id": 2, "name": "CI", "event": "pull_request", "status": "in_progress",
+            "conclusion": null, "head_branch": "feat/x",
+            "html_url": "https://x", "created_at": now().to_rfc3339(),
+        }))
+        .expect("run");
+        let health = health_of(
+            "o/r",
+            &[run("queued", None, 120), pr_run],
+            RepoCounts::default(),
+        );
+        assert!(!health.stuck.is_empty(), "precondition: a run is stuck");
+        assert!(
+            !health.running.is_empty(),
+            "precondition: something is running"
         );
         assert_eq!(status_of(&health), RepoStatus::Failed);
     }
