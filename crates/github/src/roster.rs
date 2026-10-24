@@ -30,6 +30,10 @@ pub const AGE_OUT_SECS: i64 = 24 * 3_600;
 pub struct RunnerRosterEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<String>,
+    /// The labels of the last sighting. `None` is an entry written before
+    /// labels were remembered — unknown, not "carries none".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     pub name: String,
     pub os: RunnerOs,
     pub last_seen: DateTime<Utc>,
@@ -40,6 +44,7 @@ pub struct RunnerRosterEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhRunnerAbsence {
     pub architecture: Option<String>,
+    pub labels: Option<Vec<String>>,
     pub name: String,
     pub os: RunnerOs,
     pub state: PresenceState,
@@ -124,6 +129,7 @@ pub fn updated(
             runner.name.clone(),
             RunnerRosterEntry {
                 architecture: runner.architecture.clone(),
+                labels: runner.labels.clone(),
                 name: runner.name.clone(),
                 os: runner.os,
                 last_seen: now,
@@ -151,6 +157,7 @@ pub fn absences(
         .filter(|entry| !registered_names.contains(entry.name.as_str()))
         .map(|entry| GhRunnerAbsence {
             architecture: entry.architecture.clone(),
+            labels: entry.labels.clone(),
             name: entry.name.clone(),
             os: entry.os,
             state: presence::state(false, entry.last_seen, now, grace_secs),
@@ -272,6 +279,7 @@ mod tests {
     fn runner(name: &str, os: RunnerOs) -> GhRunner {
         GhRunner {
             architecture: None,
+            labels: None,
             id: 1,
             name: name.to_string(),
             os,
@@ -282,6 +290,7 @@ mod tests {
     fn entry(name: &str, os: RunnerOs, absent_for: i64) -> RunnerRosterEntry {
         RunnerRosterEntry {
             architecture: None,
+            labels: None,
             name: name.to_string(),
             os,
             last_seen: now() - TimeDelta::seconds(absent_for),
@@ -313,6 +322,32 @@ mod tests {
         let learned = updated(&[], &[registered], now());
         let absent = absences(&learned, &[], now(), DEFAULT_GRACE_SECS);
         assert_eq!(absent[0].architecture.as_deref(), Some("ARM64"));
+    }
+
+    /// A large runner recycling between jobs must stay in its label's group,
+    /// so the roster remembers the labels of the last sighting.
+    #[test]
+    fn absence_keeps_the_labels_learned_from_the_last_sighting() {
+        let mut registered = runner("worker", RunnerOs::Linux);
+        registered.labels = Some(vec!["self-hosted".into(), "runner-large".into()]);
+        let learned = updated(&[], &[registered], now());
+        let absent = absences(&learned, &[], now(), DEFAULT_GRACE_SECS);
+        assert_eq!(
+            absent[0].labels.as_deref(),
+            Some(&["self-hosted".to_owned(), "runner-large".to_owned()][..])
+        );
+    }
+
+    /// A roster written before labels were remembered holds none. That is
+    /// "we never looked", and must read back as unknown rather than as a
+    /// runner that carries no labels.
+    #[test]
+    fn a_roster_entry_written_before_labels_reads_back_as_unknown() {
+        let entry: RunnerRosterEntry = serde_json::from_str(
+            r#"{"name":"ubu-1","os":"linux","last_seen":"2026-10-01T00:00:00Z"}"#,
+        )
+        .expect("decode");
+        assert_eq!(entry.labels, None);
     }
 
     /// A de-registered ephemeral runner stays remembered — that memory is the
@@ -387,12 +422,14 @@ mod tests {
             &[
                 GhRunnerAbsence {
                     architecture: None,
+                    labels: None,
                     name: "mac-s2".into(),
                     os: RunnerOs::MacOs,
                     state: PresenceState::Recycling { absence_secs: 60 },
                 },
                 GhRunnerAbsence {
                     architecture: None,
+                    labels: None,
                     name: "ubu-1".into(),
                     os: RunnerOs::Linux,
                     state: PresenceState::Missing { absence_secs: 400 },

@@ -2531,9 +2531,18 @@ static FIRST_RUNNERS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn runners(state: tauri::State<'_, Arc<App>>) -> Value {
+    // Copied out and released before the GitHub state's lock: the two are
+    // never held together, so this adds no lock ordering. Read on every
+    // request, so a Settings edit regroups the next frame without a poll.
+    let group_labels = state
+        .store
+        .lock()
+        .expect("store poisoned")
+        .runner_group_labels()
+        .to_vec();
     let payload = {
         let panel = state.github.lock().expect("github state poisoned");
-        github::runners_view(&panel, panel::now_unix())
+        github::runners_view(&panel, &group_labels, panel::now_unix())
     };
     FIRST_RUNNERS_REQUEST.call_once(|| {
         let rows = payload["rows"].as_array().map_or(0, Vec::len);
@@ -2705,6 +2714,12 @@ fn settings_payload(app: &App) -> Value {
     let plain_refused = plain_refused_hosts(app);
     let versions = agent_versions(app);
     let live = live_volumes(app);
+    // The GitHub state's lock, also taken and released before the store's.
+    let runner_labels = app
+        .github
+        .lock()
+        .expect("github state poisoned")
+        .runner_labels();
     let agent_release = app
         .agent_release
         .lock()
@@ -2726,6 +2741,8 @@ fn settings_payload(app: &App) -> Value {
             certificate_changed: &certificate_changed,
             plain_refused: &plain_refused,
             live_volumes: &live,
+            runner_group_labels: store.runner_group_labels(),
+            runner_labels: runner_labels.as_deref(),
         },
         &stored,
         &facts,
@@ -4607,6 +4624,43 @@ fn settings_remove_container_rule(index: usize, state: tauri::State<'_, Arc<App>
     settings_response(&state, status)
 }
 
+/// Appends one runner group label. No poll is woken: the `runners` command
+/// reads the list on every request, so the next frame is regrouped.
+#[tauri::command]
+fn settings_add_runner_group_label(label: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let mut labels = store.runner_group_labels().to_vec();
+        match settings::validated_group_label(&label, &labels) {
+            Ok(label) => {
+                labels.push(label);
+                store.set_runner_group_labels(labels);
+                save_status(&store, "Saved.")
+            }
+            Err(status) => Some(status),
+        }
+    };
+    settings_response(&state, status)
+}
+
+/// Removes one runner group label, matched exactly as it is stored.
+#[tauri::command]
+fn settings_remove_runner_group_label(label: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let mut labels = store.runner_group_labels().to_vec();
+        let before = labels.len();
+        labels.retain(|listed| *listed != label);
+        if labels.len() == before {
+            Some(format!("Skipped — {label} is not listed."))
+        } else {
+            store.set_runner_group_labels(labels);
+            save_status(&store, "Removed label.")
+        }
+    };
+    settings_response(&state, status)
+}
+
 /// The Test button: one `/v1/health` probe, rendered as the original result line.
 #[tauri::command]
 async fn settings_test_host(
@@ -5616,7 +5670,7 @@ fn dump_github_showcase(runners: bool) -> Value {
     let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
     let state = github::showcase_state(now);
     if runners {
-        github::runners_view(&state, u64::try_from(now.timestamp()).unwrap_or(0))
+        github::runners_view(&state, &[], u64::try_from(now.timestamp()).unwrap_or(0))
     } else {
         github::repos_view(&state, now)
     }
@@ -5911,6 +5965,10 @@ fn dump_settings() -> Value {
             plain_refused: &[],
             accounts: &accounts,
             live_volumes: &live_volumes,
+            // One listed label with one runner carrying it, so the Runner
+            // Group Labels editor is rendered with a row and its count.
+            runner_group_labels: &["runner-large".to_owned()],
+            runner_labels: Some(&[vec!["self-hosted".to_owned(), "runner-large".to_owned()]]),
         },
         &stored,
         &facts,
@@ -6083,7 +6141,7 @@ fn dump_github(empty: bool, runners: bool) -> Value {
         github::fixture_state(now)
     };
     if runners {
-        github::runners_view(&state, u64::try_from(now.timestamp()).unwrap_or(0))
+        github::runners_view(&state, &[], u64::try_from(now.timestamp()).unwrap_or(0))
     } else {
         github::repos_view(&state, now)
     }
@@ -6770,6 +6828,8 @@ fn main() {
             settings_add_container_rule,
             settings_set_container_rule,
             settings_remove_container_rule,
+            settings_add_runner_group_label,
+            settings_remove_runner_group_label,
             settings_test_host,
             settings_save_host,
             settings_add_repo,
@@ -8999,7 +9059,7 @@ mod tests {
     fn github_views(state: &GitHubState) -> (Value, Value) {
         (
             github::repos_view(state, github::now_utc()),
-            github::runners_view(state, panel::now_unix()),
+            github::runners_view(state, &[], panel::now_unix()),
         )
     }
 

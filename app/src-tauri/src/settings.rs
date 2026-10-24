@@ -785,6 +785,12 @@ pub struct StoreSections<'a> {
     /// it is what lets Settings offer a checklist of mounts to show rather
     /// than only the ones already hidden.
     pub live_volumes: &'a [(String, Vec<wire::Volume>)],
+    /// The stored runner group labels, in priority order.
+    pub runner_group_labels: &'a [String],
+    /// Every runner's labels as the GitHub state last read them — live, like
+    /// the lists above — or `None` before any organization's runners have been
+    /// read. It is what lets each group label say how many runners carry it.
+    pub runner_labels: Option<&'a [Vec<String>]>,
 }
 
 /// What the crash-reporting section needs to say beyond the stored toggle.
@@ -832,6 +838,8 @@ pub fn view(
         agent_versions,
         agent_release,
         live_volumes,
+        runner_group_labels,
+        runner_labels,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -844,7 +852,11 @@ pub fn view(
             { "id": "about", "title": "About" },
         ],
         "connections": connections_section(store, stored, openclaw),
-        "general": general_tab(settings, crash),
+        "general": general_tab(
+            settings,
+            crash,
+            runner_group_labels_section(runner_group_labels, runner_labels),
+        ),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
         "hosts": with_volume_choices(
@@ -1215,7 +1227,7 @@ fn connections_section(
     })
 }
 
-fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
+fn general_tab(settings: &Settings, crash: CrashFacts, runner_group_labels: Value) -> Value {
     json!({
         "heading": "Preferences",
         "refreshInterval": {
@@ -1257,6 +1269,7 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         "saveLabel": "Apply",
         "machineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, None),
         "panelIntervals": panel_intervals_section(settings),
+        "runnerGroupLabels": runner_group_labels,
         "crashReporting": crash_reporting_section(settings, crash),
     })
 }
@@ -1541,6 +1554,93 @@ pub fn validated_org(
         ));
     }
     Ok(org.to_owned())
+}
+
+/// The longest runner group label accepted, in bytes. Ours, not GitHub's: a
+/// generous ceiling on a value that is echoed into every group's title.
+pub const GROUP_LABEL_MAX_BYTES: usize = 256;
+
+/// The most runner group labels one cockpit lists. Ours as well: every label
+/// is a group per OS · architecture, and past a few dozen the panel is a list
+/// of groups rather than an answer.
+pub const GROUP_LABELS_MAX: usize = 32;
+
+/// One runner group label to append to `listed`, trimmed, or the status line
+/// saying why not.
+///
+/// Anything a fleet might use is accepted — the gate refuses only what cannot
+/// be a label (blank, a control character, past [`GROUP_LABEL_MAX_BYTES`]), a
+/// second spelling of one already listed (GitHub matches labels
+/// case-insensitively, so the two would be one group named twice), and a
+/// list already at [`GROUP_LABELS_MAX`].
+///
+/// # Errors
+/// The status line to show, already worded as one.
+pub fn validated_group_label(label: &str, listed: &[String]) -> Result<String, String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err("Skipped — a runner label is required.".to_owned());
+    }
+    if label.chars().any(char::is_control) {
+        return Err("Skipped — a runner label cannot contain control characters.".to_owned());
+    }
+    if label.len() > GROUP_LABEL_MAX_BYTES {
+        return Err(format!(
+            "Skipped — a runner label is at most {GROUP_LABEL_MAX_BYTES} bytes."
+        ));
+    }
+    if let Some(existing) = listed
+        .iter()
+        .find(|existing| existing.eq_ignore_ascii_case(label))
+    {
+        return Err(format!("Skipped — {existing} is already listed."));
+    }
+    if listed.len() >= GROUP_LABELS_MAX {
+        return Err(format!(
+            "Skipped — at most {GROUP_LABELS_MAX} runner group labels can be listed."
+        ));
+    }
+    Ok(label.to_owned())
+}
+
+/// The Runner Group Labels editor: the stored list, each label with how many
+/// runners currently carry it.
+///
+/// `runner_labels` is every runner's label list as the GitHub state holds it
+/// (registered and remembered alike, unknown ones left out), or `None` before
+/// any organization's runners have been read — when "no runner carries this
+/// label" would be a claim nothing has checked.
+pub fn runner_group_labels_section(
+    labels: &[String],
+    runner_labels: Option<&[Vec<String>]>,
+) -> Value {
+    let rows: Vec<Value> = labels
+        .iter()
+        .map(|label| {
+            let carriers = match runner_labels {
+                None => "runners not read yet".to_owned(),
+                Some(runners) => match runners
+                    .iter()
+                    .filter(|carried| viewmodel::dashboard::carries_label(carried, label))
+                    .count()
+                {
+                    0 => "no runner carries this label".to_owned(),
+                    1 => "carried by 1 runner".to_owned(),
+                    n => format!("carried by {n} runners"),
+                },
+            };
+            json!({ "label": label, "carriers": carriers })
+        })
+        .collect();
+    json!({
+        "heading": "Runner Group Labels",
+        "help": "Split each OS · architecture runner group by labels your runners carry — runner-large, say, to see large and small runners apart. A runner joins the group of the first label in this list that it carries; one carrying none of them is grouped as other. Labels match the way GitHub matches runs-on, ignoring case. With none listed, runners group by OS and architecture alone.",
+        "empty": "No group labels — runners group by OS and architecture.",
+        "inputLabel": "Runner label (e.g. runner-large)",
+        "addLabel": "Add",
+        "removeLabel": "Remove",
+        "rows": rows,
+    })
 }
 
 /// The add form's two fields as an account, or the status line saying what is
@@ -3407,6 +3507,8 @@ mod tests {
             agent_versions: &[],
             agent_release: &viewmodel::agent_release::Latest::NotChecked,
             live_volumes: &[],
+            runner_group_labels: &[],
+            runner_labels: None,
         }
     }
 
@@ -5412,6 +5514,79 @@ mod tests {
         assert_eq!(
             validated_org("beta", personal.id, &accounts).expect("a free org"),
             "beta"
+        );
+    }
+
+    /// A group label is whatever the operator's fleet uses, so the gate refuses
+    /// only what cannot be a label or would make two groups indistinguishable:
+    /// GitHub matches labels case-insensitively, so `Runner-Large` beside
+    /// `runner-large` would be one group listed twice.
+    #[test]
+    fn group_labels_are_trimmed_and_refused_only_when_unusable() {
+        let listed = vec!["runner-large".to_owned()];
+        assert_eq!(
+            validated_group_label("  gpu  ", &listed).expect("a new label"),
+            "gpu"
+        );
+        for refused in ["", "   ", "Runner-Large", "runner\tlarge"] {
+            assert!(
+                validated_group_label(refused, &listed).is_err(),
+                "{refused:?} must be refused"
+            );
+        }
+        assert!(validated_group_label(&"a".repeat(GROUP_LABEL_MAX_BYTES), &[]).is_ok());
+        assert!(validated_group_label(&"a".repeat(GROUP_LABEL_MAX_BYTES + 1), &[]).is_err());
+        let full: Vec<String> = (0..GROUP_LABELS_MAX)
+            .map(|i| format!("label-{i}"))
+            .collect();
+        assert!(
+            validated_group_label("one-more", &full).is_err(),
+            "the list has a ceiling"
+        );
+    }
+
+    /// Each listed label says how many runners carry it, so a typo — which
+    /// would quietly put every runner in `other` — is visible where it was
+    /// typed. Before any runner has been read the count is unknown, not zero.
+    #[test]
+    fn each_group_label_says_how_many_runners_carry_it() {
+        let listed = [
+            "runner-large".to_owned(),
+            "gpu".to_owned(),
+            "rare".to_owned(),
+        ];
+        let seen: Vec<Vec<String>> = [
+            vec!["self-hosted", "runner-large"],
+            vec!["Runner-Large", "gpu"],
+            vec!["self-hosted"],
+        ]
+        .iter()
+        .map(|labels| labels.iter().map(|l| (*l).to_owned()).collect())
+        .collect();
+        let carriers = |section: &Value| {
+            section["rows"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|row| {
+                    (
+                        row["label"].as_str().unwrap().to_owned(),
+                        row["carriers"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            carriers(&runner_group_labels_section(&listed, Some(&seen))),
+            vec![
+                ("runner-large".to_owned(), "carried by 2 runners".to_owned()),
+                ("gpu".to_owned(), "carried by 1 runner".to_owned()),
+                ("rare".to_owned(), "no runner carries this label".to_owned()),
+            ]
+        );
+        assert_eq!(
+            carriers(&runner_group_labels_section(&listed[..1], None)),
+            vec![("runner-large".to_owned(), "runners not read yet".to_owned())]
         );
     }
 

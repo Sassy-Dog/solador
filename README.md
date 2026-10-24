@@ -76,7 +76,9 @@ warnings on a specific machine and metric; critical alerts still need attention.
 Volumes you don't care about can be hidden per machine from the tile, Detail or Settings,
 and a Machines tile can drop its Disk strip. GitHub Repos supports
 per-tile repository selection, sortable columns and an All rows option.
-Runners can show every individual runner or counts grouped by OS and architecture.
+Runners can show every individual runner or counts grouped by OS and architecture,
+optionally split by runner labels you list in Settings → Preferences — `runner-large`,
+say, to see large and small runners apart.
 
 | Panel | Reads |
 |---|---|

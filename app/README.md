@@ -149,14 +149,19 @@ use repository identity. Status sorts Unreadable, Failed, Waiting (a run held at
 an approval gate), Running, Healthy. The column and direction are saved per tile; numeric columns
 start descending, Repo and Status ascending.
 
-Runners default to **By OS + architecture** (the shipped overview tile and any
+Runners default to **By OS, architecture and group labels** (the shipped overview tile and any
 Runners tile you add start there); **Individual runners** is one click away. A
 saved tile that says `list`, or carries no choice, stays a list.
-Each type shows online / total, busy, idle and offline counts, plus recycling,
-missing or unknown counts when present. Grouping follows the tile's scope and
+Each type shows busy / online (`2/3 busy`, or `none online`), then busy, idle
+and offline counts, plus recycling, missing or unknown counts when present. Its
+colour is its load, busy ÷ online: gray while nothing is busy, green, amber from
+half busy, and red once no runner is free — every online runner busy, or none
+online. Offline, recycling and missing runners are not capacity. A missing
+runner also turns its type red, and is the only thing that raises Needs
+Attention; a fully busy type never does. Grouping follows the tile's scope and
 precedes its row limit. Selecting a group opens the inline **Detail** inspector,
 just like selecting a machine, while keeping the dashboard visible. It shows
-that OS + architecture across the source with current counts and individual
+that group across the source with current counts and individual
 members. **Open full panel** carries the selected group into Full; the tile's
 **Details** link opens all runners within its scope. The saved Runners Table/List
 choice applies to both Detail and Full; List stays in one vertical column.
@@ -170,6 +175,20 @@ right-click. Full panels share Detail's palette and heading style; focused Full
 panels fit their rows rather than reserving an empty list area.
 Architecture comes from GitHub's ARM64, X64 or ARM labels and survives in the
 absence roster. Missing or conflicting labels render Unknown architecture.
+**Runner group labels** (Settings → Preferences) split each type further, by
+labels your runners carry: list `runner-large` and Linux · X64 becomes
+`LINUX · X64 · runner-large` and `LINUX · X64 · other`. A runner joins the group
+of the first listed label it carries, matched ignoring ASCII case the way GitHub
+matches `runs-on`; one carrying none is `other`. Nothing is listed until you
+list it, and with nothing listed the types are exactly OS · architecture. Each
+listed label says how many runners carry it (`runners not read yet` before the
+first read), so a typo that would put every runner in `other` shows where it
+was typed. Every label survives in the absence roster too, so a recycling
+runner keeps its group; a roster record from before labels were stored reads
+`labels unknown` under a split — never `other` — until its next sighting.
+The group is decided once per runner row in Rust (`groupId`, `groupLabel`,
+`groupRank`), and the tile, Detail and Full all read it, so a group always
+opens onto the runners it counted.
 The existing source warnings accompany grouped counts too.
 A **GitHub Repos** row carries its backlog on the row itself, in both
 presentations: numeric-only Issues, Ready and PRs columns at every tile width,
@@ -1025,9 +1044,10 @@ polled with its owning account's token; a failing org keeps its last-good rows
 with the reason in the `footer` field (`staleAfter: 150s`), which the frontend
 paints **beside the panel title, not under its body** — see "Where a warning
 goes" below. Rows name their org only when more than one is watched. Roster
-records also retain optional `architecture` for the overview's type counts;
-older records without it remain readable and show Unknown architecture until
-a successful sighting supplies a standard architecture label.
+records also retain optional `architecture` and `labels` for the overview's
+type counts; older records without them remain readable and show Unknown
+architecture (or, under a group-label split, `labels unknown`) until a
+successful sighting supplies them.
 
 **Applied without a restart.** The token and the portfolio are re-read on every
 pass, and `github_wake` cuts the sleep short after a Save, a Clear, a portfolio
@@ -2781,6 +2801,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Full view layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Full view layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
+| `settings_add_runner_group_label` / `settings_remove_runner_group_label` | with runners showing, under Settings → **Preferences** → **Runner Group Labels**, type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; then **Remove** it | the first saves and the row reads `carried by N runners`, and the overview's Runners tile splits that type into `· <label>` and `· other` on its next frame, with no restart and no poll; clicking either opens Detail onto exactly its runners. The second is **refused** as already listed. **Remove** puts the tile back to plain OS · architecture types. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |

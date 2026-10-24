@@ -118,6 +118,10 @@ impl RunnerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhRunner {
     pub architecture: Option<String>,
+    /// Every label GitHub reported, in its order. `None` when the payload had
+    /// no `labels` key: unknown, which the group-label split must not read as
+    /// "carries none of them".
+    pub labels: Option<Vec<String>>,
     pub id: i64,
     pub name: String,
     pub os: RunnerOs,
@@ -150,6 +154,10 @@ pub fn map(dtos: &[RunnerDto]) -> Vec<GhRunner> {
     dtos.iter()
         .map(|dto| GhRunner {
             architecture: architecture_of(dto),
+            labels: dto
+                .labels
+                .as_ref()
+                .map(|labels| labels.iter().map(|label| label.name.clone()).collect()),
             id: dto.id,
             name: dto.name.clone(),
             os: os_of(dto),
@@ -240,6 +248,30 @@ mod tests {
             );
             assert_eq!(map(&[input])[0].architecture.as_deref(), expected);
         }
+    }
+
+    /// Group labels are the operator's, so every label GitHub reports must
+    /// survive the mapping — not just the architecture ones. A payload with no
+    /// `labels` key is *unknown*, never an empty list: an empty list would say
+    /// "carries none of your group labels", which nobody measured.
+    #[test]
+    fn every_reported_label_is_kept_and_an_absent_list_stays_unknown() {
+        let mut labelled = dto("ubu-1", "Linux", "online", false);
+        labelled.labels = Some(
+            ["self-hosted", "Linux", "X64", "runner-large"]
+                .into_iter()
+                .map(|name| RunnerLabel { name: name.into() })
+                .collect(),
+        );
+        let mut unlabelled = dto("ubu-2", "Linux", "online", false);
+        unlabelled.labels = None;
+
+        let runners = map(&[labelled, unlabelled]);
+        assert_eq!(
+            runners[0].labels.as_deref(),
+            Some(&["self-hosted", "Linux", "X64", "runner-large"].map(String::from)[..])
+        );
+        assert_eq!(runners[1].labels, None);
     }
 
     fn dto(name: &str, os: &str, status: &str, busy: bool) -> RunnerDto {
