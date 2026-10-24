@@ -936,7 +936,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
                 "Thermal" => 90,
                 "DEPENDABOT" => 95,
                 "Organization" => 180,
-                "Labels" => 320,
+                "Labels" => 170,
                 "OS" | "Architecture" | "LONGEST" => 120,
                 _ => 80,
             },
@@ -1011,13 +1011,16 @@ mod detail_table_tests {
     }
 
     #[test]
-    fn the_labels_column_fits_a_typical_runner_on_one_line() {
+    fn the_labels_column_has_its_own_width_without_crowding_out_status() {
+        // A base width, not a fit: the table grows its columns in proportion,
+        // and the chips lead with the labels that tell runners apart, so a
+        // narrow cell gives up the ones OS and Architecture already say.
         let rows = vec![
             json!({"details":[{"label":"Labels","value":"self-hosted, macOS, ARM64, xcode-16"}]}),
         ];
         let columns = detail_columns("ghRunners", &rows);
         let labels = columns.iter().find(|c| c["label"] == "Labels").unwrap();
-        assert_eq!(labels["width"], 320);
+        assert_eq!(labels["width"], 170);
     }
 }
 

@@ -1411,7 +1411,7 @@ fn runners_payload(state: &GitHubState, group_labels: &[String], now: u64) -> Va
 fn runner_detail_labels() -> Value {
     json!({"table":"Table", "list":"List", "view":"Detail view",
         "columns":["Runner", "Organization", "OS", "Architecture", "Labels", "Status"],
-        "widths":[260,180,110,120,320,180],
+        "widths":[200,140,90,120,170,130],
         "failed":"Could not save the view. Try again."})
 }
 
@@ -3851,9 +3851,9 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                ("self-hosted", "standard"),
                 ("runner-large", "match"),
-                ("gpu", "custom")
+                ("gpu", "custom"),
+                ("self-hosted", "standard")
             ]
         );
         assert_eq!(row["labelsText"], "self-hosted, runner-large, gpu");
@@ -4211,7 +4211,7 @@ mod tests {
                 architecture: Some("ARM64".into()),
                 // Remembered labels are what keep an absent runner in its
                 // group across a restart; dropping them on either side of the
-                // bridge would read every one back as `labels unknown`.
+                // bridge would drop every one into `other` as not recorded.
                 labels: Some(vec!["self-hosted".into(), "large".into()]),
                 name: "mac-s1".to_owned(),
                 os: RunnerOs::MacOs,

@@ -427,6 +427,22 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
     expect(await status.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
 });
 
+test('a half-width Full runners table keeps Status in view, labels on one line', async ({page, baseURL}) => {
+  await page.setViewportSize({width:1800, height:1200});
+  await openDashboard(page, baseURL, true);
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  const panel = page.locator('#runnersPanel');
+  await expect(panel.locator('.db-detail-table')).toBeVisible();
+  const edge = await panel.evaluate(el => el.getBoundingClientRect().right);
+  expect(await panel.locator('thead th').last().evaluate(el => el.getBoundingClientRect().right)).toBeLessThanOrEqual(edge);
+  const row = panel.locator('tbody tr', {hasText:'mac-s1'});
+  expect(await row.evaluate(el => el.getBoundingClientRect().height)).toBeLessThanOrEqual(36);
+  // The custom label leads; GitHub's own, which OS and Architecture already
+  // say, are the ones a narrow cell gives up — and the tooltip still has all.
+  await expect(row.locator('.db-label-chip').first()).toHaveText('xcode-16');
+  await expect(row.locator('td.gh-runner-labels')).toHaveAttribute('title', 'self-hosted, macOS, ARM64, xcode-16');
+});
+
 test('machine volumes use sorted aligned columns in both Detail views', async ({page,baseURL}) => {
   const model = await openDashboard(page,baseURL);
   const host = model.sources.find(s=>s.id==='hosts').rows.find(r=>r.volumes?.length>1);
@@ -1123,7 +1139,8 @@ test("Full runners table and list show labels", async ({ page, baseURL }) => {
   await expect(panel.locator("thead th")).toContainText(["Labels"]);
   const cell = panel.locator(`tr[data-runner='${JSON.stringify(["acme", "mac-s1"])}'] .db-label-chip`);
   await expect(cell).toHaveText(mac.labelChips.map(c => c.text));
-  await expect(cell.last()).toHaveAttribute("data-kind", "custom");
+  await expect(cell.first()).toHaveAttribute("data-kind", "custom");
+  await expect(cell.last()).toHaveAttribute("data-kind", "standard");
   await expect(panel.locator(`tr[data-runner='${JSON.stringify(["acme", "mac-s3"])}']`)).toContainText("— not recorded");
   await panel.getByRole("button", { name: "List", exact: true }).click();
   const row = panel.locator("#runnersBody .gh-row", { has: page.locator(".gh-runner-name", { hasText: "mac-s1" }) });

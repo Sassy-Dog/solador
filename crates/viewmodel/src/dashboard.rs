@@ -161,28 +161,32 @@ pub fn is_standard_label(label: &str) -> bool {
     .any(|standard| label.eq_ignore_ascii_case(standard))
 }
 
-/// A runner's labels as chips, in GitHub's order: the one that put it in its
-/// group is `match`, GitHub's own are `standard`, the rest `custom`. `null`
-/// when the labels were never recorded, which a view renders as
-/// [`LABELS_NOT_RECORDED`] rather than an empty list.
+/// A runner's labels as chips: the one that put it in its group is `match`,
+/// GitHub's own are `standard`, the rest `custom`, ordered in that order
+/// (GitHub's within each), so a table cell too narrow for every chip loses the
+/// ones its OS and Architecture columns already say. `null` when the labels
+/// were never recorded, which a view renders as [`LABELS_NOT_RECORDED`] rather
+/// than an empty list.
 #[must_use]
 pub fn label_chips(labels: Option<&[String]>, matched: Option<&str>) -> Value {
     let Some(labels) = labels else {
         return Value::Null;
     };
-    labels
+    let mut chips: Vec<_> = labels
         .iter()
         .map(|label| {
-            let kind = if matched.is_some_and(|m| label.eq_ignore_ascii_case(m)) {
-                "match"
+            let (rank, kind) = if matched.is_some_and(|m| label.eq_ignore_ascii_case(m)) {
+                (0, "match")
             } else if is_standard_label(label) {
-                "standard"
+                (2, "standard")
             } else {
-                "custom"
+                (1, "custom")
             };
-            json!({"text": label, "kind": kind})
+            (rank, json!({"text": label, "kind": kind}))
         })
-        .collect()
+        .collect();
+    chips.sort_by_key(|(rank, _)| *rank);
+    chips.into_iter().map(|(_, chip)| chip).collect()
 }
 
 /// Whether a runner carrying `labels` carries `wanted` — ASCII
@@ -489,11 +493,28 @@ mod tests {
         assert_eq!(
             label_chips(Some(&carried), Some("runner-large")),
             json!([
+                {"text":"Runner-Large","kind":"match"}, {"text":"gpu","kind":"custom"},
                 {"text":"self-hosted","kind":"standard"}, {"text":"Linux","kind":"standard"},
-                {"text":"X64","kind":"standard"}, {"text":"Runner-Large","kind":"match"},
-                {"text":"gpu","kind":"custom"}])
+                {"text":"X64","kind":"standard"}])
         );
         assert_eq!(label_chips(None, None), Value::Null);
+    }
+
+    #[test]
+    fn label_chips_lead_with_what_tells_runners_apart() {
+        // GitHub lists its own labels first; a cell too narrow for all of them
+        // must lose the ones the OS and Architecture columns already say.
+        let carried = strings(&["self-hosted", "macOS", "ARM64", "xcode-16", "runner-large"]);
+        let texts: Vec<_> = label_chips(Some(&carried), Some("runner-large"))
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|chip| chip["text"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            texts,
+            ["runner-large", "xcode-16", "self-hosted", "macOS", "ARM64"]
+        );
     }
 
     fn row(name: &str, state: &str, group: &RunnerGroup) -> Value {

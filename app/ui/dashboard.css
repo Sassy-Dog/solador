@@ -571,9 +571,12 @@
 #dashboardOverview button.db-label-chip { font: inherit; font-size: 11px; line-height: 1.4; padding: 1px 7px; white-space: normal; overflow-wrap: anywhere; }
 /* A runner label as a pill, in Configure, Detail and Full. The label that put
    the runner in its group is highlighted; GitHub's own labels are dimmed, never
-   hidden. Chips wrap inside a fixed column rather than clip, so no label is cut
-   off — a runner with more labels than fit gets a taller row, not fewer labels. */
+   hidden. Lists wrap. A table cell keeps its row compact on one line instead:
+   Rust orders the chips match → custom → standard, so what a narrow cell gives
+   up is what its OS and Architecture columns already say, and the cell's title
+   names every label. */
 :is(#dashboardOverview, #cockpitView) .db-label-chips { display: flex; flex-wrap: wrap; gap: 2px 4px; min-width: 0; }
+:is(#dashboardOverview, #cockpitView) .db-detail-table td .db-label-chips { flex-wrap: nowrap; overflow: hidden; mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
 :is(#dashboardOverview, #cockpitView) .db-label-chip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; white-space: nowrap; }
 :is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="match"] { color: var(--db-blue); border-color: var(--db-blue); }
 :is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="standard"] { color: var(--db-muted); border-style: dashed; }
