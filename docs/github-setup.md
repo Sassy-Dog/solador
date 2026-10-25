@@ -99,5 +99,5 @@ It is already watched by another account. The message names which one.
 Authenticated requests get **5,000/hour per token**. The Repos panel spends
 about **4 requests per repo per pass**, so roughly **20 repos at the default 60s
 cadence**, or about **100 at a 5-minute** cadence. If panels stop updating,
-either lengthen the cadence in **Settings → General → Panel Poll Cadence**,
+either lengthen the **Refresh Interval** in **Settings → Preferences**,
 watch fewer repos, or split them across two accounts with separate tokens.

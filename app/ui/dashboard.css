@@ -577,6 +577,13 @@
 #dashboardOverview .db-rule-row input { flex: 1 1 110px; min-width: 0; }
 #dashboardOverview .db-rule-row [data-field="expected"] { flex: 0 1 90px; }
 #dashboardOverview .db-rules-shared { font-size: 11px; }
+/* The source's poll cadence (#614): the rules' frame, one input and its buttons. */
+#dashboardOverview .db-cadence { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-cadence legend { font-size: 12px; }
+#dashboardOverview .db-cadence p { margin: 0; }
+#dashboardOverview .db-cadence-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+#dashboardOverview .db-cadence-line input { flex: 0 1 110px; min-width: 0; }
+#dashboardOverview .db-cadence-shared { font-size: 11px; }
 /* The machine alert limits and volume list: the group labels' frame, one block per machine. */
 #dashboardOverview .db-machine-alerts { grid-column: 1 / -1; min-width: 0; display: grid; gap: 10px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
 #dashboardOverview .db-machine-alerts legend { font-size: 12px; }

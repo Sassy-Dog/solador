@@ -75,7 +75,7 @@
     // share; every other failure belongs to the overview.
     const inChrome = anchor && appChrome?.contains(anchor);
     const target = feedback && (inChrome ? appChrome : mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels, .db-machine-block") || anchor
+      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels, .db-machine-block, .db-cadence") || anchor
       : active ? q(".db-inspector") : q(".db-attention")));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -494,6 +494,7 @@
       if (choices && draft) fillRepoChoices(choices, source(draft.source), draft.selectedRepos);
       if (draft) fillGroupLabels(q("[data-group-labels]"), source(draft.source));
       if (draft) fillContainerRules(q("[data-container-rules]"), source(draft.source));
+      if (draft) fillCadence(q("[data-cadence]"), source(draft.source));
       if (draft) fillMachineAlerts(q("[data-machine-alerts]"), source(draft.source));
     }
     if (active?.kind === "details") fillDetails();
@@ -768,6 +769,52 @@
     add.disabled = disabled;
     box.querySelector(".db-rule-actions").replaceChildren(add);
   }
+  // The source's poll cadence is shared by every tile of it and the Full view
+  // (#614), so it is not part of the tile: the input has no name (formTile()
+  // never reads it) and sits outside any form, so the tile's Apply neither
+  // validates nor sends it. It saves on its own button through Rust, which
+  // refuses a below-floor value in its own words. The input is built once and
+  // its text is left alone while the source's saved value is unchanged, so a
+  // poll's repaint, or a refusal, never clears what is being typed.
+  function fillCadence(box, s) {
+    const c = s?.cadence;
+    if (!box || !c) return;
+    const disabled = busy || !window.__TAURI__;
+    if (!box.childElementCount) {
+      // Typing a cadence is not an edit of the tile, so not a reason to re-ask the preview.
+      box.addEventListener("input", (event) => event.stopPropagation());
+      const input = node("input");
+      input.type = "number";
+      input.step = "1";
+      input.setAttribute("form", "dashboard-cadence-no-form");
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); q('[data-action="cadence-apply"]')?.click(); }
+      });
+      const line = node("div", "db-cadence-line");
+      line.append(input, button(c.applyLabel, "cadence-apply"), button(c.resetLabel, "cadence-reset"));
+      box.append(node("legend"), node("label", "db-cadence-label"), line,
+        node("p", "db-sub db-cadence-status"), node("p", "db-sub db-cadence-help"),
+        node("p", "db-muted db-cadence-shared"));
+    }
+    const input = box.querySelector("input");
+    const saved = JSON.stringify([c.id, c.value, c.configured]);
+    if (box.saved !== saved) {
+      box.saved = saved;
+      input.value = String(c.value);
+    }
+    input.id = `dashboard-cadence-${c.id}`;
+    input.min = String(c.min);
+    box.querySelector("label").htmlFor = input.id;
+    text(box.querySelector("legend"), c.heading);
+    text(box.querySelector("label"), c.label);
+    text(box.querySelector(".db-cadence-status"), c.status);
+    text(box.querySelector(".db-cadence-help"), c.help);
+    text(box.querySelector(".db-cadence-shared"), c.shared);
+    box.dataset.panel = c.id;
+    input.disabled = disabled;
+    box.querySelector('[data-action="cadence-apply"]').disabled = disabled;
+    box.querySelector('[data-action="cadence-reset"]').disabled = disabled || !c.configured;
+  }
   // A hint, not the validation: Rust trims, refuses blanks and duplicates, in
   // its own words.
   function syncGroupLabelAdd(box) {
@@ -1018,6 +1065,12 @@
         groupLabels.dataset.groupLabels = "";
         fillGroupLabels(groupLabels, s);
         fields.append(groupLabels);
+      }
+      if (source(t.source)?.cadence) {
+        const cadence = node("fieldset", "db-cadence");
+        cadence.dataset.cadence = "";
+        fillCadence(cadence, s);
+        fields.append(cadence);
       }
       if (t.source === "containers") {
         const rules = node("fieldset", "db-rules");
@@ -1673,6 +1726,11 @@
     return sharedListChange(command, args, selector, fallback,
       { scope: "[data-container-rules]", failed: "containerRulesFailed", home: '[data-action="container-rule-add"]' });
   }
+  // The poll cadence saves the same way (#614).
+  function cadenceChange(command, args, selector) {
+    return sharedListChange(command, args, selector, null,
+      { scope: "[data-cadence]", failed: "cadenceFailed", home: selector });
+  }
   async function sharedListChange(command, args, selector, fallback, { scope, failed, home }) {
     if (!window.__TAURI__ || busy) return false;
     const inspector = active,
@@ -1892,6 +1950,21 @@
     }
     if (action === "volume-hidden") {
       await setVolumeHidden(b);
+      return;
+    }
+    if (action === "cadence-apply" || action === "cadence-reset") {
+      const box = q("[data-cadence]");
+      if (!box) return;
+      const panel = box.dataset.panel, selector = `[data-action="${action}"]`;
+      if (action === "cadence-reset") {
+        await cadenceChange("panel_interval_clear", { panel }, selector);
+      } else {
+        // Rust decides whether the number is legal and says why not; an empty
+        // or negative entry is sent as 0 (a u32 cannot carry it), which every
+        // floor refuses in its own words.
+        const secs = Number.parseInt(box.querySelector("input").value, 10);
+        await cadenceChange("panel_interval_save", { panel, secs: Number.isFinite(secs) ? Math.max(0, secs) : 0 }, selector);
+      }
       return;
     }
     if (action === "container-rule-add") {
