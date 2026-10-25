@@ -731,7 +731,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .settings-content .help { font-size:11px; line-height:1.55; }
 .settings-content .input { min-width:0; width:100%; min-height:34px; }
 .settings-content .field { gap:6px; }
-.machine-alert-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; max-width:640px; }
 .settings-content .btn { min-height:31px; font-weight:500; }
 .settings .primary { background:var(--ink); color:var(--panel); border-color:var(--ink); }
 .connection-heading { margin-bottom:6px; }
@@ -855,11 +854,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   overflow-wrap:anywhere; user-select:all; }
 .pairing { gap:8px; }
 .pair-trusted { color:var(--green); }
-.hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
-.hidden-row .mount { font-size:10px; font-weight:700; }
-.volume-choice { display:flex; align-items:center; gap:8px; padding:3px 0; border-bottom:1px solid var(--line); cursor:pointer; }
-.volume-choice .mount { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
-.volume-choice .volume-detail { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 /* The Layout editor: one row per panel — name, width picker, and the two move
    buttons — laid out on one line rather than the stacked shape `.host-row` and
    `.repo-row` use, because a row here carries three short controls and no

@@ -779,11 +779,6 @@ pub struct StoreSections<'a> {
     /// (#489). `NotChecked` until the first check settles — a state of its own,
     /// never a verdict.
     pub agent_release: &'a viewmodel::agent_release::Latest,
-    /// The volumes each machine reported on its latest read, keyed the way
-    /// cards are (`"local"` or the host's UUID). Live, like the lists above;
-    /// it is what lets Settings offer a checklist of mounts to show rather
-    /// than only the ones already hidden.
-    pub live_volumes: &'a [(String, Vec<wire::Volume>)],
 }
 
 /// What the crash-reporting section needs to say beyond the stored toggle.
@@ -829,7 +824,6 @@ pub fn view(
         plain_refused,
         agent_versions,
         agent_release,
-        live_volumes,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -845,21 +839,15 @@ pub fn view(
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
-        "hosts": with_volume_choices(
-            hosts_tab(
-                settings,
-                hosts,
-                stored,
-                certificate_changed,
-                plain_refused,
-                AgentRelease {
-                    versions: agent_versions,
-                    latest: agent_release,
-                },
-            ),
-            settings,
+        "hosts": hosts_tab(
             hosts,
-            live_volumes,
+            stored,
+            certificate_changed,
+            plain_refused,
+            AgentRelease {
+                versions: agent_versions,
+                latest: agent_release,
+            },
         ),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
@@ -1252,7 +1240,6 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         // decision now (Settings → Layout), because one global switch could not
         // say "tabs in a narrow column, side by side when wide".
         "saveLabel": "Apply",
-        "machineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, None),
         "panelIntervals": panel_intervals_section(settings),
         "crashReporting": crash_reporting_section(settings, crash),
     })
@@ -2229,66 +2216,7 @@ impl AgentRelease<'_> {
     }
 }
 
-/// Adds each machine's volume checklist to the Hosts tab: every mount it
-/// reported on its latest read, plus every hidden one it has not reported
-/// since, so a hidden mount that went away can still be unhidden.
-fn with_volume_choices(
-    mut tab: Value,
-    settings: &Settings,
-    hosts: &[Host],
-    live: &[(String, Vec<wire::Volume>)],
-) -> Value {
-    let live_for = |id: &str| {
-        live.iter()
-            .find(|(key, _)| key == id)
-            .map_or(&[][..], |(_, volumes)| volumes.as_slice())
-    };
-    if let Some(rows) = tab["rows"].as_array_mut() {
-        for row in rows {
-            let id = row["id"].as_str().unwrap_or_default().to_owned();
-            let hidden = hosts
-                .iter()
-                .find(|host| host.id.to_string() == id)
-                .map_or(&[][..], |host| host.hidden_volume_mounts.as_slice());
-            row["volumes"] = volume_choices(live_for(&id), hidden);
-        }
-    }
-    tab["localVolumes"] = volume_choices(
-        live_for(crate::volumes::LOCAL),
-        &settings.local_hidden_volume_mounts,
-    );
-    tab
-}
-
-fn volume_choices(live: &[wire::Volume], hidden: &[String]) -> Value {
-    let mut rows: Vec<(String, String, bool)> = live
-        .iter()
-        .map(|volume| {
-            let detail = match volume.percent_used() {
-                Some(percent) => format!(
-                    "{}% · {} GB",
-                    percent.round() as i64,
-                    viewmodel::format::fmt(volume.total_gb)
-                ),
-                None => viewmodel::card::UNKNOWN.to_owned(),
-            };
-            (volume.mount.clone(), detail, hidden.contains(&volume.mount))
-        })
-        .collect();
-    for mount in hidden {
-        if !rows.iter().any(|(known, ..)| known == mount) {
-            rows.push((mount.clone(), "not reported".to_owned(), true));
-        }
-    }
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
-    json!(rows
-        .into_iter()
-        .map(|(mount, detail, hidden)| json!({"mount": mount, "detail": detail, "hidden": hidden}))
-        .collect::<Vec<_>>())
-}
-
 fn hosts_tab(
-    settings: &Settings,
     hosts: &[Host],
     stored: &StoredSecrets,
     certificate_changed: &[Uuid],
@@ -2301,7 +2229,6 @@ fn hosts_tab(
         "testLabel": "Test",
         "testingLabel": "Testing…",
         "deleteLabel": "Delete",
-        "unhideLabel": "Unhide",
         "tokenStoredLabel": "Token stored",
         "noTokenLabel": "No token",
         "rows": hosts
@@ -2314,7 +2241,6 @@ fn hosts_tab(
                 "port": host.port,
                 "enabled": host.enabled,
                 "tokenStored": stored.hosts.contains(&host.id),
-                "machineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, Some(&host.id.to_string())),
                 // The pin is a public certificate's hash, so it is shown in
                 // full: it is what the operator compares against the host.
                 "pinned": host.tls_fingerprint.is_some(),
@@ -2335,9 +2261,6 @@ fn hosts_tab(
                 "agentRelease": agent.line(host),
             }))
             .collect::<Vec<_>>(),
-        "volumesHeading": "Volumes",
-        "volumesHelp": "Unchecked volumes are still measured, but they are left off the Machines tile and the Hosts panel, and a full one raises no attention.",
-        "localMachineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, Some("local")),
         "add": {
             "heading": "Add Host",
             "nameLabel": "Name (e.g. ubu-01)",
@@ -2886,7 +2809,7 @@ mod tests {
     #[test]
     fn each_host_row_carries_its_agent_release_line() {
         use viewmodel::agent_release::Latest;
-        let (settings, _, _, stored) = sample();
+        let (_, _, _, stored) = sample();
         let behind = Host::new("behind", "100.64.0.1");
         let current = Host::new("current", "100.64.0.2");
         let silent = Host::new("silent", "100.64.0.3");
@@ -2897,7 +2820,6 @@ mod tests {
         ];
         let latest = Latest::Published("2026.11.1".to_owned());
         let tab = hosts_tab(
-            &settings,
             &hosts,
             &stored,
             &[],
@@ -2924,11 +2846,10 @@ mod tests {
     /// the check is pending; it is not "up to date", and not amber.
     #[test]
     fn a_host_row_before_the_first_check_is_not_checked() {
-        let (settings, _, _, stored) = sample();
+        let (_, _, _, stored) = sample();
         let host = Host::new("h", "100.64.0.1");
         let versions = [(host.id, "2026.10.13".to_owned())];
         let tab = hosts_tab(
-            &settings,
             std::slice::from_ref(&host),
             &stored,
             &[],
@@ -2962,13 +2883,13 @@ mod tests {
     /// TLS, which the guard does not touch.
     #[test]
     fn only_an_unpinned_host_row_carries_the_plain_refused_flag() {
-        let (settings, mut hosts, _repos, stored) = sample();
+        let (_, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let refused = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &stored, &[], &refused, no_agent());
+        let tab = hosts_tab(&hosts, &stored, &[], &refused, no_agent());
         assert_eq!(tab["rows"][0]["plainRefused"], false);
         assert_eq!(tab["rows"][1]["plainRefused"], true);
-        let calm = hosts_tab(&settings, &hosts, &stored, &[], &[], no_agent());
+        let calm = hosts_tab(&hosts, &stored, &[], &[], no_agent());
         assert_eq!(calm["rows"][1]["plainRefused"], false);
         assert!(tab["pair"]["unpairedHelp"].is_string());
     }
@@ -3047,17 +2968,17 @@ mod tests {
 
     #[test]
     fn a_pinned_host_row_carries_its_fingerprint_and_an_unpinned_one_does_not() {
-        let (settings, mut hosts, _repos, stored) = sample();
+        let (_, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let changed = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &stored, &changed, &[], no_agent());
+        let tab = hosts_tab(&hosts, &stored, &changed, &[], no_agent());
         assert_eq!(tab["rows"][0]["pinned"], true);
         // Only a *pinned* host can have a changed certificate: the second is
         // in the live set but unpinned, so it must not offer to replace a pin
         // it does not have.
         assert_eq!(tab["rows"][0]["certificateChanged"], true);
         assert_eq!(tab["rows"][1]["certificateChanged"], false);
-        let calm = hosts_tab(&settings, &hosts, &stored, &[], &[], no_agent());
+        let calm = hosts_tab(&hosts, &stored, &[], &[], no_agent());
         assert_eq!(calm["rows"][0]["certificateChanged"], false);
         assert_eq!(tab["rows"][0]["fingerprint"], "45:39:AF");
         assert_eq!(tab["rows"][1]["pinned"], false);
@@ -3399,7 +3320,6 @@ mod tests {
             plain_refused: &[],
             agent_versions: &[],
             agent_release: &viewmodel::agent_release::Latest::NotChecked,
-            live_volumes: &[],
         }
     }
 
@@ -4095,17 +4015,17 @@ mod tests {
         assert_eq!(rows[0]["endpoint"], "100.100.100.100:9000");
         assert_eq!(rows[0]["enabled"], true);
         assert_eq!(rows[0]["tokenStored"], true);
-        assert_eq!(
-            rows[0]["volumes"],
-            json!([{"mount": "/mnt/scratch", "detail": "not reported", "hidden": true}]),
-            "a hidden mount the host no longer reports can still be unhidden"
+        assert!(
+            rows[0].get("volumes").is_none() && rows[0].get("machineAlerts").is_none(),
+            "volumes and alert limits are the Machines tile's Configure (#612), not a connection's"
         );
         assert_eq!(rows[0]["id"], hosts[0].id.to_string());
 
         assert_eq!(rows[1]["enabled"], false);
         assert_eq!(rows[1]["tokenStored"], false);
-        assert_eq!(vm["hosts"]["localVolumes"][0]["mount"], "/Volumes/Backup");
-        assert_eq!(vm["hosts"]["localVolumes"][0]["hidden"], true);
+        assert!(vm["hosts"].get("localVolumes").is_none());
+        assert!(vm["hosts"].get("localMachineAlerts").is_none());
+        assert!(vm["general"].get("machineAlerts").is_none());
         assert_eq!(vm["hosts"]["add"]["portDefault"], "7878");
     }
 

@@ -1105,9 +1105,11 @@ the bundle's floor.
   filtered once per frame by the `cockpit` command's `apply_machine_preferences`
   (via `app/src-tauri/src/volumes.rs`, on `cockpit_view`'s payload), before the
   Hosts panel or the dashboard reads a card, so a hidden volume never
-  colours the strip, names itself in the status or raises attention. Hide from
-  the tile's Disk strip or Detail (`machine_set_volume_hidden`) or the
-  Connections checklist (`settings_set_volume_hidden`). A Machines tile's
+  colours the strip, names itself in the status or raises attention. The list's
+  one home is the Machines tile's Configure → **Volumes shown** (rule 4: shared
+  by every Machines tile, saved on the click); Hide on the tile's Disk strip and
+  Hide / Unhide in Detail are shortcuts to the same list, all through
+  `machine_set_volume_hidden`. A Machines tile's
   `showDisk: false` (Configure → **Disk strip**) drops the strip from that tile's
   rows only, in `tile_view`; status, attention and Detail are unchanged. Each
   machine renders as an inset card. GitHub tiles persist row limits
@@ -1121,10 +1123,12 @@ the bundle's floor.
 - **Where a setting lives**: see `app/README.md`'s section of that name — what
   changes a tile goes in its Configure, what reaches a source in Settings →
   Connections, what is app-wide in Settings. A shared setting edited from a tile
-  says it is shared. Its inventory names the follow-ups (#612–#616) for the
-  settings that do not fit yet, the CPU/RAM thresholds below among them.
-- Settings → Preferences has shared CPU/RAM alert thresholds; Connections has
-  per-machine overrides, including the local machine. Defaults remain 70/90%.
+  says it is shared. Its inventory names the follow-ups (#613–#616) for the
+  settings that do not fit yet.
+- The Machines tile's Configure → **Machine alerts** has the shared CPU/RAM alert
+  thresholds and a per-machine override for each machine, including the local
+  one, marked shared and saved on the click (`machine_save_alerts`, answering
+  with the re-rendered dashboard; Settings carries neither). Defaults remain 70/90%.
   The CPU pair applies to **sustained** load (#545): the minimum of the last
   `CPU_SUSTAIN_SAMPLES` (60, about a minute) samples in `HostHistories.cpu`,
   carried on the card as `cpuSustainedFraction`, so a build or test run does

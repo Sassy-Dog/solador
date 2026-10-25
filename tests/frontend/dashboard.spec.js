@@ -99,6 +99,28 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               }
               return project();
             }
+            if (command === "machine_save_alerts") {
+              if (window.__FAIL_ALERTS__) throw "Could not save the machine alert limits.";
+              // The limits edit only; validation is Rust's (store::machine_alerts).
+              const g = original.sources.find(s => s.id === "hosts").machineAlerts;
+              const initial = (window.__INITIAL_LIMITS__ ||= structuredClone(g.defaults.fields));
+              const paint = (editor, values) => editor.fields.forEach(f => { f.value = values[f.id]; });
+              const shared = Object.fromEntries(g.defaults.fields.map(f => [f.id, f.value]));
+              if (!args.hostId) {
+                const next = args.thresholds || Object.fromEntries(initial.map(f => [f.id, f.value]));
+                paint(g.defaults, next);
+                g.defaults.defaults = next;
+                for (const editor of Object.values(g.byHost)) {
+                  editor.defaults = next;
+                  if (editor.inherited) paint(editor, next);
+                }
+              } else {
+                const editor = g.byHost[args.hostId];
+                editor.inherited = args.thresholds === null;
+                paint(editor, args.thresholds || shared);
+              }
+              return project();
+            }
             if (command.startsWith("runner_group_label_")) {
               if (window.__FAIL_GROUP_LABEL__) throw "Could not save the group labels.";
               // The list edit only; carriers counts and grouping are Rust's
@@ -953,6 +975,124 @@ test("a failed container rule save says so beside the section (#613)", async ({ 
   await section.locator('[data-container-rule="0"] [data-action="container-rule-remove"]').click();
   await expect(section.locator(".db-action-error")).toHaveText("Could not save the container rules.");
   await expect(section.locator("[data-container-rule]")).toHaveCount(t.rows.length);
+async function configureMachines(page) {
+  await page.locator('#dashboardOverview [data-action="edit"]').click();
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  return page.locator("[data-machine-alerts]");
+}
+const machine = (section, id) => section.locator(`[data-machine="${id}"]`);
+const limit = (block, label) => block.getByLabel(label, { exact: true });
+
+test("the Machines Configure edits the shared limits, every machine's override and its volumes, and says they are shared", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const hosts = model.sources.find(s => s.id === "hosts");
+  const editor = hosts.machineAlerts;
+  const section = await configureMachines(page);
+  await expect(section.locator("legend")).toHaveText(editor.heading);
+  await expect(section).toContainText("Shared · saved immediately · applies to every Machines tile, Detail and the Full view.");
+  const shared = machine(section, "defaults");
+  for (const field of editor.defaults.fields)
+    await expect(limit(shared, field.label)).toHaveValue(String(field.value));
+  for (const row of hosts.rows) {
+    const block = machine(section, row.id);
+    await expect(block.locator("h4")).toHaveText(row.label);
+    await expect(block.getByLabel("Use shared defaults", { exact: true })).toBeChecked();
+    await expect(limit(block, "RAM warning (%)")).toBeDisabled();
+    const mounts = [...(row.volumes || []).map(v => v.mount), ...(row.hiddenVolumes || [])].sort();
+    await expect(block.locator(".db-machine-mount")).toHaveText(mounts);
+  }
+  // Another tile's Configure has none of it.
+  await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
+  await expect(page.locator("[data-machine-alerts]")).toHaveCount(0);
+});
+
+test("shared limits, a machine's override and its reset save on the click, never with the tile's Apply", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const row = model.sources.find(s => s.id === "hosts").rows[0];
+  const section = await configureMachines(page);
+  const shared = machine(section, "defaults");
+  await limit(shared, "RAM warning (%)").fill("80");
+  await limit(shared, "RAM critical (%)").fill("95");
+  await shared.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toEqual([
+    { hostId: null, thresholds: expect.objectContaining({ ramWarning: 80, ramCritical: 95 }), width: expect.any(Number) },
+  ]);
+  // A machine that follows the shared limits shows the new ones.
+  await expect(limit(machine(section, row.id), "RAM warning (%)")).toHaveValue("80");
+  const block = machine(section, row.id);
+  await block.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await limit(block, "RAM warning (%)").fill("50");
+  await limit(block, "RAM critical (%)").fill("60");
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(async () => (await commandArgs(page, "machine_save_alerts")).at(-1)).toEqual(
+    { hostId: row.id, thresholds: expect.objectContaining({ ramWarning: 50, ramCritical: 60 }), width: expect.any(Number) },
+  );
+  await expect(block.getByLabel("Use shared defaults", { exact: true })).not.toBeChecked();
+  await block.getByLabel("Use shared defaults", { exact: true }).check();
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(async () => (await commandArgs(page, "machine_save_alerts")).at(-1))
+    .toEqual({ hostId: row.id, thresholds: null, width: expect.any(Number) });
+  await shared.getByRole("button", { name: "Reset defaults", exact: true }).click();
+  await expect.poll(async () => (await commandArgs(page, "machine_save_alerts")).at(-1))
+    .toEqual({ hostId: null, thresholds: null, width: expect.any(Number) });
+  await expect(limit(shared, "RAM warning (%)")).toHaveValue("70");
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("saving one machine's limits keeps another machine's unsaved draft", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [first, second] = model.sources.find(s => s.id === "hosts").rows;
+  const section = await configureMachines(page);
+  const other = machine(section, second.id);
+  await other.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await limit(other, "RAM warning (%)").fill("42");
+  const block = machine(section, first.id);
+  await block.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
+  await expect(limit(other, "RAM warning (%)")).toHaveValue("42");
+  await expect(other.getByLabel("Use shared defaults", { exact: true })).not.toBeChecked();
+});
+
+test("a refused limits save says so beside the machine and keeps the draft", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await page.evaluate(() => { window.__FAIL_ALERTS__ = true; });
+  const section = await configureMachines(page);
+  const shared = machine(section, "defaults");
+  await limit(shared, "RAM warning (%)").fill("99");
+  await shared.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect(section.locator(".db-action-error")).toHaveText("Could not save the machine alert limits.");
+  await expect(limit(shared, "RAM warning (%)")).toHaveValue("99");
+});
+
+test("the Configure volume list hides and shows a mount through the same command as the Disk strip", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const row = model.sources.find(s => s.id === "hosts").rows.find(r => (r.volumes || []).length);
+  const mount = row.volumes[0].mount;
+  const section = await configureMachines(page);
+  const box = () => machine(section, row.id).locator(`input[data-mount="${mount}"]`);
+  await expect(box()).toBeChecked();
+  await box().click();
+  await expect.poll(() => commandArgs(page, "machine_set_volume_hidden"))
+    .toEqual([{ hostId: row.id, mount, hidden: true, width: expect.any(Number) }]);
+  await expect(box()).not.toBeChecked();
+  await box().click();
+  await expect.poll(async () => (await commandArgs(page, "machine_set_volume_hidden")).at(-1))
+    .toEqual({ hostId: row.id, mount, hidden: false, width: expect.any(Number) });
+  await expect(box()).toBeChecked();
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("a refused volume save puts the tick back", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const row = model.sources.find(s => s.id === "hosts").rows.find(r => (r.volumes || []).length);
+  const mount = row.volumes[0].mount;
+  await page.evaluate(() => { window.__FAIL_VOLUME__ = true; });
+  const section = await configureMachines(page);
+  const box = machine(section, row.id).locator(`input[data-mount="${mount}"]`);
+  await box.click();
+  await expect(section.locator(".db-action-error")).toHaveText("Could not save the hidden volumes.");
+  await expect(box).toBeChecked();
 });
 
 test("a fresh dashboard groups Runners by OS and architecture, and an added Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {

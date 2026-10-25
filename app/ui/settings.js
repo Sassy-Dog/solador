@@ -366,59 +366,8 @@ function generalTab(g) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box, machineAlertsGroup(g.machineAlerts), panelIntervalsGroup(g.panelIntervals),
+  return [box, panelIntervalsGroup(g.panelIntervals),
     crashReportingGroup(g.crashReporting)];
-}
-
-function machineAlertsGroup(g) {
-  const box = group(g.heading);
-  box.classList.add("machine-alerts");
-  box.appendChild(help(g.help));
-  const inputs = new Map();
-  const fields = node("div", "machine-alert-fields");
-  const inherited = !g.shared ? checkbox(g.inherited) : null;
-  if (inherited) {
-    inherited.defaultChecked = inherited.checked;
-    inherited.dataset.applyGated = "true";
-  }
-  if (inherited) {
-    inherited.id = `machine-alerts-${g.hostId}-inherit`;
-    const label = node("label", "connection-toggle");
-    label.append(inherited, node("span", null, g.useDefaultsLabel));
-    box.appendChild(label);
-  }
-  for (const entry of g.fields) {
-    const input = numberInput(entry.value, g.min, g.max);
-    input.step = "1";
-    input.required = true;
-    input.disabled = !!inherited?.checked;
-    inputs.set(entry.id, input);
-    fields.appendChild(field(`machine-alerts-${g.hostId || "defaults"}-${entry.id}`, entry.label, input));
-  }
-  let draft = Object.fromEntries(g.fields.map(entry => [entry.id, String(entry.value)]));
-  inherited?.addEventListener("input", () => {
-    if (inherited.checked) draft = Object.fromEntries([...inputs].map(([key, input]) => [key, input.value]));
-    for (const [key, input] of inputs) {
-      input.value = inherited.checked ? String(g.defaults[key]) : draft[key];
-      input.disabled = inherited.checked;
-    }
-  });
-  const apply = button(g.saveLabel, "machine-alerts-save");
-  apply.addEventListener("click", () => {
-    if ([...inputs.values()].some(input => !input.reportValidity())) return;
-    const thresholds = inherited?.checked ? null : Object.fromEntries(
-      [...inputs].map(([key, input]) => [key, input.valueAsNumber]),
-    );
-    mutate("settings_save_machine_alerts", { hostId: g.hostId, thresholds }, [...inputs.values(), ...(inherited ? [inherited] : [])]);
-  });
-  const actions = actionRow(apply);
-  if (g.shared) {
-    const reset = button(g.resetLabel, "machine-alerts-reset");
-    reset.addEventListener("click", () => mutate("settings_save_machine_alerts", { hostId:null, thresholds:null }, [...inputs.values()]));
-    actions.appendChild(reset);
-  }
-  box.append(fields, help(g.rangeHelp), actions);
-  return box;
 }
 
 /** The four per-panel poll cadences, one row each.
@@ -660,40 +609,6 @@ function layoutTab(t) {
   ];
 }
 
-/** One "hidden volume" line: the mount, and the button that unhides it. */
-function hiddenRow(t, mount, hostId) {
-  const row = node("div", "hidden-row");
-  row.append(node("span", "mount", mount));
-  row.appendChild(node("span", "grow"));
-  const unhide = button(t.unhideLabel, "unhide");
-  unhide.addEventListener("click", () =>
-    mutate("settings_set_volume_hidden", { hostId: hostId, mount, hidden: false })
-  );
-  row.appendChild(unhide);
-  return row;
-}
-
-/**
- * A machine's volume checklist: every mount it last reported plus every hidden
- * one, checked when shown. `hostId` null is this machine.
- */
-function volumesGroup(t, volumes, hostId) {
-  const g = group(t.volumesHeading);
-  g.classList.add("volume-choices");
-  for (const volume of volumes) {
-    const row = node("label", "volume-choice");
-    const box = checkbox(!volume.hidden);
-    box.dataset.mount = volume.mount;
-    box.addEventListener("change", () =>
-      mutate("settings_set_volume_hidden", { hostId, mount: volume.mount, hidden: !box.checked })
-    );
-    row.append(box, node("span", "mount", volume.mount), node("span", "grow"), node("span", "volume-detail", volume.detail));
-    g.appendChild(row);
-  }
-  g.appendChild(help(t.volumesHelp));
-  return g;
-}
-
 /**
  * The pairing step (#448): fetch the certificate an address presents, show its
  * fingerprint, and let the operator **Trust** it.
@@ -866,15 +781,12 @@ function hostsTab(t, options = {}) {
     head.append(test, remove);
     row.prepend(head, result);
     row.appendChild(monitor);
-    for (const volume of host.volumes.filter(v => v.hidden)) row.appendChild(hiddenRow(t, volume.mount, host.id));
     list.appendChild(row);
   }
 
   const boxes = options.addOnly ? [] : [list];
 
   if (options.edit) {
-    boxes.push(...t.rows.map(host => machineAlertsGroup(host.machineAlerts)));
-    boxes.push(...t.rows.filter(host => host.volumes.length).map(host => volumesGroup(t, host.volumes, host.id)));
     return boxes;
   }
   const add = group(t.add.heading);
@@ -2065,8 +1977,7 @@ function connectionEditor() {
     content = [orphaned];
   } else if (entry.kind === "local") {
     const hosts = S.view.hosts;
-    const volumes = hosts.localVolumes.length ? [volumesGroup(hosts, hosts.localVolumes, null)] : [];
-    content = [help(entry.help), machineAlertsGroup(hosts.localMachineAlerts), ...volumes];
+    content = [help(entry.help)];
   } else if (entry.kind === "claude") content = [help(entry.help)];
   else if (entry.kind === "services") {
     const add = button(t.addLabel, "connection-add");
