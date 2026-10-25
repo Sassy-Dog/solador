@@ -191,7 +191,7 @@ pub fn label_chips(labels: Option<&[String]>, matched: Option<&str>) -> Value {
 
 /// Whether a runner carrying `labels` carries `wanted` — ASCII
 /// case-insensitive, as GitHub matches `runs-on`. The one matching rule:
-/// Settings' "carried by N runners" count asks it too, so the count can never
+/// the Runners Configure's "carried by N runners" count asks it too, so the count can never
 /// disagree with the grouping it predicts.
 #[must_use]
 pub fn carries_label(labels: &[String], wanted: &str) -> bool {

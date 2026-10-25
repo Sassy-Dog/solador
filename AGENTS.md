@@ -76,7 +76,9 @@ detailed than this file.
   its load, busy ÷ online (`group_load_color`, value `2/3 busy`): gray idle,
   green, amber from half busy, red once no runner is free — all busy, or none
   online. Saturation is colour only; a missing runner is still the one thing
-  that raises attention. Individual rows keep their state colours.
+  that raises attention, and a group holding one leads with it (value
+  `1 missing`, red) rather than a load figure, which moves to the line under
+  it. Individual rows keep their state colours.
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES

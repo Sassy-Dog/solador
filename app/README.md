@@ -159,7 +159,9 @@ Runners default to **By OS, architecture and group labels** (the shipped overvie
 Runners tile you add start there); **Individual runners** is one click away. A
 saved tile that says `list`, or carries no choice, stays a list.
 Each type shows busy / online (`2/3 busy`, or `none online`), then busy, idle
-and offline counts, plus recycling, missing or unknown counts when present. Its
+and offline counts, plus recycling, missing or unknown counts when present. A
+type with a missing runner leads with that instead (`1 missing`, in red), and
+keeps its load in the line under it. Its
 colour is its load, busy ÷ online: gray while nothing is busy, green, amber from
 half busy, and red once no runner is free — every online runner busy, or none
 online. Offline, recycling and missing runners are not capacity. A missing
@@ -389,7 +391,7 @@ Runners tile and the Full view show, so they are edited where the groups are
 seen, in a Runners tile's Configure → **Group by labels**, and the section says
 `Shared · saved immediately · applies everywhere runners appear: every Runners
 tile and the Full view.` They save on the click (`runner_group_label_add` /
-`_move` / `_remove`), not with the tile's **Save**, because a shared list cannot
+`_move` / `_remove`), not with the tile's **Apply**, because a shared list cannot
 wait on one tile's draft. They used to live under Settings → Preferences, apart
 from the groups they split, where an operator who had just added one could not
 find it.
@@ -399,9 +401,9 @@ does not fit it yet:
 
 | Setting | Lives in | Fits? |
 |---|---|---|
-| Rows to show, repo checklist, sorting, Disk strip, runner view | the tile's Configure | rule 1 |
+| Rows to show, repo checklist, Disk strip, runner view (and Repos sorting, by its column headers) | the tile's Configure, or the tile itself | rule 1 |
 | Runner group labels | Runners tile Configure, marked shared | rule 4 |
-| Accounts, tokens, hosts, providers, plan-limit opt-ins | Settings → Connections | rule 2 |
+| Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates, Full view layout | Settings | rule 3 |
 | CPU/RAM thresholds (Preferences), per-machine overrides (Connections), hidden volumes (three places) | split | [#612](https://github.com/Sassy-Dog/solador/issues/612): Machines tile Configure |
 | Container Group Rules | Settings → Connections, under each machine | [#613](https://github.com/Sassy-Dog/solador/issues/613): Containers tile Configure |
@@ -2877,7 +2879,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Full view layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Full view layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
-| `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Save**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
+| `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |

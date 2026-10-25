@@ -209,9 +209,11 @@ pub struct StoreData {
     /// "never configured" case to keep apart from it.
     #[serde(default)]
     pub runner_roster: Vec<RunnerRosterRecord>,
-    /// The runner labels the operator groups runners by, in priority order: a
-    /// runner joins the group of the first listed label it carries, and one
-    /// carrying none of them is `other` (`viewmodel::dashboard::runner_group`).
+    /// The runner labels the operator groups runners by, in priority order. An
+    /// OS · architecture splits only where a runner carries one of them: there
+    /// a runner joins the group of the first listed label it carries, and one
+    /// carrying none — or whose labels were never recorded — is `other`
+    /// (`viewmodel::dashboard::runner_group`).
     ///
     /// Empty is the plain OS · architecture grouping, and it is what a store
     /// that never set any holds. Nothing is seeded, for the reason
