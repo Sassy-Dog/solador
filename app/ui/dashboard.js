@@ -875,9 +875,13 @@
     // the current defaults, and a block that follows them forgets the draft it
     // was built with, so unticking prefills the new ones.
     block.refreshDefaults = (next) => {
+      const before = block.alertDefaults;
       block.alertDefaults = next.defaults;
       if (inherit && !inherit.checked) return;
-      draft = Object.fromEntries(Object.keys(next.defaults).map((k) => [k, String(next.defaults[k])]));
+      // Only a draft entry still equal to the old defaults follows them; one
+      // the operator typed (or a saved override) is theirs and survives.
+      for (const k of Object.keys(next.defaults))
+        if (draft[k] === String(before[k])) draft[k] = String(next.defaults[k]);
       if (inherit) for (const [k, input] of inputs) input.value = String(next.defaults[k]);
     };
     inherit?.addEventListener("input", () => {
