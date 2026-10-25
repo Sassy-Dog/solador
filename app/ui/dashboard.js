@@ -75,7 +75,7 @@
     // share; every other failure belongs to the overview.
     const inChrome = anchor && appChrome?.contains(anchor);
     const target = feedback && (inChrome ? appChrome : mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric") || anchor
+      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels") || anchor
       : active ? q(".db-inspector") : q(".db-attention")));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -492,6 +492,7 @@
     if (active?.kind === "configure") {
       const draft = formTile(), choices = q(".db-repo-choices");
       if (choices && draft) fillRepoChoices(choices, source(draft.source), draft.selectedRepos);
+      if (draft) fillGroupLabels(q("[data-group-labels]"), source(draft.source));
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
@@ -596,6 +597,95 @@
       if (repo.id === focused) input.focus({preventScroll:true});
     }
   }
+  // The runner group labels are shared by every Runners view, not this tile:
+  // every control is a plain button and the input has no name, so formTile()
+  // never reads the list into the draft, and each edit saves on the click.
+  // Only the list and the seen labels are repainted, so a poll cannot clear
+  // what is being typed.
+  function fillGroupLabels(box, s) {
+    const g = s?.groupLabels;
+    if (!box || !g) return;
+    const disabled = busy || !window.__TAURI__;
+    const signature = JSON.stringify([g, disabled]);
+    if (box.signature === signature) return;
+    box.signature = signature;
+    if (!box.childElementCount) {
+      const field = node("div", "db-field db-group-label-field"),
+        label = node("label"),
+        input = node("input"),
+        add = button("", "group-label-add");
+      input.type = "text";
+      input.id = "dashboard-group-label";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      label.htmlFor = input.id;
+      // Not the draft's: typing a label is not a reason to re-ask the preview.
+      input.addEventListener("input", (event) => {
+        event.stopPropagation();
+        syncGroupLabelAdd(box);
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (!add.disabled) add.click();
+      });
+      const entry = node("div", "db-group-label-entry");
+      entry.append(input, add);
+      field.append(label, entry);
+      box.append(node("legend"), node("p", "db-sub db-group-labels-first"),
+        node("ol", "db-group-label-rows"), node("p", "db-sub db-group-labels-empty"), field,
+        node("div", "db-group-label-seen"), node("p", "db-sub db-group-labels-help"),
+        node("p", "db-muted db-group-labels-shared"));
+    }
+    box.dataset.disabled = String(disabled);
+    text(box.querySelector("legend"), g.heading);
+    text(box.querySelector(".db-group-labels-first"), g.firstMatch);
+    text(box.querySelector(".db-group-label-field label"), g.inputLabel);
+    text(box.querySelector('[data-action="group-label-add"]'), g.addLabel);
+    text(box.querySelector(".db-group-labels-help"), g.help);
+    text(box.querySelector(".db-group-labels-shared"), g.shared);
+    const empty = box.querySelector(".db-group-labels-empty");
+    text(empty, g.empty);
+    empty.hidden = g.rows.length > 0;
+    box.querySelector(".db-group-label-rows").replaceChildren(...g.rows.map((row) => {
+      const item = node("li", "db-group-label");
+      item.dataset.groupLabel = row.label;
+      const controls = [
+        ["↑", "up", g.upLabel, row.first],
+        ["↓", "down", g.downLabel, row.last],
+      ].map(([symbol, direction, name, edge]) => {
+        const b = button(symbol, "group-label-move");
+        b.dataset.label = row.label;
+        b.dataset.direction = direction;
+        b.setAttribute("aria-label", `${name} ${row.label}`);
+        b.disabled = disabled || edge;
+        return b;
+      });
+      const remove = actionLabel(button(g.removeLabel, "group-label-remove"), row.label);
+      remove.dataset.label = row.label;
+      remove.disabled = disabled;
+      item.append(node("span", "db-group-label-name", row.label),
+        node("span", "db-muted db-group-label-carriers", row.carriers), ...controls, remove);
+      return item;
+    }));
+    const seen = box.querySelector(".db-group-label-seen");
+    seen.hidden = !g.seen.length;
+    seen.replaceChildren(node("span", "db-muted", g.seenLabel), ...g.seen.map((label) => {
+      const chip = button(label, "group-label-seen", null, "db-label-chip");
+      chip.dataset.label = label;
+      chip.disabled = disabled;
+      return chip;
+    }));
+    syncGroupLabelAdd(box);
+  }
+  // A hint, not the validation: Rust trims, refuses blanks and duplicates, in
+  // its own words.
+  function syncGroupLabelAdd(box) {
+    const input = box.querySelector("#dashboard-group-label");
+    input.disabled = box.dataset.disabled === "true";
+    box.querySelector('[data-action="group-label-add"]').disabled =
+      input.disabled || input.value.trim() === "";
+  }
   function openInspector(next) {
     status("");
     active = next;
@@ -659,6 +749,10 @@
       }
       if (t.source === "ghRunners") {
         fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
+        const groupLabels = node("fieldset", "db-group-labels");
+        groupLabels.dataset.groupLabels = "";
+        fillGroupLabels(groupLabels, s);
+        fields.append(groupLabels);
       }
       if (t.source === "ghWorkflows") {
         const repos = node("fieldset", "db-repo-selection");
@@ -934,7 +1028,8 @@
     const selected = active.tile && model.tiles.find(t => t.id === active.tile);
     const group = active.group && s.groups?.find(g => g.id === active.group.id);
     const title = active.group ? group?.label || active.group.label : active.row ? rows[0]?.label || s.title : s.title;
-    const subtitle = active.group ? [group?.value, group?.detail].filter(Boolean).join(" · ") : s.trailing || "";
+    // A split group says what put its runners there; a plain one has no match.
+    const subtitle = active.group ? [group?.value, group?.detail, group?.match].filter(Boolean).join(" · ") : s.trailing || "";
     const empty = (active.group ? s.message || s.emptyGroupMessage : selected?.empty || s.message) || L("missingReading");
     const signature = JSON.stringify([view, rows, s.detailColumns, s.warnings, s.message, title, subtitle, empty]);
     if (active.signature === signature) return;
@@ -975,7 +1070,9 @@
       const primary = node("dl", "db-detail-primary");
       const field = m => {
         const pair = node("div", "db-detail-field");
-        pair.append(node("dt", "db-muted", m.header ?? m.label), colored("dd", "", m.value ?? "—", m.color));
+        const value = m.chips === undefined ? colored("dd", "", m.value ?? "—", m.color) : node("dd");
+        if (m.chips !== undefined) value.append(labelChips(m.chips, m.value));
+        pair.append(node("dt", "db-muted", m.header ?? m.label), value);
         const badge = acknowledgementBadge(m, true);
         if (badge) pair.lastElementChild.append(" ", badge);
         return pair;
@@ -1037,6 +1134,7 @@
       const expanded = active.expanded.has(row.id), extraId = `db-resource-extra-${index}`;
       for (const column of columns) {
         const cell = node(column.key === "name" ? "th" : "td", column.numeric ? "db-numeric" : "");
+        let title = null;
         if (column.key === "name") {
           cell.scope = "row";
           const toggle = button("", "detail-toggle", row.id, "db-table-toggle");
@@ -1056,11 +1154,15 @@
           cell.append(context);
         } else {
           const field = row[column.section]?.find(m => (m.header ?? m.label) === column.label);
-          cell.append(colored("span", "", field?.value ?? "—", field?.color));
+          if (field?.chips !== undefined) {
+            cell.append(labelChips(field.chips, field.value));
+            // Chips carry no separators in textContent; Rust's joined text does.
+            title = field.value;
+          } else cell.append(colored("span", "", field?.value ?? "—", field?.color));
           const badge = acknowledgementBadge(field, true);
           if (badge) cell.append(" ", badge);
         }
-        cell.title = cell.textContent;
+        cell.title = title ?? cell.textContent;
         tr.append(cell);
       }
       const more = node("tr", "db-table-extra");
@@ -1285,6 +1387,41 @@
         q(selector)?.focus({preventScroll:true});
     }
   }
+  // Shares setVolumeHidden's guard: a poll already in flight carries the list
+  // from before this save, so it is discarded whatever its timing. The tile
+  // draft is left as it is — the list is not the tile's — and the preview is
+  // asked again, because a regrouping changes what the tile would show.
+  // `fallback` names where focus goes when `selector` is gone or disabled —
+  // a label moved to an end disables the arrow that moved it.
+  async function groupLabelChange(command, args, selector, fallback = null) {
+    if (!window.__TAURI__ || busy) return false;
+    const inspector = active,
+      restoreFocus = !!document.activeElement?.closest("[data-group-labels]");
+    status("");
+    acknowledgementVersion++;
+    busy = true;
+    render(true);
+    let saved = false;
+    try {
+      const next = await callRust(command, { ...args, width: root.clientWidth || innerWidth });
+      if (!next?.layout?.tiles || !Array.isArray(next.sources) || !next.labels)
+        throw new Error(L("groupLabelsFailed"));
+      model = next;
+      saved = true;
+    } catch (error) {
+      if (active === inspector && mode === "overview")
+        status((typeof error === "string" ? error : error?.message) || L("groupLabelsFailed"), true, selector);
+    } finally {
+      busy = false;
+      render(true);
+      if (saved && active === inspector) schedulePreview();
+      if (restoreFocus && active === inspector && document.activeElement === document.body)
+        [selector, fallback, "#dashboard-group-label"]
+          .map((s) => s && q(`${s}:not(:disabled)`))
+          .find(Boolean)?.focus({ preventScroll: true });
+    }
+    return saved;
+  }
   function copyLayout() {
     return structuredClone(model.layout);
   }
@@ -1444,6 +1581,31 @@
     }
     if (action === "volume-hidden") {
       await setVolumeHidden(b);
+      return;
+    }
+    if (action === "group-label-add") {
+      // The field clears before the round trip and gets the text back only
+      // if the save fails.
+      const input = q("#dashboard-group-label"), label = input.value;
+      input.value = "";
+      const saved = await groupLabelChange("runner_group_label_add", { label }, "#dashboard-group-label");
+      if (!saved && input.isConnected && !input.value) {
+        input.value = label;
+        syncGroupLabelAdd(input.closest("[data-group-labels]"));
+      }
+      return;
+    }
+    if (action.startsWith("group-label-")) {
+      const label = b.dataset.label,
+        selector = `[data-group-labels] [data-action="${action}"][data-label="${CSS.escape(label)}"]` +
+          (b.dataset.direction ? `[data-direction="${b.dataset.direction}"]` : "");
+      if (action === "group-label-seen")
+        await groupLabelChange("runner_group_label_add", { label }, selector);
+      if (action === "group-label-remove")
+        await groupLabelChange("runner_group_label_remove", { label }, selector);
+      if (action === "group-label-move")
+        await groupLabelChange("runner_group_label_move", { label, up: b.dataset.direction === "up" }, selector,
+          `[data-group-labels] [data-group-label="${CSS.escape(label)}"] button`);
       return;
     }
     if (action === "detail-toggle") {

@@ -310,7 +310,9 @@ function runnerRowNode(row, forgetLabel, showOrgTags) {
   // The org tag paints only when Rust says it adds anything — with one org
   // watched it would restate the whole panel on every row.
   if (showOrgTags) el.appendChild(node("span", "dim", row.org));
-  el.append(node("span", "grow"), node("span", "gh-runner-os", row.platform || row.os));
+  const labels = labelChips(row.labelChips, row.labelsText);
+  labels.title = row.labelsText;
+  el.append(labels, node("span", "grow"), node("span", "gh-runner-os", row.platform || row.os));
 
   // The status is the widest thing in the row that changes — "idle" one poll,
   // "recycling 40s" the next — so it is the one column that must be reserved
@@ -397,13 +399,17 @@ function runnerTable(rows, payload) {
     dot.style.background = row.dotColor;
     identity.append(dot, node('span','gh-runner-name',row.name));
     name.append(identity);
-    tr.append(name, node('td','',row.org), node('td','gh-runner-os',row.os), node('td','',row.architecture));
+    const labels = node('td','gh-runner-labels');
+    labels.append(labelChips(row.labelChips, row.labelsText));
+    tr.append(name, node('td','',row.org), node('td','gh-runner-os',row.os), node('td','',row.architecture), labels);
     const status = node('td'), value = node('span','gh-runner-status',row.status);
     value.style.color = row.statusColor;
     value.title = row.status;
     status.append(value);
     tr.append(status);
     for (const cell of tr.children) cell.title = cell.textContent;
+    // Chips carry no separators in textContent; Rust's joined text does.
+    labels.title = row.labelsText;
     if (row.kind === 'absent' && payload.forgetLabel) {
       tr.tabIndex = 0;
       const open = (x,y) => openForgetMenu(x,y,row.org,row.name,payload.forgetLabel);
@@ -455,6 +461,8 @@ function renderRunners(payload) {
     children.push(filter);
     if (group) children.push(node("p", "gh-group-summary", group.detail));
     else if (!payload.message) children.push(messageNode({text:payload.emptyGroupMessage}));
+    // What put these runners in the group; a plain group has no match line.
+    if (group?.match) children.push(node("p", "gh-group-match", group.match));
   }
   if (payload.message) children.push(messageNode(payload.message));
   // Stats and chips share one row, so they share one wrapper — the line they

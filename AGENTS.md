@@ -57,11 +57,18 @@ detailed than this file.
   frozen, and its footer says so (`runners_error_message`) instead of the
   PAT-scope hint.
   Runner groups are OS · architecture, split by the operator's **runner group
-  labels** (`store.json`'s `runner_group_labels`, Settings → Preferences): a
-  runner joins the group of the first listed label it carries (ASCII
+  labels** (`store.json`'s `runner_group_labels`, edited in a Runners tile's
+  Configure and marked shared — see **Where a setting lives** in
+  `app/README.md`). **An OS · architecture splits only where a listed label
+  appears**: into one group per listed label a runner carries, plus `other`;
+  one where no runner carries any stays a plain `group:OS:ARCH` with no
+  `· other`. That split is decided once across every org's runners and
+  remembered absences (`split_platforms`), never per tile scope. A runner
+  joins the group of the first listed label it carries (ASCII
   case-insensitive, as GitHub matches `runs-on`), one carrying none is
-  `other`, and one whose labels are unknown — a roster entry from before
-  labels were remembered — is `labels unknown`, never `other`. Nothing is
+  `other`, and so is one whose labels were never recorded — a roster entry
+  from before labels were remembered — which keeps its alarm and reads
+  `— not recorded` in the Labels column Detail and Full show. Nothing is
   seeded, for the container rules' reason. `viewmodel::dashboard::runner_group`
   decides a row's group once, in `runner_row`, and every view reads its
   `groupId`/`groupLabel`/`groupRank` rather than re-deriving it — which is
@@ -69,7 +76,9 @@ detailed than this file.
   its load, busy ÷ online (`group_load_color`, value `2/3 busy`): gray idle,
   green, amber from half busy, red once no runner is free — all busy, or none
   online. Saturation is colour only; a missing runner is still the one thing
-  that raises attention. Individual rows keep their state colours.
+  that raises attention, and a group holding one leads with it (value
+  `1 missing`, red) rather than a load figure, which moves to the line under
+  it. Individual rows keep their state colours.
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
@@ -1104,6 +1113,11 @@ the bundle's floor.
   roster so absences retain their type, and every label is carried the same way
   so absences retain their group; unknown stays unknown.
   See `app/README.md` for controls, count meanings and responsive behavior.
+- **Where a setting lives**: see `app/README.md`'s section of that name — what
+  changes a tile goes in its Configure, what reaches a source in Settings →
+  Connections, what is app-wide in Settings. A shared setting edited from a tile
+  says it is shared. Its inventory names the follow-ups (#612–#616) for the
+  settings that do not fit yet, the CPU/RAM thresholds below among them.
 - Settings → Preferences has shared CPU/RAM alert thresholds; Connections has
   per-machine overrides, including the local machine. Defaults remain 70/90%.
   The CPU pair applies to **sustained** load (#545): the minimum of the last

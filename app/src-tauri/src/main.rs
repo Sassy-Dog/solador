@@ -29,6 +29,7 @@ mod machine_alerts;
 mod openclaw;
 mod panel;
 mod resume;
+mod runner_groups;
 mod services;
 mod settings;
 mod update;
@@ -2714,12 +2715,6 @@ fn settings_payload(app: &App) -> Value {
     let plain_refused = plain_refused_hosts(app);
     let versions = agent_versions(app);
     let live = live_volumes(app);
-    // The GitHub state's lock, also taken and released before the store's.
-    let runner_labels = app
-        .github
-        .lock()
-        .expect("github state poisoned")
-        .runner_labels();
     let agent_release = app
         .agent_release
         .lock()
@@ -2741,8 +2736,6 @@ fn settings_payload(app: &App) -> Value {
             certificate_changed: &certificate_changed,
             plain_refused: &plain_refused,
             live_volumes: &live,
-            runner_group_labels: store.runner_group_labels(),
-            runner_labels: runner_labels.as_deref(),
         },
         &stored,
         &facts,
@@ -3888,6 +3881,55 @@ fn machine_set_volume_hidden(
     Ok(dashboard_view(width, state))
 }
 
+/// Applies one edit to the runner group labels and saves it, from a Runners
+/// tile's Configure. Saved on the click and outside the dashboard's undo
+/// history: the list is shared by every Runners tile, Detail and the Full
+/// view, not a property of the tile being configured. No poll is woken: the
+/// `runners` command reads the list on every request, so this very response
+/// is regrouped.
+fn edit_runner_group_labels(
+    state: &tauri::State<'_, Arc<App>>,
+    next: impl FnOnce(&[String]) -> Result<Vec<String>, String>,
+) -> Result<(), String> {
+    let mut store = state.store.lock().expect("store poisoned");
+    let labels = next(store.runner_group_labels())?;
+    runner_groups::save(&mut store, labels)
+}
+
+#[tauri::command]
+fn runner_group_label_add(
+    label: String,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    edit_runner_group_labels(&state, |listed| {
+        let label = runner_groups::validated_label(&label, listed)?;
+        Ok(listed.iter().cloned().chain([label]).collect())
+    })?;
+    Ok(dashboard_view(width, state))
+}
+
+#[tauri::command]
+fn runner_group_label_remove(
+    label: String,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    edit_runner_group_labels(&state, |listed| runner_groups::removed(listed, &label))?;
+    Ok(dashboard_view(width, state))
+}
+
+#[tauri::command]
+fn runner_group_label_move(
+    label: String,
+    up: bool,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    edit_runner_group_labels(&state, |listed| runner_groups::moved(listed, &label, up))?;
+    Ok(dashboard_view(width, state))
+}
+
 /// Cuts short the sleep of the one loop whose cadence just changed.
 ///
 /// Exhaustive over [`PanelInterval`], so a fifth settable panel cannot be added
@@ -4621,43 +4663,6 @@ fn settings_remove_container_rule(index: usize, state: tauri::State<'_, Arc<App>
         // the seeded three back.
         true
     });
-    settings_response(&state, status)
-}
-
-/// Appends one runner group label. No poll is woken: the `runners` command
-/// reads the list on every request, so the next frame is regrouped.
-#[tauri::command]
-fn settings_add_runner_group_label(label: String, state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        let mut labels = store.runner_group_labels().to_vec();
-        match settings::validated_group_label(&label, &labels) {
-            Ok(label) => {
-                labels.push(label);
-                store.set_runner_group_labels(labels);
-                save_status(&store, "Saved.")
-            }
-            Err(status) => Some(status),
-        }
-    };
-    settings_response(&state, status)
-}
-
-/// Removes one runner group label, matched exactly as it is stored.
-#[tauri::command]
-fn settings_remove_runner_group_label(label: String, state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        let mut labels = store.runner_group_labels().to_vec();
-        let before = labels.len();
-        labels.retain(|listed| *listed != label);
-        if labels.len() == before {
-            Some(format!("Skipped — {label} is not listed."))
-        } else {
-            store.set_runner_group_labels(labels);
-            save_status(&store, "Removed label.")
-        }
-    };
     settings_response(&state, status)
 }
 
@@ -5965,10 +5970,6 @@ fn dump_settings() -> Value {
             plain_refused: &[],
             accounts: &accounts,
             live_volumes: &live_volumes,
-            // One listed label with one runner carrying it, so the Runner
-            // Group Labels editor is rendered with a row and its count.
-            runner_group_labels: &["runner-large".to_owned()],
-            runner_labels: Some(&[vec!["self-hosted".to_owned(), "runner-large".to_owned()]]),
         },
         &stored,
         &facts,
@@ -6141,7 +6142,11 @@ fn dump_github(empty: bool, runners: bool) -> Value {
         github::fixture_state(now)
     };
     if runners {
-        github::runners_view(&state, &[], u64::try_from(now.timestamp()).unwrap_or(0))
+        github::runners_view(
+            &state,
+            &[github::FIXTURE_GROUP_LABEL.to_owned()],
+            u64::try_from(now.timestamp()).unwrap_or(0),
+        )
     } else {
         github::repos_view(&state, now)
     }
@@ -6809,6 +6814,9 @@ fn main() {
             settings_save_machine_alerts,
             machine_acknowledge_warning,
             machine_set_volume_hidden,
+            runner_group_label_add,
+            runner_group_label_remove,
+            runner_group_label_move,
             settings_save_panel_interval,
             settings_clear_panel_interval,
             settings_set_crash_reporting,
@@ -6828,8 +6836,6 @@ fn main() {
             settings_add_container_rule,
             settings_set_container_rule,
             settings_remove_container_rule,
-            settings_add_runner_group_label,
-            settings_remove_runner_group_label,
             settings_test_host,
             settings_save_host,
             settings_add_repo,

@@ -76,6 +76,23 @@ impl GhRunnerDisplayRow {
             GhRunnerDisplayRow::Absent(a) => a.os,
         }
     }
+
+    #[must_use]
+    pub fn architecture(&self) -> Option<&str> {
+        match self {
+            GhRunnerDisplayRow::Registered(r) => r.architecture.as_deref(),
+            GhRunnerDisplayRow::Absent(a) => a.architecture.as_deref(),
+        }
+    }
+
+    /// `None` when the labels were never recorded, which is not "carries none".
+    #[must_use]
+    pub fn labels(&self) -> Option<&[String]> {
+        match self {
+            GhRunnerDisplayRow::Registered(r) => r.labels.as_deref(),
+            GhRunnerDisplayRow::Absent(a) => a.labels.as_deref(),
+        }
+    }
 }
 
 /// Everything one successful org-runners fetch produces.

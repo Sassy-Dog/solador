@@ -556,6 +556,31 @@
 #dashboardOverview .db-repo-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 8px; margin-top: 10px; }
 #dashboardOverview .db-repo-choices label { flex-direction: row; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 #dashboardOverview .db-repo-choices input { flex: none; }
+/* The runner group labels: the repo selection's frame, one row per label. */
+#dashboardOverview .db-group-labels { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-group-labels legend { font-size: 12px; }
+#dashboardOverview .db-group-labels p { margin: 0; }
+#dashboardOverview .db-group-label-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+#dashboardOverview .db-group-label { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; font-size: 12px; }
+#dashboardOverview .db-group-label-name { overflow-wrap: anywhere; }
+#dashboardOverview .db-group-label-carriers { margin-right: auto; font-size: 11px; }
+#dashboardOverview .db-group-label-entry { display: flex; gap: 8px; }
+#dashboardOverview .db-group-label-entry input { flex: 1; }
+#dashboardOverview .db-group-label-seen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
+#dashboardOverview .db-group-labels-shared { font-size: 11px; }
+#dashboardOverview button.db-label-chip { font: inherit; font-size: 11px; line-height: 1.4; padding: 1px 7px; white-space: normal; overflow-wrap: anywhere; }
+/* A runner label as a pill, in Configure, Detail and Full. The label that put
+   the runner in its group is highlighted; GitHub's own labels are dimmed, never
+   hidden. Lists wrap. A table cell keeps its row compact on one line instead:
+   Rust orders the chips match → custom → standard, so what a narrow cell gives
+   up is what its OS and Architecture columns already say, and the cell's title
+   names every label. */
+:is(#dashboardOverview, #cockpitView) .db-label-chips { display: flex; flex-wrap: wrap; gap: 2px 4px; min-width: 0; }
+:is(#dashboardOverview, #cockpitView) .db-detail-table td .db-label-chips { flex-wrap: nowrap; overflow: hidden; mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+:is(#dashboardOverview, #cockpitView) .db-label-chip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; white-space: nowrap; }
+:is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="match"] { color: var(--db-blue); border-color: var(--db-blue); }
+:is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="standard"] { color: var(--db-muted); border-style: dashed; }
+:is(#dashboardOverview, #cockpitView) .db-label-none { color: var(--db-muted); }
 #dashboardOverview .db-tile-content { container: tile / inline-size; }
 #dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation] .db-runner-group .db-row-description { height: auto; min-height: 33px; white-space: normal; overflow: visible; }
 #dashboardOverview .db-tools {
@@ -904,6 +929,9 @@
 /* Status text is a column, never a reason to wrap a resource name. Full text
    is on the row's title and in its Details view. */
 #dashboardOverview .db-item-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* A runner group's name is the whole answer (OS · arch · label), so it wraps
+   rather than losing the label that tells two groups apart. */
+#dashboardOverview .db-runner-group .db-item-name { white-space:normal; overflow-wrap:anywhere; text-overflow:clip; }
 #dashboardOverview .db-item > .db-value {
   width:18ch;
   max-width:48%;

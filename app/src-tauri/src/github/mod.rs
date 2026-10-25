@@ -27,7 +27,7 @@
 pub mod git;
 pub mod notify;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use github::roster::{self, RunnerRosterEntry};
@@ -1279,7 +1279,7 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
         "footer": Value::Null,
         "groups": [],
         "allRunnersLabel": "All runners",
-        "emptyGroupMessage": "No runners currently match this type.",
+        "emptyGroupMessage": "No runners currently match this group.",
         "detailLabels": runner_detail_labels(),
     })
 }
@@ -1288,6 +1288,15 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
 /// `runner_group_labels`), in priority order; empty is the plain
 /// OS · architecture grouping.
 pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> Value {
+    let mut view = runners_payload(state, group_labels, now);
+    // On every payload, setup ones included: a Runners tile's Configure edits
+    // the list before a token is connected too.
+    view["groupLabels"] =
+        crate::runner_groups::section(group_labels, state.runner_labels().as_deref());
+    view
+}
+
+fn runners_payload(state: &GitHubState, group_labels: &[String], now: u64) -> Value {
     // `credential_error` holds this branch back: the zero-credential payload
     // asserts there is no token *and* blanks the rows, and neither survives
     // "we could not ask". Everything the last good fetch left — stats, chips,
@@ -1342,13 +1351,31 @@ pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> V
     // command needs it), and this flag is what says whether painting the name
     // adds anything — with one org it restates the whole panel.
     let show_org_tags = state.org_runners.len() > 1;
-    let rows: Vec<_> = state
+    let display: Vec<_> = state
         .org_runners
         .iter()
-        .flat_map(|(org, entry)| {
-            roster::display_rows(&entry.runners, &entry.absent)
-                .iter()
-                .map(|row| runner_row(org, row, group_labels))
+        .map(|(org, entry)| (org, roster::display_rows(&entry.runners, &entry.absent)))
+        .collect();
+    // Whether a platform splits is decided over every org's runners at once:
+    // every view reads the group stamped on the row, so it has to mean the same
+    // thing whichever org or tile scope a row is seen through.
+    let split = viewmodel::dashboard::split_platforms(
+        display.iter().flat_map(|(_, rows)| {
+            rows.iter().map(|row| {
+                (
+                    row.os().label().to_uppercase(),
+                    row.architecture(),
+                    row.labels(),
+                )
+            })
+        }),
+        group_labels,
+    );
+    let rows: Vec<_> = display
+        .iter()
+        .flat_map(|(org, rows)| {
+            rows.iter()
+                .map(|row| runner_row(org, row, group_labels, &split))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -1371,7 +1398,7 @@ pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> V
         "rows": rows,
         "groups": groups,
         "allRunnersLabel": "All runners",
-        "emptyGroupMessage": "No runners currently match this type.",
+        "emptyGroupMessage": "No runners currently match this group.",
         "detailLabels": runner_detail_labels(),
         "showOrgTags": show_org_tags,
         // The absent rows' context-menu label. From here rather than authored
@@ -1383,8 +1410,8 @@ pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> V
 
 fn runner_detail_labels() -> Value {
     json!({"table":"Table", "list":"List", "view":"Detail view",
-        "columns":["Runner", "Organization", "OS", "Architecture", "Status"],
-        "widths":[260,180,110,120,180],
+        "columns":["Runner", "Organization", "OS", "Architecture", "Labels", "Status"],
+        "widths":[200,140,90,120,170,130],
         "failed":"Could not save the view. Try again."})
 }
 
@@ -1524,7 +1551,12 @@ fn os_chips(summary: RunnerSummary) -> Vec<Value> {
 /// Every row carries its org: the Forget command is org-qualified (a name two
 /// orgs share must only be forgotten where the operator clicked), so the org
 /// is data on every row while `showOrgTags` decides whether it is *painted*.
-fn runner_row(org: &str, row: &GhRunnerDisplayRow, group_labels: &[String]) -> Value {
+fn runner_row(
+    org: &str,
+    row: &GhRunnerDisplayRow,
+    group_labels: &[String],
+    split: &BTreeSet<String>,
+) -> Value {
     let attention = match row {
         GhRunnerDisplayRow::Registered(_) => false,
         GhRunnerDisplayRow::Absent(absence) => {
@@ -1572,19 +1604,28 @@ fn runner_row(org: &str, row: &GhRunnerDisplayRow, group_labels: &[String]) -> V
         "statusWidth": RUNNER_STATUS_W,
     });
     // The row's group is decided here, once; every view that groups or
-    // filters runners reads these three fields rather than re-deriving them.
+    // filters runners reads these fields rather than re-deriving them.
+    let labels = row.labels();
     let group = viewmodel::dashboard::runner_group(
         value["os"].as_str().unwrap_or("Unknown OS"),
-        value["architecture"].as_str(),
-        match row {
-            GhRunnerDisplayRow::Registered(r) => r.labels.as_deref(),
-            GhRunnerDisplayRow::Absent(r) => r.labels.as_deref(),
-        },
+        row.architecture(),
+        labels,
         group_labels,
+        split,
     );
     value["groupId"] = json!(group.id);
     value["groupLabel"] = json!(group.label);
     value["groupRank"] = json!(group.rank);
+    value["groupMatch"] = json!(group.matched);
+    value["groupSplit"] = json!(group.split);
+    // `null`, never `[]`, for labels nobody recorded: "carries none" is a
+    // claim, and a roster entry from before labels were stored cannot make it.
+    value["labels"] = json!(labels);
+    value["labelChips"] = viewmodel::dashboard::label_chips(labels, group.matched.as_deref());
+    value["labelsText"] = json!(labels.map_or_else(
+        || viewmodel::dashboard::LABELS_NOT_RECORDED.to_owned(),
+        |labels| labels.join(", ")
+    ));
     value["platform"] = json!(format!(
         "{} · {}",
         value["os"].as_str().unwrap_or("Unknown OS"),
@@ -1790,10 +1831,25 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     ]));
 
     let runner = fixture_runner;
+    // Two custom labels beside GitHub's own: what "Seen on your runners"
+    // offers, and what a Labels chip shows undimmed.
+    let tagged = |mut runner: GhRunner, label: &str| {
+        runner
+            .labels
+            .get_or_insert_with(Vec::new)
+            .push(label.to_owned());
+        runner
+    };
     let registered = [
-        runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
+        tagged(
+            runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
+            "xcode-16",
+        ),
         runner(2, "mac-s2", RunnerOs::MacOs, RunnerState::Idle),
-        runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
+        tagged(
+            runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
+            "gpu",
+        ),
         runner(4, "ubu-spare", RunnerOs::Linux, RunnerState::Offline),
     ];
     // Two remembered names that are not registered right now: one inside the
@@ -1960,6 +2016,11 @@ fn fixture_counts(
     }
 }
 
+/// The group label the runner fixtures list. No fixture runner carries it, so
+/// it shows its count line ("no runner carries this label") without splitting
+/// a group the suite's assertions name.
+pub const FIXTURE_GROUP_LABEL: &str = "runner-large";
+
 fn fixture_runner(
     id: i64,
     name: &str,
@@ -1968,7 +2029,12 @@ fn fixture_runner(
 ) -> GhRunner {
     GhRunner {
         architecture: Some("ARM64".into()),
-        labels: None,
+        // The labels GitHub assigns every self-hosted runner.
+        labels: Some(vec![
+            "self-hosted".into(),
+            os.label().into(),
+            "ARM64".into(),
+        ]),
         id,
         name: name.to_owned(),
         os,
@@ -3422,8 +3488,9 @@ mod tests {
             totals,
             vec![
                 ("LINUX · X64 · runner-large", 3),
-                ("LINUX · X64 · other", 1),
-                ("LINUX · X64 · labels unknown", 1),
+                // `before-labels` was remembered before labels were: the
+                // operator's "the rest", never a group of its own.
+                ("LINUX · X64 · other", 2),
             ]
         );
         let rows = view["rows"].as_array().unwrap();
@@ -3609,6 +3676,189 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    fn labelled(name: &str, os: RunnerOs, architecture: &str, labels: &[&str]) -> GhRunner {
+        let mut r = runner(name, os, RunnerState::Idle);
+        r.architecture = Some(architecture.into());
+        r.labels = Some(labels.iter().map(|label| (*label).to_owned()).collect());
+        r
+    }
+
+    fn with_org_runners(orgs: &[(&str, &[GhRunner])]) -> GitHubState {
+        let mut state = GitHubState::new();
+        for (org, registered) in orgs {
+            let update =
+                roster::apply_fetch(&[], registered, now(), github::presence::DEFAULT_GRACE_SECS);
+            state.apply_org_runners(org, &update, now_unix());
+        }
+        state
+    }
+
+    fn group_ids(view: &Value) -> Vec<(&str, &str)> {
+        rows(view)
+            .iter()
+            .map(|r| {
+                (
+                    r["name"].as_str().expect("name"),
+                    r["groupId"].as_str().expect("groupId"),
+                )
+            })
+            .collect()
+    }
+
+    /// Every view reads the group stamped on the row, so whether a platform
+    /// splits is decided over every org's runners, never one org's.
+    #[test]
+    fn the_split_is_decided_across_every_org() {
+        let large = [labelled(
+            "a-large",
+            RunnerOs::Linux,
+            "X64",
+            &["self-hosted", "runner-large"],
+        )];
+        let small = [labelled(
+            "b-small",
+            RunnerOs::Linux,
+            "X64",
+            &["self-hosted"],
+        )];
+        let state = with_org_runners(&[("a", &large), ("b", &small)]);
+        let view = runners_view(&state, &["runner-large".to_owned()], now_unix());
+        assert_eq!(
+            group_ids(&view),
+            vec![
+                ("a-large", "group:LINUX:X64:label:runner-large"),
+                ("b-small", "group:LINUX:X64:other"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_platform_without_the_label_keeps_its_plain_group() {
+        let large = [
+            labelled(
+                "ubu-large",
+                RunnerOs::Linux,
+                "X64",
+                &["self-hosted", "runner-large"],
+            ),
+            labelled(
+                "mac-1",
+                RunnerOs::MacOs,
+                "ARM64",
+                &["self-hosted", "macOS", "ARM64"],
+            ),
+        ];
+        let state = with_org_runners(&[("acme", &large)]);
+        let view = runners_view(&state, &["runner-large".to_owned()], now_unix());
+        let mac = rows(&view)
+            .iter()
+            .find(|r| r["name"] == "mac-1")
+            .expect("mac row");
+        assert_eq!(mac["groupId"], "group:MACOS:ARM64");
+        assert_eq!(mac["groupLabel"], "MACOS · ARM64");
+        assert_eq!(mac["groupSplit"], false);
+    }
+
+    /// The roster entry from before labels were stored: it joins `other`, says
+    /// its labels were not recorded instead of showing none, and keeps its
+    /// alarm.
+    #[test]
+    fn an_absence_without_recorded_labels_joins_other_and_says_so() {
+        let state = with_runners(
+            &[labelled(
+                "ubu-large",
+                RunnerOs::Linux,
+                "X64",
+                &["self-hosted", "runner-large"],
+            )],
+            &[RunnerRosterEntry {
+                architecture: Some("X64".into()),
+                labels: None,
+                name: "ubu-old".to_owned(),
+                os: RunnerOs::Linux,
+                last_seen: now() - TimeDelta::seconds(3600),
+            }],
+        );
+        let view = runners_view(&state, &["runner-large".to_owned()], now_unix());
+        let old = rows(&view)
+            .iter()
+            .find(|r| r["name"] == "ubu-old")
+            .expect("absent row");
+        assert_eq!(old["groupId"], "group:LINUX:X64:other");
+        assert_eq!(old["labels"], Value::Null);
+        assert_eq!(old["labelChips"], Value::Null);
+        assert_eq!(old["labelsText"], viewmodel::dashboard::LABELS_NOT_RECORDED);
+        assert_eq!(old["attention"], true);
+    }
+
+    /// The label editor rides on every runners payload, setup ones included:
+    /// Configure must show the stored list even before a token is connected,
+    /// and the carriers count must come from the same runners the rows do.
+    #[test]
+    fn the_group_label_editor_rides_on_every_runners_payload() {
+        let listed = ["runner-large".to_owned()];
+        let mut setup = GitHubState::new();
+        setup.apply_unauthenticated();
+        let view = runners_view(&setup, &listed, now_unix());
+        assert_eq!(view["groupLabels"]["rows"][0]["label"], "runner-large");
+        assert_eq!(
+            view["groupLabels"]["rows"][0]["carriers"],
+            "runners not read yet"
+        );
+        let state = with_org_runners(&[(
+            "acme",
+            &[labelled(
+                "ubu-large",
+                RunnerOs::Linux,
+                "X64",
+                &["self-hosted", "runner-large", "gpu"],
+            )][..],
+        )]);
+        let view = runners_view(&state, &listed, now_unix());
+        assert_eq!(
+            view["groupLabels"]["rows"][0]["carriers"],
+            "carried by 1 runner"
+        );
+        assert_eq!(view["groupLabels"]["seen"], json!(["gpu"]));
+    }
+
+    #[test]
+    fn runner_rows_carry_their_label_chips() {
+        let state = with_org_runners(&[(
+            "acme",
+            &[labelled(
+                "ubu-large",
+                RunnerOs::Linux,
+                "X64",
+                &["self-hosted", "runner-large", "gpu"],
+            )][..],
+        )]);
+        let view = runners_view(&state, &["runner-large".to_owned()], now_unix());
+        let row = &rows(&view)[0];
+        let kinds: Vec<_> = row["labelChips"]
+            .as_array()
+            .expect("chips")
+            .iter()
+            .map(|chip| {
+                (
+                    chip["text"].as_str().unwrap(),
+                    chip["kind"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("runner-large", "match"),
+                ("gpu", "custom"),
+                ("self-hosted", "standard")
+            ]
+        );
+        assert_eq!(row["labelsText"], "self-hosted, runner-large, gpu");
+        assert_eq!(row["groupMatch"], "runner-large");
+        assert_eq!(row["groupSplit"], true);
     }
 
     /// #206: the status column is a *reservation*, not a measurement. A
@@ -3961,7 +4211,7 @@ mod tests {
                 architecture: Some("ARM64".into()),
                 // Remembered labels are what keep an absent runner in its
                 // group across a restart; dropping them on either side of the
-                // bridge would read every one back as `labels unknown`.
+                // bridge would drop every one into `other` as not recorded.
                 labels: Some(vec!["self-hosted".into(), "large".into()]),
                 name: "mac-s1".to_owned(),
                 os: RunnerOs::MacOs,
@@ -4093,6 +4343,41 @@ mod tests {
     }
 
     // MARK: - Fixture
+
+    /// The runner fixture carries what the label UI paints — a custom label, a
+    /// GitHub one, a remembered absence nobody recorded labels for, a listed
+    /// group label and labels a click could add — and splits nothing, because
+    /// its listed label is one no runner carries. The suite's group assertions
+    /// read the plain `OS · ARCH` groups.
+    #[test]
+    fn the_runner_fixture_covers_every_label_rendering() {
+        let view = runners_view(
+            &fixture_state(now()),
+            &[FIXTURE_GROUP_LABEL.to_owned()],
+            now_unix(),
+        );
+        let editor = &view["groupLabels"];
+        assert_eq!(editor["rows"][0]["label"], FIXTURE_GROUP_LABEL);
+        assert_eq!(
+            editor["rows"][0]["carriers"],
+            "no runner carries this label"
+        );
+        assert_eq!(editor["seen"], json!(["gpu", "xcode-16"]));
+        let rows = rows(&view);
+        assert!(rows
+            .iter()
+            .all(|row| !row["groupSplit"].as_bool().unwrap_or(true)));
+        assert!(rows
+            .iter()
+            .any(|row| row["labelsText"] == viewmodel::dashboard::LABELS_NOT_RECORDED));
+        let kinds: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row["labelChips"].as_array())
+            .flatten()
+            .filter_map(|chip| chip["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"custom") && kinds.contains(&"standard"));
+    }
 
     /// The dumped fixtures are what the Playwright suite renders, so the state
     /// behind them has to actually contain the cases those tests claim to

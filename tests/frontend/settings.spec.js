@@ -1172,35 +1172,13 @@ test("the retired GitHub tab is gone and org watching lives on the account", asy
   await expect(orgInput).toHaveValue("");
 });
 
-test("runner group labels show each label's runner count and round-trip Add and Remove through Rust", async ({ page, baseURL }) => {
+// The group labels moved to the Runners tile's Configure: one editor, beside
+// the groups it changes. A second copy here would be two homes for one list.
+test("preferences no longer edits runner group labels", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "general").click();
-  const t = settings.general.runnerGroupLabels;
-  // The fixture lists one label that one runner carries, so the row renders
-  // its count rather than the empty line.
-  expect(t.rows).toEqual([{ label: "runner-large", carriers: "carried by 1 runner" }]);
-  const box = page.locator("[data-runner-group-labels]");
-  const row = box.locator('[data-group-label="runner-large"]');
-  await expect(row).toContainText("runner-large");
-  await expect(row).toContainText("carried by 1 runner");
-
-  await row.locator(".group-label-remove").click();
-  expect(await calls(page, "settings_remove_runner_group_label")).toEqual([
-    { command: "settings_remove_runner_group_label", args: { label: "runner-large" } },
-  ]);
-
-  // Add is disabled until something is typed — a hint; Rust validates. Enter
-  // submits, and the field clears before the round trip.
-  const input = page.locator("#runner-group-label");
-  const add = box.locator(".group-label-add");
-  await expect(add).toBeDisabled();
-  await input.fill("gpu");
-  await expect(add).toBeEnabled();
-  await input.press("Enter");
-  expect(await calls(page, "settings_add_runner_group_label")).toEqual([
-    { command: "settings_add_runner_group_label", args: { label: "gpu" } },
-  ]);
-  await expect(input).toHaveValue("");
+  expect(settings.general.runnerGroupLabels).toBeUndefined();
+  await expect(page.locator("[data-runner-group-labels]")).toHaveCount(0);
 });
 
 test("a credential with nothing stored offers nothing to clear", async ({ page, baseURL }) => {
