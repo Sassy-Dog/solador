@@ -568,6 +568,15 @@
 #dashboardOverview .db-group-label-entry input { flex: 1; }
 #dashboardOverview .db-group-label-seen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
 #dashboardOverview .db-group-labels-shared { font-size: 11px; }
+/* The container group rules (#613): the group labels' frame, one row per rule. */
+#dashboardOverview .db-rules { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-rules legend { font-size: 12px; }
+#dashboardOverview .db-rules p { margin: 0; }
+#dashboardOverview .db-rule-rows { display: grid; gap: 6px; }
+#dashboardOverview .db-rule-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; font-size: 12px; }
+#dashboardOverview .db-rule-row input { flex: 1 1 110px; min-width: 0; }
+#dashboardOverview .db-rule-row [data-field="expected"] { flex: 0 1 90px; }
+#dashboardOverview .db-rules-shared { font-size: 11px; }
 #dashboardOverview button.db-label-chip { font: inherit; font-size: 11px; line-height: 1.4; padding: 1px 7px; white-space: normal; overflow-wrap: anywhere; }
 /* A runner label as a pill, in Configure, Detail and Full. The label that put
    the runner in its group is highlighted; GitHub's own labels are dimmed, never

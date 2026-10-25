@@ -887,18 +887,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   overflow:hidden; text-overflow:ellipsis; }
 .layout-tile-span { font-size:9px; color:var(--muted); margin-left:auto;
   white-space:nowrap; }
-/* One container group rule, laid out like the original editor's HStack: action,
-   pattern, then the Collapse-only label + expected count, the host scope and
-   the delete. WHICH of those exist is `collapseOnly` in the payload, never a
-   CSS or JS test against the action string. */
-.rule-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-  padding:6px 0; border-top:1px solid var(--line); }
-.rule-row:first-of-type { border-top:0; }
-.rule-row .input { max-width:none; min-width:0; }
-.rule-row .rule-expected { width:96px; flex:none; }
-.rule-row .rule-host { flex:none; width:auto; }
-.rule-arrow { color:var(--muted); }
-
 /* The Configure repos… modal — the app's second floating layer (.ctx-menu at
    z-index:10 is the first, so this sits one up). The scrim owns dismissal:
    a click that lands on it, and not on the panel, closes the picker. */

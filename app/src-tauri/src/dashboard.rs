@@ -888,6 +888,10 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         source["emptyGroupMessage"] = payload["emptyGroupMessage"].clone();
         source["groupLabels"] = payload["groupLabels"].clone();
     }
+    if id == "containers" {
+        // The rules decide what every Containers tile and the Full view show.
+        source["ruleEditor"] = payload["ruleEditor"].clone();
+    }
     source
 }
 
@@ -1245,6 +1249,8 @@ fn labels() -> Value {
         ("volumeUnhidden", "Volume shown again."),
         ("volumeHideFailed", "Could not save the volume change. Nothing was changed."),
         ("groupLabelsFailed", "Could not save the group labels. Nothing was changed."),
+        ("noContainerRules", "No rules \u{2014} every container is listed as it is."),
+        ("containerRulesFailed", "Could not save the container rules. Nothing was changed."),
         ("expandDetails", "Expand or collapse resource details"),
         ("configure", "Configure"),
         ("hide", "Hide"),

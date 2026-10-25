@@ -1444,17 +1444,19 @@ static FIRST_CONTAINERS_REQUEST: std::sync::Once = std::sync::Once::new();
 fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
     // Rules and presence first, then the panel state — one lock at a time, in
     // the same sequence `poll_containers` uses.
-    let (rules, presence) = {
+    let (rules, presence, hosts) = {
         let store = state.store.lock().expect("store poisoned");
         (
             store.container_rules().to_vec(),
             store.container_presence().clone(),
+            store.hosts().to_vec(),
         )
     };
-    let payload = {
+    let mut payload = {
         let panel = state.containers.lock().expect("containers state poisoned");
         containers::view(&panel, &rules, &presence, containers::now_unix())
     };
+    payload["ruleEditor"] = settings::rules_section(&rules, &hosts);
     // The same terminal-side signal `cockpit` and `settings_view` print, and
     // for the same reason: this is a third command on an IPC boundary with no
     // automated coverage (#123), and every way it can break from outside Rust
@@ -2729,7 +2731,6 @@ fn settings_payload(app: &App) -> Value {
             settings: store.settings(),
             hosts: store.hosts(),
             repos: store.repos(),
-            rules: store.container_rules(),
             layout: store.layout(),
             vendors: store.status_vendors(),
             accounts: store.accounts(),
@@ -4599,32 +4600,34 @@ fn settings_set_volume_hidden(
 // exactly like the Sentry quota and the Azure budget. A wake here would spend a
 // full pass of `docker ps` invocations to change nothing.
 
-/// Reads the persisted rules, hands them to `edit`, and writes them back when
-/// it says it changed something.
-///
-/// One place where the read-modify-write happens, so a future fourth mutation
-/// cannot quietly acquire a stale-snapshot bug the other three don't have.
-fn mutate_rules(
-    app: &App,
-    ok: impl Into<String>,
-    edit: impl FnOnce(&mut Vec<ContainerGroupRule>) -> bool,
-) -> Option<String> {
-    let mut store = app.store.lock().expect("store poisoned");
-    let mut rules = store.container_rules().to_vec();
-    if !edit(&mut rules) {
-        return Some("Skipped — unknown rule.".to_owned());
-    }
+/// Applies one edit to the container group rules and saves it, from a
+/// Containers tile's Configure. Saved on the click and outside the dashboard's
+/// undo history: the list is shared by every Containers tile and the Full view,
+/// not a property of the tile being configured (#613). A save that fails puts
+/// the previous list back, so memory never claims what disk does not hold.
+fn edit_container_rules(
+    state: &tauri::State<'_, Arc<App>>,
+    edit: impl FnOnce(&mut Vec<ContainerGroupRule>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut store = state.store.lock().expect("store poisoned");
+    let previous = store.container_rules().to_vec();
+    let mut rules = previous.clone();
+    edit(&mut rules)?;
     store.set_container_rules(rules);
-    save_status(&store, ok)
+    if let Err(error) = store.save() {
+        store.set_container_rules(previous);
+        return Err(format!("Could not save the container rules: {error}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn settings_add_container_rule(state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = mutate_rules(&state, "Added rule.", |rules| {
+fn container_rule_add(width: f64, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
+    edit_container_rules(&state, |rules| {
         rules.push(settings::new_rule());
-        true
-    });
-    settings_response(&state, status)
+        Ok(())
+    })?;
+    Ok(dashboard_view(width, state))
 }
 
 /// One field of one rule.
@@ -4632,28 +4635,35 @@ fn settings_add_container_rule(state: tauri::State<'_, Arc<App>>) -> Value {
 /// Deliberately *not* a whole-row write: the frontend sends the field that
 /// changed and nothing else, so the value in every other field of that row is
 /// whatever is on disk rather than whatever the last render happened to paint.
-/// The original gets the same property from a `Binding` per `WritableKeyPath`.
 #[tauri::command]
-fn settings_set_container_rule(
+fn container_rule_set(
     index: usize,
     field: String,
     value: String,
+    width: f64,
     state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let Some(field) = settings::RuleField::parse(&field) else {
-        return settings_response(&state, Some("Skipped — unknown rule field.".into()));
-    };
-    let status = mutate_rules(&state, "Saved.", |rules| {
-        settings::apply_rule_edit(rules, index, field, &value)
-    });
-    settings_response(&state, status)
+) -> Result<Value, String> {
+    let field = settings::RuleField::parse(&field)
+        .ok_or_else(|| "Skipped \u{2014} unknown rule field.".to_owned())?;
+    edit_container_rules(&state, |rules| {
+        if settings::apply_rule_edit(rules, index, field, &value) {
+            Ok(())
+        } else {
+            Err("Skipped \u{2014} unknown rule.".to_owned())
+        }
+    })?;
+    Ok(dashboard_view(width, state))
 }
 
 #[tauri::command]
-fn settings_remove_container_rule(index: usize, state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = mutate_rules(&state, "Removed rule.", |rules| {
+fn container_rule_remove(
+    index: usize,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    edit_container_rules(&state, |rules| {
         if index >= rules.len() {
-            return false;
+            return Err("Skipped \u{2014} unknown rule.".to_owned());
         }
         rules.remove(index);
         // An emptied list is respected as an emptied list, never re-seeded:
@@ -4661,9 +4671,9 @@ fn settings_remove_container_rule(index: usize, state: tauri::State<'_, Arc<App>
         // reads back as "the user cleared every rule" rather than "never
         // configured". Deleting the last rule and relaunching must not bring
         // the seeded three back.
-        true
-    });
-    settings_response(&state, status)
+        Ok(())
+    })?;
+    Ok(dashboard_view(width, state))
 }
 
 /// The Test button: one `/v1/health` probe, rendered as the original result line.
@@ -5684,7 +5694,9 @@ fn dump_github_showcase(runners: bool) -> Value {
 fn dump_containers_showcase() -> Value {
     const NOW: u64 = 1_700_000_000;
     let (state, rules, presence) = containers::showcase_state(NOW);
-    containers::view(&state, &rules, &presence, NOW)
+    let mut payload = containers::view(&state, &rules, &presence, NOW);
+    payload["ruleEditor"] = settings::rules_section(&rules, &[]);
+    payload
 }
 
 /// Three hosts in three different connection states, so the Playwright suite
@@ -5963,7 +5975,6 @@ fn dump_settings() -> Value {
                 },
                 store::TrackedRepo::new("acme/pipe-fitting"),
             ],
-            rules: &dump_container_rules(),
             layout: Some(&layout),
             vendors: &vendors,
             certificate_changed: &certificate_changed,
@@ -6113,10 +6124,16 @@ fn dump_containers(empty: bool) -> Value {
             ),
             NOW - 90,
         );
-        return containers::view(&state, &[], &std::collections::BTreeMap::new(), NOW);
+        let mut payload = containers::view(&state, &[], &std::collections::BTreeMap::new(), NOW);
+        payload["ruleEditor"] = settings::rules_section(&[], &[]);
+        return payload;
     }
     let (state, rules, presence) = containers::fixture_state(NOW);
-    containers::view(&state, &rules, &presence, NOW)
+    let mut payload = containers::view(&state, &rules, &presence, NOW);
+    // The Settings fixture's rule list, not `fixture_state`'s: it carries every
+    // rendering the editor has, including a scope naming a host that is gone.
+    payload["ruleEditor"] = settings::rules_section(&dump_container_rules(), &[]);
+    payload
 }
 
 /// The Repos and GitHub Runners panels as fixtures.
@@ -6833,9 +6850,9 @@ fn main() {
             settings_set_host_enabled,
             settings_remove_host,
             settings_set_volume_hidden,
-            settings_add_container_rule,
-            settings_set_container_rule,
-            settings_remove_container_rule,
+            container_rule_add,
+            container_rule_set,
+            container_rule_remove,
             settings_test_host,
             settings_save_host,
             settings_add_repo,
@@ -10032,8 +10049,8 @@ mod tests {
     /// expectation set and unset, an unscoped rule, and a scope naming a host
     /// that is not configured.
     #[test]
-    fn the_settings_fixture_covers_every_rule_rendering_the_editor_has() {
-        let rows = dump_settings()["hosts"]["rules"]["rows"]
+    fn the_containers_fixture_covers_every_rule_rendering_the_editor_has() {
+        let rows = dump_containers(false)["ruleEditor"]["rows"]
             .as_array()
             .expect("rule rows")
             .clone();

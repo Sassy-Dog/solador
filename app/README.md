@@ -403,10 +403,10 @@ does not fit it yet:
 |---|---|---|
 | Rows to show, repo checklist, Disk strip, runner view (and Repos sorting, by its column headers) | the tile's Configure, or the tile itself | rule 1 |
 | Runner group labels | Runners tile Configure, marked shared | rule 4 |
+| Container Group Rules | Containers tile Configure, marked shared (#613) | rule 4 |
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates, Full view layout | Settings | rule 3 |
 | CPU/RAM thresholds (Preferences), per-machine overrides (Connections), hidden volumes (three places) | split | [#612](https://github.com/Sassy-Dog/solador/issues/612): Machines tile Configure |
-| Container Group Rules | Settings → Connections, under each machine | [#613](https://github.com/Sassy-Dog/solador/issues/613): Containers tile Configure |
 | Panel Poll Cadence | Settings → Preferences | [#614](https://github.com/Sassy-Dog/solador/issues/614): each tile's Configure, with its floor |
 | Refresh Interval (GitHub, Services, Claude rollups) | Settings → Preferences | [#615](https://github.com/Sassy-Dog/solador/issues/615): rule 3 or rule 4, to decide |
 | CPU core rows, Row spacing | Settings → Preferences | [#616](https://github.com/Sassy-Dog/solador/issues/616): Machines tile or Full view layout, to decide |
@@ -935,8 +935,16 @@ folding rows.
 
 **Order is the contract** for whatever you do configure: matching is
 first-match-wins, so a hide rule above a collapse rule changes what the panel
-shows. Rules are edited under [Settings → Connections → This machine](#settings), beside the host
-list whose names scope them.
+shows. Rules are edited in any Containers tile's **Configure**, under **Container
+Group Rules** (#613), beside the rows they hide, collapse or group — not in
+Settings, which no longer carries them. The list is shared by every Containers
+tile and the Full view, so the section says `Shared · saved immediately ·
+applies everywhere containers appear: every Containers tile and the Full view.`
+and, like the runner group labels, saves on the change (`container_rule_add` /
+`_set` / `_remove`, each answering with the re-rendered dashboard) rather than
+with the tile's **Apply**, and stays out of the dashboard's undo history. The
+editor's payload rides on the Containers source as `ruleEditor`
+(`settings::rules_section`).
 
 ## The `repos` and `runners` commands
 
@@ -1945,7 +1953,6 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_probe_host_certificate` | pairing step one (#448): the certificate an address presents, fetched **without trusting it** → `{status: "tls" \| "no-tls" \| "failed", fingerprint, message}`. One unauthenticated request; nothing stored, no token sent |
 | `settings_save_host` | edit a host's name / address / port and, on request, replace its token. An optional `tlsFingerprint` **replaces the pin** (Re-pair); absent leaves it exactly as it is, so a rename can never touch it |
 | `settings_set_volume_hidden` | one mount hidden or shown, on a host or on the local list (the Connections volume checklist and the Hosts tab's Unhide) |
-| `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
 | `settings_test_host` | one `/v1/health` probe → the original result line, through the pinned client for a paired host. The answer also carries `certificateChanged`, which is what offers **Re-pair** the moment Test finds it |
 | `settings_save_account` | create or edit a [vendor account](#the-accounts-tab) — `id: null` adds, an id edits. The token is minted as **its own** credential-store item (`SecretKey::VendorToken`), never shared with another account. An empty token is a legitimate save, not a failure: the row reads **No token** and the operator fills it in later. Wakes the GitHub loop, because accounts *are* that pass's identities |
 | `settings_set_account_enabled` | one account in or out of the GitHub pass, without deleting it or its token |
@@ -1972,7 +1979,7 @@ a portfolio fetch on a credential it has no use for.
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
-| a container group rule | nothing — the rules are read at render time too, by `containers` |
+| a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |
 | the [layout](#the-layout-tab) — a move, a width, an overflow mode, a breakpoint added or removed, a reset | nothing: `cockpit` re-reads the bands and picks one by the measured width on every frame, so the change is on screen a second later (or the moment Settings closes, which repaints immediately) |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
@@ -2090,16 +2097,18 @@ implementation of the packer, free to promise an arrangement the cockpit then
 does not render.
 
 **The rules editor writes one field per call, and that is the whole of its
-concurrency story.** the original builds a `Binding` per `WritableKeyPath` that
+concurrency story.** (It lives in a Containers tile's Configure now, #613; the
+commands are `container_rule_add` / `container_rule_set` / `container_rule_remove`
+and answer with the dashboard view.) the original builds a `Binding` per `WritableKeyPath` that
 re-reads the persisted list on *every* access, precisely so editing a rule's
 label cannot clobber the pattern someone changed a moment earlier. The port is
-`settings_set_container_rule(index, field, value)`: the frontend sends the field
+`container_rule_set(index, field, value)`: the frontend sends the field
 that changed and nothing else, and Rust does the read-modify-write of the whole
 list under the store's lock. A whole-row command would have been a client-side
 snapshot of four fields, which is the bug that shape exists to avoid. Rows are
 addressed by **index** because the persisted model has no id and order *is* the
 engine's contract (first match wins); an index that no longer names a rule is a
-rejected edit — `Skipped — unknown rule.` — never a misdirected one.
+rejected edit — `Skipped — unknown rule.` — never a misdirected one. A save that fails puts the previous list back.
 
 Two rules of the editor are Rust's, not the field's: the group label and the
 expected count exist **only for a Collapse rule** (`collapseOnly` in the
@@ -2688,13 +2697,14 @@ neither and a **pinned certificate that has changed**, so the pin line and the
 Re-pair button render, and a third that has reported no agent version — which,
 beside the first two (behind the newest verified release, and at it), gives every
 host row an `agentRelease` line in a different state; two credentials stored, two not) with hard-coded uuids, so it is
-byte-stable across regenerations and covers both sides of every badge. Its
-**container group rules** are the seeded three plus the two renderings seeding
-alone never reaches — an Expect rule (whose Collapse-only fields must therefore
+byte-stable across regenerations and covers both sides of every badge. (Its
+container group rules moved out with the editor, #613; see `--dump-containers`
+below.) The Containers fixture's rules (`ruleEditor`) are three written-out rules (seeding ships none) plus
+the two renderings seeding alone never reaches — an Expect rule (whose Collapse-only fields must therefore
 be absent) and a scope naming a host that is not configured (the case the host
 picker grows an extra option for, and the one where it renders blank if it
 doesn't) — all asserted by
-`the_settings_fixture_covers_every_rule_rendering_the_editor_has`. Its
+`the_containers_fixture_covers_every_rule_rendering_the_editor_has`. The Settings fixture's
 **status vendors** are two invented pages, one enabled and one not, so the
 Services tab's row renders in both states — invented rather than real, because
 the panel ships no vendor list and a fixture naming one operator's dependencies
@@ -2828,7 +2838,7 @@ cannot see.
       the sentence `no container runtimes`. Allow 10s — that is the panel's cadence.
 - [ ] **Click Settings** → terminal prints
       `settings: first frontend request (N host(s), N repo(s))`, the Hosts tab lists
-      your seeded host **and the three seeded container group rules below it**
+      your seeded host
       (its row also carries the agent-release line — `Agent version — · not
       compared with releases` on a token-less run, #489), and
       **Done** returns to the cockpit.
@@ -2874,7 +2884,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `agentRelease` on each host row (`settings_payload` → `hosts_tab`, `agent_release_loop`, #489) | Settings → Connections → the seeded host. Then, against a real agent with `\|$TOKEN` on `SOLADOR_SEED_HOST` | the row carries a persistent line with **no Test press**. With no token (the default smoke run) it reads `Agent version — · not compared with releases`, because no health read can land. With a live agent it reads `Agent v<version> · …` and, while no `agent-v*` release has been published (the feed 404s), `no agent release published yet` in a muted colour — **never** `up to date`, and never amber or red. Amber appears only as `<release> available` beside a host whose CalVer is lower than a verified release. Terminal: one `agent release: …` line at startup, then hourly (`newest verified is …`, `none published yet`, or `the check failed: …`). A line that stays `checking for a newer release…` for more than a few seconds with a network means `agent_release_loop` never ran |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
-| the rules editor | under Settings → Connections → This machine, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
+| the rules editor (`container_rule_add` / `_set` / `_remove`, #613) | **Edit dashboard** → the Containers tile's **Configure** → **Container Group Rules**: press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern, saved on the click before **Apply**; switching to Hide drops the group-label and expected-count fields; **Delete** removes it. Settings → Connections → This machine has no rules editor at all. A rule that survives a relaunch with Apply never pressed is the intended behaviour; one that needs Apply is the defect |
 | the tabs mode, per breakpoint | with two hosts configured, set Settings → **Full view layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
 | `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Full view layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Full view layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |

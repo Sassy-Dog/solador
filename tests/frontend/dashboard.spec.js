@@ -118,6 +118,23 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               editor.seen = editor.seen.filter(seen => !labels.some(l => l.toLowerCase() === seen.toLowerCase()));
               return project();
             }
+            if (command.startsWith("container_rule_")) {
+              if (window.__FAIL_CONTAINER_RULE__) throw "Could not save the container rules.";
+              // The list edit only; host options and which fields a row has
+              // are Rust's and are not re-derived here.
+              const editor = original.sources.find(s => s.id === "containers").ruleEditor;
+              if (command === "container_rule_add")
+                editor.rows.push({ index: editor.rows.length, action: "collapse", pattern: "", label: "", expected: "",
+                  host: "", collapseOnly: true, hostOptions: editor.rows[0].hostOptions });
+              if (command === "container_rule_remove")
+                editor.rows = editor.rows.filter(r => r.index !== args.index).map((r, index) => ({ ...r, index }));
+              if (command === "container_rule_set") {
+                const row = editor.rows[args.index];
+                row[args.field] = args.value;
+                if (args.field === "action") row.collapseOnly = args.value === "collapse";
+              }
+              return project();
+            }
             if (command === "dashboard_preview") {
               const preview = project(args.tile).tiles[0];
               if (window.__HOLD_PREVIEW__) {
@@ -854,6 +871,88 @@ test("a failed label save says so beside the section", async ({ page, baseURL })
   await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
   await expect(section.locator("[data-group-label]")).toHaveCount(0);
   await expect(section.locator(".db-action-error")).toHaveCount(0);
+});
+
+async function configureContainers(page) {
+  // No Containers tile is on the default dashboard: add one, which opens its
+  // Configure on a draft. The rules are not the draft's, so nothing below
+  // presses Apply.
+  await page.locator('#dashboardOverview [data-action="edit"]').click();
+  await page.locator('#dashboardOverview [data-action="catalog"]').click();
+  await page.locator('[data-action="add"][data-id="containers"]').click();
+  return page.locator("[data-container-rules]");
+}
+
+test("the Containers Configure lists every rule field, Collapse-only ones only for Collapse, with the shared note (#613)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const t = model.sources.find(s => s.id === "containers").ruleEditor;
+  const section = await configureContainers(page);
+  await expect(section.locator("legend")).toHaveText(t.heading);
+  await expect(section).toContainText(t.firstMatch);
+  await expect(section).toContainText("Shared \u00b7 saved immediately \u00b7 applies everywhere containers appear: every Containers tile and the Full view.");
+  const rows = section.locator("[data-container-rule]");
+  await expect(rows).toHaveCount(t.rows.length);
+  for (const rule of t.rows) {
+    const row = section.locator(`[data-container-rule="${rule.index}"]`);
+    await expect(row.locator('[data-field="action"]')).toHaveValue(rule.action);
+    await expect(row.locator('[data-field="pattern"]')).toHaveValue(rule.pattern);
+    // Including the host that no longer exists: a picker missing its own
+    // selection renders blank, which would read as unscoped.
+    await expect(row.locator('[data-field="host"]')).toHaveValue(rule.host);
+    await expect(row.locator('[data-field="expected"]')).toHaveCount(rule.collapseOnly ? 1 : 0);
+    await expect(row.locator('[data-field="label"]')).toHaveCount(rule.collapseOnly ? 1 : 0);
+    if (rule.collapseOnly) await expect(row.locator('[data-field="expected"]')).toHaveValue(rule.expected);
+  }
+  expect(t.rows.some(r => r.collapseOnly)).toBe(true);
+  expect(t.rows.some(r => !r.collapseOnly)).toBe(true);
+  expect(t.rows.some(r => r.expected !== "")).toBe(true);
+  await expect(rows.first().locator('[data-field="action"] option')).toHaveText(t.actions.map(a => a.label));
+  // Only Containers carries it.
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  await expect(page.locator("[data-container-rules]")).toHaveCount(0);
+});
+
+test("a container rule edits one field at a time, adds and deletes, saving on the change and never through Apply (#613)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const t = model.sources.find(s => s.id === "containers").ruleEditor;
+  const section = await configureContainers(page);
+  const collapse = t.rows.find(r => r.collapseOnly && r.expected !== "");
+  expect(collapse, "the fixture must carry a collapse rule with a count").toBeTruthy();
+  const row = () => section.locator(`[data-container-rule="${collapse.index}"]`);
+  const width = expect.any(Number);
+
+  await row().locator('[data-field="pattern"]').fill("worker-*");
+  await row().locator('[data-field="pattern"]').blur();
+  await expect.poll(() => commandArgs(page, "container_rule_set"))
+    .toEqual([{ index: collapse.index, field: "pattern", value: "worker-*", width }]);
+  await expect(row().locator('[data-field="pattern"]')).toHaveValue("worker-*");
+  await row().locator('[data-field="expected"]').fill("6");
+  await row().locator('[data-field="expected"]').blur();
+  await row().locator('[data-field="host"]').selectOption("");
+  await row().locator('[data-field="action"]').selectOption("hide");
+  await expect.poll(async () => (await commandArgs(page, "container_rule_set")).map(a => [a.field, a.value]))
+    .toEqual([["pattern", "worker-*"], ["expected", "6"], ["host", ""], ["action", "hide"]]);
+  // Rust says a Hide rule has no aggregate, so the Collapse-only fields go.
+  await expect(row().locator('[data-field="expected"]')).toHaveCount(0);
+
+  const before = t.rows.length;
+  await section.locator('[data-action="container-rule-add"]').click();
+  await expect.poll(() => commandArgs(page, "container_rule_add")).toEqual([{ width }]);
+  await expect(section.locator("[data-container-rule]")).toHaveCount(before + 1);
+  await section.locator(`[data-container-rule="${collapse.index}"] [data-action="container-rule-remove"]`).click();
+  await expect.poll(() => commandArgs(page, "container_rule_remove")).toEqual([{ index: collapse.index, width }]);
+  await expect(section.locator("[data-container-rule]")).toHaveCount(before);
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("a failed container rule save says so beside the section (#613)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const t = model.sources.find(s => s.id === "containers").ruleEditor;
+  await page.evaluate(() => { window.__FAIL_CONTAINER_RULE__ = true; });
+  const section = await configureContainers(page);
+  await section.locator('[data-container-rule="0"] [data-action="container-rule-remove"]').click();
+  await expect(section.locator(".db-action-error")).toHaveText("Could not save the container rules.");
+  await expect(section.locator("[data-container-rule]")).toHaveCount(t.rows.length);
 });
 
 test("a fresh dashboard groups Runners by OS and architecture, and an added Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
