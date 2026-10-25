@@ -75,7 +75,7 @@
     // share; every other failure belongs to the overview.
     const inChrome = anchor && appChrome?.contains(anchor);
     const target = feedback && (inChrome ? appChrome : mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels, .db-machine-block") || anchor
+      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels, .db-machine-block, .db-cadence") || anchor
       : active ? q(".db-inspector") : q(".db-attention")));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -1960,9 +1960,10 @@
         await cadenceChange("panel_interval_clear", { panel }, selector);
       } else {
         // Rust decides whether the number is legal and says why not; an empty
-        // entry is sent as 0, which every floor refuses.
+        // or negative entry is sent as 0 (a u32 cannot carry it), which every
+        // floor refuses in its own words.
         const secs = Number.parseInt(box.querySelector("input").value, 10);
-        await cadenceChange("panel_interval_save", { panel, secs: Number.isFinite(secs) ? secs : 0 }, selector);
+        await cadenceChange("panel_interval_save", { panel, secs: Number.isFinite(secs) ? Math.max(0, secs) : 0 }, selector);
       }
       return;
     }

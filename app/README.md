@@ -421,7 +421,7 @@ does not fit it yet:
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates, Full view layout | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, Usage (metered providers), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it (#614) | rule 4 |
+| Poll cadence of Containers, Usage (metered providers), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (GitHub, Services, Claude rollups) | Settings → Preferences | [#615](https://github.com/Sassy-Dog/solador/issues/615): rule 3 or rule 4, to decide |
 | CPU core rows, Row spacing | Settings → Preferences | [#616](https://github.com/Sassy-Dog/solador/issues/616): Machines tile or Full view layout, to decide |
 

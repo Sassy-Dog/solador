@@ -997,7 +997,7 @@ the bundle's floor.
   `app/src-tauri/src/main.rs` — capturing it at spawn is what would make a
   change take up to one full interval (four hours, on Azure) to apply. Each is
   edited in the **Configure of the tile(s) it feeds** (#614; it was Settings →
-  General → **Panel Poll Cadence**, #337) — Containers, Usage (the metered
+  Preferences → **Panel Poll Cadence**, #337) — Containers, Usage (the metered
   providers), Azure Cost and Scheduled Jobs (Sentry crons) — under **Poll
   cadence**, which says it is shared by every tile of that source and the Full
   view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
