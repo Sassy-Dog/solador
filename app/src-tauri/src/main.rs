@@ -19,6 +19,7 @@ use viewmodel::cockpit::{
 use viewmodel::color;
 
 mod azure;
+mod cadence;
 mod containers;
 mod crons;
 mod dashboard;
@@ -2798,7 +2799,13 @@ fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
             .settings()
             .machine_alerts,
     );
-    let payloads = vec![
+    let settings = state
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .clone();
+    let mut payloads = vec![
         hosts,
         repos(state.clone()),
         runners(state.clone()),
@@ -2809,6 +2816,7 @@ fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         azure_cost(state.clone()),
         openclaw(state),
     ];
+    cadence::attach(&mut payloads, &settings);
     dashboard::view(&layout, &payloads)
 }
 
@@ -3936,61 +3944,71 @@ fn wake_panel(app: &App, panel: PanelInterval) {
     }
 }
 
-/// One panel's poll cadence.
+/// One panel's poll cadence, from the Configure of a tile of that source.
 ///
 /// **Refused, not clamped.** A value under the panel's floor writes nothing and
-/// comes back with [`store::settings::IntervalRejection::user_message`] — which
-/// names the panel, its floor, why that floor exists and what was asked for.
-/// Storing the floor instead would leave an operator looking at a number they
-/// did not choose, on a setting whose whole point is that the cadence is theirs.
+/// comes back as an error carrying [`store::settings::IntervalRejection::user_message`]
+/// — which names the panel, its floor, why that floor exists and what was asked
+/// for. Storing the floor instead would leave an operator looking at a number
+/// they did not choose, on a setting whose whole point is that the cadence is
+/// theirs.
 ///
 /// The floor is enforced here rather than in the webview, and again on read in
-/// [`store::settings::Settings::panel_interval_secs`], because on the Azure row
-/// a bypassed floor is a spend decision. The `min` the row carries is a
-/// courtesy to the number input, not the gate.
+/// [`store::settings::Settings::panel_interval_secs`], because on the Azure
+/// panel a bypassed floor is a spend decision. The `min` the control carries is
+/// a courtesy to the number input, not the gate.
+///
+/// Saved on the click and outside the dashboard's undo history (#614): the
+/// cadence is the source's, shared by every tile of it and the Full view.
 #[tauri::command]
-fn settings_save_panel_interval(
+fn panel_interval_save(
     panel: String,
     secs: u32,
+    width: f64,
     state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let Some(kind) = PanelInterval::parse(&panel) else {
-        return settings_response(&state, Some("Skipped — unknown panel.".into()));
-    };
-    let secs = match kind.check_secs(secs) {
-        Ok(secs) => secs,
-        Err(rejection) => return settings_response(&state, Some(rejection.user_message())),
-    };
-    let status = {
+) -> Result<Value, String> {
+    let kind = PanelInterval::parse(&panel).ok_or("Skipped \u{2014} unknown panel.")?;
+    let secs = kind.check_secs(secs).map_err(|r| r.user_message())?;
+    {
         let mut store = state.store.lock().expect("store poisoned");
+        let previous = store.settings().panel_intervals.clone();
         let outcome = store.settings_mut().set_panel_interval_secs(kind, secs);
         debug_assert!(
             !outcome.was_clamped(),
             "a value that passed check_secs must be stored as asked"
         );
-        save_status(&store, "Saved.")
-    };
+        if let Err(error) = store.save() {
+            store.settings_mut().panel_intervals = previous;
+            return Err(format!("Could not save the poll cadence: {error}"));
+        }
+    }
     wake_panel(&state, kind);
-    settings_response(&state, status)
+    Ok(dashboard_view(width, state))
 }
 
 /// Forget one panel's cadence override.
 ///
 /// Not the same as setting it *to* the default: this restores "never
-/// configured", so the panel follows its constant if that ever moves. The row's
-/// status line is what makes the two distinguishable on screen.
+/// configured", so the panel follows its constant if that ever moves. The
+/// control's status line is what makes the two distinguishable on screen.
 #[tauri::command]
-fn settings_clear_panel_interval(panel: String, state: tauri::State<'_, Arc<App>>) -> Value {
-    let Some(kind) = PanelInterval::parse(&panel) else {
-        return settings_response(&state, Some("Skipped — unknown panel.".into()));
-    };
-    let status = {
+fn panel_interval_clear(
+    panel: String,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    let kind = PanelInterval::parse(&panel).ok_or("Skipped \u{2014} unknown panel.")?;
+    {
         let mut store = state.store.lock().expect("store poisoned");
+        let previous = store.settings().panel_intervals.clone();
         store.settings_mut().clear_panel_interval(kind);
-        save_status(&store, "Back to the default cadence.")
-    };
+        if let Err(error) = store.save() {
+            store.settings_mut().panel_intervals = previous;
+            return Err(format!("Could not save the poll cadence: {error}"));
+        }
+    }
     wake_panel(&state, kind);
-    settings_response(&state, status)
+    Ok(dashboard_view(width, state))
 }
 
 /// The crash-reporting opt-in. Its own command, and it saves immediately.
@@ -6122,20 +6140,23 @@ fn dump_dashboard() -> Value {
     );
     hosts["hosts"][1] = dump_card_of("ubu-01", &serving, &Connection::Live);
     machine_alerts::attach(&mut hosts, &store::machine_alerts::MachineAlerts::default());
-    dashboard::view(
-        &dashboard::default_layout(),
-        &[
-            hosts,
-            dump_github(false, false),
-            dump_github(false, true),
-            dump_containers(false),
-            services::view(&services::fixture_statuses()),
-            dump_crons(crons::Fixture::Alerting, false),
-            dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
-            dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
-            dump_openclaw(openclaw::Fixture::Connected),
-        ],
-    )
+    // One cadence set and the rest untouched, so the fixture carries both
+    // renderings the control has ("Set to ..." and "Using the default").
+    let mut cadences = store::settings::Settings::default();
+    cadences.set_panel_interval_secs(store::settings::PanelInterval::AzureCost, 6 * 3600);
+    let mut payloads = vec![
+        hosts,
+        dump_github(false, false),
+        dump_github(false, true),
+        dump_containers(false),
+        services::view(&services::fixture_statuses()),
+        dump_crons(crons::Fixture::Alerting, false),
+        dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
+        dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
+        dump_openclaw(openclaw::Fixture::Connected),
+    ];
+    cadence::attach(&mut payloads, &cadences);
+    dashboard::view(&dashboard::default_layout(), &payloads)
 }
 
 /// Returns the path argument following `flag` if `flag` is present, falling
@@ -6768,8 +6789,8 @@ fn main() {
             runner_group_label_add,
             runner_group_label_remove,
             runner_group_label_move,
-            settings_save_panel_interval,
-            settings_clear_panel_interval,
+            panel_interval_save,
+            panel_interval_clear,
             settings_set_crash_reporting,
             settings_move_panel,
             settings_set_panel_span,

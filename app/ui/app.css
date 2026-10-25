@@ -793,23 +793,8 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    explanation below it. Brighter than `.help` because it is the sentence that
    changes, and the one an operator checks. */
 .crash-status { color:var(--ink); font-weight:600; }
-/* One panel's poll cadence: the number, its two buttons, then the state it is
-   in and the floor that constrains it. Separated like `.host-row` rather than
-   packed like `.layout-row`, because each row carries two sentences under it
-   and running four of those together loses which floor belongs to which panel.
-   Same `align-items:flex-end` trick as `.layout-row`: the `.field` label sits
-   above its input, so the buttons line up with the input and not its label. */
-.cadence-item { display:flex; flex-direction:column; gap:4px;
-  padding:8px 0; border-top:1px solid var(--line); }
-.cadence-item:first-of-type { border-top:0; }
-.cadence-row { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; }
-.cadence-row .input { max-width:160px; }
-/* Which of the two states this row is in — an override, or the untouched
-   default. Brighter than the floor text below it for the same reason
-   `.crash-status` is: it is the line that changes. */
-.cadence-status { color:var(--ink); font-weight:600; }
 /* Where this build stands against the update feed. Weighted like
-   `.crash-status` and `.cadence-status` because it is the sentence that
+   `.crash-status` because it is the sentence that
    changes -- but with NO colour here: green (up to date), amber (an update is
    waiting, or the check failed) and red (an install failed) are meanings, and
    meanings come from Rust. A colour in this file would be a fourth opinion
@@ -929,7 +914,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 /* Reserved, so a short Test result moves nothing (#436); a long one wraps
    across the row and grows below the buttons rather than scrolling in place. */
 .host-row > .result { min-height:29px; overflow-wrap:anywhere; }
-.crash-status, .cadence-status { height:29px; overflow:auto; }
+.crash-status { height:29px; overflow:auto; }
 
 /* A host grows to fit every core and volume. Keep the initial reservation for
    cold failures; subsequent outages retain the measured live height. */

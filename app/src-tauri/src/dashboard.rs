@@ -893,6 +893,11 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         source["emptyGroupMessage"] = payload["emptyGroupMessage"].clone();
         source["groupLabels"] = payload["groupLabels"].clone();
     }
+    if !payload["cadence"].is_null() {
+        // The poll cadence is the source's, shared by every tile of it and the
+        // Full view (#614), so it rides on the source, never on a tile.
+        source["cadence"] = payload["cadence"].clone();
+    }
     if id == "containers" {
         // The rules decide what every Containers tile and the Full view show.
         source["ruleEditor"] = payload["ruleEditor"].clone();
@@ -1255,6 +1260,7 @@ fn labels() -> Value {
         ("volumeHideFailed", "Could not save the volume change. Nothing was changed."),
         ("groupLabelsFailed", "Could not save the group labels. Nothing was changed."),
         ("noContainerRules", "No rules \u{2014} every container is listed as it is."),
+        ("cadenceFailed", "Could not save the poll cadence. Nothing was changed."),
         ("containerRulesFailed", "Could not save the container rules. Nothing was changed."),
         ("machineAlertsFailed", "Could not save the machine alert limits. Nothing was changed."),
         ("hiddenVolumes", "Volumes shown"),
