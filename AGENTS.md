@@ -117,8 +117,8 @@ detailed than this file.
 
 Rows are reflowed by `viewmodel::cockpit` for the measured width, and every card
 in a row is the same height. An in-app Settings surface over `crates/store`
-(hosts CRUD, portfolio, credentials, container group rules, cockpit layout,
-general prefs) applies changes without a restart. The main window also remembers
+(hosts CRUD, portfolio, credentials, cockpit layout, general prefs; the
+container group rules are edited from a Containers tile's Configure, #613) applies changes without a restart. The main window also remembers
 its size, position and maximized state across normal launches through the
 Rust-only window-state module (logical points on macOS, the window-state plugin
 on Windows); see app/README.md for storage and the isolated
@@ -975,6 +975,11 @@ the bundle's floor.
   because the panel looks like it is working while hiding or folding rows.
 - **Order is the contract**: matching is first-match-wins, so a hide rule above
   a collapse rule changes what the panel shows.
+- **The rules are edited in a Containers tile's Configure (#613)**, under
+  **Container Group Rules**, not in Settings. They are shared by every
+  Containers tile and the Full view, so the section says so and saves on the
+  change (`container_rule_add` / `_set` / `_remove`), never with the tile's
+  Apply.
 
 ### CI & usage data
 - GitHub Actions data: `crates/github` (workflow health, self-hosted runners,

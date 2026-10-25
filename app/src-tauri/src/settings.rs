@@ -748,7 +748,6 @@ pub struct StoreSections<'a> {
     pub settings: &'a Settings,
     pub hosts: &'a [Host],
     pub repos: &'a [TrackedRepo],
-    pub rules: &'a [ContainerGroupRule],
     /// `None` means the cockpit layout has never been configured — not that it
     /// is empty.
     pub layout: Option<&'a [store::LayoutProfile]>,
@@ -823,7 +822,6 @@ pub fn view(
         settings,
         hosts,
         repos,
-        rules,
         layout,
         vendors,
         accounts,
@@ -851,7 +849,6 @@ pub fn view(
             hosts_tab(
                 settings,
                 hosts,
-                rules,
                 stored,
                 certificate_changed,
                 plain_refused,
@@ -1194,8 +1191,8 @@ fn connections_section(
         ],
         "automaticHeading": "Automatic sources",
         "automatic": [
-            {"kind":"local", "title":"This machine", "feeds":"Local monitoring and container rules",
-                "help":"Local machine metrics are collected automatically. Container rules can apply to this machine or a remote host."},
+            {"kind":"local", "title":"This machine", "feeds":"Local monitoring",
+                "help":"Local machine metrics are collected automatically. Container group rules live in the Containers tile\u{2019}s Configure."},
             {"kind":"claude", "title":"Claude Code", "feeds":"Local usage logs",
                 "help":"Claude Code usage is read from local session logs. No account token is required."},
             {"kind":"services", "title":"Service health", "feeds":"Connected providers",
@@ -2153,9 +2150,13 @@ fn rule_host_options(hosts: &[Host], current: Option<&str>) -> Vec<Value> {
 /// the index a row was rendered with addresses the same rule the frontend is
 /// looking at. A row whose index no longer exists is a rejected edit, not a
 /// misdirected one — see [`apply_rule_edit`].
-fn rules_section(rules: &[ContainerGroupRule], hosts: &[Host]) -> Value {
+pub(crate) fn rules_section(rules: &[ContainerGroupRule], hosts: &[Host]) -> Value {
     json!({
         "heading": "Container Group Rules",
+        // Saved on the click and outside the dashboard's undo history, because
+        // the list is not one tile's: rule 4 of "Where a setting lives".
+        "shared": "Shared \u{b7} saved immediately \u{b7} applies everywhere containers appear: every Containers tile and the Full view.",
+        "firstMatch": "Order is the contract: the first rule that matches a container decides what happens to it, so a Hide rule above a Collapse rule changes what the panel shows.",
         "addLabel": "Add Rule",
         "deleteLabel": "Delete",
         "actionLabel": "Action",
@@ -2289,7 +2290,6 @@ fn volume_choices(live: &[wire::Volume], hidden: &[String]) -> Value {
 fn hosts_tab(
     settings: &Settings,
     hosts: &[Host],
-    rules: &[ContainerGroupRule],
     stored: &StoredSecrets,
     certificate_changed: &[Uuid],
     plain_refused: &[Uuid],
@@ -2364,10 +2364,6 @@ fn hosts_tab(
             "unpairedHelp": "This host isn't paired, and its address is neither this machine nor a Tailscale address, so the cockpit is not polling it: it never sends the token over plain HTTP anywhere else. Check its certificate and trust it, then save.",
             "help": "Fetches the certificate this address presents so you can compare its fingerprint with the one `solador-agent tls-fingerprint` printed on the host. Nothing is trusted until you press Trust.",
         },
-        // Same tab as the original's, and for the same reason: the rules are scoped by
-        // host, so the picker that names one belongs beside the list that
-        // defines them.
-        "rules": rules_section(rules, hosts),
     })
 }
 
@@ -2903,7 +2899,6 @@ mod tests {
         let tab = hosts_tab(
             &settings,
             &hosts,
-            &[],
             &stored,
             &[],
             &[],
@@ -2935,7 +2930,6 @@ mod tests {
         let tab = hosts_tab(
             &settings,
             std::slice::from_ref(&host),
-            &[],
             &stored,
             &[],
             &[],
@@ -2971,10 +2965,10 @@ mod tests {
         let (settings, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let refused = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &[], &stored, &[], &refused, no_agent());
+        let tab = hosts_tab(&settings, &hosts, &stored, &[], &refused, no_agent());
         assert_eq!(tab["rows"][0]["plainRefused"], false);
         assert_eq!(tab["rows"][1]["plainRefused"], true);
-        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[], no_agent());
+        let calm = hosts_tab(&settings, &hosts, &stored, &[], &[], no_agent());
         assert_eq!(calm["rows"][1]["plainRefused"], false);
         assert!(tab["pair"]["unpairedHelp"].is_string());
     }
@@ -3056,14 +3050,14 @@ mod tests {
         let (settings, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let changed = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &[], &stored, &changed, &[], no_agent());
+        let tab = hosts_tab(&settings, &hosts, &stored, &changed, &[], no_agent());
         assert_eq!(tab["rows"][0]["pinned"], true);
         // Only a *pinned* host can have a changed certificate: the second is
         // in the live set but unpinned, so it must not offer to replace a pin
         // it does not have.
         assert_eq!(tab["rows"][0]["certificateChanged"], true);
         assert_eq!(tab["rows"][1]["certificateChanged"], false);
-        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[], no_agent());
+        let calm = hosts_tab(&settings, &hosts, &stored, &[], &[], no_agent());
         assert_eq!(calm["rows"][0]["certificateChanged"], false);
         assert_eq!(tab["rows"][0]["fingerprint"], "45:39:AF");
         assert_eq!(tab["rows"][1]["pinned"], false);
@@ -3398,7 +3392,6 @@ mod tests {
             settings,
             hosts,
             repos,
-            rules: &[],
             layout: None,
             vendors: &[],
             accounts: &[],
@@ -3410,19 +3403,12 @@ mod tests {
         }
     }
 
-    /// [`view`] over one container-rule list — every rules test's shape.
+    /// [`rules_section`] over one container-rule list -- every rules test's
+    /// shape. The editor is the dashboard's now (#613), so it is read from the
+    /// section itself, not from the Settings view.
     fn rules_view(rules: &[ContainerGroupRule]) -> Value {
-        let (settings, hosts, repos, stored) = sample();
-        view(
-            StoreSections {
-                rules,
-                ..sections(&settings, &hosts, &repos)
-            },
-            &stored,
-            &facts(),
-            CrashFacts::default(),
-            no_updates(),
-        )
+        let (_, hosts, _, _) = sample();
+        json!({ "hosts": { "rules": rules_section(rules, &hosts) } })
     }
 
     /// [`view`] over one stored layout — every Layout-tab test's shape. No

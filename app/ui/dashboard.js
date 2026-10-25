@@ -493,6 +493,7 @@
       const draft = formTile(), choices = q(".db-repo-choices");
       if (choices && draft) fillRepoChoices(choices, source(draft.source), draft.selectedRepos);
       if (draft) fillGroupLabels(q("[data-group-labels]"), source(draft.source));
+      if (draft) fillContainerRules(q("[data-container-rules]"), source(draft.source));
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
@@ -678,6 +679,94 @@
     }));
     syncGroupLabelAdd(box);
   }
+  // The container group rules are shared by every Containers view, not this
+  // tile (#613): the same shape as the runner group labels above. Every control
+  // is a plain control with no name, so formTile() never reads a rule into the
+  // draft, and each edit saves on the change, through Rust, outside Apply.
+  // Rows are addressed by index in the persisted list, which is also the order
+  // the rule engine matches in.
+  function fillContainerRules(box, s) {
+    const r = s?.ruleEditor;
+    if (!box || !r) return;
+    const disabled = busy || !window.__TAURI__;
+    const signature = JSON.stringify([r, disabled]);
+    if (box.signature === signature) return;
+    box.signature = signature;
+    if (!box.childElementCount) {
+      // Typing in a rule is not a reason to re-ask the tile preview.
+      box.addEventListener("input", (event) => event.stopPropagation());
+      box.append(node("legend"), node("p", "db-sub db-rules-first"), node("div", "db-rule-rows"),
+        node("p", "db-sub db-rules-empty"), node("div", "db-rule-actions"),
+        node("p", "db-sub db-rules-help"), node("p", "db-muted db-rules-shared"));
+    }
+    box.dataset.disabled = String(disabled);
+    text(box.querySelector("legend"), r.heading);
+    text(box.querySelector(".db-rules-first"), r.firstMatch);
+    text(box.querySelector(".db-rules-help"), r.help);
+    text(box.querySelector(".db-rules-shared"), r.shared);
+    const empty = box.querySelector(".db-rules-empty");
+    text(empty, L("noContainerRules"));
+    empty.hidden = r.rows.length > 0;
+    const field = (control, title, field) => {
+      control.title = title;
+      control.setAttribute("aria-label", title);
+      control.dataset.field = field;
+      control.disabled = disabled;
+      return control;
+    };
+    const textField = (value, placeholder, title, name) => {
+      const input = node("input");
+      input.type = "text";
+      input.value = value;
+      input.placeholder = placeholder;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      return field(input, title, name);
+    };
+    const picker = (choices, value, title, name) => {
+      const el = node("select");
+      for (const choice of choices) {
+        const option = node("option", "", choice.label);
+        option.value = choice.value;
+        option.selected = choice.value === value;
+        el.append(option);
+      }
+      return field(el, title, name);
+    };
+    box.querySelector(".db-rule-rows").replaceChildren(...r.rows.map((rule) => {
+      const row = node("div", "db-rule-row");
+      row.dataset.containerRule = String(rule.index);
+      const set = (name, control) => control.addEventListener("change", () =>
+        containerRuleChange("container_rule_set", { index: rule.index, field: name, value: control.value },
+          `[data-container-rule="${rule.index}"] [data-field="${name}"]`));
+      const action = picker(r.actions, rule.action, r.actionLabel, "action");
+      const pattern = textField(rule.pattern, r.patternPrompt, r.patternLabel, "pattern");
+      set("action", action);
+      set("pattern", pattern);
+      const controls = [action, pattern];
+      // Whether a rule has an aggregate to name or count is Rust's
+      // `collapseOnly`, not a comparison against an action string typed here.
+      if (rule.collapseOnly) {
+        const label = textField(rule.label, r.labelPrompt, r.labelLabel, "label");
+        // A text field, not type="number": empty means "no expectation", and
+        // Rust decides what the string means.
+        const expected = textField(rule.expected, r.expectedPrompt, r.expectedLabel, "expected");
+        set("label", label);
+        set("expected", expected);
+        controls.push(node("span", "db-rule-arrow", r.arrow), label, expected);
+      }
+      const host = picker(rule.hostOptions, rule.host, r.hostLabel, "host");
+      set("host", host);
+      const remove = actionLabel(button(r.deleteLabel, "container-rule-remove"), r.heading);
+      remove.dataset.index = String(rule.index);
+      remove.disabled = disabled;
+      row.append(...controls, host, remove);
+      return row;
+    }));
+    const add = button(r.addLabel, "container-rule-add");
+    add.disabled = disabled;
+    box.querySelector(".db-rule-actions").replaceChildren(add);
+  }
   // A hint, not the validation: Rust trims, refuses blanks and duplicates, in
   // its own words.
   function syncGroupLabelAdd(box) {
@@ -753,6 +842,12 @@
         groupLabels.dataset.groupLabels = "";
         fillGroupLabels(groupLabels, s);
         fields.append(groupLabels);
+      }
+      if (t.source === "containers") {
+        const rules = node("fieldset", "db-rules");
+        rules.dataset.containerRules = "";
+        fillContainerRules(rules, s);
+        fields.append(rules);
       }
       if (t.source === "ghWorkflows") {
         const repos = node("fieldset", "db-repo-selection");
@@ -1393,10 +1488,19 @@
   // asked again, because a regrouping changes what the tile would show.
   // `fallback` names where focus goes when `selector` is gone or disabled —
   // a label moved to an end disables the arrow that moved it.
-  async function groupLabelChange(command, args, selector, fallback = null) {
+  function groupLabelChange(command, args, selector, fallback = null) {
+    return sharedListChange(command, args, selector, fallback,
+      { scope: "[data-group-labels]", failed: "groupLabelsFailed", home: "#dashboard-group-label" });
+  }
+  // The container rules save the same way (#613).
+  function containerRuleChange(command, args, selector, fallback = null) {
+    return sharedListChange(command, args, selector, fallback,
+      { scope: "[data-container-rules]", failed: "containerRulesFailed", home: '[data-action="container-rule-add"]' });
+  }
+  async function sharedListChange(command, args, selector, fallback, { scope, failed, home }) {
     if (!window.__TAURI__ || busy) return false;
     const inspector = active,
-      restoreFocus = !!document.activeElement?.closest("[data-group-labels]");
+      restoreFocus = !!document.activeElement?.closest(scope);
     status("");
     acknowledgementVersion++;
     busy = true;
@@ -1405,18 +1509,18 @@
     try {
       const next = await callRust(command, { ...args, width: root.clientWidth || innerWidth });
       if (!next?.layout?.tiles || !Array.isArray(next.sources) || !next.labels)
-        throw new Error(L("groupLabelsFailed"));
+        throw new Error(L(failed));
       model = next;
       saved = true;
     } catch (error) {
       if (active === inspector && mode === "overview")
-        status((typeof error === "string" ? error : error?.message) || L("groupLabelsFailed"), true, selector);
+        status((typeof error === "string" ? error : error?.message) || L(failed), true, selector);
     } finally {
       busy = false;
       render(true);
       if (saved && active === inspector) schedulePreview();
       if (restoreFocus && active === inspector && document.activeElement === document.body)
-        [selector, fallback, "#dashboard-group-label"]
+        [selector, fallback, home]
           .map((s) => s && q(`${s}:not(:disabled)`))
           .find(Boolean)?.focus({ preventScroll: true });
     }
@@ -1581,6 +1685,16 @@
     }
     if (action === "volume-hidden") {
       await setVolumeHidden(b);
+      return;
+    }
+    if (action === "container-rule-add") {
+      await containerRuleChange("container_rule_add", {}, '[data-action="container-rule-add"]',
+        "[data-container-rule]:last-of-type [data-field=\"pattern\"]");
+      return;
+    }
+    if (action === "container-rule-remove") {
+      await containerRuleChange("container_rule_remove", { index: Number(b.dataset.index) },
+        '[data-action="container-rule-add"]');
       return;
     }
     if (action === "group-label-add") {
