@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 // crate's; this module only decides how its findings are painted.
 use servicestatus::discover::{self, Component, ProbeError};
 use store::settings::{
-    interval_label, CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES, ROW_GAP_PX_RANGE,
+    interval_label, PanelInterval, CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES, ROW_GAP_PX_RANGE,
 };
 use store::{
     ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
@@ -851,6 +851,7 @@ pub fn view(
         ),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
+        "planUsage": plan_usage_section(settings),
         "services": services_tab(vendors),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(updates),
@@ -948,7 +949,20 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             ("OpenClaw connection", &["openclaw"])
         }
         "claudeUsage" => {
-            if route.scope == "claude" || resource.is_some_and(|id| id.starts_with("claude-")) {
+            // Plan rows first: their ids also start with `claude-`, and they
+            // belong to the plan opt-in, not to the log rollups.
+            let plan = resource
+                .and_then(|id| id.split_once(':'))
+                .and_then(|(section, _)| match section {
+                    crate::plan_usage::CLAUDE_ID => Some("claudePlan"),
+                    crate::plan_usage::CODEX_ID => Some("codexPlan"),
+                    _ => None,
+                });
+            if let Some(kind) = plan {
+                target = editor(kind, None);
+            } else if route.scope == "claude"
+                || resource.is_some_and(|id| id.starts_with("claude-"))
+            {
                 target = editor("claude", None);
             } else if let Some((provider, _)) = resource.and_then(|id| id.split_once(':')) {
                 if ["neon", "sentry", "vercel"].contains(&provider) {
@@ -957,10 +971,17 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             }
             (
                 "Usage connections",
-                if route.scope == "providers" {
-                    &["neon", "sentry", "vercel"]
-                } else {
-                    &["neon", "sentry", "vercel", "claude"]
+                match route.scope.as_str() {
+                    "providers" => &["neon", "sentry", "vercel"],
+                    "plans" => &["claudePlan", "codexPlan"],
+                    _ => &[
+                        "neon",
+                        "sentry",
+                        "vercel",
+                        "claude",
+                        "claudePlan",
+                        "codexPlan",
+                    ],
                 },
             )
         }
@@ -1100,6 +1121,34 @@ fn connections_section(
             ));
         }
     }
+    // A plan opt-in is a connection only once it is on. Off, it is offered in
+    // the catalog and claims nothing here.
+    for (kind, title, holder, on) in [
+        (
+            "claudePlan",
+            "Claude plan limits",
+            "Claude Code's sign-in",
+            s.claude_plan_usage_enabled,
+        ),
+        (
+            "codexPlan",
+            "Codex plan limits",
+            "Codex's sign-in",
+            s.codex_plan_usage_enabled,
+        ),
+    ] {
+        if on {
+            rows.push(row(
+                kind.into(),
+                kind,
+                None,
+                title,
+                holder.into(),
+                "Usage",
+                status("On", false),
+            ));
+        }
+    }
     if !s.azure_storage_account.is_empty() || !s.azure_cost_container.is_empty() {
         let complete = !s.azure_storage_account.is_empty() && !s.azure_cost_container.is_empty();
         rows.push(row(
@@ -1176,6 +1225,8 @@ fn connections_section(
             {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
             {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
+            {"kind":"claudePlan", "title":"Claude plan limits", "feeds":"The Claude plan's own 5-hour and weekly limits, from Claude Code's sign-in"},
+            {"kind":"codexPlan", "title":"Codex plan limits", "feeds":"The Codex plan's own 5-hour and weekly limits, from Codex's sign-in"},
         ],
         "automaticHeading": "Automatic sources",
         "automatic": [
@@ -1277,6 +1328,44 @@ fn crash_reporting_section(settings: &Settings, crash: CrashFacts) -> Value {
         "value": enabled,
         "status": status,
         "help": "Off by default. When on, a panic is reported with its stack trace after scrubbing: host addresses, host names, tokens, absolute paths and local variables are removed before anything leaves this machine. No usage or analytics data is ever sent.",
+    })
+}
+
+/// The two plan opt-ins: what each reads, whether it is on, and what is never
+/// done with the sign-in.
+///
+/// Saves on the spot like [`crash_reporting_section`], for the same reason:
+/// consent is not a draft. The help is specific about the source because it
+/// is someone else's credential: the operator should know exactly which file
+/// or keychain item is read, and that it is only ever read.
+fn plan_usage_section(settings: &Settings) -> Value {
+    let cadence = interval_label(settings.panel_interval_secs(PanelInterval::PlanUsage));
+    let entry = |enabled: bool, label: &str, holder: &str, help: &str| {
+        json!({
+            "label": label,
+            "value": enabled,
+            "status": if enabled {
+                format!("On. Reads {holder}'s sign-in every {cadence}.")
+            } else {
+                "Off. Nothing is read.".to_owned()
+            },
+            "help": help,
+        })
+    };
+    json!({
+        "heading": "Plan limits",
+        "claude": entry(
+            settings.claude_plan_usage_enabled,
+            "Read Claude Code's sign-in",
+            "Claude Code",
+            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the Usage panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
+        ),
+        "codex": entry(
+            settings.codex_plan_usage_enabled,
+            "Read Codex's sign-in",
+            "Codex",
+            "Off by default. When on, Solador reads Codex's saved ChatGPT sign-in on each poll ($CODEX_HOME/auth.json, else ~/.codex/auth.json), sends one read-only request for the plan's limits to ChatGPT, and drops the token. It never stores, refreshes or changes the sign-in, and never starts Codex. A Codex set to keep its sign-in in the OS keyring has no file, and reads as not signed in. The endpoint is undocumented and may change.",
+        ),
     })
 }
 
@@ -2611,6 +2700,24 @@ mod tests {
             route("claudeUsage", "claude", &data)["editor"]["kind"],
             "claude"
         );
+        // A plan row opens its own opt-in, not the log rollups' source, even
+        // though both ids start with `claude-`.
+        assert_eq!(
+            route("claudeUsage", "item:claude-plan:CLAUDE PLAN (5H)", &data)["editor"]["kind"],
+            "claudePlan"
+        );
+        assert_eq!(
+            route("claudeUsage", "item:codex-plan:CODEX PLAN (WEEK)", &data)["editor"]["kind"],
+            "codexPlan"
+        );
+        assert_eq!(
+            route("claudeUsage", "item:claude-today", &data)["editor"]["kind"],
+            "claude"
+        );
+        assert_eq!(
+            route("claudeUsage", "plans", &data)["kinds"],
+            json!(["claudePlan", "codexPlan"])
+        );
         assert_eq!(
             route("sentryCrons", "active", &data)["editor"]["kind"],
             "sentry"
@@ -3251,8 +3358,83 @@ mod tests {
             &facts(),
         );
         assert_eq!(vm["connections"]["rows"], json!([]));
-        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 8);
+        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 10);
         assert_eq!(vm["connections"]["automatic"].as_array().unwrap().len(), 3);
+    }
+
+    /// The two plan opt-ins are offered in the catalog, and only become a
+    /// connection row once the operator has turned them on. A default store
+    /// claims no plan source.
+    #[test]
+    fn plan_limits_are_offered_off_and_become_a_row_only_once_on() {
+        let off = view_of(
+            &Settings::default(),
+            &[],
+            &[],
+            &StoredSecrets::default(),
+            &facts(),
+        );
+        let kinds: Vec<&str> = off["connections"]["catalog"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"claudePlan") && kinds.contains(&"codexPlan"));
+        assert_eq!(off["connections"]["rows"], json!([]));
+        assert_eq!(off["planUsage"]["claude"]["value"], false);
+        assert_eq!(
+            off["planUsage"]["claude"]["status"],
+            "Off. Nothing is read."
+        );
+
+        let settings = Settings {
+            claude_plan_usage_enabled: true,
+            ..Settings::default()
+        };
+        let on = view_of(&settings, &[], &[], &StoredSecrets::default(), &facts());
+        let rows = on["connections"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["kind"], "claudePlan");
+        assert_eq!(rows[0]["status"]["attention"], false);
+        assert_eq!(on["planUsage"]["claude"]["value"], true);
+        assert_eq!(
+            on["planUsage"]["claude"]["status"],
+            "On. Reads Claude Code's sign-in every 15 minutes."
+        );
+        assert_eq!(on["planUsage"]["codex"]["value"], false);
+    }
+
+    /// The help says what is read, that nothing is stored or refreshed, and
+    /// that the endpoint is not a documented one.
+    #[test]
+    fn plan_limit_help_names_the_source_and_what_is_never_done_with_it() {
+        let vm = view_of(
+            &Settings::default(),
+            &[],
+            &[],
+            &StoredSecrets::default(),
+            &facts(),
+        );
+        let claude = vm["planUsage"]["claude"]["help"].as_str().unwrap();
+        for needle in [
+            "Claude Code-credentials",
+            ".credentials.json",
+            "never stores",
+            "undocumented",
+        ] {
+            assert!(claude.contains(needle), "{needle}: {claude}");
+        }
+        let codex = vm["planUsage"]["codex"]["help"].as_str().unwrap();
+        for needle in [
+            "auth.json",
+            "CODEX_HOME",
+            "never stores",
+            "keyring",
+            "undocumented",
+        ] {
+            assert!(codex.contains(needle), "{needle}: {codex}");
+        }
     }
 
     #[test]

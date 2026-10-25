@@ -413,10 +413,86 @@ test("an unconfigured provider contributes no section at all", async ({ page, ba
   expect(usage.providers).toEqual([]);
   await expect(page.locator("#usageBody .pv-section[data-provider]")).toHaveCount(0);
 
-  // And the Claude half says what state it is in, in Rust's words.
-  await expect(page.locator("#usageBody .pv-message")).toHaveText(usage.message.text);
+  // And the Claude half says what state it is in, in Rust's words. The panel's
+  // own message is the body's direct child; the plans' setup line is not.
+  await expect(page.locator("#usageBody > .pv-message")).toHaveText(usage.message.text);
   await expect(page.locator("#usageTrailing")).toHaveText("");
   await expect(page.locator("#usageStale")).toHaveText(usage.footer.text);
+});
+
+const planSection = (page, id) => page.locator(`#usageBody .pv-section[data-plan="${id}"]`);
+
+test("each plan that is on paints its windows as rows, each with its own bar", async ({ page, baseURL }) => {
+  const usage = await gotoWithUsage(page, baseURL);
+  expect(usage.plans.length, "the measured fixture has both plans on").toBe(2);
+  expect(usage.plansMessage, "and so no setup line").toBeNull();
+  await expect(page.locator("#usageBody .usage-plans > .pv-message")).toHaveCount(0);
+
+  for (const plan of usage.plans) {
+    const section = planSection(page, plan.id);
+    // Inside the rollups' block, after the projects: a reading of the plan, not
+    // a provider account, so never under `.usage-providers` and never counted
+    // by `data-provider`.
+    await expect(page.locator(`#usageBody .usage-main .usage-plans [data-plan="${plan.id}"]`)).toHaveCount(1);
+    await expect(section).not.toHaveAttribute("data-provider");
+    const rows = section.locator(".pv-row.plan");
+    await expect(rows).toHaveCount(plan.rows.length);
+    for (const [i, row] of plan.rows.entries()) {
+      await expect(rows.nth(i).locator(".lbl")).toHaveText(row.label);
+      await expect(rows.nth(i).locator(".val")).toHaveText(row.value);
+      await expect(rows.nth(i).locator(".val")).toHaveCSS("color", rgb(row.valueColor));
+    }
+    // One bar per window that has one, in Rust's colour and width.
+    const bars = plan.rows.filter((row) => row.bar);
+    await expect(section.locator(".pbar")).toHaveCount(bars.length);
+    for (const [i, row] of bars.entries()) {
+      const fill = section.locator(".pbar > span").nth(i);
+      await expect(fill).toHaveCSS("background-color", rgb(row.bar.color));
+      // The browser normalises `34.0%` to `34%`, so compare the number.
+      const width = await fill.evaluate((el) => parseFloat(el.style.width));
+      expect(width).toBeCloseTo(row.bar.fraction * 100, 1);
+    }
+  }
+});
+
+test("a plan window with no bar draws none, rather than an empty one", async ({ page, baseURL }) => {
+  // `bar: null` is Rust's "nothing honest to draw" (no reading yet, or a reset
+  // that has passed since the read). A track drawn at zero would read as an
+  // unused plan.
+  const healthy = await gotoWithUsage(page, baseURL);
+  const id = healthy.plans[0].id;
+  const withoutBars = {
+    ...healthy,
+    plans: healthy.plans.map((plan) => ({
+      ...plan,
+      rows: plan.rows.map((row) => ({ ...row, bar: null })),
+    })),
+  };
+  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), withoutBars);
+  await expect(planSection(page, id).locator(".pv-row.plan")).toHaveCount(healthy.plans[0].rows.length);
+  await expect(page.locator("#usageBody .usage-plans .pbar")).toHaveCount(0);
+});
+
+test("plans that are off are one muted setup line, not rows of dashes", async ({ page, baseURL }) => {
+  const usage = await gotoWithUsage(page, baseURL, "sample-usage-empty.json");
+  expect(usage.plans).toEqual([]);
+  expect(usage.plansMessage.text, "the empty fixture is a store that never opted in").toBeTruthy();
+
+  await expect(page.locator("#usageBody .pv-section[data-plan]")).toHaveCount(0);
+  const line = page.locator("#usageBody .usage-plans > .pv-message");
+  await expect(line).toHaveText(usage.plansMessage.text);
+  await expect(line).toHaveCSS("color", rgb(usage.plansMessage.color));
+
+  // One plan on and one off: the section for the one, the line for the other.
+  const healthy = await fixture(baseURL, "sample-usage.json");
+  const mixed = {
+    ...healthy,
+    plans: healthy.plans.slice(0, 1),
+    plansMessage: { text: "Codex plan limits are off — turn on in Settings", color: usage.plansMessage.color },
+  };
+  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), mixed);
+  await expect(page.locator("#usageBody .pv-section[data-plan]")).toHaveCount(1);
+  await expect(line).toHaveText(mixed.plansMessage.text);
 });
 
 /**

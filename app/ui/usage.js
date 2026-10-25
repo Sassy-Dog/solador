@@ -1,5 +1,7 @@
-// The Usage panel: Claude Code token rollups, plus a Neon and a Sentry section
-// when those providers are configured. Same discipline as every other panel
+// The Usage panel: Claude Code token rollups, the Claude and Codex plans' own
+// limit windows when the operator has turned those on, plus a Neon, Sentry and
+// Vercel section when those providers are configured. Same discipline as every
+// other panel
 // here: each string, colour and figure arrives from Rust
 // (`app/src-tauri/src/usage.rs`), and this file does layout, wiring, and
 // nothing else.
@@ -124,6 +126,27 @@ function providerNode(provider) {
   return el;
 }
 
+/**
+ * One plan section: a divider, then each window as a row with its own bar.
+ *
+ * A bar per row rather than one per section, because each window is its own
+ * limit (the 5-hour session and the week fill independently). `bar` is `null`
+ * when Rust has nothing honest to draw: no reading yet, or a window whose reset
+ * has passed since it was read. `data-plan`, not `data-provider`: a plan is
+ * not a provider account, and the suite counts providers by that attribute.
+ */
+function planNode(plan) {
+  const el = node("div", "pv-section");
+  el.dataset.plan = plan.id;
+  el.appendChild(node("hr", "pv-divider"));
+  for (const row of plan.rows || []) {
+    el.appendChild(valueRow(row, "plan"));
+    const bar = barNode(row.bar);
+    if (bar) el.appendChild(bar);
+  }
+  return el;
+}
+
 function renderUsage(payload) {
   $u("usageTitle").textContent = payload.title;
   $u("usageTrailing").textContent = payload.trailing || "";
@@ -155,6 +178,19 @@ function renderUsage(payload) {
     for (const item of payload.projects.rows || []) section.appendChild(itemRow(item));
     main.appendChild(section);
   }
+
+  // The plans' limit windows, after the rollups: a reading of the plan, not of
+  // this machine's logs, so it is its own block. A plan that is off contributes
+  // no section; Rust folds every plan that is off into one muted setup line, so
+  // turning both off costs one line, not two rows of dashes.
+  const plans = node("div", "usage-plans");
+  if (payload.plansMessage) {
+    const line = node("p", "pv-message", payload.plansMessage.text);
+    line.style.color = payload.plansMessage.color;
+    plans.appendChild(line);
+  }
+  for (const plan of payload.plans || []) plans.appendChild(planNode(plan));
+  if (plans.childElementCount) main.appendChild(plans);
 
   if (main.childElementCount) children.push(main);
 

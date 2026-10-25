@@ -142,7 +142,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             }
             if (command === "panel_interval_save" || command === "panel_interval_clear") {
               if (window.__FAIL_CADENCE__) throw "Could not save the poll cadence.";
-              const c = original.sources.map(x => x.cadence).find(x => x?.id === args.panel);
+              const c = original.sources.flatMap(x => x.cadences || []).find(x => x.id === args.panel);
               if (command === "panel_interval_save") {
                 // The floor is Rust's (`PanelInterval::check_secs`); this double
                 // only refuses the way it does, with a sentence naming the floor.
@@ -2342,25 +2342,29 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
   expect(await opened()).toHaveLength(1);
 });
 
-// The poll cadence moved from Settings into the Configure of the tile(s) it
-// feeds (#614). Four sources carry one; Machines does not.
+// The poll cadences moved from Settings into the Configure of the tile(s) they
+// feed (#614). Four sources carry them, Usage two (its metered providers and
+// its plans' limit windows); Machines carries none.
 const CADENCE_SOURCES = ["containers", "claudeUsage", "azureCost", "sentryCrons"];
-async function configureCadence(page, source) {
+const cadencesOf = (model, id) => model.sources.find(s => s.id === id).cadences;
+async function configureCadence(page, source, panel = null) {
   await page.locator('#dashboardOverview [data-action="edit"]').click();
   await page.locator('#dashboardOverview [data-action="catalog"]').click();
   await page.locator(`[data-action="add"][data-id="${source}"]`).click();
-  return page.locator("[data-cadence]");
+  return page.locator(panel ? `[data-cadence="${panel}"]` : "[data-cadence]");
 }
 
 test("each source's Configure shows its poll cadence with the floor, the reason and the shared note (#614)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  const cadences = CADENCE_SOURCES.map(id => [id, model.sources.find(s => s.id === id).cadence]);
-  expect(cadences.every(([, c]) => c)).toBe(true);
-  expect(model.sources.find(s => s.id === "hosts").cadence).toBeUndefined();
+  expect(CADENCE_SOURCES.every(id => cadencesOf(model, id)?.length)).toBe(true);
+  expect(cadencesOf(model, "hosts")).toBeUndefined();
+  expect(cadencesOf(model, "claudeUsage").map(c => c.id)).toEqual(["usage_providers", "plan_usage"]);
+  const cadences = CADENCE_SOURCES.flatMap(id => cadencesOf(model, id).map(c => [id, c]));
   expect(cadences.some(([, c]) => c.configured) && cadences.some(([, c]) => !c.configured),
     "the fixture needs both renderings").toBe(true);
   for (const [id, c] of cadences) {
-    const section = await configureCadence(page, id);
+    const section = await configureCadence(page, id, c.id);
+    await expect(page.locator("[data-cadence]")).toHaveCount(cadencesOf(model, id).length);
     await expect(section.locator("legend")).toHaveText(c.heading);
     await expect(section.locator("input")).toHaveValue(String(c.value));
     await expect(section.locator("input")).toHaveAttribute("min", String(c.min));
@@ -2378,7 +2382,7 @@ test("each source's Configure shows its poll cadence with the floor, the reason 
 
 test("a valid cadence saves through panel_interval_save on the click, never through the tile's Apply (#614)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  const c = model.sources.find(s => s.id === "containers").cadence;
+  const [c] = cadencesOf(model, "containers");
   const section = await configureCadence(page, "containers");
   await section.locator("input").fill("45");
   await section.locator('[data-action="cadence-apply"]').click();
@@ -2393,7 +2397,7 @@ test("a valid cadence saves through panel_interval_save on the click, never thro
 
 test("a below-floor cadence is refused with the floor's reason, not clamped, and the typed value stays (#614)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  const c = model.sources.find(s => s.id === "azureCost").cadence;
+  const [c] = cadencesOf(model, "azureCost");
   const section = await configureCadence(page, "azureCost");
   await section.locator("input").fill("30");
   await section.locator('[data-action="cadence-apply"]').click();
@@ -2430,7 +2434,7 @@ test("a negative cadence is sent as 0 so Rust refuses it in the floor's words (#
 
 test("a failed cadence save says so beside the section, keeps the typed value and the status (#614)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  const c = model.sources.find(s => s.id === "containers").cadence;
+  const [c] = cadencesOf(model, "containers");
   await page.evaluate(() => { window.__FAIL_CADENCE__ = true; });
   const section = await configureCadence(page, "containers");
   await section.locator("input").fill("45");
@@ -2439,4 +2443,25 @@ test("a failed cadence save says so beside the section, keeps the typed value an
   await expect(page.locator("[data-cadence] button .db-action-error")).toHaveCount(0);
   await expect(section.locator("input")).toHaveValue("45");
   await expect(section.locator(".db-cadence-status")).toHaveText(c.status);
+});
+
+test("the Usage tile's two cadences each save, and refuse, on their own box", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [providers, plans] = cadencesOf(model, "claudeUsage");
+  await configureCadence(page, "claudeUsage");
+  await expect(page.locator("[data-cadence]")).toHaveCount(2);
+  const providerBox = page.locator(`[data-cadence="${providers.id}"]`);
+  const planBox = page.locator(`[data-cadence="${plans.id}"]`);
+  // Enter applies the box it was pressed in, not the first one on the page.
+  await planBox.locator("input").fill("600");
+  await planBox.locator("input").press("Enter");
+  await expect.poll(() => commandArgs(page, "panel_interval_save"))
+    .toEqual([{ panel: plans.id, secs: 600, width: expect.any(Number) }]);
+  await expect(planBox.locator(".db-cadence-status")).toHaveText("Set to 600s.");
+  await expect(providerBox.locator(".db-cadence-status")).toHaveText(providers.status);
+  // A refusal lands beside the box it came from, never its neighbour.
+  await planBox.locator("input").fill("30");
+  await planBox.locator('[data-action="cadence-apply"]').click();
+  await expect(planBox.locator(":scope > .db-action-error")).toContainText(`${plans.min}s floor`);
+  await expect(providerBox.locator(".db-action-error")).toHaveCount(0);
 });

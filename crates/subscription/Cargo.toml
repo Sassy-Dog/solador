@@ -1,0 +1,38 @@
+[package]
+# Prefixed like `solador-usage` to stay clear of a popular crates.io name. The
+# lib below keeps the short import name.
+name = "solador-subscription"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "subscription"
+
+# APP-ONLY, like crates/hostsetup and crates/agentrelease: this is the one crate
+# that reads a credential another program owns (Claude Code's and Codex's saved
+# sign-ins). `agent/` runs unattended on servers and must never resolve it —
+# `scripts/agent-deps-guard.sh` asserts that absence.
+
+[dependencies]
+# The stock message vocabulary. A leaf crate with no dependencies of its own.
+solador-fault = { path = "../fault" }
+serde_json = { workspace = true }
+# Home directory for the two credential files (`~/.claude/.credentials.json`,
+# `~/.codex/auth.json`; `%USERPROFILE%\…` on Windows). Already a workspace
+# dependency.
+dirs = { workspace = true }
+# Same HTTP stack (and feature set) as crates/usage, so the workspace resolves
+# one reqwest and one TLS backend. No gzip: both replies are a few hundred bytes.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Reset instants and `Retry-After` dates. Without `clock`, as in crates/usage:
+# nothing here reads the wall clock — `now` is always an argument.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+# Temp dirs for the credential-file and stub-`security` tests, so no test ever
+# reads the real `~/.claude`, `~/.codex` or keychain.
+tempfile = "3"

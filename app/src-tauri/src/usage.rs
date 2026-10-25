@@ -1,5 +1,12 @@
-//! The **Usage** panel: Claude Code token rollups, plus a Neon and a Sentry
-//! section when those providers are configured.
+//! The **Usage** panel: Claude Code token rollups, the Claude and Codex
+//! **plan** windows when the operator has turned those on, and a Neon, Sentry
+//! and Vercel section when those providers are configured.
+//!
+//! The plan block is a different reading from the rollups and is never merged
+//! with them: the rollups are this machine's consumption from local logs, the
+//! plan rows a subscription's utilisation of its own limits
+//! ([`crate::plan_usage`]). It renders between the two, and its sections and
+//! setup line are their own payload keys (`plans`, `plansMessage`).
 //!
 //! Port of `ClaudeUsagePanel`. The data
 //! layer beneath it is [`usage`]; this module is the view side, and it holds to
@@ -71,6 +78,8 @@ use crate::panel::{
     attributed_freshness_payload, attributed_status_footer, merged_footer, merged_freshness,
     progress_bar, status_footer, Configured,
 };
+use crate::plan_usage::{PlanInputs, PlanSource};
+use subscription::Provider;
 
 // Re-exported so `main.rs` — where this module's name shadows the data crate's
 // — reaches the layer beneath through here rather than through a `::usage::`
@@ -317,6 +326,12 @@ pub struct UsageState {
     neon_invoice: ProviderState<NeonInvoiceSummary>,
     sentry: ProviderState<SentryUsageSummary>,
     vercel: ProviderState<VercelUsageSummary>,
+    /// The Claude plan's limit windows, behind their own opt-in. A separate
+    /// reading from `claude` above, which is this machine's log rollup: the
+    /// two must never be merged (`crate::plan_usage`).
+    claude_plan: PlanSource,
+    /// The Codex plan's limit windows, behind their own opt-in.
+    codex_plan: PlanSource,
 }
 
 impl UsageState {
@@ -381,6 +396,21 @@ impl UsageState {
 
     pub fn vercel_mut(&mut self) -> &mut ProviderState<VercelUsageSummary> {
         &mut self.vercel
+    }
+
+    #[must_use]
+    pub fn plan(&self, provider: Provider) -> &PlanSource {
+        match provider {
+            Provider::Claude => &self.claude_plan,
+            Provider::Codex => &self.codex_plan,
+        }
+    }
+
+    pub fn plan_mut(&mut self, provider: Provider) -> &mut PlanSource {
+        match provider {
+            Provider::Claude => &mut self.claude_plan,
+            Provider::Codex => &mut self.codex_plan,
+        }
     }
 }
 
@@ -655,6 +685,10 @@ fn vercel_section(
 /// panel without waiting out an hourly cadence for a number no API call is
 /// involved in.
 ///
+/// `plans` is the two plan opt-ins and their cadence, read at render time for
+/// the same reason: turning a provider off must hide its rows now, not after
+/// the next poll has dropped them.
+///
 /// `cadence_secs` is the operator's cadence for the **metered providers**
 /// (`PanelInterval::UsageProviders`), and it is what each section's clock on the
 /// panel's `freshness` line is classified against. Read at render time for the
@@ -668,6 +702,7 @@ pub fn view(
     state: &UsageState,
     quota: u64,
     rates: NeonRates,
+    plans: PlanInputs,
     cadence_secs: u64,
     now: u64,
 ) -> Value {
@@ -763,6 +798,16 @@ pub fn view(
     // above measures.
     let mut clocks: Vec<Value> = Vec::new();
     let mut providers: Vec<Value> = Vec::new();
+    // The plan block renders between the rollups and the metered providers,
+    // so its warnings and clocks join the header in that order too.
+    let plan = crate::plan_usage::view(
+        state.plan(Provider::Claude),
+        state.plan(Provider::Codex),
+        plans,
+        now,
+    );
+    warnings.extend(plan.warnings);
+    clocks.extend(plan.clocks);
     for provider in configured.into_iter().flatten() {
         providers.push(provider.section);
         warnings.push(provider.warning);
@@ -789,11 +834,17 @@ pub fn view(
         // `footer` — the line appeared and disappeared with a missed poll, and
         // in the body that cost the card a line of height (#355).
         "freshness": merged_freshness(&clocks),
+        // The plan windows, one section per provider that is on, and the one
+        // muted setup line for every provider that is off (`Null` when both
+        // are on). Off is an instruction, never the dash a failure renders.
+        "plans": plan.sections,
+        "plansMessage": plan.off_line,
         "providers": providers,
         // Any half of the panel still waiting on its first answer keeps the
         // frontend on its fast refresh. Published rather than inferred from the
         // message text, which this boundary never asks the frontend to read.
         "loading": state.claude_loading
+            || plan.loading
             || state.neon.is_loading()
             || state.sentry.is_loading()
             || state.vercel.is_loading(),
@@ -805,8 +856,8 @@ pub fn view(
 /// Which rendering `--dump-usage` should produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fixture {
-    /// Everything measured: Claude content, Neon figures + last invoice,
-    /// Sentry count + bar.
+    /// Everything measured: Claude content, both plans' windows (well inside
+    /// their limits), Neon figures + last invoice, Sentry count + bar.
     Measured,
     /// Both providers configured and answering, neither measuring anything —
     /// the em-dash path, with the quota set and the bar therefore suppressed.
@@ -839,6 +890,12 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
         }
         Fixture::Measured => {
             state.apply_claude(Some(fixture_summary()), claude_at, None);
+            // Read at the providers' clock, reset times from the render's: a
+            // stale dump moves only when the plans were read, so its rows and
+            // bars are the healthy dump's.
+            for (provider, reading) in fixture_plans(claude_at) {
+                state.plan_mut(provider).state.succeeded(reading, at, None);
+            }
             state.neon.succeeded(
                 NeonUsageSummary::Measured {
                     compute_unit_hours: 12.4,
@@ -884,6 +941,51 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
     }
     state
 }
+
+/// The fixture's plan readings, with every reset counted from `at`: green,
+/// mid-window, every reset ahead. Shown only when the dump turns the plans on
+/// ([`FIXTURE_PLANS`]).
+fn fixture_plans(at: u64) -> [(Provider, subscription::PlanUsage); 2] {
+    use subscription::{PlanUsage, PlanWindow, WindowSpan, SESSION_MINUTES, WEEK_MINUTES};
+    let reset = |secs: u64| {
+        chrono::DateTime::from_timestamp(i64::try_from(at + secs).unwrap_or(i64::MAX), 0)
+    };
+    let window = |minutes, scope: Option<&str>, used, resets_in| PlanWindow {
+        span: WindowSpan::Minutes(minutes),
+        scope: scope.map(str::to_owned),
+        used_percent: used,
+        resets_at: reset(resets_in),
+    };
+    [
+        (
+            Provider::Claude,
+            PlanUsage {
+                windows: vec![
+                    window(SESSION_MINUTES, None, 34.0, 2 * 3_600 + 14 * 60),
+                    window(WEEK_MINUTES, None, 41.0, 3 * 86_400 + 5 * 3_600),
+                ],
+            },
+        ),
+        (
+            Provider::Codex,
+            PlanUsage {
+                windows: vec![
+                    window(SESSION_MINUTES, None, 12.0, 3_600 + 40 * 60),
+                    window(WEEK_MINUTES, None, 22.0, 4 * 86_400 + 2 * 3_600),
+                ],
+            },
+        ),
+    ]
+}
+
+/// The plan opt-ins the measured dumps render with: both on, so they show the
+/// plan rows. The other dumps render with both off, as a fresh store does,
+/// which is what puts the setup line in front of the browser suite.
+pub const FIXTURE_PLANS: PlanInputs = PlanInputs {
+    claude: true,
+    codex: true,
+    cadence_secs: 15 * 60,
+};
 
 /// The Claude half of the fixture: a busy 5h window, a busier week, and four
 /// projects plus a fifth that must not render.
@@ -948,6 +1050,14 @@ mod tests {
         fixture_state(Fixture::Measured, NOW, NOW)
     }
 
+    /// The panel as every store starts: both plan opt-ins off. A local item
+    /// that shadows the glob-imported [`super::view`], so the tests written
+    /// before the plan block keep describing exactly the panel they always
+    /// did. The plan block's own tests call `super::view` with it on.
+    fn view(state: &UsageState, quota: u64, rates: NeonRates, cadence: u64, now: u64) -> Value {
+        super::view(state, quota, rates, PlanInputs::OFF, cadence, now)
+    }
+
     /// The measured fixture with Claude's walk dated `at` instead of `NOW`.
     ///
     /// The panel now has **one** warning line, so a test that advances the clock
@@ -965,6 +1075,73 @@ mod tests {
             .as_array()?
             .iter()
             .find(|s| s["id"] == id)
+    }
+
+    // MARK: plan block
+
+    /// Off is one muted setup line and no plan section; on, the measured
+    /// fixture's two plans render as their own sections, and the token
+    /// rollups are untouched either way.
+    #[test]
+    fn the_plan_block_is_its_own_reading_beside_the_rollups() {
+        let off = view(&measured(), QUOTA, RATES, CADENCE, NOW);
+        assert_eq!(off["plans"], json!([]));
+        assert_eq!(
+            off["plansMessage"]["text"],
+            "Claude and Codex plan limits are off — turn on in Settings"
+        );
+
+        let on = super::view(&measured(), QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);
+        assert!(on["plansMessage"].is_null());
+        let ids: Vec<&str> = on["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
+        );
+        assert_eq!(on["plans"][0]["rows"][0]["label"], "CLAUDE PLAN (5H)");
+        assert_eq!(on["windows"], off["windows"], "the rollups do not move");
+        assert_eq!(on["windows"][0]["label"], "5H");
+    }
+
+    /// A plan's failure reads in the header in body order: after Claude's own
+    /// line, before the metered providers'.
+    #[test]
+    fn a_plan_warning_joins_the_header_between_the_rollups_and_the_providers() {
+        let mut state = measured();
+        state.neon_mut().failed("couldn't reach Neon".into());
+        state
+            .plan_mut(Provider::Codex)
+            .state
+            .failed("Codex's sign-in has expired — run it to refresh".into());
+        let inputs = PlanInputs {
+            codex: true,
+            ..PlanInputs::OFF
+        };
+        let payload = super::view(&state, QUOTA, RATES, inputs, CADENCE, NOW);
+        let text = payload["footer"]["text"].as_str().unwrap();
+        let plan = text.find("codex-plan:").expect("plan warning");
+        let neon = text.find("neon:").expect("neon warning");
+        assert!(plan < neon, "{text}");
+    }
+
+    #[test]
+    fn a_plan_that_is_on_and_unanswered_keeps_the_panel_loading() {
+        let mut state = fixture_state(Fixture::Measured, NOW, NOW);
+        state.plan_mut(Provider::Claude).reset();
+        let inputs = PlanInputs {
+            claude: true,
+            ..PlanInputs::OFF
+        };
+        assert_eq!(
+            super::view(&state, 0, RATES, inputs, CADENCE, NOW)["loading"],
+            true
+        );
+        assert_eq!(view(&state, 0, RATES, CADENCE, NOW)["loading"], false);
     }
 
     // MARK: formatting

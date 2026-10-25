@@ -87,7 +87,7 @@ carries one splits, and Detail and Full show every runner's labels.
 | **Containers / VMs** | docker, podman and tart, locally and on every host |
 | **GitHub Repos** | running workflows, longest-running elapsed, branch and worktree counts |
 | **GitHub Runners** | your self-hosted runners, with an absence roster for the ones that should be there and aren't |
-| **Usage** | Claude Code token rollups, plus Neon, Sentry and Vercel consumption |
+| **Usage** | Claude Code token rollups, the Claude and Codex plans' own 5-hour and weekly limits (opt-in), plus Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
 | **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
 | **Services** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
@@ -119,6 +119,7 @@ Add these in **Settings**, in any order, whenever you feel like it.
 | **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY backlog column. It finds your repos itself, and derives the organizations whose runners it watches — [step-by-step walkthrough](docs/github-setup.md) |
 | **Other machines** | the [agent](agent/) running on that host, plus its address and bearer token |
 | **Usage** | a Neon org key, a Sentry `org:read` token, a Vercel token — each optional and independent |
+| **Claude and Codex plan limits** | nothing to paste: tick **Claude plan limits** or **Codex plan limits** and Solador reads that tool's own saved sign-in (on a Mac, Claude Code's keychain item, which macOS may ask you to allow; otherwise `~/.claude/.credentials.json` or `~/.codex/auth.json`). It only reads: the sign-in is never copied, stored, refreshed or changed. Both plan endpoints are undocumented and may change. Off until you tick it |
 | **Azure Cost** | a daily cost export in blob storage. There is no credential to paste: it signs each read itself with the `az` CLI you're already signed in to |
 | **Sentry Crons** | the same Sentry token as above — one credential, two panels |
 
@@ -293,8 +294,8 @@ its panel say so, not crash.
 ```
 app/src-tauri/   Tauri shell: one poll task per panel, plus the settings surface
 app/ui/          Frontend — plain HTML/CSS/JS, no bundler
-crates/          The real work: viewmodel, store, github, usage, azurecost,
-                 servicestatus, openclaw, localhost, wire, agentclient
+crates/          The real work: viewmodel, store, github, usage, subscription,
+                 azurecost, servicestatus, openclaw, localhost, wire, agentclient
 agent/           The per-host metrics agent (workspace member, Linux CI job)
 tests/frontend/  Playwright suite for app/ui
 tests/fixtures/  Wire-contract fixtures both agent/ and crates/ assert against

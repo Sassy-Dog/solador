@@ -421,7 +421,7 @@ does not fit it yet:
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates, Full view layout | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, Usage (metered providers), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
+| Poll cadence of Containers, Usage (metered providers; plan limits), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (GitHub, Services, Claude rollups) | Settings → Preferences | [#615](https://github.com/Sassy-Dog/solador/issues/615): rule 3 or rule 4, to decide |
 | CPU core rows, Row spacing | Settings → Preferences | [#616](https://github.com/Sassy-Dog/solador/issues/616): Machines tile or Full view layout, to decide |
 
@@ -434,6 +434,11 @@ account editor; Sentry usage and scheduled jobs share the Sentry editor.
 **Add connection** opens the appropriate source form. Providers with one saved
 configuration reopen that same configuration. Local monitoring, Claude Code
 logs and automatic provider status are listed separately under Automatic sources.
+**Claude plan limits** and **Codex plan limits** are in **Add connection** too:
+each is one checkbox, off in a fresh store, that lets the Usage panel read that
+tool's own saved sign-in for the plan's limit windows (see
+[the plans' own limits](#the-plans-own-limits)). Like crash reporting, the box
+saves on the click, and a plan is listed as a connection only while it is on.
 
 Configuration badges describe the available evidence: **Configured** means setup
 exists, not that the last network request succeeded. OpenClaw uses its live
@@ -562,6 +567,8 @@ app/
 │   ├── src/github/       # the Repos + GitHub Runners panels, and the local
 │   │                     #   git scan behind their LOCAL/WT columns
 │   ├── src/usage.rs      # the Usage panel: Claude tokens + Neon + Sentry
+│   ├── src/plan_usage.rs # its plan rows: the opt-in gate, each provider's
+│   │                     #   schedule, and the Claude/Codex plan sections
 │   ├── src/azure.rs      # the Azure Cost panel
 │   ├── src/openclaw.rs   # the OpenClaw panel: the device-key store, the live
 │   │                     #   session, and every string the panel paints
@@ -598,6 +605,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`localhost`](../crates/localhost) | this machine's metrics; every field the platform can decline is an `Option` |
 | [`github`](../crates/github) | the GitHub client (REST, plus one GraphQL walk for the board's Ready column): workflows, runners, roster/presence |
 | [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats |
+| [`subscription`](../crates/subscription) | the Claude and Codex plans' limit windows: reads each tool's own saved sign-in (read-only) and one undocumented usage endpoint each; app-only |
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 | [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
@@ -1328,8 +1336,24 @@ await window.__TAURI__.core.invoke("azure_cost");
     //     `freshness`. Both are the panel's, in the header; see below.
     {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}}
   ],
+  "plans": [        // one section per plan that is ON, in provider order
+    {"id": "claude-plan", "rows": [
+      {"label": "CLAUDE PLAN (5H)",   "value": "34% · resets in 2h 14m",
+       "valueColor": …, "bar": {"fraction": 0.34, "color": …}},
+      //   ^ each window carries its own bar, coloured at 70/90%; `bar` is null
+      //     with no reading yet, and on "34% · reset since read" (muted)
+      {"label": "CLAUDE PLAN (WEEK)", "value": "41% · resets in 3d 5h", …}
+      //   ^ plus a per-model weekly when the plan reports one:
+      //     "CLAUDE PLAN (WEEK · FABLE)". Before any reading, one row:
+      //     "reading…" while it loads, "—" (muted) after a failure.
+    ]},
+    {"id": "codex-plan", "rows": […]}
+  ],
+  "plansMessage": null, // or {"text": "Claude and Codex plan limits are off —
+                        //    turn on in Settings", "color": …}: ONE muted line
+                        //    naming every plan that is off
   "footer": null,   // ONE line for the panel: Claude's own (staleAfter 150s)
-                    // plus each metered section's, attributed and joined by
+                    // plus each plan's and each metered section's, attributed and joined by
                     // `merged_footer` — "⚠ neon: stale · updated 23h ago
                     // ⚠ sentry: stale · updated 23h ago"
   "freshness": null // ONE more, beside it and never folded into it: each
@@ -1364,7 +1388,10 @@ await window.__TAURI__.core.invoke("azure_cost");
 a walk of `~/.claude/projects` on the store's `refresh_interval_secs`
 (`staleAfter` 150s). Neon consumption and Sentry event stats are hourly API reads
 inside the same loop (`staleAfter` 90m — above their own cadence, so a warning
-means a stuck poller and not the gap between polls). Azure cost is its own loop
+means a stuck poller and not the gap between polls). The Claude and Codex plan
+limits are a fifth, on a loop of their own (`plan_usage_loop`, every 15 minutes
+by default, `staleAfter` twice that) and only once the operator has opted in;
+see [the plans' own limits](#the-plans-own-limits). Azure cost is its own loop
 on 4h (`azurecost::POLL_INTERVAL`, its default since the cadence became the
 operator's in [#301](https://github.com/Sassy-Dog/solador/issues/301)), because
 the export is published about once a day and the crate's fingerprint cache makes
@@ -1516,6 +1543,48 @@ Anthropic; the subscription is not one
 and must not be modelled as one, because an account id hung on these rollups
 would be an attribution invented to fill a gap — the same unknown-as-zero error
 the `Unmeasured` enums above exist to prevent, wearing a different costume.
+
+### The plans' own limits
+
+**The Claude and Codex plans publish their own limit windows, and reading them
+means reading another program's credential — so nothing does until the operator
+says so.** Each provider is a checkbox (Settings → Add connection → **Claude
+plan limits** / **Codex plan limits**), persisted as the non-secret
+`claude_plan_usage_enabled` / `codex_plan_usage_enabled` and `false` in a fresh
+store. Off, the provider is never read and never woken, and the panel shows one
+muted line for every plan that is off instead of rows of `—`. The mechanism is
+the one [stablyai/orca](https://github.com/stablyai/orca) uses, minus every
+step that could change the other tool's state:
+
+| | Claude | Codex |
+|---|---|---|
+| sign-in read | macOS keychain item `Claude Code-credentials` (account `$USER`, via `/usr/bin/security`), else `~/.claude/.credentials.json` | `$CODEX_HOME/auth.json`, else `~/.codex/auth.json` |
+| request | `GET https://api.anthropic.com/api/oauth/usage` (`anthropic-beta: oauth-2025-04-20`) | `GET https://chatgpt.com/backend-api/wham/usage` (`OpenAI-Beta: codex-1`, `ChatGPT-Account-Id`) |
+| windows | `five_hour`, `seven_day`, and any per-model weekly in `limits[]` | `rate_limit.primary_window` / `secondary_window`, named by their length |
+
+**Read-only, and never kept.** Solador never writes, refreshes or rotates either
+sign-in, and never starts `claude` or `codex` (orca's Codex RPC path spawns the
+CLI, which may rewrite `auth.json`). The token is never copied into the OS
+credential store: it is read on each poll into a redacting type, sent once, and
+dropped. **Both endpoints are undocumented**, so a change on their side reads
+like `NEON LAST INVOICE` failing: the rows read `—` and the header names the
+reason. An expired sign-in is its own sentence (`Claude Code's sign-in has
+expired — run it to refresh`), never *unreachable*, and a 429 pushes only that
+provider back, by its `Retry-After` (capped at a day).
+
+**The keychain prompt is asked for, never sprung.** Reading Claude Code's item
+from another binary may make macOS ask (whether it does is unverified; see
+`crates/subscription/src/keychain.rs`); if it does, that happens on the first
+poll after the box is ticked, never at launch on a store that did not opt in. A refusal
+parks the provider (`keychain didn't share Claude Code's sign-in — re-enable to
+retry`) until the box is unticked and ticked again, or the app restarts, so a
+refused prompt is not re-asked every 15 minutes. **Windows and Linux** have no
+keychain step: the file is the only source there, and a Codex configured to keep
+its sign-in in the OS keyring reads as not signed in.
+
+**A plan is not an account.** The reading is whichever account each tool is
+signed in as on this machine, it sits in its own rows, and it is never merged
+into the rollups above it or attributed to a `VendorAccount`.
 
 **Applied without a restart**, like the GitHub panels: saving or clearing a Neon
 key, a Sentry token, an org id or a slug wakes the usage loop *and* forces its
@@ -1989,6 +2058,7 @@ a portfolio fetch on a credential it has no use for.
 | the portfolio, the refresh interval, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | the refresh interval | …and the usage loop's Claude half, which shares that cadence |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
+| a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
@@ -2000,9 +2070,10 @@ a portfolio fetch on a credential it has no use for.
 
 **A resume is the one caller allowed to wake every loop at once**, and it is not
 a mutation. Closing a laptop suspends every poll task, so the slow loops —
-GitHub, usage (1h), Azure (4h), containers, OpenClaw — otherwise resume on their
+GitHub, usage (1h), Azure (4h), containers, OpenClaw, the plan limits — otherwise resume on their
 own schedule and the cockpit paints last night's data for up to a full interval
-after the lid opens. Containers is in that list as of
+after the lid opens. The plan loop's wake reads only a provider that is on and
+due by the wall clock, so a short nap spends no request. Containers is in that list as of
 [#301](https://github.com/Sassy-Dog/solador/issues/301): a 10s tick was too
 short to be worth waking, but its cadence is a setting now, and one stretched to
 ten minutes has exactly this problem. The rule above holds for *edits* because an edit changes
@@ -2150,14 +2221,16 @@ Two things worth knowing about this surface:
   (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
   than a preference, and Neon, Sentry and the Azure export publish on the order
   of hours or days, so each keeps a cadence of its own. Those per-panel cadences
-  — containers, the metered providers, Azure cost and Sentry crons — are the
+  — containers, the metered providers, Azure cost, Sentry crons and the Claude
+  and Codex plan limits — are the
   store's `panel_intervals`, each clamped to a floor stated beside the source it
   protects ([#300](https://github.com/Sassy-Dog/solador/issues/300)) and re-read
   by its loop every pass ([#301](https://github.com/Sassy-Dog/solador/issues/301)),
   so a change applies on the next tick. Since
   [#614](https://github.com/Sassy-Dog/solador/issues/614) the control is in the
-  Configure of the tile(s) each feeds (**Poll cadence** — Containers, Usage,
-  Azure Cost, Scheduled Jobs), not here; it was this tab's **Panel Poll Cadence**
+  Configure of the tile(s) each feeds (**Poll cadence** — Containers, Usage
+  (two: its metered providers and its plans), Azure Cost, Scheduled Jobs), not
+  here; it was this tab's **Panel Poll Cadence**
   group ([#337](https://github.com/Sassy-Dog/solador/issues/337)). It says it is
   shared by every tile of that source and the Full view, saves on the click
   (`panel_interval_save` / `panel_interval_clear`, which wake the one loop each)
@@ -2675,10 +2748,12 @@ cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage p
 #   …plus `--unmeasured` (both providers answering, neither measuring: the em
 #   dash path, with the quota set and the bar therefore suppressed),
 #   `--empty` (no summary, no provider configured) and `--stale` (the same good
-#   read, with the METERED providers' last success dated 23h back: TWO header
-#   lines, each naming both sections — one warning about the poller and one
-#   dating the figures, never joined. Claude's own rollups stay current, being
-#   on a far faster cadence).
+#   read, with the METERED providers' and the plans' last success dated 23h
+#   back: TWO header lines, each naming every section — one warning about the
+#   poller and one dating the figures, never joined. Claude's own rollups stay
+#   current, being on a far faster cadence). The measured and stale dumps have
+#   both plans on; `--unmeasured` and `--empty` have both off, so they show the
+#   plans' setup line.
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and

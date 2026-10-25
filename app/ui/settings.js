@@ -393,6 +393,28 @@ function crashReportingGroup(c) {
   return box;
 }
 
+/** One plan opt-in: a checkbox that reads another app's sign-in only while it
+ *  is ticked.
+ *
+ *  Saves on change, like `crashReportingGroup` and for its reason: this is
+ *  consent to read someone else's credential, and an unpressed Apply is no
+ *  reason to keep reading after the box is unticked. The status and help are
+ *  Rust's sentences; whether the reading succeeded is the Usage panel's to say,
+ *  not this group's. `provider` is the command's own vocabulary
+ *  (`claude` / `codex`), never a label. */
+function planUsageGroup(plans, provider) {
+  const p = plans[provider];
+  const box = group(plans.heading);
+  const toggle = checkbox(p.value);
+  toggle.addEventListener("change", () =>
+    mutate("settings_set_plan_usage", { provider, enabled: toggle.checked })
+  );
+  box.appendChild(field(`plan-usage-${provider}`, p.label, toggle));
+  box.appendChild(node("p", "help plan-status", p.status));
+  box.appendChild(help(p.help));
+  return box;
+}
+
 /** One panel's row in the Layout editor: its title, a width picker, and the
  *  two buttons that walk it along the order.
  *
@@ -1930,6 +1952,8 @@ function connectionEditor() {
     const hosts = S.view.hosts;
     content = [help(entry.help)];
   } else if (entry.kind === "claude") content = [help(entry.help)];
+  else if (entry.kind === "claudePlan") content = [planUsageGroup(S.view.planUsage, "claude")];
+  else if (entry.kind === "codexPlan") content = [planUsageGroup(S.view.planUsage, "codex")];
   else if (entry.kind === "services") {
     const add = button(t.addLabel, "connection-add");
     add.addEventListener("click", () => openConnection(t.catalog.find(item => item.kind === "vendor")));

@@ -58,6 +58,10 @@ solador-agentrelease = { path = "../../crates/agentrelease" }
 # hand-off socket this process serves it on (`src/handoff.rs`). App-only, like
 # agentrelease — `agent/` must never resolve it (`scripts/agent-deps-guard.sh`).
 solador-hostsetup = { path = "../../crates/hostsetup" }
+# The Usage panel's plan rows: reads Claude Code's and Codex's saved sign-ins,
+# read only and only behind the Settings opt-in (`src/plan_usage.rs`). App-only
+# — `agent/` must never resolve it (`scripts/agent-deps-guard.sh`).
+solador-subscription = { path = "../../crates/subscription" }
 # The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
 # the panel layer speaks the same type rather than converting at every call.
 # Same pin as crates/github's, so one chrono resolves for the workspace.

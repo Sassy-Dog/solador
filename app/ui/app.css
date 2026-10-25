@@ -34,7 +34,7 @@
      `.card`, `.panel` and `.group` keep their literal 10, and so do the
      `gap:10px 24px` grids on `#containersBody`/`#reposBody`/`#usageBody`/
      `#azureBody` and the block wrappers inside them (`.usage-main`,
-     `.usage-providers`, `.az-main`). Every one of those spaces SECTIONS,
+     `.usage-plans`, `.usage-providers`, `.az-main`). Every one of those spaces SECTIONS,
      COLUMNS or a card's frame apart, which is a different axis asking a
      different question — and now a fixed one, so pointing them at a preference
      would put them under a control that does not name them. Read this token
@@ -590,6 +590,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 }
 .usage-main { display:flex; flex-direction:column; gap:10px; min-width:0; }
 .usage-providers { display:flex; flex-direction:column; gap:10px; min-width:0; }
+/* The plan windows sit inside `.usage-main`, after the projects: each plan
+   section opens with its own rule, which separates it from the rollups above
+   at either column count. */
+.usage-plans { display:flex; flex-direction:column; gap:10px; min-width:0; }
 /* A message names a state of the whole panel, so it spans the split. */
 #usageBody > .pv-message { grid-column: 1 / -1; }
 /* Every provider section opens with a rule separating it from the block ABOVE

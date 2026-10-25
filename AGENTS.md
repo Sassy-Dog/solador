@@ -79,12 +79,22 @@ detailed than this file.
   that raises attention, and a group holding one leads with it (value
   `1 missing`, red) rather than a load figure, which moves to the line under
   it. Individual rows keep their state colours.
-- **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
-  (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
+- **Usage** — Claude token rollups (same interval); the Claude and Codex
+  **plans' own limit windows** (`CLAUDE PLAN (5H)`, `(WEEK)`, a per-model
+  weekly such as `(WEEK · FABLE)`, each with its reset countdown and a bar
+  coloured like the CPU/RAM meters, 70/90%), **opt-in per provider and off in
+  a fresh store** (15 min by default, see **Authentication**); Neon, Sentry +
+  Vercel (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
   (MTD)` from operator-entered rates, and a best-effort `NEON LAST INVOICE` off
   an undocumented endpoint — that one failing degrades to `—` plus a footer,
-  never the consumption rows.
+  never the consumption rows. Both plan endpoints are undocumented too, and
+  degrade the same way: the window rows read `—` and the header names the
+  reason. A plan that is off is one muted setup line for every plan that is off
+  (`Claude and Codex plan limits are off — turn on in Settings`), never rows of
+  `—`, and adds nothing to the dashboard. Plan rows are their own block
+  (`crates/subscription`, `app/src-tauri/src/plan_usage.rs`): a plan is not an
+  account, and its figures never merge into the rollups.
 - **Azure Cost** — the daily cost export, on its own cadence (4h by default).
 - **Sentry Crons** — every cron monitor environment that is not `ok`, and **how
   long it has been broken** (its own cadence, 1h by default). The age comes from
@@ -173,7 +183,7 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   negative control `scripts/shellcheck-pin-guard-test.sh` (stub binaries), the secrets guard and
   its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
   `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
-  does not resolve `crates/updatefeed`, `crates/agentrelease` or `crates/hostsetup`, and `scripts/tauri-cli-pin-guard.sh`
+  does not resolve `crates/updatefeed`, `crates/agentrelease`, `crates/hostsetup` or `crates/subscription`, and `scripts/tauri-cli-pin-guard.sh`
   (#485: `TAURI_CLI_VERSION` and `Cargo.lock`'s `tauri` must share major.minor,
   text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh`, and
   `scripts/claude-dir-guard.sh` (nothing named `.claude` is tracked except
@@ -611,6 +621,11 @@ the bundle's floor.
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
 │   ├── usage/              # Claude Code log rollups + Neon + Sentry + Vercel
+│   ├── subscription/       # the Claude and Codex plans' limit windows: reads
+│   │                       #   each tool's OWN saved sign-in (read-only, never
+│   │                       #   copied or refreshed) and one undocumented usage
+│   │                       #   endpoint each. APP-ONLY — agent/ must never
+│   │                       #   resolve it
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer
@@ -988,8 +1003,15 @@ the bundle's floor.
   unit-tested but never displayed, since the account is subscription-based).
 - Neon, Sentry, Vercel consumption: `crates/usage`. Own 1h cadence, not the
   shared refresh interval; render `—` when the key is missing or the API fails.
-- **Four cadences are the operator's, not constants**: containers, the metered
-  providers, Azure cost and Sentry crons are `store.json`'s `panel_intervals`,
+- Claude and Codex plan limits: `crates/subscription`, one task
+  (`plan_usage_loop` in `app/src-tauri/src/main.rs`) on its own cadence
+  (`panel_intervals.plan_usage`, 15 min by default, floor 5 min). Each provider
+  keeps its own schedule (a 429's `Retry-After`, capped at a day, pushes only
+  that provider back) and a generation counter, so a reading that lands after
+  its toggle flipped is dropped rather than painted under the new setting. A
+  provider that is off is never read and never woken.
+- **Five cadences are the operator's, not constants**: containers, the metered
+  providers, Azure cost, Sentry crons and the plan limits are `store.json`'s `panel_intervals`,
   each clamped to a floor stated beside the source it protects
   (`PanelInterval::spec`). Today's constants are their *defaults*, so an
   unconfigured store polls exactly as it always did. Every loop re-reads its
@@ -997,10 +1019,11 @@ the bundle's floor.
   `app/src-tauri/src/main.rs` — capturing it at spawn is what would make a
   change take up to one full interval (four hours, on Azure) to apply. Each is
   edited in the **Configure of the tile(s) it feeds** (#614; it was Settings →
-  Preferences → **Panel Poll Cadence**, #337) — Containers, Usage (the metered
-  providers), Azure Cost and Scheduled Jobs (Sentry crons) — under **Poll
-  cadence**, which says it is shared by every tile of that source and the Full
-  view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
+  Preferences → **Panel Poll Cadence**, #337) — Containers, Usage (two: the
+  metered providers and the plan limits), Azure Cost and Scheduled Jobs (Sentry
+  crons) — under **Poll cadence**, one control per cadence (a source carries a
+  `cadences` list, so a tile fed by two polls shows both), which says it is
+  shared by every tile of that source and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
   its floor *and why that floor exists* (`app/src-tauri/src/cadence.rs`), and a
   below-floor value is **refused with that reason** rather than clamped to a
@@ -1023,7 +1046,7 @@ the bundle's floor.
   it that one column reads `—` and everything else is unaffected.
 - **Remote hosts**: per-host bearer token, plus — once paired (#448) — the
   pinned certificate fingerprint, which is public and lives in `store.json`.
-- **Usage → Claude**: no credential — and **no account either**. The rollups
+- **Usage → Claude** (the rollups): no credential — and **no account either**. The rollups
   are a walk of `~/.claude/projects`, and those logs record what was consumed,
   never who paid for it: a full key survey of a real session file — 50+
   top-level fields including `cwd`, `gitBranch`, `sessionId`, `version`,
@@ -1040,6 +1063,30 @@ the bundle's floor.
   and must not be modelled as one**: an account id on these rollups would be an
   attribution invented to fill a gap — the unknown-as-zero error in another
   costume. If a number cannot be attributed, say so rather than attributing it.
+- **Usage → Claude and Codex plan limits**: **another program's credential,
+  read only while the operator has opted in** (`store.json`'s
+  `claude_plan_usage_enabled` / `codex_plan_usage_enabled`, both `false` in a
+  fresh store and on any store written before them; Settings → Connections →
+  **Claude plan limits** / **Codex plan limits**, saved on the click like the
+  crash-reporting toggle). Claude: the macOS keychain item `Claude
+  Code-credentials` (account `$USER`), read by `/usr/bin/security`, else
+  `~/.claude/.credentials.json`; then `GET
+  https://api.anthropic.com/api/oauth/usage`. Codex: `$CODEX_HOME/auth.json`,
+  else `~/.codex/auth.json`; then `GET
+  https://chatgpt.com/backend-api/wham/usage`. Both endpoints are
+  undocumented. **Solador only reads**: it never writes, refreshes or rotates
+  either sign-in, never starts `claude` or `codex` (Codex's RPC path can
+  rewrite `auth.json`), and never copies a token into `crates/store::secrets`;
+  the token lives in a redacting `AccessToken` (no `Display`, no `Clone`, a
+  `Debug` that prints `AccessToken(<redacted>)`) for one request and is dropped. An expired
+  sign-in is `Fault::SignInExpired` (`run it to refresh`), never
+  *unreachable*. Reading the keychain item from another binary may make macOS
+  ask (unverified: `subscription::keychain` explains why it cannot be); a refusal **parks** that provider until its toggle is turned off and on or
+  the app restarts, so a refused prompt is never asked again on a timer.
+  Windows and Linux have no keychain step: the file is the only source, and a
+  Codex that keeps its sign-in in the OS keyring reads as not signed in. Like
+  the rollups, the reading is machine-local: it is whichever account the tool
+  is signed in as, and is not modelled as an account.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
   normal preference, not a credential-store item.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`
@@ -2025,8 +2072,9 @@ has no dump for, rather than paint a layout computed for another one.
    `crates/fault` (#364) — a caller with no sharper reading takes
    `fault::http_status_message`, which classifies only the two status classes
    that mean the same thing everywhere. The vendor slot is an untyped `&str`
-   carrying two grammatical categories, and `Fault::ToolUnavailable` is the one
-   sentence that needs a proper noun rather than `"that host"`.
+   carrying two grammatical categories, and `Fault::ToolUnavailable` and
+   `Fault::SignInExpired` are the two sentences that need a program's name
+   rather than `"that host"` (one says to install it, the other to run it).
 4. Never fabricate a value to fill a gap — render `—` and say why. **A state is
    a value**: an unanticipated failure keeps `Fault::Unexpected` rather than
    being rounded to the nearest anticipated one, and a crate whose failure the
@@ -2036,6 +2084,15 @@ has no dump for, rather than paint a layout computed for another one.
 ## Security Considerations
 
 - Never log credentials or tokens (the agent must not echo its bearer token).
+- **Another program's credential is read, never kept** (`crates/subscription`).
+  Nothing reads Claude Code's or Codex's sign-in until that provider's opt-in is
+  on; the reader runs on each poll, the token is used for one request and
+  dropped, and no error message, `Debug` output or test assertion may carry it
+  (`secret.rs`'s redaction is tested). The crate is app-only, and
+  `scripts/agent-deps-guard.sh` asserts `agent/` never resolves it. A change
+  that would write, refresh or rotate either sign-in needs the operator's
+  explicit approval first: refreshing a shared OAuth token rotates it for the
+  tool that owns it.
 - **`.claude/` is untracked except `.claude/sassy-dog/`**, the config of the
   optional sassy-dog plugin (the public Sassy-Dog/skills). Nothing reads it
   unless that plugin is installed, but it is not inert for those who have it:
