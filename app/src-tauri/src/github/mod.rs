@@ -117,7 +117,9 @@ pub fn runners_error_message(error: &github::GitHubError) -> String {
 }
 
 /// `PanelStatusFooter(..., staleAfter: 150)` on the Runners panel — 2.5× the
-/// default 60s refresh interval, so one missed poll is not yet a warning.
+/// default 60s GitHub cadence, so one missed poll is not yet a warning. This is
+/// the window at the default; the live one follows the operator's
+/// [`PanelInterval::GitHub`] through [`GitHubState::stale_after_secs`].
 pub const RUNNERS_STALE_AFTER_SECS: u64 = 150;
 
 // Fixed column widths. Each is the wider of the two things it must hold — its
@@ -370,12 +372,29 @@ pub struct GitHubState {
     /// it. `status_error` records why the refresh did not happen.
     service_status: Option<servicestatus::ServiceStatus>,
     status_error: Option<String>,
+    /// The GitHub cadence the last pass ran on, which the staleness window
+    /// follows. `None` before the first pass: the default's window.
+    cadence_secs: Option<u64>,
 }
 
 impl GitHubState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Told by the loop at the top of each pass, so a cadence edit moves the
+    /// window with the very pass that runs on it.
+    pub fn set_cadence_secs(&mut self, cadence_secs: u64) {
+        self.cadence_secs = Some(cadence_secs);
+    }
+
+    /// How old a runner reading may be before the panel says so.
+    fn stale_after_secs(&self) -> u64 {
+        self.cadence_secs.map_or(
+            RUNNERS_STALE_AFTER_SECS,
+            crate::panel::stale_after_for_cadence,
+        )
     }
 
     /// No token configured. Both panels drop back to the connect-a-token line.
@@ -640,7 +659,7 @@ impl GitHubState {
     /// folded with our fleet's per-OS state.
     ///
     /// The fleet half is offered **only while the runner list is fresh enough
-    /// to speak for**, against the same [`RUNNERS_STALE_AFTER_SECS`] window the
+    /// to speak for**, against the same [`GitHubState::stale_after_secs`] window the
     /// Runners panel's own footer uses. That coupling is the point: the moment
     /// the panel admits its list is stale, the chip stops blaming the fleet, so
     /// two readings of one fact cannot disagree.
@@ -656,7 +675,7 @@ impl GitHubState {
             && self.org_runners.values().all(|entry| {
                 entry
                     .last_updated
-                    .is_some_and(|at| now.saturating_sub(at) <= RUNNERS_STALE_AFTER_SECS)
+                    .is_some_and(|at| now.saturating_sub(at) <= self.stale_after_secs())
             });
         let merged = if every_org_fresh {
             self.merged_summary()
@@ -1429,7 +1448,7 @@ fn runners_footer(state: &GitHubState, now: u64) -> Value {
             entry.and_then(|entry| entry.last_updated),
             entry.and_then(|entry| entry.error.as_deref()),
             now,
-            RUNNERS_STALE_AFTER_SECS,
+            state.stale_after_secs(),
         );
     }
     let parts: Vec<Value> = state
@@ -1446,7 +1465,7 @@ fn runners_footer(state: &GitHubState, now: u64) -> Value {
                 entry.last_updated,
                 Some(&subject),
                 now,
-                RUNNERS_STALE_AFTER_SECS,
+                state.stale_after_secs(),
             ))
         })
         .collect();
@@ -1457,7 +1476,7 @@ fn runners_footer(state: &GitHubState, now: u64) -> Value {
             .map(|entry| entry.last_updated)
             .min()
             .flatten();
-        return crate::panel::status_footer(oldest, None, now, RUNNERS_STALE_AFTER_SECS);
+        return crate::panel::status_footer(oldest, None, now, state.stale_after_secs());
     }
     let text = parts
         .iter()
@@ -4067,6 +4086,27 @@ mod tests {
         assert_eq!(
             runners_view(&state, &[], now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["footer"]["text"],
             "⚠ stale · updated 2m ago"
+        );
+    }
+
+    /// The window follows the operator's GitHub cadence (#615): a healthy
+    /// 5-minute poll is not stale 151 seconds after its last pass.
+    #[test]
+    fn the_stale_window_follows_the_github_cadence() {
+        let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
+        state.set_cadence_secs(300);
+        assert!(
+            runners_view(&state, &[], now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["footer"]
+                .is_null(),
+            "151s into a 300s cadence is a healthy gap"
+        );
+        assert!(
+            runners_view(&state, &[], now_unix() + 750)["footer"].is_null(),
+            "2.5 cycles is still the edge"
+        );
+        assert!(
+            !runners_view(&state, &[], now_unix() + 751)["footer"].is_null(),
+            "past 2.5 cycles the poller looks stuck"
         );
     }
 

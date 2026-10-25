@@ -421,8 +421,8 @@ does not fit it yet:
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates, Full view layout | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, Usage (metered providers; plan limits), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
-| Refresh Interval (GitHub, Services, Claude rollups) | Settings → Preferences | [#615](https://github.com/Sassy-Dog/solador/issues/615): rule 3 or rule 4, to decide |
+| Poll cadence of Containers, GitHub (Repos and Runners), Services, Usage (Claude rollups; metered providers; plan limits), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
+| Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
 | CPU core rows, Row spacing | Settings → Preferences | [#616](https://github.com/Sassy-Dog/solador/issues/616): Machines tile or Full view layout, to decide |
 
 ### Settings and connections
@@ -971,9 +971,10 @@ editor's payload rides on the Containers source as `ruleEditor`
 ## The `repos` and `runners` commands
 
 The CI-visibility half of the cockpit, both fed by one poll pass over
-[`crates/github`](../crates/github) and both on the store's
-**`refresh_interval_secs`** — the first consumer of that preference in this
-shell.
+[`crates/github`](../crates/github) and both on
+**`PanelInterval::GitHub`** — one poll, one cadence, edited from either tile's
+Configure (30s floor, 60s default). It was the store's shared
+`refresh_interval_secs` until [#615](https://github.com/Sassy-Dog/solador/issues/615).
 
 ```js
 await window.__TAURI__.core.invoke("repos");
@@ -1159,7 +1160,7 @@ tile, whichever orgs it is scoped to.
 
 **Applied without a restart.** The token and the portfolio are re-read on every
 pass, and `github_wake` cuts the sleep short after a Save, a Clear, a portfolio
-edit or a new refresh interval — shortening a 5-minute cadence to 30 seconds
+edit or a new GitHub cadence — shortening a 5-minute cadence to 30 seconds
 and then waiting five minutes for it to take is indistinguishable from the
 setting doing nothing. This is the periodic-service counterpart to
 `reload_hosts`, which reconciles tasks instead.
@@ -1363,7 +1364,7 @@ await window.__TAURI__.core.invoke("azure_cost");
                     // several sections has no single `state` or age to publish;
                     // Azure Cost's below is one reading and carries both.
                     // Claude contributes no clock: its rollups are on the
-                    // store's refresh interval, not the providers' cadence.
+                    // `ClaudeRollups` cadence, not the providers' cadence.
 }
 
 // azure_cost
@@ -1385,8 +1386,8 @@ await window.__TAURI__.core.invoke("azure_cost");
 ```
 
 **Four sources, and Vercel is the odd one.** Claude Code's token rollups are
-a walk of `~/.claude/projects` on the store's `refresh_interval_secs`
-(`staleAfter` 150s). Neon consumption and Sentry event stats are hourly API reads
+a walk of `~/.claude/projects` on `PanelInterval::ClaudeRollups`
+(`staleAfter` 2.5 cycles, 150s at the default 60s). Neon consumption and Sentry event stats are hourly API reads
 inside the same loop (`staleAfter` 90m — above their own cadence, so a warning
 means a stuck poller and not the gap between polls). The Claude and Codex plan
 limits are a fifth, on a loop of their own (`plan_usage_loop`, every 15 minutes
@@ -2022,7 +2023,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | Command | What it does |
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
-| `settings_save_general` | refresh interval, core-row span, row spacing |
+| `settings_save_general` | core-row span, row spacing (the refresh interval left in [#615](https://github.com/Sassy-Dog/solador/issues/615)) |
 | `machine_save_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID), from the Machines tile's Configure. Null `thresholds` resets shared defaults or removes that machine's override. Validation (`store::machine_alerts`) and save failures preserve the previous effective values and reject with the sentence; success answers with the re-rendered dashboard |
 | `panel_interval_save` | one panel's poll cadence, by its `panel_intervals` key, from that source's tile Configure. **Refused, not clamped**: a value under the panel's floor writes nothing and rejects with `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose. Saves on the click; success wakes that panel's loop and answers with the re-rendered dashboard |
 | `panel_interval_clear` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
@@ -2055,8 +2056,8 @@ a portfolio fetch on a credential it has no use for.
 
 | Edit | Wakes |
 |---|---|
-| the portfolio, the refresh interval, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
-| the refresh interval | …and the usage loop's Claude half, which shares that cadence |
+| the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
+| an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
 | a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
@@ -2213,23 +2214,30 @@ streak and its last-success time.
 
 Two things worth knowing about this surface:
 
-- **All three Apply-gated General preferences are consumed.**
-  `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
-  rollup's cadence, and changing it applies immediately (see below). Neither the
-  host poll loop nor the provider reads are on it: the host loop stays at 1s
+- **Both Apply-gated General preferences are consumed.** The shared Refresh
+  Interval that used to be the first is gone
+  ([#615](https://github.com/Sassy-Dog/solador/issues/615)): it drove two
+  unrelated loops (`github_loop`, with the Services pass inside it, and
+  `usage_loop`'s Claude rollups), so it split into three cadences, one per
+  source, each in its tile's Configure — GitHub (shared by Repos and Runners),
+  Services, Claude rollups — with a 30s floor and a 60s default, and any
+  non-default value a store had chosen carried into all three on load (see
+  *Applied without a restart* above and **Where things are today**). The
+  host poll loop is not on any of them: the host loop stays at 1s
   because one history sample is one fixed time slice
   (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
   than a preference, and Neon, Sentry and the Azure export publish on the order
   of hours or days, so each keeps a cadence of its own. Those per-panel cadences
-  — containers, the metered providers, Azure cost, Sentry crons and the Claude
-  and Codex plan limits — are the
+  — containers, GitHub, Services, the Claude rollups, the metered providers,
+  Azure cost, Sentry crons and the Claude and Codex plan limits — are the
   store's `panel_intervals`, each clamped to a floor stated beside the source it
   protects ([#300](https://github.com/Sassy-Dog/solador/issues/300)) and re-read
   by its loop every pass ([#301](https://github.com/Sassy-Dog/solador/issues/301)),
   so a change applies on the next tick. Since
   [#614](https://github.com/Sassy-Dog/solador/issues/614) the control is in the
-  Configure of the tile(s) each feeds (**Poll cadence** — Containers, Usage
-  (two: its metered providers and its plans), Azure Cost, Scheduled Jobs), not
+  Configure of the tile(s) each feeds (**Poll cadence** — Containers, GitHub
+  Repos and Runners, Service Health, Usage (three: its Claude rollups, metered
+  providers and plans), Azure Cost, Scheduled Jobs), not
   here; it was this tab's **Panel Poll Cadence**
   group ([#337](https://github.com/Sassy-Dog/solador/issues/337)). It says it is
   shared by every tile of that source and the Full view, saves on the click
@@ -2345,7 +2353,8 @@ selection has no independent existence to become "unattributed": unlike a
 repo, there is nothing left to render.)
 
 Saving, toggling, or removing an account — or checking an org — wakes the
-GitHub poll immediately rather than waiting out a refresh interval — accounts
+GitHub poll (and the Services pass, which derives its watched set from them)
+immediately rather than waiting out the GitHub cadence — accounts
 are the identities that pass fetches with, so a change that does not reach the
 loop leaves the panel fetching with the previous set.
 
@@ -2358,11 +2367,13 @@ panel's vendor list out of code — with releases blocked by
 [#15](https://github.com/Sassy-Dog/solador/issues/15), "you need a rebuild to
 watch Railway" means "you cannot".
 
-A vendor saved, toggled or removed here **wakes the GitHub poll** — which is
-where `poll_service_status` runs — rather than waiting out a refresh interval,
-for the same reason the Accounts tab does: the watched set is re-derived every
-pass, so the row appears on the next one, and cutting the sleep short is the
-difference between now and up to a full `refresh_interval_secs` later.
+A vendor saved, toggled or removed here **wakes the Services loop** — which is
+where `poll_service_status` runs, on a loop and a cadence of its own since
+[#615](https://github.com/Sassy-Dog/solador/issues/615), and with no GitHub
+token needed — rather than waiting out its cadence, for the same reason the
+Accounts tab does: the watched set is re-derived every pass, so the row appears
+on the next one, and cutting the sleep short is the difference between now and
+up to a full Services cadence later.
 
 **Adding one is a probe, not a form.** A vendor is not a URL: it is a URL plus
 the one component this stack depends on, and Statuspage component ids are opaque
@@ -2979,6 +2990,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Full view layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Full view layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press **Apply cadence**; then set it to `30` and **Apply cadence**; then press **Use default** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. A refusal that silently stores `5` instead is the defect this row exists to catch |
+| `panel_interval_save` (GitHub) | **Edit dashboard** → a Runners tile's **Configure** → **Poll cadence**: set it to `300` and **Apply cadence**; then open a GitHub Repos tile's **Configure** | the Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
@@ -3096,7 +3108,7 @@ and that immediacy is itself the check on the corresponding wake:
    GitHub (Actions, Contents, Issues and Pull requests, all read-only, plus org
    self-hosted runners read for the Runners panel). It applies without a
    relaunch — `settings_save_secret` wakes the loop — so the panels should fill
-   within a few seconds rather than on the next refresh interval, and that
+   within a few seconds rather than on the next GitHub poll, and that
    immediacy is itself the check on `github_wake`. Then **Clear** it and watch
    both panels drop back to the connect line just as fast.
 
@@ -3127,7 +3139,7 @@ and that immediacy is itself the check on the corresponding wake:
    The Usage panel is the one surface here that needs **no credential at all** to
    populate: it walks `~/.claude/projects` on this machine. On a machine that has
    run Claude Code, expect `5H` and `WEEK` token counts, a `TOP PROJECTS (7D)`
-   list, and an `N today` trailing label within one refresh interval. On one that
+   list, and an `N today` trailing label within one rollup cadence (a minute by default). On one that
    has not, expect `no ~/.claude/projects` in the footer with `no usage data`
    above it — also a pass, and the two are different Rust sentences.
 

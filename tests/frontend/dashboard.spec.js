@@ -142,17 +142,24 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             }
             if (command === "panel_interval_save" || command === "panel_interval_clear") {
               if (window.__FAIL_CADENCE__) throw "Could not save the poll cadence.";
-              const c = original.sources.flatMap(x => x.cadences || []).find(x => x.id === args.panel);
+              // Every source carrying the id, as in Rust: one cadence, one value
+              // (GitHub's is on both the Repos and the Runners tile).
+              const all = original.sources.flatMap(x => x.cadences || []).filter(x => x.id === args.panel);
+              const [c] = all;
               if (command === "panel_interval_save") {
                 // The floor is Rust's (`PanelInterval::check_secs`); this double
                 // only refuses the way it does, with a sentence naming the floor.
                 if (args.secs < c.min) throw `${c.label}: ${args.secs}s is below the ${c.min}s floor. ${c.help}`;
-                c.value = args.secs;
-                c.configured = true;
-                c.status = `Set to ${args.secs}s.`;
+                for (const x of all) {
+                  x.value = args.secs;
+                  x.configured = true;
+                  x.status = `Set to ${args.secs}s.`;
+                }
               } else {
-                c.configured = false;
-                c.status = "Using the default.";
+                for (const x of all) {
+                  x.configured = false;
+                  x.status = "Using the default.";
+                }
               }
               return project();
             }
@@ -2343,9 +2350,10 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
 });
 
 // The poll cadences moved from Settings into the Configure of the tile(s) they
-// feed (#614). Four sources carry them, Usage two (its metered providers and
-// its plans' limit windows); Machines carries none.
-const CADENCE_SOURCES = ["containers", "claudeUsage", "azureCost", "sentryCrons"];
+// feed (#614, #615). Seven sources carry them, Usage three (its Claude
+// rollups, metered providers and plans' limit windows); GitHub's one cadence is
+// on both its Repos and Runners tiles; Machines carries none.
+const CADENCE_SOURCES = ["containers", "ghWorkflows", "ghRunners", "services", "claudeUsage", "azureCost", "sentryCrons"];
 const cadencesOf = (model, id) => model.sources.find(s => s.id === id).cadences;
 async function configureCadence(page, source, panel = null) {
   await page.locator('#dashboardOverview [data-action="edit"]').click();
@@ -2358,7 +2366,10 @@ test("each source's Configure shows its poll cadence with the floor, the reason 
   const model = await openDashboard(page, baseURL);
   expect(CADENCE_SOURCES.every(id => cadencesOf(model, id)?.length)).toBe(true);
   expect(cadencesOf(model, "hosts")).toBeUndefined();
-  expect(cadencesOf(model, "claudeUsage").map(c => c.id)).toEqual(["usage_providers", "plan_usage"]);
+  expect(cadencesOf(model, "claudeUsage").map(c => c.id)).toEqual(["claude_rollups", "usage_providers", "plan_usage"]);
+  expect(cadencesOf(model, "ghWorkflows").map(c => c.id)).toEqual(["github"]);
+  expect(cadencesOf(model, "ghRunners").map(c => c.id)).toEqual(["github"]);
+  expect(cadencesOf(model, "services").map(c => c.id)).toEqual(["services"]);
   const cadences = CADENCE_SOURCES.flatMap(id => cadencesOf(model, id).map(c => [id, c]));
   expect(cadences.some(([, c]) => c.configured) && cadences.some(([, c]) => !c.configured),
     "the fixture needs both renderings").toBe(true);
@@ -2445,11 +2456,37 @@ test("a failed cadence save says so beside the section, keeps the typed value an
   await expect(section.locator(".db-cadence-status")).toHaveText(c.status);
 });
 
-test("the Usage tile's two cadences each save, and refuse, on their own box", async ({ page, baseURL }) => {
+test("one GitHub cadence is on both of its tiles, and a save from either moves both (#615)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  const [providers, plans] = cadencesOf(model, "claudeUsage");
+  const [repos] = cadencesOf(model, "ghWorkflows");
+  const [runners] = cadencesOf(model, "ghRunners");
+  expect(runners).toEqual(repos);
+  expect(repos.shared).toContain("every GitHub Repos tile and every Runners tile");
+  for (const [saveIn, readIn] of [["ghWorkflows", "ghRunners"], ["ghRunners", "ghWorkflows"]]) {
+    await page.goto(baseURL);
+    const section = await configureCadence(page, saveIn, "github");
+    await section.locator("input").fill("300");
+    await section.locator('[data-action="cadence-apply"]').click();
+    await expect.poll(() => commandArgs(page, "panel_interval_save"))
+      .toEqual([{ panel: "github", secs: 300, width: expect.any(Number) }]);
+    await expect(section.locator(".db-cadence-status")).toHaveText("Set to 300s.");
+    // The other tile, opened in the same session, now carries the same value:
+    // one key, not a copy per tile.
+    await page.locator('#dashboardOverview [data-action="catalog"]').click();
+    await page.locator(`[data-action="add"][data-id="${readIn}"]`).click();
+    const other = page.locator('[data-cadence="github"]');
+    await expect(other).toHaveCount(1);
+    await expect(other.locator("input")).toHaveValue("300");
+    await expect(other.locator(".db-cadence-status")).toHaveText("Set to 300s.");
+  }
+});
+
+test("the Usage tile's three cadences each save, and refuse, on their own box", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [rollups, providers, plans] = cadencesOf(model, "claudeUsage");
+  expect(rollups.id).toBe("claude_rollups");
   await configureCadence(page, "claudeUsage");
-  await expect(page.locator("[data-cadence]")).toHaveCount(2);
+  await expect(page.locator("[data-cadence]")).toHaveCount(3);
   const providerBox = page.locator(`[data-cadence="${providers.id}"]`);
   const planBox = page.locator(`[data-cadence="${plans.id}"]`);
   // Enter applies the box it was pressed in, not the first one on the page.

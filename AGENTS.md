@@ -40,8 +40,8 @@ detailed than this file.
 - **GitHub Repos + GitHub Runners** — per-repo CI health and counts (open
   issues, the board's **Ready** backlog, open PRs — the three also ride on the
   compact dashboard's repo rows in every presentation), local branch/worktree
-  counts, self-hosted runners with the absence roster (the store's
-  `refresh_interval_secs`). READY is a GraphQL read (`crates/github::ready`),
+  counts, self-hosted runners with the absence roster (one poll, one cadence:
+  `PanelInterval::GitHub`, edited from either tile's Configure, #615). READY is a GraphQL read (`crates/github::ready`),
   issue-side so no board identity lives in config; it needs the PAT's org
   Projects permission and renders `—`, never `0`, without it — and, alone
   among the four counts, says why in the panel footer (`ready_error`). Open PRs
@@ -107,7 +107,9 @@ detailed than this file.
   level) are counted and shown with their reason, never dropped; and a **blind
   read** — no monitors at all, or a monitor carrying no environments — is red,
   because an empty green panel is the failure this exists to remove.
-- **Services** — third-party availability, read on the GitHub poll's cadence.
+- **Services** — third-party availability, on a loop and a cadence of its own
+  (`services_loop`, `PanelInterval::Services`, #615; it used to ride the top of
+  the GitHub pass), which runs with no GitHub token.
   Three transports behind one vocabulary (`crates/servicestatus`), and a change
   in either direction fires a desktop notification. **The watched list is
   derived from configuration, never shipped** (#284, wired up in #375):
@@ -1002,7 +1004,7 @@ the bundle's floor.
 - Claude Code usage rollups: `crates/usage` (tokens only — USD is computed and
   unit-tested but never displayed, since the account is subscription-based).
 - Neon, Sentry, Vercel consumption: `crates/usage`. Own 1h cadence, not the
-  shared refresh interval; render `—` when the key is missing or the API fails.
+  Claude rollups'; render `—` when the key is missing or the API fails.
 - Claude and Codex plan limits: `crates/subscription`, one task
   (`plan_usage_loop` in `app/src-tauri/src/main.rs`) on its own cadence
   (`panel_intervals.plan_usage`, 15 min by default, floor 5 min). Each provider
@@ -1010,8 +1012,9 @@ the bundle's floor.
   that provider back) and a generation counter, so a reading that lands after
   its toggle flipped is dropped rather than painted under the new setting. A
   provider that is off is never read and never woken.
-- **Five cadences are the operator's, not constants**: containers, the metered
-  providers, Azure cost, Sentry crons and the plan limits are `store.json`'s `panel_intervals`,
+- **Eight cadences are the operator's, not constants**: containers, GitHub
+  (Repos and Runners), Services, the Claude rollups, the metered providers,
+  Azure cost, Sentry crons and the plan limits are `store.json`'s `panel_intervals`,
   each clamped to a floor stated beside the source it protects
   (`PanelInterval::spec`). Today's constants are their *defaults*, so an
   unconfigured store polls exactly as it always did. Every loop re-reads its
@@ -1019,17 +1022,31 @@ the bundle's floor.
   `app/src-tauri/src/main.rs` — capturing it at spawn is what would make a
   change take up to one full interval (four hours, on Azure) to apply. Each is
   edited in the **Configure of the tile(s) it feeds** (#614; it was Settings →
-  Preferences → **Panel Poll Cadence**, #337) — Containers, Usage (two: the
-  metered providers and the plan limits), Azure Cost and Scheduled Jobs (Sentry
-  crons) — under **Poll cadence**, one control per cadence (a source carries a
-  `cadences` list, so a tile fed by two polls shows both), which says it is
-  shared by every tile of that source and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
+  Preferences → **Panel Poll Cadence**, #337) — Containers, GitHub Repos *and*
+  Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
+  maps a panel to a list of sources), Service Health, Usage (three: the Claude
+  rollups, the metered providers and the plan limits), Azure Cost and Scheduled
+  Jobs (Sentry crons) — under **Poll cadence**, one control per cadence (a
+  source carries a `cadences` list, so a tile fed by three polls shows all
+  three), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
   its floor *and why that floor exists* (`app/src-tauri/src/cadence.rs`), and a
   below-floor value is **refused with that reason** rather than clamped to a
   number the operator did not choose. `set_panel_interval_secs` still clamps and
   `panel_interval_secs` still clamps on read, because a hand-edited `store.json`
   reaches neither gate. Settings carries none of them.
+  **The GitHub, Services and Claude-rollup cadences were one setting until
+  #615** — the shared Refresh Interval (30s / 1m / 5m), which drove
+  `github_loop` (Repos, Runners, and the Services pass inside it) and
+  `usage_loop`'s outer sleep. Each defaults to that interval's 60s with a 30s
+  floor, so an unconfigured store polls as it did. A store that had chosen 30s
+  or 5m is carried over once: on load, `Settings::seed_cadences_from_legacy_refresh_interval`
+  copies a non-default `refresh_interval_secs` into all three keys (a stored 60
+  is "never chosen" and seeds nothing), then empties the field, which is never
+  serialised — so the first save drops the key and a cadence cleared afterwards
+  is not seeded again. A footer's staleness window follows its cadence
+  (`panel::stale_after_for_cadence`, 2.5 cycles, never under 150s) rather than a
+  flat 150s.
 - Sentry cron monitors: `crates/usage/src/sentry.rs`'s `cron_monitors()` /
   `summarize_monitors()` plus `app/src-tauri/src/crons.rs`. Three wire traps are
   documented there and each has a test: there is **no** flat `projectSlug` (it is
@@ -1176,7 +1193,7 @@ the bundle's floor.
 - **Where a setting lives**: see `app/README.md`'s section of that name — what
   changes a tile goes in its Configure, what reaches a source in Settings →
   Connections, what is app-wide in Settings. A shared setting edited from a tile
-  says it is shared. Its inventory names the follow-ups (#615–#616) for the
+  says it is shared. Its inventory names the follow-up (#616) for the
   settings that do not fit yet.
 - The Machines tile's Configure → **Machine alerts** has the shared CPU/RAM alert
   thresholds and a per-machine override for each machine, including the local

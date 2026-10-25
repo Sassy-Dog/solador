@@ -83,10 +83,11 @@ const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// starts keeps handing out the number that was configured *then*, so choosing
 /// a new cadence in Settings takes up to one full interval to have any visible
 /// effect — four hours, on the Azure row — which is indistinguishable from the
-/// setting doing nothing at all. `github_loop` has re-read
-/// `refresh_interval_secs` every pass for exactly this reason since it was
-/// written; this is that same discipline for the four panels whose cadence
-/// became a setting in #300.
+/// setting doing nothing at all. `github_loop` has re-read its cadence every
+/// pass for exactly this reason since it was written; this is that same
+/// discipline for the panels whose cadence became a setting in #300, and since
+/// #615 `github_loop`, `services_loop` and `usage_loop` read theirs through here
+/// too.
 ///
 /// [`store::settings::Settings::panel_interval_secs`] applies the panel's floor
 /// on read, so what comes back here is already the enforced value — callers
@@ -243,8 +244,7 @@ struct App {
     /// operator's now, so "it comes round again immediately anyway" stopped
     /// being true, and the resume path is the caller that noticed first.
     containers_wake: tokio::sync::Notify,
-    /// The Repos + GitHub Runners panels' state, on the store's
-    /// `refresh_interval_secs` cadence.
+    /// The Repos + GitHub Runners panels' state, on [`PanelInterval::GitHub`].
     ///
     /// One lock for both panels because they share a credential and a poll
     /// pass; like the containers lock, it is never held while the store's is.
@@ -254,11 +254,19 @@ struct App {
     /// This is what makes "applies without a restart" true for a *periodic*
     /// service, where reconciling tasks (as [`reload_hosts`] does for hosts) is
     /// not the mechanism: saving a token, clearing one, editing the portfolio
-    /// or picking a new refresh interval all wake the loop instead of waiting
+    /// or picking a new GitHub cadence all wake the loop instead of waiting
     /// out a cadence that can be five minutes long.
     github_wake: tokio::sync::Notify,
-    /// The Usage panel's state: Claude token rollups on the store's refresh
-    /// interval, Neon and Sentry on their own fixed hourly cadence.
+    /// Cuts the Services loop's sleep short. A loop of its own since #615, on
+    /// [`PanelInterval::Services`]: it used to ride at the top of
+    /// [`poll_github`], and an edit to the watched set woke the GitHub loop to
+    /// reach it. The watched set is derived from the status-page list and the
+    /// credentials and accounts already in the cockpit, so those edits wake
+    /// this one (and the GitHub one too, where they also change what it fetches).
+    services_wake: tokio::sync::Notify,
+    /// The Usage panel's state: Claude token rollups on
+    /// [`PanelInterval::ClaudeRollups`], Neon and Sentry on their own fixed
+    /// hourly cadence.
     usage: Mutex<UsageState>,
     /// Cuts the usage loop's sleep short, for the same reason
     /// [`App::github_wake`] exists.
@@ -276,7 +284,7 @@ struct App {
     /// which nothing else on the usage loop does.
     plan_usage_wake: tokio::sync::Notify,
     /// The Sentry Crons panel's state, on the same fixed hourly cadence as the
-    /// other Sentry read — not the store's shared refresh interval.
+    /// other Sentry read — not the Claude rollups' cadence.
     ///
     /// Its own lock rather than a field on [`UsageState`]: the two share a
     /// credential and nothing else. They are different panels, on different rows,
@@ -1080,6 +1088,7 @@ async fn resume_loop(app: Arc<App>) {
             .reset();
 
         wake_github(&app);
+        wake_services(&app);
         wake_usage(&app, true);
         app.azure_wake.notify_one();
         app.containers_wake.notify_one();
@@ -1483,8 +1492,9 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
 //
 // One loop for both, because they share a credential and a cadence: the token
 // that authenticates one authenticates the other, and a single pass fills both.
-// This is the shell's **first consumer of `refresh_interval_secs`** — until
-// now that preference persisted and nothing read it.
+// Its cadence is `PanelInterval::GitHub`, edited from either tile's Configure
+// (#615): the retired shared Refresh Interval used to drive this, the Services
+// pass and the Claude rollups from one number.
 
 /// Why a disabled account fetched nothing. Not an error — the operator turned
 /// it off — but still reported, because the repos it owns are still tracked
@@ -1938,15 +1948,21 @@ async fn poll_service_status(app: &Arc<App>) {
 /// No lock is ever held across an `await`; each is taken, used and dropped, in
 /// sequence, exactly as [`poll_containers`] does.
 async fn poll_github(app: &Arc<App>) {
-    // The Services pass first, and deliberately **before** the token gate
-    // below: no status page needs a credential, and "GitHub Actions is in a
-    // major outage" is most useful precisely when this panel is otherwise
-    // blank — a cockpit that returned early here would be the one that could
-    // not explain itself at all. Whether *GitHub* is among the vendors that
-    // pass reads is its own question, derived from configuration (#284): a
-    // store with no GitHub account and no stored token has no GitHub data for
-    // an outage to explain, so there is nothing there to annotate either.
-    poll_service_status(app).await;
+    // The Services pass is not here any more (#615): it has a loop and a
+    // cadence of its own, `services_loop`, which runs with no GitHub token for
+    // the reason it always did — no status page needs a credential, and
+    // "GitHub Actions is in a major outage" is most useful precisely when this
+    // panel is otherwise blank.
+    //
+    // This pass is told the staleness window of *its* cadence, so a 5-minute
+    // GitHub cadence does not read as a stuck poller between two healthy passes.
+    {
+        let cadence = panel_interval(&app.store, PanelInterval::GitHub).as_secs();
+        app.github
+            .lock()
+            .expect("github state poisoned")
+            .set_cadence_secs(cadence);
+    }
 
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch. `legacy_org` is the
@@ -2491,7 +2507,7 @@ fn update_install(state: tauri::State<'_, Arc<App>>) -> Value {
     update::view(&updates, settings::VERSION)
 }
 
-/// The GitHub panels' poll loop, on the store's `refresh_interval_secs`.
+/// The GitHub panels' poll loop, on [`PanelInterval::GitHub`].
 ///
 /// The interval is re-read after every pass rather than baked into a
 /// `tokio::time::interval`, and the sleep is interruptible — together that is
@@ -2500,12 +2516,9 @@ fn update_install(state: tauri::State<'_, Arc<App>>) -> Value {
 async fn github_loop(app: Arc<App>) {
     loop {
         poll_github(&app).await;
-        let secs = {
-            let store = app.store.lock().expect("store poisoned");
-            u64::from(store.settings().refresh_interval_secs)
-        };
+        let secs = panel_interval(&app.store, PanelInterval::GitHub);
         tokio::select! {
-            () = tokio::time::sleep(std::time::Duration::from_secs(secs)) => {}
+            () = tokio::time::sleep(secs) => {}
             // `notify_one`, not `notify_waiters`: a wake that lands while a
             // pass is still running stores a permit and fires the moment this
             // sleep begins, instead of being dropped for having no listener.
@@ -2518,6 +2531,30 @@ async fn github_loop(app: Arc<App>) {
 /// fetch, or how often.
 fn wake_github(app: &App) {
     app.github_wake.notify_one();
+}
+
+/// The Services pass's loop, on [`PanelInterval::Services`] (#615).
+///
+/// It runs whether or not a GitHub token exists: that was the whole reason the
+/// pass sat above the token gate in [`poll_github`], and a loop of its own
+/// keeps it true by construction instead of by the order of two statements.
+/// Re-reads its cadence after every pass, like every loop here.
+async fn services_loop(app: Arc<App>) {
+    loop {
+        poll_service_status(&app).await;
+        let secs = panel_interval(&app.store, PanelInterval::Services);
+        tokio::select! {
+            () = tokio::time::sleep(secs) => {}
+            // `notify_one`, for the reason `github_loop` states.
+            () = app.services_wake.notified() => {}
+        }
+    }
+}
+
+/// Cuts the Services loop's sleep short after an edit to the watched set or to
+/// the cadence.
+fn wake_services(app: &App) {
+    app.services_wake.notify_one();
 }
 
 /// Guards the Repos panel's counterpart to [`FIRST_REQUEST`].
@@ -3178,13 +3215,13 @@ fn read_claude_usage() -> (Option<usage::UsageSummary>, Option<String>) {
 
 /// The Usage panel's poll loop, on **two** clocks.
 ///
-/// The loop itself turns on the store's `refresh_interval_secs`, because that
-/// is the Claude rollup's cadence — a local walk of `~/.claude/projects` that
-/// costs nobody anything. The metered providers inside it (Neon, Sentry,
-/// Vercel) are three vendor APIs on a rate-limit budget and run on their own,
-/// much slower [`PanelInterval::UsageProviders`] cadence, which is why `due` is
-/// computed rather than assumed: a pass can refresh the tokens without spending
-/// a provider request.
+/// The loop itself turns on [`PanelInterval::ClaudeRollups`], the Claude
+/// rollup's cadence — a local walk of `~/.claude/projects` that costs nobody
+/// anything. The metered providers inside it (Neon, Sentry, Vercel) are three
+/// vendor APIs on a rate-limit budget and run on their own, much slower
+/// [`PanelInterval::UsageProviders`] cadence, which is why `due` is computed
+/// rather than assumed: a pass can refresh the tokens without spending a
+/// provider request.
 ///
 /// Both are re-read every pass — the outer one at the bottom of the loop, the
 /// provider one at the top — so either can be changed in Settings without
@@ -3201,17 +3238,22 @@ async fn usage_loop(app: Arc<App>) {
         let providers_every = panel_interval(&app.store, PanelInterval::UsageProviders);
         let due = app.usage_providers_due.swap(false, Ordering::SeqCst)
             || providers_last.is_none_or(|at| at.elapsed() >= providers_every);
+        // Told to the state before the pass, so the rollups' footer judges
+        // staleness against the cadence this pass runs on.
+        app.usage
+            .lock()
+            .expect("usage state poisoned")
+            .set_claude_cadence_secs(
+                panel_interval(&app.store, PanelInterval::ClaudeRollups).as_secs(),
+            );
         poll_usage(&app, due).await;
         if due {
             providers_last = Some(std::time::Instant::now());
         }
 
-        let secs = {
-            let store = app.store.lock().expect("store poisoned");
-            u64::from(store.settings().refresh_interval_secs)
-        };
+        let secs = panel_interval(&app.store, PanelInterval::ClaudeRollups);
         tokio::select! {
-            () = tokio::time::sleep(std::time::Duration::from_secs(secs)) => {}
+            () = tokio::time::sleep(secs) => {}
             () = app.usage_wake.notified() => {}
         }
     }
@@ -3888,34 +3930,23 @@ fn settings_view(
 
 #[tauri::command]
 fn settings_save_general(
-    refresh_interval_secs: u32,
     core_row_span: u8,
     row_gap_px: u8,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        let general =
-            settings::normalized_general(refresh_interval_secs, core_row_span, row_gap_px);
+        let general = settings::normalized_general(core_row_span, row_gap_px);
         let current = store.settings_mut();
-        current.refresh_interval_secs = general.refresh_interval_secs;
         current.core_row_span = general.core_row_span;
         current.row_gap_px = general.row_gap_px;
         save_status(&store, "Saved.")
     };
-    // The refresh interval is the GitHub *and* Claude-usage loops' cadence, so
-    // picking a new one has to reach both before the *old* one elapses —
-    // shortening 5 minutes to 30 seconds and then waiting five minutes for it
-    // to take is indistinguishable from the setting doing nothing. The Usage
-    // panel's provider half is on its own hourly clock and is deliberately not
-    // forced here: nothing about a cadence change alters what Neon returns.
-    //
-    // The row gap needs no wake of its own. A cadence change has to reach a loop
-    // that is already asleep on the *old* interval; this one is read out of the
-    // store by `cockpit_view` on every frame, so it paints on the next 1s tick
-    // whether anything is woken or not.
-    wake_github(&state);
-    wake_usage(&state, false);
+    // Neither field needs a wake. They are read out of the store by
+    // `cockpit_view` on every frame, so they paint on the next 1s tick whether
+    // anything is woken or not. (The shared Refresh Interval that used to need
+    // waking here is three per-source cadences now, edited in the tiles'
+    // Configure, whose save wakes exactly the loop it moved: `wake_panel`.)
     settings_response(&state, status)
 }
 
@@ -4029,7 +4060,7 @@ fn runner_group_label_move(
 
 /// Cuts short the sleep of the one loop whose cadence just changed.
 ///
-/// Exhaustive over [`PanelInterval`], so a fifth settable panel cannot be added
+/// Exhaustive over [`PanelInterval`], so a further settable panel cannot be added
 /// with a control that writes a cadence nothing acts on until the *old* one
 /// elapses — four hours, on the Azure row, which is indistinguishable from the
 /// setting doing nothing. The loops re-read the store every pass ([#301]), so
@@ -4044,6 +4075,10 @@ fn runner_group_label_move(
 fn wake_panel(app: &App, panel: PanelInterval) {
     match panel {
         PanelInterval::Containers => app.containers_wake.notify_one(),
+        PanelInterval::GitHub => wake_github(app),
+        PanelInterval::Services => wake_services(app),
+        // Not the providers' half: a rollups cadence change spends no vendor request.
+        PanelInterval::ClaudeRollups => wake_usage(app, false),
         PanelInterval::UsageProviders => wake_usage(app, false),
         PanelInterval::AzureCost => app.azure_wake.notify_one(),
         PanelInterval::Crons => app.crons_wake.notify_one(),
@@ -4433,7 +4468,7 @@ fn settings_set_account_org(
     };
     // The selection is what the runners half of the pass polls, so it has to
     // reach the loop now — an org checked and then watched going nowhere for a
-    // full refresh interval reads as broken.
+    // full GitHub cadence reads as broken.
     wake_github(&state);
     settings_response(&state, status)
 }
@@ -5103,7 +5138,7 @@ fn settings_set_repo_account(
         }
     };
     // Attribution decides which token fetches this repo, so an edit that does
-    // not reach the loop leaves the panel a full refresh interval behind on
+    // not reach the loop leaves the panel a full GitHub cadence behind on
     // whose credential it is using.
     wake_github(&state);
     settings_response(&state, status)
@@ -5139,8 +5174,10 @@ fn settings_save_account(
     };
     // Accounts ARE the GitHub pass's identities, so a save that does not reach
     // the loop leaves the panel fetching with the previous set for a full
-    // refresh interval.
+    // GitHub cadence. The Services pass derives its watched set from accounts
+    // too, so it is woken beside it.
     wake_github(&state);
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -5258,6 +5295,7 @@ fn settings_set_account_enabled(
         }
     };
     wake_github(&state);
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -5312,6 +5350,7 @@ fn settings_remove_account(id: String, state: tauri::State<'_, Arc<App>>) -> Val
         }
     };
     wake_github(&state);
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -5367,10 +5406,10 @@ async fn settings_probe_status_vendor(base_url: String) -> Value {
 /// The four fields are re-validated here rather than trusted from the probe —
 /// every one of them is still editable after an answer lands.
 ///
-/// Wakes the GitHub loop, which is where [`poll_service_status`] runs: the
+/// Wakes the Services loop, which is where [`poll_service_status`] runs: the
 /// watched set is re-derived every pass, so a vendor added here is polled on the
 /// next one — and cutting that sleep short is the difference between the row
-/// appearing now and appearing up to a full `refresh_interval_secs` later.
+/// appearing now and appearing up to a full Services cadence later.
 #[tauri::command]
 fn settings_save_status_vendor(
     label: String,
@@ -5389,7 +5428,7 @@ fn settings_save_status_vendor(
             }
             Err(reason) => Some(reason),
         };
-    wake_github(&state);
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -5412,7 +5451,7 @@ fn settings_set_status_vendor_enabled(
             None => Some("Skipped — unknown status page.".to_owned()),
         }
     };
-    wake_github(&state);
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -5431,7 +5470,7 @@ fn settings_remove_status_vendor(id: String, state: tauri::State<'_, Arc<App>>) 
             None => Some("Skipped — unknown status page.".to_owned()),
         }
     };
-    wake_github(&state);
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -6820,6 +6859,7 @@ fn main() {
         containers_wake: tokio::sync::Notify::new(),
         github: Mutex::new(GitHubState::new()),
         github_wake: tokio::sync::Notify::new(),
+        services_wake: tokio::sync::Notify::new(),
         usage: Mutex::new(UsageState::new()),
         usage_wake: tokio::sync::Notify::new(),
         usage_providers_due: std::sync::atomic::AtomicBool::new(false),
@@ -6862,14 +6902,17 @@ fn main() {
     rt.spawn(agent_release_loop(Arc::clone(&app)));
     rt.spawn(hosts_watch_loop(Arc::clone(&app)));
     rt.spawn(resume_loop(Arc::clone(&app)));
-    // The GitHub panels run on the store's refresh interval and read the
-    // portfolio and the token on every pass, so an edit in Settings joins them
-    // on the next pass — which `wake_github` makes immediate.
+    // The GitHub panels run on their own cadence and read the portfolio and the
+    // token on every pass, so an edit in Settings joins them on the next pass —
+    // which `wake_github` makes immediate.
     rt.spawn(github_loop(Arc::clone(&app)));
+    // Service health, on a cadence and a loop of its own (#615), and needing no
+    // credential — it starts whether or not a GitHub token exists.
+    rt.spawn(services_loop(Arc::clone(&app)));
     // This machine, on the host cadence — the card that leads the grid.
     rt.spawn(local::poll_loop(Arc::clone(&app.local), POLL_INTERVAL));
-    // Usage: Claude on the store's refresh interval, Neon and Sentry hourly
-    // inside the same loop.
+    // Usage: Claude on its rollup cadence, Neon and Sentry hourly inside the
+    // same loop.
     rt.spawn(usage_loop(Arc::clone(&app)));
     rt.spawn(plan_usage_loop(Arc::clone(&app)));
     // Sentry cron monitors, on the same fixed hourly cadence as the Sentry read
@@ -7204,38 +7247,36 @@ mod tests {
     /// Which clock each data source runs on, pinned against the original service
     /// that owns it.
     ///
-    /// The user-facing refresh interval governs the two GitHub panels and
-    /// Claude usage **and nothing else** — every other source runs on a cadence
-    /// chosen by what it is polling, and wiring one of them to the user's
-    /// setting would be a real bug that no other test would catch. A 4h Azure
-    /// export polled every 30s is 480 pointless blob listings an hour; a 1s
-    /// host poll slowed to 300s is a dead chart axis, since one history sample
-    /// is one fixed time slice.
+    /// Every source except the 1s host poll and the event-driven OpenClaw
+    /// session polls on a [`PanelInterval`] the operator owns (#615 retired the
+    /// shared Refresh Interval that used to govern the two GitHub panels, the
+    /// Services pass and the Claude rollups together), each with its own floor
+    /// and reason. Wiring a loop to the wrong one would be a real bug that no
+    /// other test would catch. A 4h Azure export polled every 30s is 480
+    /// pointless blob listings an hour; a 1s host poll slowed to 300s is a dead
+    /// chart axis, since one history sample is one fixed time slice.
     ///
-    /// Four of those cadences are the *operator's* since #300/#301, but the
-    /// constants below remain what an unconfigured store polls on: this test
-    /// pins the constants, and
+    /// The constants below remain what an unconfigured store polls on: this
+    /// test pins the constants, and
     /// `each_panels_default_cadence_is_the_constant_this_crate_declares` pins
     /// that the store still hands them back.
     ///
-    /// | source | cadence | governed by `refresh_interval_secs`? | the original |
-    /// |---|---|---|---|
-    /// | Hosts (local + remote) | 1s | no | `RemoteHostMetricsService` |
-    /// | Containers | 10s default | no — the operator's | `LocalContainerService` |
-    /// | Repos + Runners | user's | **yes** — `github_loop` | app entry point |
-    /// | Claude usage | user's | **yes** — `usage_loop` | app entry point |
-    /// | Neon + Sentry | 1h default | no — the operator's | `NeonUsageService` |
-    /// | Sentry crons | 1h default | no — the operator's | no counterpart — `crons_loop` |
-    /// | Azure Cost | 4h default | no — the operator's | `AzureCostService` |
-    /// | OpenClaw | none — event-driven | no | `OpenClawService` |
+    /// | source | cadence | the original |
+    /// |---|---|---|
+    /// | Hosts (local + remote) | 1s | `RemoteHostMetricsService` |
+    /// | Containers | 10s default | `LocalContainerService` |
+    /// | Repos + Runners | 60s default (`PanelInterval::GitHub`) | app entry point |
+    /// | Services | 60s default (`PanelInterval::Services`) | app entry point |
+    /// | Claude rollups | 60s default (`PanelInterval::ClaudeRollups`) | app entry point |
+    /// | Neon + Sentry | 1h default | `NeonUsageService` |
+    /// | Sentry crons | 1h default | no counterpart — `crons_loop` |
+    /// | Azure Cost | 4h default | `AzureCostService` |
+    /// | OpenClaw | none — event-driven | `OpenClawService` |
     ///
-    /// The "yes" rows are structural rather than constants, so they are pinned
-    /// by where they read the store rather than here: `github_loop` reads
-    /// `refresh_interval_secs` at its top and `usage_loop` at its own, and no
-    /// other loop in this file reads it at all. The four "the operator's" rows
-    /// read [`PanelInterval`] through [`panel_interval`] instead, which is a
-    /// different setting and a different floor per row — the distinction this
-    /// test exists to keep.
+    /// The three 60s rows are not constants of this file: they are the retired
+    /// shared interval's default, and are pinned in the store beside their
+    /// floors. What is pinned here for them is that no *fixed* cadence is
+    /// confusable with that default, below.
     ///
     /// The crons row shared `PROVIDER_POLL_INTERVAL_SECS` with the Sentry read
     /// inside `usage_loop` rather than declaring a second hour of its own — same
@@ -7264,24 +7305,27 @@ mod tests {
             );
         }
 
-        // The user's choices, which the two governed loops read. Pinned here
-        // too because a fourth choice — or a changed default — silently
-        // redefines what "the refresh interval" means for those loops.
-        assert_eq!(
-            store::settings::REFRESH_INTERVAL_CHOICES,
-            [30, 60, 300],
-            "the refresh-interval choices are the original's RefreshInterval cases"
-        );
+        // The three per-source cadences the retired shared interval became
+        // (#615), all defaulting to its 60s. Pinned because a changed default
+        // silently changes what an unconfigured store polls on, and the values
+        // the old control offered must stay legal for each.
         assert_eq!(store::settings::DEFAULT_REFRESH_INTERVAL_SECS, 60);
+        for panel in [
+            PanelInterval::GitHub,
+            PanelInterval::Services,
+            PanelInterval::ClaudeRollups,
+        ] {
+            assert_eq!(panel.spec().default_secs, 60, "{panel:?}");
+        }
 
-        // No fixed cadence may coincide with the default refresh interval:
-        // that is what would let a loop be wired to the wrong clock and still
-        // look correct out of the box.
+        // No fixed cadence may coincide with those defaults: that is what would
+        // let a loop be wired to the wrong clock and still look correct out of
+        // the box.
         for (source, cadence, _) in cadences {
             assert_ne!(
                 cadence,
                 u64::from(store::settings::DEFAULT_REFRESH_INTERVAL_SECS),
-                "{source}'s fixed cadence must not be confusable with the default refresh interval"
+                "{source}'s fixed cadence must not be confusable with the default GitHub, Services or rollup cadence"
             );
         }
     }
@@ -7775,7 +7819,7 @@ mod tests {
     /// The health poll is a second cadence over the same hosts, and its whole
     /// justification is being cheap: at the snapshot cadence it would double
     /// the cockpit's tailnet traffic to learn a flag that moves on the order of
-    /// minutes. It is also not the user's refresh interval — this is a
+    /// minutes. It is also not any panel's cadence — this is a
     /// correctness probe, not a panel.
     #[test]
     fn the_health_poll_is_slower_than_the_snapshot_poll_and_is_not_the_users_interval() {

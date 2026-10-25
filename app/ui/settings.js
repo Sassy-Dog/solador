@@ -166,7 +166,7 @@ function group(heading) {
   return box;
 }
 
-/** Whole numbers only: `refreshIntervalSecs`, `coreRowSpan`, `rowGapPx` and the
+/** Whole numbers only: `coreRowSpan`, `rowGapPx` and the
  *  Sentry quota are integers in Rust, and a NaN is not even JSON. */
 const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
 
@@ -345,8 +345,8 @@ function secretGroup(heading, secret) {
 function generalTab(g) {
   const box = group(g.heading);
 
-  const interval = select(g.refreshInterval.options, g.refreshInterval.value);
-  box.append(field("general-interval", g.refreshInterval.label, interval), help(g.refreshInterval.help));
+  // Where the shared Refresh Interval went (#615): Rust says, this paints.
+  box.append(help(g.cadenceNote));
 
   const span = numberInput(g.coreRowSpan.value, g.coreRowSpan.min, g.coreRowSpan.max);
   box.append(field("general-core-rows", g.coreRowSpan.label, span), help(g.coreRowSpan.help));
@@ -360,7 +360,6 @@ function generalTab(g) {
   const apply = button(g.saveLabel, "apply");
   apply.addEventListener("click", () =>
     mutate("settings_save_general", {
-      refreshIntervalSecs: int(interval.value),
       coreRowSpan: int(span.value),
       rowGapPx: int(gap.value),
     })

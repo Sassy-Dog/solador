@@ -15,7 +15,7 @@
 /** How often the panel asks Rust for a fresh payload.
  *
  *  Matches the panels around it rather than the status poll behind it (the
- *  store's `refresh_interval_secs`, 30s–5m): Rust answers from whatever the
+ *  store's `panel_intervals.services`, 30s and up): Rust answers from whatever the
  *  last pass stored, and asking on the panel cadence is what makes a recovery
  *  appear promptly rather than up to five minutes late. */
 const REFRESH_MS = 10000;

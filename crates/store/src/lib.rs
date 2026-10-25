@@ -428,6 +428,13 @@ impl Store {
                 if data.version == 2 && migrate_v2_to_v3(&mut data, github_token_present) {
                     data.version = 3;
                 }
+                // Independent of the version chain above, deliberately: a
+                // store stuck below 3 (no token to migrate against) must still
+                // keep polling at the cadence its operator chose (#615). What
+                // makes it one-shot is the legacy key not being written back,
+                // not a version stamp. See
+                // `Settings::seed_cadences_from_legacy_refresh_interval`.
+                data.settings.seed_cadences_from_legacy_refresh_interval();
                 Ok(Store { path, data })
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -1240,13 +1247,84 @@ mod tests {
         assert_eq!(slugs.len(), 2);
     }
 
+    fn write_store_with_refresh_interval(dir: &TempDir, secs: u32) {
+        let store = Store::open_in(dir.path(), false).expect("open");
+        store.save().expect("save");
+        let path = store.path().to_path_buf();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        json["settings"]["refresh_interval_secs"] = serde_json::json!(secs);
+        fs::write(&path, serde_json::to_string_pretty(&json).expect("render")).expect("write");
+    }
+
+    /// #615: a store that chose a non-default Refresh Interval keeps polling at
+    /// it, through the three cadences it became.
+    #[test]
+    fn a_stored_refresh_interval_seeds_the_cadences_it_drove_on_load() {
+        use settings::PanelInterval;
+        let dir = temp_dir();
+        write_store_with_refresh_interval(&dir, 300);
+        let store = Store::open_in(dir.path(), false).expect("reopen");
+        for panel in [
+            PanelInterval::GitHub,
+            PanelInterval::Services,
+            PanelInterval::ClaudeRollups,
+        ] {
+            assert_eq!(
+                store.settings().panel_interval_secs(panel),
+                300,
+                "{panel:?}"
+            );
+        }
+        assert_eq!(
+            store
+                .settings()
+                .panel_interval_secs(PanelInterval::Containers),
+            PanelInterval::Containers.spec().default_secs
+        );
+    }
+
+    /// The seed is one-shot: after the first save the retired key is gone, so a
+    /// cadence the operator then clears ("Use default") stays cleared.
+    #[test]
+    fn a_cleared_seeded_cadence_is_not_seeded_again_on_the_next_load() {
+        use settings::PanelInterval;
+        let dir = temp_dir();
+        write_store_with_refresh_interval(&dir, 30);
+        let mut store = Store::open_in(dir.path(), false).expect("seed");
+        assert!(store
+            .settings()
+            .panel_interval_is_configured(PanelInterval::GitHub));
+        store
+            .settings_mut()
+            .clear_panel_interval(PanelInterval::GitHub);
+        store.save().expect("save");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
+        assert!(!reopened
+            .settings()
+            .panel_interval_is_configured(PanelInterval::GitHub));
+        assert_eq!(
+            reopened
+                .settings()
+                .panel_interval_secs(PanelInterval::GitHub),
+            60
+        );
+        // The other two kept what was seeded; clearing one did not touch them.
+        assert_eq!(
+            reopened
+                .settings()
+                .panel_interval_secs(PanelInterval::Services),
+            30
+        );
+    }
+
     #[test]
     fn settings_hosts_and_repos_round_trip_through_the_file() {
         let dir = temp_dir();
         let mut store = Store::open_in(dir.path(), false).expect("open");
 
         store.set_settings(Settings {
-            refresh_interval_secs: 300,
+            legacy_refresh_interval_secs: None,
             core_row_span: 3,
             row_gap_px: 10,
             host_overflow_mode: HostOverflowMode::Tabs,
@@ -1301,7 +1379,7 @@ mod tests {
 
         let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.data(), store.data());
-        assert_eq!(reopened.settings().refresh_interval_secs, 300);
+        assert_eq!(reopened.settings().core_row_span, 3);
         assert_eq!(reopened.settings().row_gap_px, 10);
         assert!(!reopened.settings().notify_on_approval_needed);
         assert_eq!(reopened.hosts().len(), 2);
