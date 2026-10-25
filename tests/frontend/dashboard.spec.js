@@ -1132,6 +1132,107 @@ test("a refused volume save puts the tick back", async ({ page, baseURL }) => {
   await expect(box).toBeChecked();
 });
 
+test("ticking a volume, or a poll adding and removing a mount, keeps the machine's typed limits (#620)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const hosts = model.sources.find(s => s.id === "hosts");
+  const row = hosts.rows.find(r => (r.volumes || []).length);
+  const mount = row.volumes[0].mount;
+  const section = await configureMachines(page);
+  const block = machine(section, row.id);
+  await block.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await limit(block, "RAM warning (%)").fill("42");
+  // A poll that brings a mount (removable media) and one that takes it away.
+  const withUsb = hosts.rows.map(r => r.id === row.id
+    ? { ...r, volumes: [...r.volumes, { ...r.volumes[0], mount: "/Volumes/USB" }] }
+    : r);
+  await page.evaluate(next => window.__SET_SOURCE_ROWS__("hosts", next), withUsb);
+  await expect(block.locator('input[data-mount="/Volumes/USB"]')).toHaveCount(1);
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("42");
+  await page.evaluate(next => window.__SET_SOURCE_ROWS__("hosts", next), hosts.rows);
+  await expect(block.locator('input[data-mount="/Volumes/USB"]')).toHaveCount(0);
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("42");
+  // Ticking a volume repaints the list from Rust's answer, not the limits.
+  await block.locator(`input[data-mount="${mount}"]`).click();
+  await expect.poll(() => commandArgs(page, "machine_set_volume_hidden")).toHaveLength(1);
+  await expect(block.locator(`input[data-mount="${mount}"]`)).not.toBeChecked();
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("42");
+  await expect(limit(block, "RAM warning (%)")).toBeEnabled();
+  await expect(block.getByLabel("Use shared defaults", { exact: true })).not.toBeChecked();
+});
+
+test("after a shared save, unticking Use shared defaults prefills the new defaults, and a ticked machine shows them (#620)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [first, second] = model.sources.find(s => s.id === "hosts").rows;
+  const section = await configureMachines(page);
+  const shared = machine(section, "defaults");
+  const inheriting = machine(section, first.id);
+  // The second machine holds a saved override, then ticks the box locally.
+  const overridden = machine(section, second.id);
+  await overridden.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await limit(overridden, "RAM warning (%)").fill("50");
+  await limit(overridden, "RAM critical (%)").fill("60");
+  await overridden.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
+  await overridden.getByLabel("Use shared defaults", { exact: true }).check();
+  await limit(shared, "RAM warning (%)").fill("80");
+  await limit(shared, "RAM critical (%)").fill("95");
+  await shared.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(2);
+  await expect(limit(overridden, "RAM warning (%)")).toHaveValue("80");
+  await expect(limit(overridden, "RAM warning (%)")).toBeDisabled();
+  await inheriting.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await expect(limit(inheriting, "RAM warning (%)")).toHaveValue("80");
+  await expect(limit(inheriting, "RAM critical (%)")).toHaveValue("95");
+  // Apply sends what is shown: nothing for the ticked block, 80/95 for the unticked.
+  await overridden.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(async () => (await commandArgs(page, "machine_save_alerts")).at(-1))
+    .toEqual({ hostId: second.id, thresholds: null, width: expect.any(Number) });
+  await inheriting.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(async () => (await commandArgs(page, "machine_save_alerts")).at(-1))
+    .toEqual({ hostId: first.id, thresholds: expect.objectContaining({ ramWarning: 80, ramCritical: 95 }), width: expect.any(Number) });
+  await overridden.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await expect(limit(overridden, "RAM warning (%)")).toBeEnabled();
+});
+
+// Several 1s polls: every render calls refreshDefaults on a kept block.
+const afterRepaints = async (page) => {
+  const count = () => page.evaluate(() => window.__CALLS__.length);
+  const start = await count();
+  await expect.poll(count, { timeout: 8000 }).toBeGreaterThan(start + 2);
+};
+
+test("a typed limit survives tick, a repaint and untick (#620)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [first] = model.sources.find(s => s.id === "hosts").rows;
+  const block = machine(await configureMachines(page), first.id);
+  const toggle = block.getByLabel("Use shared defaults", { exact: true });
+  await toggle.uncheck();
+  await limit(block, "RAM warning (%)").fill("42");
+  await toggle.check();
+  await afterRepaints(page);
+  await toggle.uncheck();
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("42");
+});
+
+test("a saved override survives a local tick, a repaint and untick, and Apply sends it (#620)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [first] = model.sources.find(s => s.id === "hosts").rows;
+  const block = machine(await configureMachines(page), first.id);
+  const toggle = block.getByLabel("Use shared defaults", { exact: true });
+  await toggle.uncheck();
+  await limit(block, "RAM warning (%)").fill("50");
+  await limit(block, "RAM critical (%)").fill("60");
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
+  await toggle.check();
+  await afterRepaints(page);
+  await toggle.uncheck();
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("50");
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(async () => (await commandArgs(page, "machine_save_alerts")).at(-1)).toEqual(
+    { hostId: first.id, thresholds: expect.objectContaining({ ramWarning: 50, ramCritical: 60 }), width: expect.any(Number) });
+});
+
 test("a fresh dashboard groups Runners by OS and architecture, and an added Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
   const original = await openDashboard(page, baseURL);
   expect(original.tiles.find(t => t.source === "ghRunners").runnerView).toBe("grouped");

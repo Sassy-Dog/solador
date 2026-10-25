@@ -1123,7 +1123,7 @@ the bundle's floor.
 - **Where a setting lives**: see `app/README.md`'s section of that name — what
   changes a tile goes in its Configure, what reaches a source in Settings →
   Connections, what is app-wide in Settings. A shared setting edited from a tile
-  says it is shared. Its inventory names the follow-ups (#613–#616) for the
+  says it is shared. Its inventory names the follow-ups (#614–#616) for the
   settings that do not fit yet.
 - The Machines tile's Configure → **Machine alerts** has the shared CPU/RAM alert
   thresholds and a per-machine override for each machine, including the local
