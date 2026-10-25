@@ -82,9 +82,12 @@ so it can still be unhidden. It lives there rather than in Connections because
 hiding a volume changes what the Machines tile judges, not how the machine is
 reached, and it sits beside the limits that judge the volumes that remain. A
 hidden volume is still measured but leaves the Machines tile,
-the Hosts panel cards, the Disk strip, the status line and attention. Both
-controls write `Host.hidden_volume_mounts` or `Settings.local_hidden_volume_mounts`
-in `store.json`, and the filter runs once per frame in the `cockpit` command's
+the Hosts panel cards, the Disk strip, the status line and attention. All three
+(the strip's Hide, Detail's Hide / Unhide and Configure's **Volumes shown**) go
+through `machine_set_volume_hidden`, which writes `Host.hidden_volume_mounts` or
+`Settings.local_hidden_volume_mounts` in `store.json` without reloading the poll
+set, so a hide never costs a host its sparkline history (the original view's
+`applyHiddenMounts()` vs `reload()`). The filter runs once per frame in the `cockpit` command's
 `apply_machine_preferences` (`app/src-tauri/src/volumes.rs`), on `cockpit_view`'s
 payload and before either view reads the cards.
 
@@ -2135,8 +2138,7 @@ the store file, or a log line can carry a value.
 **Applied without a restart.** Adding, removing or disabling a host rebuilds the
 poll set in place: tasks are *reconciled*, not torn down, so every host that did
 not change keeps its own task — and therefore its sparkline history, its failure
-streak and its last-success time. Unhiding a volume deliberately skips that
-reload entirely, mirroring the original view's `applyHiddenMounts()` vs `reload()`.
+streak and its last-success time.
 
 Two things worth knowing about this surface:
 

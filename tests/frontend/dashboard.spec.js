@@ -975,6 +975,8 @@ test("a failed container rule save says so beside the section (#613)", async ({ 
   await section.locator('[data-container-rule="0"] [data-action="container-rule-remove"]').click();
   await expect(section.locator(".db-action-error")).toHaveText("Could not save the container rules.");
   await expect(section.locator("[data-container-rule]")).toHaveCount(t.rows.length);
+});
+
 async function configureMachines(page) {
   await page.locator('#dashboardOverview [data-action="edit"]').click();
   await tile(page, "hosts").locator('[data-action="configure"]').click();
@@ -1052,6 +1054,41 @@ test("saving one machine's limits keeps another machine's unsaved draft", async 
   await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
   await expect(limit(other, "RAM warning (%)")).toHaveValue("42");
   await expect(other.getByLabel("Use shared defaults", { exact: true })).not.toBeChecked();
+});
+
+test("saving the shared limits keeps a machine's unsaved draft", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [, second] = model.sources.find(s => s.id === "hosts").rows;
+  const section = await configureMachines(page);
+  const other = machine(section, second.id);
+  await other.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await limit(other, "RAM warning (%)").fill("42");
+  const shared = machine(section, "defaults");
+  await limit(shared, "RAM warning (%)").fill("80");
+  await limit(shared, "RAM critical (%)").fill("95");
+  await shared.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
+  await shared.getByRole("button", { name: "Reset defaults", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(2);
+  await expect(other.getByLabel("Use shared defaults", { exact: true })).not.toBeChecked();
+  await expect(limit(other, "RAM warning (%)")).toHaveValue("42");
+  await expect(limit(other, "RAM warning (%)")).toBeEnabled();
+});
+
+test("an invalid unsaved limit does not block the tile's own Apply", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureMachines(page);
+  const shared = machine(section, "defaults");
+  await limit(shared, "RAM warning (%)").fill("150");
+  await page.locator("#dashboard-title").fill("Machines now");
+  await action(page, "apply").click();
+  await expect.poll(() => commandArgs(page, "dashboard_save")).toHaveLength(1);
+  expect(await commandArgs(page, "machine_save_alerts")).toEqual([]);
+  // The block's own Apply is still what gates a limit.
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  await limit(machine(page.locator("[data-machine-alerts]"), "defaults"), "RAM warning (%)").fill("150");
+  await machine(page.locator("[data-machine-alerts]"), "defaults").getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  expect(await commandArgs(page, "machine_save_alerts")).toEqual([]);
 });
 
 test("a refused limits save says so beside the machine and keeps the draft", async ({ page, baseURL }) => {

@@ -802,10 +802,23 @@
     const blocks = box.querySelector(".db-machine-blocks");
     const existing = new Map([...blocks.children].map((el) => [el.dataset.machine, el]));
     blocks.replaceChildren(...wanted.map((entry) => {
-      const signature = JSON.stringify([entry.title, entry.alerts,
+      // A block's signature covers only what it renders on its own: the
+      // shared defaults ride on every machine's editor, but a machine's
+      // limits change only when it saves, or while it follows the defaults
+      // (and then they are refreshed in place below). So saving the shared
+      // limits never rebuilds, and never reverts, another machine's draft.
+      const a = entry.alerts;
+      const signature = JSON.stringify([entry.title, a.hostId, a.inherited, a.inherited ? null : a.fields,
         entry.volumes && [(entry.volumes.volumes || []).map((v) => v.mount), entry.volumes.hiddenVolumes || []]]);
       let block = existing.get(entry.key);
-      if (block?.signature === signature) return block;
+      if (block?.signature === signature) {
+        block.alertDefaults = a.defaults;
+        const follows = block.querySelector(".db-machine-inherit input");
+        if (a.inherited && follows?.checked)
+          for (const field of a.fields)
+            block.querySelector(`#${CSS.escape(`dashboard-machine-${entry.key}-${field.id}`)}`).value = String(field.value);
+        return block;
+      }
       block = machineBlock(entry);
       block.signature = signature;
       return block;
@@ -819,6 +832,7 @@
   function machineBlock({ key, title, alerts: g, volumes }) {
     const block = node("div", "db-machine-block");
     block.dataset.machine = key;
+    block.alertDefaults = g.defaults;
     block.append(node("h4", "", title), node("p", "db-sub", g.help));
     const inherit = g.shared ? null : document.createElement("input");
     const inputs = new Map();
@@ -840,6 +854,10 @@
       input.required = true;
       input.value = String(entry.value);
       input.id = `dashboard-machine-${key}-${entry.id}`;
+      // No form owns it: these limits are not the tile's, so they take no
+      // part in the tile Apply's validation or in formTile()'s FormData. The
+      // block's own reportValidity() gates the limits.
+      input.setAttribute("form", "dashboard-limits-no-form");
       label.htmlFor = input.id;
       input.disabled = !!inherit?.checked;
       inputs.set(entry.id, input);
@@ -852,7 +870,7 @@
     inherit?.addEventListener("input", () => {
       if (inherit.checked) draft = Object.fromEntries([...inputs].map(([k, input]) => [k, input.value]));
       for (const [k, input] of inputs) {
-        input.value = inherit.checked ? String(g.defaults[k]) : draft[k];
+        input.value = inherit.checked ? String(block.alertDefaults[k]) : draft[k];
         input.disabled = inherit.checked;
       }
     });
