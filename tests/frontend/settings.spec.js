@@ -971,6 +971,12 @@ test("repos live under their account card, edited behind Configure", async ({ pa
   await expect(config).toBeHidden();
   await row.locator(".btn.configure").click();
   await expect(config).toBeVisible();
+  // The disclosure's layout (#620): a 12px indent, an 8px gap, centred rows.
+  const layout = await config.evaluate((el) => {
+    const css = getComputedStyle(el);
+    return { display: css.display, paddingLeft: css.paddingLeft, gap: css.columnGap, alignItems: css.alignItems };
+  });
+  expect(layout).toEqual({ display: "flex", paddingLeft: "12px", gap: "8px", alignItems: "center" });
   // `input.input` inside the disclosure, not the id: the slug carries a `/`,
   // which a CSS id selector cannot spell unescaped.
   await config.locator("input.input").fill("release.yml, deploy.yml");

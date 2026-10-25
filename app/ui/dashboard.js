@@ -808,19 +808,22 @@
       // (and then they are refreshed in place below). So saving the shared
       // limits never rebuilds, and never reverts, another machine's draft.
       const a = entry.alerts;
-      const signature = JSON.stringify([entry.title, a.hostId, a.inherited, a.inherited ? null : a.fields,
-        entry.volumes && [(entry.volumes.volumes || []).map((v) => v.mount), entry.volumes.hiddenVolumes || []]]);
+      const signature = JSON.stringify([entry.title, a.hostId, a.inherited, a.inherited ? null : a.fields]);
+      // The volume list has its own signature: a tick, or a mount a poll adds
+      // or removes, repaints the list and never the limits being typed above it.
+      const volumeSignature = entry.volumes && volumesSignature(entry.volumes);
       let block = existing.get(entry.key);
       if (block?.signature === signature) {
-        block.alertDefaults = a.defaults;
-        const follows = block.querySelector(".db-machine-inherit input");
-        if (a.inherited && follows?.checked)
-          for (const field of a.fields)
-            block.querySelector(`#${CSS.escape(`dashboard-machine-${entry.key}-${field.id}`)}`).value = String(field.value);
+        block.refreshDefaults(a);
+        if (entry.volumes && block.volumeSignature !== volumeSignature) {
+          block.querySelector(".db-machine-volumes").replaceWith(machineVolumes(entry.volumes));
+          block.volumeSignature = volumeSignature;
+        }
         return block;
       }
       block = machineBlock(entry);
       block.signature = signature;
+      block.volumeSignature = volumeSignature;
       return block;
     }));
     for (const control of box.querySelectorAll("button, .db-machine-volume input"))
@@ -867,6 +870,16 @@
     // Typing a limit is not an edit of the tile: keep it out of the preview.
     block.addEventListener("input", (event) => event.stopPropagation());
     let draft = Object.fromEntries(g.fields.map((entry) => [entry.id, String(entry.value)]));
+    // Called when the shared defaults (or this machine's own saved state)
+    // change under a block that is kept in place. A ticked box always shows
+    // the current defaults, and a block that follows them forgets the draft it
+    // was built with, so unticking prefills the new ones.
+    block.refreshDefaults = (next) => {
+      block.alertDefaults = next.defaults;
+      if (inherit && !inherit.checked) return;
+      draft = Object.fromEntries(Object.keys(next.defaults).map((k) => [k, String(next.defaults[k])]));
+      if (inherit) for (const [k, input] of inputs) input.value = String(next.defaults[k]);
+    };
     inherit?.addEventListener("input", () => {
       if (inherit.checked) draft = Object.fromEntries([...inputs].map(([k, input]) => [k, input.value]));
       for (const [k, input] of inputs) {
@@ -893,36 +906,40 @@
       actions.append(reset);
     }
     block.append(fields, node("p", "db-sub", g.rangeHelp), actions);
-    if (volumes) {
-      const mounts = new Set([...(volumes.volumes || []).map((v) => v.mount), ...(volumes.hiddenVolumes || [])]);
-      const hidden = new Set(volumes.hiddenVolumes || []);
-      const list = node("div", "db-machine-volumes");
-      list.append(node("h5", "", L("hiddenVolumes")));
-      if (!mounts.size) list.append(node("p", "db-sub", L("hiddenVolumesNone")));
-      for (const mount of [...mounts].sort()) {
-        const row = node("label", "db-machine-volume"), box = document.createElement("input");
-        box.type = "checkbox";
-        box.checked = !hidden.has(mount);
-        box.dataset.action = "volume-hidden";
-        box.dataset.id = volumes.id;
-        box.dataset.mount = mount;
-        box.dataset.origin = "configure";
-        box.addEventListener("change", () => {
-          // Rust owns the answer: the list repaints from what it saved.
-          box.dataset.hidden = String(!box.checked);
-          setVolumeHidden(box).then(() => {
-            // A refused save changes no list, so no repaint puts the tick back.
-            const now = source("hosts")?.rows.find((r) => r.id === volumes.id)?.hiddenVolumes || [];
-            if (box.isConnected) box.checked = !now.includes(mount);
-          });
-        });
-        row.append(box, node("span", "db-machine-mount", mount));
-        list.append(row);
-      }
-      list.append(node("p", "db-sub", L("hiddenVolumesHelp")));
-      block.append(list);
-    }
+    if (volumes) block.append(machineVolumes(volumes));
     return block;
+  }
+  function volumesSignature(volumes) {
+    return JSON.stringify([(volumes.volumes || []).map((v) => v.mount), volumes.hiddenVolumes || []]);
+  }
+  function machineVolumes(volumes) {
+    const mounts = new Set([...(volumes.volumes || []).map((v) => v.mount), ...(volumes.hiddenVolumes || [])]);
+    const hidden = new Set(volumes.hiddenVolumes || []);
+    const list = node("div", "db-machine-volumes");
+    list.append(node("h5", "", L("hiddenVolumes")));
+    if (!mounts.size) list.append(node("p", "db-sub", L("hiddenVolumesNone")));
+    for (const mount of [...mounts].sort()) {
+      const row = node("label", "db-machine-volume"), box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = !hidden.has(mount);
+      box.dataset.action = "volume-hidden";
+      box.dataset.id = volumes.id;
+      box.dataset.mount = mount;
+      box.dataset.origin = "configure";
+      box.addEventListener("change", () => {
+        // Rust owns the answer: the list repaints from what it saved.
+        box.dataset.hidden = String(!box.checked);
+        setVolumeHidden(box).then(() => {
+          // A refused save changes no list, so no repaint puts the tick back.
+          const now = source("hosts")?.rows.find((r) => r.id === volumes.id)?.hiddenVolumes || [];
+          if (box.isConnected) box.checked = !now.includes(mount);
+        });
+      });
+      row.append(box, node("span", "db-machine-mount", mount));
+      list.append(row);
+    }
+    list.append(node("p", "db-sub", L("hiddenVolumesHelp")));
+    return list;
   }
   function openInspector(next) {
     status("");
