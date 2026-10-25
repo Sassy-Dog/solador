@@ -74,13 +74,20 @@ the dot and attention, and Detail still lists them.
 **Hiding volumes.** Hovering or focusing a machine's card on the Machines tile
 shows a **Hide** beside the Disk strip's mount, which hides that volume; the strip
 then names the next-fullest one. Each machine's expanded Detail lists its volumes
-with a **Hide** button, and its hidden mounts beneath with **Unhide**. Settings →
-Connections → the machine (including **This machine**) shows the same list as
-checkboxes: every mount the machine last reported, plus any hidden mount it no
-longer reports. A hidden volume is still measured but leaves the Machines tile,
-the Hosts panel cards, the Disk strip, the status line and attention. Both
-controls write `Host.hidden_volume_mounts` or `Settings.local_hidden_volume_mounts`
-in `store.json`, and the filter runs once per frame in the `cockpit` command's
+with a **Hide** button, and its hidden mounts beneath with **Unhide**. Those are
+shortcuts. The list's one home is the Machines tile's **Configure** → **Volumes
+shown**, under each machine (including **This machine**): every mount the
+machine last reported as a checkbox, plus any hidden mount it no longer reports,
+so it can still be unhidden. It lives there rather than in Connections because
+hiding a volume changes what the Machines tile judges, not how the machine is
+reached, and it sits beside the limits that judge the volumes that remain. A
+hidden volume is still measured but leaves the Machines tile,
+the Hosts panel cards, the Disk strip, the status line and attention. All three
+(the strip's Hide, Detail's Hide / Unhide and Configure's **Volumes shown**) go
+through `machine_set_volume_hidden`, which writes `Host.hidden_volume_mounts` or
+`Settings.local_hidden_volume_mounts` in `store.json` without reloading the poll
+set, so a hide never costs a host its sparkline history (the original view's
+`applyHiddenMounts()` vs `reload()`). The filter runs once per frame in the `cockpit` command's
 `apply_machine_preferences` (`app/src-tauri/src/volumes.rs`), on `cockpit_view`'s
 payload and before either view reads the cards.
 
@@ -90,16 +97,23 @@ remote Macs use the same OS reader (`crates/thermal`); remote Macs need an agent
 with thermal collection enabled. Linux hosts do not currently report a pressure
 state, and their temperatures are not converted into an assumed Normal state.
 
-Set shared CPU and RAM warning/critical percentages under **Settings → Preferences
-→ Machine alerts**. Defaults are 70% warning and 90% critical for both. Each
+Set shared CPU and RAM warning/critical percentages in a Machines tile's
+**Configure** → **Machine alerts** (rule 4 of **Where a setting lives**), whose
+note reads `Shared · saved immediately · applies to every Machines tile, Detail
+and the Full view.` Defaults are 70% warning and 90% critical for both. Each
 percentage must be a whole number from 1 to 100, with warning below critical;
-the thresholds are inclusive. To give a machine different limits, open it under
-**Settings → Connections**, clear **Use shared defaults**, and **Apply thresholds**.
-This includes **This machine**. Restoring shared defaults removes the override,
-so subsequent shared changes apply to that machine too. Overrides follow stable
-machine IDs and are removed when a remote host is deleted.
+the thresholds are inclusive. To give a machine different limits, clear **Use
+shared defaults** in that machine's block, in the same section, and **Apply
+thresholds**. This includes **This machine**. Restoring shared defaults removes
+the override, so subsequent shared changes apply to that machine too. Overrides
+follow stable machine IDs and are removed when a remote host is deleted. Each
+block saves on its own click (`machine_save_alerts`), not with the tile's
+**Apply** and outside the dashboard's undo history, because the limits are not
+the tile's; saving one machine leaves another's unsaved draft alone. Settings
+carries none of it any more: the machine's address, port, token and pairing stay
+under Connections.
 
-The preferences apply on the next render without restarting or resetting history.
+The limits apply on the next render without restarting or resetting history.
 Overall CPU/RAM colors, the Machines row dot and the attention count use the same limits.
 The CPU limits apply to **sustained** load (#545): CPU counts as over a threshold
 only when the lowest of the last 60 samples (about a minute at the 1 s poll) is at
@@ -406,7 +420,7 @@ does not fit it yet:
 | Container Group Rules | Containers tile Configure, marked shared (#613) | rule 4 |
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates, Full view layout | Settings | rule 3 |
-| CPU/RAM thresholds (Preferences), per-machine overrides (Connections), hidden volumes (three places) | split | [#612](https://github.com/Sassy-Dog/solador/issues/612): Machines tile Configure |
+| CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
 | Panel Poll Cadence | Settings → Preferences | [#614](https://github.com/Sassy-Dog/solador/issues/614): each tile's Configure, with its floor |
 | Refresh Interval (GitHub, Services, Claude rollups) | Settings → Preferences | [#615](https://github.com/Sassy-Dog/solador/issues/615): rule 3 or rule 4, to decide |
 | CPU core rows, Row spacing | Settings → Preferences | [#616](https://github.com/Sassy-Dog/solador/issues/616): Machines tile or Full view layout, to decide |
@@ -1940,7 +1954,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
 | `settings_save_general` | refresh interval, core-row span, row spacing |
-| `settings_save_machine_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID). Null `thresholds` resets shared defaults or removes that machine's override. Validation and save failures preserve the previous effective values; the response also carries `saved` so the form clears only successfully submitted drafts |
+| `machine_save_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID), from the Machines tile's Configure. Null `thresholds` resets shared defaults or removes that machine's override. Validation (`store::machine_alerts`) and save failures preserve the previous effective values and reject with the sentence; success answers with the re-rendered dashboard |
 | `settings_save_panel_interval` | one panel's poll cadence, by its `panel_intervals` key. **Refused, not clamped**: a value under the panel's floor writes nothing and comes back as `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose |
 | `settings_clear_panel_interval` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
@@ -1952,7 +1966,6 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it. Add takes an optional `tlsFingerprint` — the one the operator **trusted** — validated through `crates/certpin` and stored as `Host.tls_fingerprint` (absent ⇒ plain HTTP) |
 | `settings_probe_host_certificate` | pairing step one (#448): the certificate an address presents, fetched **without trusting it** → `{status: "tls" \| "no-tls" \| "failed", fingerprint, message}`. One unauthenticated request; nothing stored, no token sent |
 | `settings_save_host` | edit a host's name / address / port and, on request, replace its token. An optional `tlsFingerprint` **replaces the pin** (Re-pair); absent leaves it exactly as it is, so a rename can never touch it |
-| `settings_set_volume_hidden` | one mount hidden or shown, on a host or on the local list (the Connections volume checklist and the Hosts tab's Unhide) |
 | `settings_test_host` | one `/v1/health` probe → the original result line, through the pinned client for a paired host. The answer also carries `certificateChanged`, which is what offers **Re-pair** the moment Test finds it |
 | `settings_save_account` | create or edit a [vendor account](#the-accounts-tab) — `id: null` adds, an id edits. The token is minted as **its own** credential-store item (`SecretKey::VendorToken`), never shared with another account. An empty token is a legitimate save, not a failure: the row reads **No token** and the operator fills it in later. Wakes the GitHub loop, because accounts *are* that pass's identities |
 | `settings_set_account_enabled` | one account in or out of the GitHub pass, without deleting it or its token |
@@ -2018,9 +2031,9 @@ worth hearing about, and one that broke and recovered while we slept compares
 equal and stays quiet on its own.
 
 Every mutation returns `{status, settings}`, and the frontend re-renders saved
-state from the returned `settings`. Machine-threshold saves also return `saved`
-so the form can clear successfully submitted drafts while preserving rejected
-values and any newer edits made while the save was pending.
+state from the returned `settings`. (The machine-alert limits and hidden volumes
+are not Settings mutations any more: they answer with the re-rendered dashboard,
+like the runner group labels.)
 
 ### The Layout tab
 
@@ -2125,8 +2138,7 @@ the store file, or a log line can carry a value.
 **Applied without a restart.** Adding, removing or disabling a host rebuilds the
 poll set in place: tasks are *reconciled*, not torn down, so every host that did
 not change keeps its own task — and therefore its sparkline history, its failure
-streak and its last-success time. Unhiding a volume deliberately skips that
-reload entirely, mirroring the original view's `applyHiddenMounts()` vs `reload()`.
+streak and its last-success time.
 
 Two things worth knowing about this surface:
 
@@ -2891,9 +2903,9 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
-| `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
+| `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
-| `machine_set_volume_hidden` / `settings_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under Settings → Connections → that machine | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
+| `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 

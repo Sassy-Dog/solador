@@ -36,34 +36,12 @@ async function stubIpc(page, cockpit, settings, probe, updates, discover) {
   await page.addInitScript(
     ({ cockpit, settings, testResult, probe, updates, discover }) => {
       window.__CALLS__ = [];
-      const defaultAlerts = structuredClone(settings.general.machineAlerts);
       window.__TAURI__ = {
         core: {
           invoke: async (command, args) => {
             window.__CALLS__.push({ command, args });
             if (command === "cockpit") return cockpit;
             if (command === "settings_view") return settings;
-            if (command === "settings_save_machine_alerts") {
-              if (window.__REJECT_MACHINE_ALERTS__) return {
-                saved:false, status:'Failed: Each warning threshold must be lower than its critical threshold.', settings,
-              };
-              const groups = [settings.general.machineAlerts, settings.hosts.localMachineAlerts,
-                ...settings.hosts.rows.map(host => host.machineAlerts)];
-              const group = groups.find(group => group.hostId === args.hostId);
-              const values = args.thresholds || (args.hostId ? group.defaults : defaultAlerts.defaults);
-              group.inherited = !!args.hostId && args.thresholds === null;
-              group.fields.forEach(field => { field.value = values[field.id]; });
-              if (!args.hostId) for (const item of groups) {
-                item.defaults = values;
-                if (item.inherited) item.fields.forEach(field => { field.value = values[field.id]; });
-              }
-              const result = {saved:true, status:'Saved.', settings:structuredClone(settings)};
-              if (window.__HOLD_MACHINE_ALERTS__) {
-                window.__HOLD_MACHINE_ALERTS__ = false;
-                return await new Promise(resolve => { window.__RELEASE_MACHINE_ALERTS__ = () => resolve(result); });
-              }
-              return result;
-            }
             if (command === "settings_test_host") return { id: args.id, result: testResult };
             // The probe answers in its own shape, not `{status, settings}`: a
             // finding is not a mutation, and the tab renders it without one.
@@ -423,123 +401,6 @@ test("General shows the stored values and applies them in one command", async ({
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
 });
 
-test("machine alert defaults save and reset independently of other preferences", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  await tab(page, "general").click();
-  const group = page.locator('.machine-alerts');
-  for (const input of settings.general.machineAlerts.fields) {
-    await expect(group.getByLabel(input.label, { exact: true })).toHaveValue(String(input.value));
-  }
-  await group.getByLabel('RAM warning (%)', { exact: true }).fill('90');
-  await group.getByLabel('RAM critical (%)', { exact: true }).fill('98');
-  await group.getByRole('button', { name: 'Apply thresholds', exact: true }).click();
-  const limits = Object.fromEntries(settings.general.machineAlerts.fields.map(f => [f.id, f.value]));
-  expect(await calls(page, 'settings_save_machine_alerts')).toEqual([{
-    command: 'settings_save_machine_alerts', args: {hostId:null, thresholds:{...limits,ramWarning:90,ramCritical:98}},
-  }]);
-  expect(await calls(page, 'settings_save_general')).toEqual([]);
-  await group.getByRole('button', { name: 'Reset defaults', exact: true }).click();
-  expect((await calls(page, 'settings_save_machine_alerts')).at(-1).args).toEqual({hostId:null,thresholds:null});
-});
-
-test("remote and local machine thresholds can override or inherit shared defaults", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  for (const [connection, hostId] of [
-    [settings.connections.rows.find(r => r.entityId === settings.hosts.rows[0].id).id, settings.hosts.rows[0].id],
-    [null, 'local'],
-  ]) {
-    if (connection) await openConnection(page, connection);
-    else {
-      await tab(page, 'connections').click();
-      await page.locator('.connection-automatic [data-kind="local"]').click();
-    }
-    const group = page.locator('.machine-alerts');
-    await group.getByLabel('Use shared defaults', { exact: true }).check();
-    await expect(group.getByLabel('RAM warning (%)', { exact: true })).toBeDisabled();
-    await group.getByLabel('Use shared defaults', { exact: true }).uncheck();
-    await group.getByLabel('RAM warning (%)', { exact: true }).fill('90');
-    await group.getByLabel('RAM critical (%)', { exact: true }).fill('98');
-    await group.getByRole('button', { name: 'Apply thresholds', exact: true }).click();
-    expect((await calls(page, 'settings_save_machine_alerts')).at(-1).args).toMatchObject({
-      hostId, thresholds:{ramWarning:90,ramCritical:98},
-    });
-    await group.getByLabel('Use shared defaults', { exact: true }).check();
-    await group.getByRole('button', { name: 'Apply thresholds', exact: true }).click();
-    expect((await calls(page, 'settings_save_machine_alerts')).at(-1).args).toEqual({hostId,thresholds:null});
-  }
-});
-
-test("machine thresholds retain rejected edits and reset only their own submitted fields", async ({ page, baseURL }) => {
-  await openSettings(page, baseURL);
-  await tab(page, 'general').click();
-  const group = page.locator('.machine-alerts');
-  await group.getByLabel('RAM warning (%)', { exact: true }).fill('90');
-  await group.getByLabel('RAM critical (%)', { exact: true }).fill('80');
-  await page.evaluate(() => { window.__REJECT_MACHINE_ALERTS__ = true; });
-  await group.getByRole('button', { name:'Apply thresholds', exact:true }).click();
-  await expect(page.locator('#settingsStatus')).toContainText('Each warning threshold');
-  await expect(group.getByLabel('RAM warning (%)', { exact: true })).toHaveValue('90');
-  await expect(group.getByLabel('RAM critical (%)', { exact: true })).toHaveValue('80');
-  await page.evaluate(() => { window.__REJECT_MACHINE_ALERTS__ = false; });
-  await page.locator('#general-core-rows').fill('1');
-  await group.getByRole('button', { name:'Reset defaults', exact:true }).click();
-  await expect(group.getByLabel('RAM warning (%)', { exact: true })).toHaveValue('70');
-  await expect(group.getByLabel('RAM critical (%)', { exact: true })).toHaveValue('90');
-  await expect(page.locator('#general-core-rows')).toHaveValue('1');
-  await group.getByLabel('RAM warning (%)', { exact: true }).fill('');
-  const before = (await calls(page, 'settings_save_machine_alerts')).length;
-  await group.getByRole('button', { name:'Apply thresholds', exact:true }).click();
-  expect((await calls(page, 'settings_save_machine_alerts')).length).toBe(before);
-});
-
-for (const laterValue of ['85', '70']) test(`machine alert saves preserve a later numeric draft of ${laterValue}`, async ({ page, baseURL }) => {
-  await openSettings(page, baseURL);
-  await tab(page, 'general').click();
-  const group = page.locator('.machine-alerts');
-  await group.getByLabel('RAM warning (%)', {exact:true}).fill('80');
-  await page.evaluate(() => { window.__HOLD_MACHINE_ALERTS__ = true; });
-  await group.getByRole('button', {name:'Apply thresholds',exact:true}).click();
-  await expect.poll(() => page.evaluate(() => typeof window.__RELEASE_MACHINE_ALERTS__)).toBe('function');
-  await group.getByLabel('RAM warning (%)', {exact:true}).fill(laterValue);
-  await page.evaluate(() => window.__RELEASE_MACHINE_ALERTS__());
-  await expect(page.locator('#settingsStatus')).toHaveText('Saved.');
-  await expect(group.getByLabel('RAM warning (%)', {exact:true})).toHaveValue(laterValue);
-});
-
-test("machine alert saves preserve a later inheritance draft", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  await openConnection(page, `host:${settings.hosts.rows[0].id}`);
-  const group = page.locator('.machine-alerts');
-  await group.getByLabel('Use shared defaults',{exact:true}).uncheck();
-  await group.getByLabel('RAM warning (%)', {exact:true}).fill('85');
-  await page.evaluate(() => { window.__HOLD_MACHINE_ALERTS__ = true; });
-  await group.getByRole('button', {name:'Apply thresholds',exact:true}).click();
-  await expect.poll(() => page.evaluate(() => typeof window.__RELEASE_MACHINE_ALERTS__)).toBe('function');
-  await group.getByLabel('Use shared defaults',{exact:true}).check();
-  await page.evaluate(() => window.__RELEASE_MACHINE_ALERTS__());
-  await expect(page.locator('#settingsStatus')).toHaveText('Saved.');
-  await expect(group.getByLabel('Use shared defaults',{exact:true})).toBeChecked();
-  await expect(group.getByLabel('RAM warning (%)', {exact:true})).toBeDisabled();
-  await expect(group.getByLabel('RAM warning (%)', {exact:true})).toHaveValue('70');
-});
-
-test("a machine inheritance draft survives an unrelated save and prompts before leaving", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  const host = settings.hosts.rows[0];
-  await openConnection(page, `host:${host.id}`);
-  const group = page.locator('.machine-alerts');
-  await group.getByLabel('Use shared defaults', {exact:true}).uncheck();
-  // A checkbox-only edit is still a draft, even before a percentage changes.
-  await tab(page, 'general').click();
-  await expect(page.locator('#settingsConfirm')).toBeVisible();
-  await page.locator('#settingsConfirm').getByRole('button', {name:settings.connections.keepLabel, exact:true}).click();
-  await group.getByLabel('RAM warning (%)', {exact:true}).fill('85');
-  await page.getByLabel(settings.connections.monitorLabel, {exact:true}).click();
-  await expect(group.getByLabel('Use shared defaults', {exact:true})).not.toBeChecked();
-  await expect(group.getByLabel('RAM warning (%)', {exact:true})).toBeEnabled();
-  await expect(group.getByLabel('RAM warning (%)', {exact:true})).toHaveValue('85');
-});
-
 test("each panel cadence applies on its own row and paints Rust's two sentences", async ({
   page,
   baseURL,
@@ -836,43 +697,17 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
     // it is the cockpit that filters on `enabled`.
     expect(await row.locator(".toggle").isChecked()).toBe(host.enabled);
   }
-
-  // Hidden volumes hang off their own host's row, with the unhide button that
-  // addresses that host.
-  const withHidden = settings.hosts.rows.find((h) => h.volumes.some((v) => v.hidden));
-  const hiddenMounts = withHidden.volumes.filter((v) => v.hidden).map((v) => v.mount);
-  await openConnection(page, `host:${withHidden.id}`);
-  const hidden = page.locator(`.host-row[data-host="${withHidden.id}"] .hidden-row`);
-  await expect(hidden).toHaveCount(hiddenMounts.length);
-  await expect(hidden.first().locator(".mount")).toHaveText(hiddenMounts[0]);
-  await hidden.first().locator(".unhide").click();
-  expect(await calls(page, "settings_set_volume_hidden")).toEqual([
-    {
-      command: "settings_set_volume_hidden",
-      args: { hostId: withHidden.id, mount: hiddenMounts[0], hidden: false },
-    },
-  ]);
 });
 
-test("a machine's volume checklist shows every mount and hides one when unchecked", async ({ page, baseURL }) => {
+test("Settings carries no machine alert limits or volume list: they moved to the Machines tile's Configure (#612)", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "hosts").click();
-  const host = settings.hosts.rows.find((h) => h.volumes.some((v) => !v.hidden));
-  await openConnection(page, `host:${host.id}`);
-  const choices = page.locator(".volume-choice");
-  await expect(choices.locator(".mount")).toHaveText(host.volumes.map((v) => v.mount));
-  for (const [i, volume] of host.volumes.entries())
-    expect(await choices.nth(i).locator("input").isChecked()).toBe(!volume.hidden);
-  const shown = host.volumes.find((v) => !v.hidden);
-  // A click, not `uncheck()`: the stub answers with the fixture unchanged, so
-  // the re-render puts the tick back and `uncheck()` would wait for it forever.
-  await choices.locator(`input[data-mount="${shown.mount}"]`).click();
-  expect(await calls(page, "settings_set_volume_hidden")).toEqual([
-    {
-      command: "settings_set_volume_hidden",
-      args: { hostId: host.id, mount: shown.mount, hidden: true },
-    },
-  ]);
+  await tab(page, "general").click();
+  await expect(page.locator(".machine-alerts")).toHaveCount(0);
+  await openConnection(page, `host:${settings.hosts.rows[0].id}`);
+  await expect(page.locator(".machine-alerts, .volume-choice, .hidden-row")).toHaveCount(0);
+  await tab(page, "connections").click();
+  await page.locator('.connection-automatic [data-kind="local"]').click();
+  await expect(page.locator(".machine-alerts, .volume-choice")).toHaveCount(0);
 });
 
 // `#rrggbb` -> the `rgb(r, g, b)` a browser reports for a computed colour.

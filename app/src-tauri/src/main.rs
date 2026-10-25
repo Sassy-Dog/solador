@@ -2677,28 +2677,6 @@ fn agent_versions(app: &App) -> Vec<(Uuid, String)> {
         .collect()
 }
 
-/// The volumes each machine reported on its latest read, keyed like cards.
-/// A host that has never answered is absent: it has reported nothing.
-fn live_volumes(app: &App) -> Vec<(String, Vec<wire::Volume>)> {
-    let mut live: Vec<(String, Vec<wire::Volume>)> = {
-        let hosts = app.hosts.lock().expect("poll set poisoned");
-        hosts
-            .iter()
-            .filter_map(|polled| {
-                let state = polled.state.lock().expect("host state poisoned");
-                state
-                    .latest
-                    .as_ref()
-                    .map(|snapshot| (polled.key.id.to_string(), snapshot.volumes.clone()))
-            })
-            .collect()
-    };
-    if let Some(volumes) = app.local.lock().expect("local state poisoned").volumes() {
-        live.push((volumes::LOCAL.to_owned(), volumes));
-    }
-    live
-}
-
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
     // Read before the store's lock is taken, and never while it is held: the
@@ -2716,7 +2694,6 @@ fn settings_payload(app: &App) -> Value {
     let certificate_changed = certificate_changed_hosts(app);
     let plain_refused = plain_refused_hosts(app);
     let versions = agent_versions(app);
-    let live = live_volumes(app);
     let agent_release = app
         .agent_release
         .lock()
@@ -2736,7 +2713,6 @@ fn settings_payload(app: &App) -> Value {
             accounts: store.accounts(),
             certificate_changed: &certificate_changed,
             plain_refused: &plain_refused,
-            live_volumes: &live,
         },
         &stored,
         &facts,
@@ -2813,6 +2789,15 @@ fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         .unwrap_or_else(dashboard::default_layout);
     let mut hosts = cockpit(width, state.clone());
     hosts["id"] = json!("hosts");
+    machine_alerts::attach(
+        &mut hosts,
+        &state
+            .store
+            .lock()
+            .expect("store poisoned")
+            .settings()
+            .machine_alerts,
+    );
     let payloads = vec![
         hosts,
         repos(state.clone()),
@@ -3820,28 +3805,25 @@ fn settings_save_general(
     settings_response(&state, status)
 }
 
+/// Saves the shared CPU/RAM limits (`host_id` null) or one machine's override
+/// from the Machines tile's Configure, and answers with the re-rendered
+/// dashboard. Saved on the click and outside the dashboard's undo history:
+/// the limits judge every Machines tile, Detail and the Full view, not the tile
+/// being configured. Rendering reads them every second; no poller or history is
+/// reset. Null `thresholds` resets the shared defaults or removes the override.
 #[tauri::command]
-fn settings_save_machine_alerts(
+fn machine_save_alerts(
     host_id: Option<String>,
     thresholds: Option<Value>,
+    width: f64,
     state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let result = machine_alerts::save(
+) -> Result<Value, String> {
+    machine_alerts::save(
         &mut state.store.lock().expect("store poisoned"),
         host_id.as_deref(),
         thresholds.as_ref(),
-    );
-    // Rendering reads these preferences every second; no poller or history is reset.
-    let saved = result.is_ok();
-    let mut response = settings_response(
-        &state,
-        Some(match result {
-            Ok(()) => "Machine alert thresholds saved.".into(),
-            Err(error) => format!("Failed: {error}"),
-        }),
-    );
-    response["saved"] = json!(saved);
-    response
+    )?;
+    Ok(dashboard_view(width, state))
 }
 
 #[tauri::command]
@@ -4558,32 +4540,6 @@ fn settings_remove_host(id: String, state: tauri::State<'_, Arc<App>>) -> Value 
     };
     reload_hosts(&state);
     settings_response(&state, status)
-}
-
-/// Hides or unhides one mount — on a host when `host_id` is given, otherwise on
-/// the local machine's list.
-///
-/// Deliberately does **not** call [`reload_hosts`]: a volume edit must not
-/// cost the host card its sparkline history or its volume debounce. Same
-/// distinction the original view draws between `applyHiddenMounts()` and
-/// `reload()`.
-#[tauri::command]
-fn settings_set_volume_hidden(
-    host_id: Option<String>,
-    mount: String,
-    hidden: bool,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let id = host_id.as_deref().unwrap_or(volumes::LOCAL);
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        match volumes::set_hidden(&mut store, id, &mount, hidden) {
-            Ok(()) if hidden => format!("Hid {mount}."),
-            Ok(()) => format!("Unhid {mount}."),
-            Err(error) => format!("Failed: {error}"),
-        }
-    };
-    settings_response(&state, Some(status))
 }
 
 // MARK: the container group rules editor
@@ -5854,28 +5810,6 @@ fn dump_settings() -> Value {
     // verified release (`live`), one at it (`spare`) and one that cannot say.
     let mut silent = Host::new("lab-edge", "100.64.0.9");
     silent.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0003);
-    // What the hosts last reported, so the Settings volume checklist renders
-    // both readings: a mount shown, one hidden while reported, and one hidden
-    // that the host no longer reports (`/mnt/scratch`).
-    let volume = |mount: &str, used_gb: f64, total_gb: f64| wire::Volume {
-        mount: mount.into(),
-        used_gb,
-        total_gb,
-        fstype: None,
-    };
-    let live_volumes = [
-        (
-            live.id.to_string(),
-            vec![volume("/", 38.0, 100.0), volume("/srv", 776.0, 800.0)],
-        ),
-        (
-            volumes::LOCAL.to_owned(),
-            vec![
-                volume("/", 1420.0, 2000.0),
-                volume("/Volumes/Time Machine", 3720.0, 4000.0),
-            ],
-        ),
-    ];
     let agent_versions = [
         (live.id, "2026.10.13".to_owned()),
         (spare.id, "2026.11.1".to_owned()),
@@ -5980,7 +5914,6 @@ fn dump_settings() -> Value {
             certificate_changed: &certificate_changed,
             plain_refused: &[],
             accounts: &accounts,
-            live_volumes: &live_volumes,
         },
         &stored,
         &facts,
@@ -6188,6 +6121,7 @@ fn dump_dashboard() -> Value {
         "the remote host the fixture swaps"
     );
     hosts["hosts"][1] = dump_card_of("ubu-01", &serving, &Connection::Live);
+    machine_alerts::attach(&mut hosts, &store::machine_alerts::MachineAlerts::default());
     dashboard::view(
         &dashboard::default_layout(),
         &[
@@ -6828,7 +6762,7 @@ fn main() {
             update_install,
             settings_view,
             settings_save_general,
-            settings_save_machine_alerts,
+            machine_save_alerts,
             machine_acknowledge_warning,
             machine_set_volume_hidden,
             runner_group_label_add,
@@ -6849,7 +6783,6 @@ fn main() {
             settings_probe_host_certificate,
             settings_set_host_enabled,
             settings_remove_host,
-            settings_set_volume_hidden,
             container_rule_add,
             container_rule_set,
             container_rule_remove,
@@ -9988,18 +9921,6 @@ mod tests {
         assert_eq!(states, ["behind", "up-to-date", "host-unknown"]);
         assert_eq!(rows[0]["tokenStored"], true);
         assert_eq!(rows[0]["enabled"], true);
-        // The checklist's three readings: shown, hidden while reported, and
-        // hidden but no longer reported (still offered, so it can be undone).
-        let volumes = rows[0]["volumes"].as_array().expect("volumes");
-        assert!(volumes.iter().any(|v| v["hidden"] == false));
-        assert!(volumes
-            .iter()
-            .any(|v| v["hidden"] == true && v["detail"] == "not reported"));
-        assert!(vm["hosts"]["localVolumes"]
-            .as_array()
-            .expect("local volumes")
-            .iter()
-            .any(|v| v["hidden"] == true && v["detail"] != "not reported"));
         assert_eq!(rows[1]["tokenStored"], false);
         assert_eq!(rows[1]["enabled"], false);
 

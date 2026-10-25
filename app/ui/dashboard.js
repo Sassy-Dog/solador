@@ -75,7 +75,7 @@
     // share; every other failure belongs to the overview.
     const inChrome = anchor && appChrome?.contains(anchor);
     const target = feedback && (inChrome ? appChrome : mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels") || anchor
+      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels, .db-machine-block") || anchor
       : active ? q(".db-inspector") : q(".db-attention")));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -494,6 +494,7 @@
       if (choices && draft) fillRepoChoices(choices, source(draft.source), draft.selectedRepos);
       if (draft) fillGroupLabels(q("[data-group-labels]"), source(draft.source));
       if (draft) fillContainerRules(q("[data-container-rules]"), source(draft.source));
+      if (draft) fillMachineAlerts(q("[data-machine-alerts]"), source(draft.source));
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
@@ -775,6 +776,154 @@
     box.querySelector('[data-action="group-label-add"]').disabled =
       input.disabled || input.value.trim() === "";
   }
+  // The machine alert limits and the volume list are shared by every Machines
+  // tile, Detail and the Full view, not this tile (#612): nothing here is
+  // named, so formTile() never reads it into the draft, and each edit saves on
+  // its own click through Rust. Each editor is its own block, repainted only
+  // when its own data changes, so saving one machine never discards another's
+  // half-typed limits and a poll cannot clear what is being typed. Busy only
+  // disables the buttons; it never rebuilds an input.
+  function fillMachineAlerts(box, s) {
+    const g = s?.machineAlerts;
+    if (!box || !g) return;
+    const disabled = busy || !window.__TAURI__;
+    if (!box.childElementCount) {
+      box.append(node("legend"), node("p", "db-muted db-machine-alerts-shared"),
+        node("div", "db-machine-blocks"));
+    }
+    text(box.querySelector("legend"), g.heading);
+    text(box.querySelector(".db-machine-alerts-shared"), g.shared);
+    const wanted = [
+      { key: "defaults", title: g.defaults.heading, alerts: g.defaults, volumes: null },
+      ...(s.rows || []).filter((row) => g.byHost[row.id]).map((row) => ({
+        key: row.id, title: row.label, alerts: g.byHost[row.id], volumes: row,
+      })),
+    ];
+    const blocks = box.querySelector(".db-machine-blocks");
+    const existing = new Map([...blocks.children].map((el) => [el.dataset.machine, el]));
+    blocks.replaceChildren(...wanted.map((entry) => {
+      // A block's signature covers only what it renders on its own: the
+      // shared defaults ride on every machine's editor, but a machine's
+      // limits change only when it saves, or while it follows the defaults
+      // (and then they are refreshed in place below). So saving the shared
+      // limits never rebuilds, and never reverts, another machine's draft.
+      const a = entry.alerts;
+      const signature = JSON.stringify([entry.title, a.hostId, a.inherited, a.inherited ? null : a.fields,
+        entry.volumes && [(entry.volumes.volumes || []).map((v) => v.mount), entry.volumes.hiddenVolumes || []]]);
+      let block = existing.get(entry.key);
+      if (block?.signature === signature) {
+        block.alertDefaults = a.defaults;
+        const follows = block.querySelector(".db-machine-inherit input");
+        if (a.inherited && follows?.checked)
+          for (const field of a.fields)
+            block.querySelector(`#${CSS.escape(`dashboard-machine-${entry.key}-${field.id}`)}`).value = String(field.value);
+        return block;
+      }
+      block = machineBlock(entry);
+      block.signature = signature;
+      return block;
+    }));
+    for (const control of box.querySelectorAll("button, .db-machine-volume input"))
+      control.disabled = disabled;
+    for (const input of box.querySelectorAll(".db-machine-fields input"))
+      input.disabled = disabled || !!input.closest(".db-machine-block")
+        ?.querySelector(".db-machine-inherit input")?.checked;
+  }
+  function machineBlock({ key, title, alerts: g, volumes }) {
+    const block = node("div", "db-machine-block");
+    block.dataset.machine = key;
+    block.alertDefaults = g.defaults;
+    block.append(node("h4", "", title), node("p", "db-sub", g.help));
+    const inherit = g.shared ? null : document.createElement("input");
+    const inputs = new Map();
+    const fields = node("div", "db-machine-fields");
+    if (inherit) {
+      inherit.type = "checkbox";
+      inherit.checked = g.inherited;
+      const label = node("label", "db-machine-inherit");
+      label.append(inherit, node("span", "", g.useDefaultsLabel));
+      block.append(label);
+    }
+    for (const entry of g.fields) {
+      const field = node("div", "db-field"), label = node("label", "", entry.label),
+        input = node("input");
+      input.type = "number";
+      input.min = g.min;
+      input.max = g.max;
+      input.step = "1";
+      input.required = true;
+      input.value = String(entry.value);
+      input.id = `dashboard-machine-${key}-${entry.id}`;
+      // No form owns it: these limits are not the tile's, so they take no
+      // part in the tile Apply's validation or in formTile()'s FormData. The
+      // block's own reportValidity() gates the limits.
+      input.setAttribute("form", "dashboard-limits-no-form");
+      label.htmlFor = input.id;
+      input.disabled = !!inherit?.checked;
+      inputs.set(entry.id, input);
+      field.append(label, input);
+      fields.append(field);
+    }
+    // Typing a limit is not an edit of the tile: keep it out of the preview.
+    block.addEventListener("input", (event) => event.stopPropagation());
+    let draft = Object.fromEntries(g.fields.map((entry) => [entry.id, String(entry.value)]));
+    inherit?.addEventListener("input", () => {
+      if (inherit.checked) draft = Object.fromEntries([...inputs].map(([k, input]) => [k, input.value]));
+      for (const [k, input] of inputs) {
+        input.value = inherit.checked ? String(block.alertDefaults[k]) : draft[k];
+        input.disabled = inherit.checked;
+      }
+    });
+    const save = (thresholds, selector) => machineAlertsChange({ hostId: g.hostId, thresholds }, selector);
+    const apply = node("button", "", g.saveLabel);
+    apply.type = "button";
+    apply.dataset.machineApply = key;
+    apply.addEventListener("click", () => {
+      if ([...inputs.values()].some((input) => !input.reportValidity())) return;
+      save(inherit?.checked ? null : Object.fromEntries([...inputs].map(([k, input]) => [k, input.valueAsNumber])),
+        `[data-machine="${CSS.escape(key)}"] [data-machine-apply]`);
+    });
+    const actions = node("div", "db-form-actions");
+    actions.append(apply);
+    if (g.shared) {
+      const reset = node("button", "", g.resetLabel);
+      reset.type = "button";
+      reset.dataset.machineReset = "";
+      reset.addEventListener("click", () => save(null, "[data-machine-reset]"));
+      actions.append(reset);
+    }
+    block.append(fields, node("p", "db-sub", g.rangeHelp), actions);
+    if (volumes) {
+      const mounts = new Set([...(volumes.volumes || []).map((v) => v.mount), ...(volumes.hiddenVolumes || [])]);
+      const hidden = new Set(volumes.hiddenVolumes || []);
+      const list = node("div", "db-machine-volumes");
+      list.append(node("h5", "", L("hiddenVolumes")));
+      if (!mounts.size) list.append(node("p", "db-sub", L("hiddenVolumesNone")));
+      for (const mount of [...mounts].sort()) {
+        const row = node("label", "db-machine-volume"), box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = !hidden.has(mount);
+        box.dataset.action = "volume-hidden";
+        box.dataset.id = volumes.id;
+        box.dataset.mount = mount;
+        box.dataset.origin = "configure";
+        box.addEventListener("change", () => {
+          // Rust owns the answer: the list repaints from what it saved.
+          box.dataset.hidden = String(!box.checked);
+          setVolumeHidden(box).then(() => {
+            // A refused save changes no list, so no repaint puts the tick back.
+            const now = source("hosts")?.rows.find((r) => r.id === volumes.id)?.hiddenVolumes || [];
+            if (box.isConnected) box.checked = !now.includes(mount);
+          });
+        });
+        row.append(box, node("span", "db-machine-mount", mount));
+        list.append(row);
+      }
+      list.append(node("p", "db-sub", L("hiddenVolumesHelp")));
+      block.append(list);
+    }
+    return block;
+  }
   function openInspector(next) {
     status("");
     active = next;
@@ -835,6 +984,12 @@
       }
       if (t.source === "hosts") {
         fields.append(selectField("showDisk", L("showDisk"), [{value:"true", label:L("diskShown")}, {value:"false", label:L("diskHidden")}], String(t.showDisk !== false)));
+      }
+      if (t.source === "hosts") {
+        const alerts = node("fieldset", "db-machine-alerts");
+        alerts.dataset.machineAlerts = "";
+        fillMachineAlerts(alerts, s);
+        fields.append(alerts);
       }
       if (t.source === "ghRunners") {
         fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
@@ -1523,6 +1678,37 @@
         [selector, fallback, home]
           .map((s) => s && q(`${s}:not(:disabled)`))
           .find(Boolean)?.focus({ preventScroll: true });
+    }
+    return saved;
+  }
+  // Shares groupLabelChange's guard: a poll already in flight carries limits
+  // from before this save, so it is discarded whatever its timing. The tile
+  // draft is left as it is, and the preview is asked again, because new limits
+  // change the colours the tile would show.
+  async function machineAlertsChange(args, selector) {
+    if (!window.__TAURI__ || busy) return false;
+    const inspector = active,
+      restoreFocus = !!document.activeElement?.closest("[data-machine-alerts]");
+    status("");
+    acknowledgementVersion++;
+    busy = true;
+    render(true);
+    let saved = false;
+    try {
+      const next = await callRust("machine_save_alerts", { ...args, width: root.clientWidth || innerWidth });
+      if (!next?.layout?.tiles || !Array.isArray(next.sources) || !next.labels)
+        throw new Error(L("machineAlertsFailed"));
+      model = next;
+      saved = true;
+    } catch (error) {
+      if (active === inspector && mode === "overview")
+        status((typeof error === "string" ? error : error?.message) || L("machineAlertsFailed"), true, selector);
+    } finally {
+      busy = false;
+      render(true);
+      if (saved && active === inspector) schedulePreview();
+      if (restoreFocus && active === inspector && document.activeElement === document.body)
+        q(`${selector}:not(:disabled)`)?.focus({ preventScroll: true });
     }
     return saved;
   }

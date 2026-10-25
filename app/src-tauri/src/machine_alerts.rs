@@ -129,14 +129,38 @@ fn persist(store: &mut store::Store, previous: MachineAlerts) -> Result<(), Stri
     Ok(())
 }
 
+/// The Machines tile's Configure section: the shared defaults, and one
+/// override editor per machine on the payload's cards.
+///
+/// The limits are not the tile's. They judge every Machines tile, Detail and
+/// the Full view, so the section says it is shared and every edit saves on the
+/// click through `machine_save_alerts`, never with the tile's Apply. Attached to
+/// the Hosts payload by both `dashboard_view` and the `--dump-dashboard`
+/// fixture, so the two cannot differ.
+pub fn attach(payload: &mut Value, alerts: &MachineAlerts) {
+    let by_host: serde_json::Map<String, Value> = payload["hosts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|card| card["id"].as_str())
+        .map(|id| (id.to_owned(), settings(alerts, Some(id))))
+        .collect();
+    payload["machineAlerts"] = json!({
+        "heading": "Machine alerts",
+        "shared": "Shared · saved immediately · applies to every Machines tile, Detail and the Full view.",
+        "defaults": settings(alerts, None),
+        "byHost": by_host,
+    });
+}
+
 pub fn settings(alerts: &MachineAlerts, host_id: Option<&str>) -> Value {
     let values = host_id.map_or(alerts.defaults, |id| alerts.for_host(id));
     json!({
-        "heading": "Machine alerts",
+        "heading": if host_id.is_none() { "Shared defaults" } else { "This machine" },
         "help": if host_id.is_none() {
-            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Warnings need attention unless acknowledged for that machine and metric; critical always needs attention. CPU counts only sustained load: it must stay at or above a threshold for about a minute (60 samples), so a build or test run does not raise it, and a machine with fewer samples than that raises no CPU alert yet. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Override these in Connections for individual machines."
+            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Warnings need attention unless acknowledged for that machine and metric; critical always needs attention. CPU counts only sustained load: it must stay at or above a threshold for about a minute (60 samples), so a build or test run does not raise it, and a machine with fewer samples than that raises no CPU alert yet. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Each machine below can override these."
         } else {
-            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Warnings need attention unless acknowledged for this metric; critical always needs attention. CPU counts only if it stays there for about a minute. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
+            "Choose this machine's CPU and RAM limits, or follow the shared defaults. Warnings need attention unless acknowledged for this metric; critical always needs attention. CPU counts only if it stays there for about a minute. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
         },
         "rangeHelp": "Use whole percentages from 1 to 100. Each warning must be lower than its critical threshold.",
         "hostId": host_id,
@@ -174,6 +198,38 @@ mod tests {
             host["thermalColor"] = json!(color::hex(color::GREEN));
         }
         payload
+    }
+
+    #[test]
+    fn the_tile_section_is_marked_shared_and_carries_an_editor_per_card() {
+        let mut alerts = MachineAlerts::default();
+        alerts.overrides.insert(
+            "ubu-01".into(),
+            MachineThresholds::parse(
+                &json!({"cpuWarning":60,"cpuCritical":80,"ramWarning":65,"ramCritical":85}),
+            )
+            .unwrap(),
+        );
+        let mut payload = readings();
+        attach(&mut payload, &alerts);
+        let section = &payload["machineAlerts"];
+        assert!(section["shared"]
+            .as_str()
+            .unwrap()
+            .starts_with("Shared · saved immediately"));
+        assert_eq!(section["defaults"]["hostId"], json!(null));
+        assert_eq!(section["defaults"]["shared"], true);
+        let cards = payload["hosts"].as_array().unwrap();
+        assert!(cards.len() >= 2, "local plus a remote host");
+        let by_host = section["byHost"].as_object().unwrap();
+        assert_eq!(by_host.len(), cards.len());
+        for card in cards {
+            let id = card["id"].as_str().unwrap();
+            assert_eq!(by_host[id]["hostId"], id);
+        }
+        assert_eq!(by_host["ubu-01"]["inherited"], false);
+        assert_eq!(by_host["ubu-01"]["fields"][0]["value"], 60);
+        assert_eq!(by_host["local"]["inherited"], true);
     }
 
     #[test]

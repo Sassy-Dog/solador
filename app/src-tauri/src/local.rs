@@ -76,14 +76,6 @@ impl LocalHostState {
         }
     }
 
-    /// The volumes this machine reported on its latest sample, for the
-    /// Settings checklist. `None` before the first sample.
-    pub fn volumes(&self) -> Option<Vec<wire::Volume>> {
-        self.latest
-            .as_ref()
-            .map(|(snapshot, _)| snapshot.to_wire().volumes)
-    }
-
     /// Folds an already-taken sample into the state.
     ///
     /// **An unmeasured value is shown but not plotted.** The rates take care of

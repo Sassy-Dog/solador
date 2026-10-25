@@ -881,6 +881,11 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
         "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false,
         "runnerView":if id=="ghRunners" {"grouped"} else {"list"}}});
+    if id == "hosts" {
+        // The shared limits editor (#612): shared by every Machines tile, so
+        // it rides on the source, never on a tile.
+        source["machineAlerts"] = payload["machineAlerts"].clone();
+    }
     if id == "ghRunners" {
         // Detail and Full describe the same source-wide group, independent
         // of the tile's scope and row limit.
@@ -1251,6 +1256,10 @@ fn labels() -> Value {
         ("groupLabelsFailed", "Could not save the group labels. Nothing was changed."),
         ("noContainerRules", "No rules \u{2014} every container is listed as it is."),
         ("containerRulesFailed", "Could not save the container rules. Nothing was changed."),
+        ("machineAlertsFailed", "Could not save the machine alert limits. Nothing was changed."),
+        ("hiddenVolumes", "Volumes shown"),
+        ("hiddenVolumesHelp", "Unticked volumes are still measured, but they are left off the Machines tile and the Hosts panel, and a full one raises no attention. Hide and Unhide on the Disk strip and in Detail change the same list."),
+        ("hiddenVolumesNone", "No volumes reported yet."),
         ("expandDetails", "Expand or collapse resource details"),
         ("configure", "Configure"),
         ("hide", "Hide"),

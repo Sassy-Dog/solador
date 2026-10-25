@@ -577,6 +577,20 @@
 #dashboardOverview .db-rule-row input { flex: 1 1 110px; min-width: 0; }
 #dashboardOverview .db-rule-row [data-field="expected"] { flex: 0 1 90px; }
 #dashboardOverview .db-rules-shared { font-size: 11px; }
+/* The machine alert limits and volume list: the group labels' frame, one block per machine. */
+#dashboardOverview .db-machine-alerts { grid-column: 1 / -1; min-width: 0; display: grid; gap: 10px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-machine-alerts legend { font-size: 12px; }
+#dashboardOverview .db-machine-alerts p { margin: 0; }
+#dashboardOverview .db-machine-alerts-shared { font-size: 11px; }
+#dashboardOverview .db-machine-blocks { display: grid; gap: 14px; }
+#dashboardOverview .db-machine-block { display: grid; gap: 8px; min-width: 0; border-top: 1px solid var(--db-line); padding-top: 10px; }
+#dashboardOverview .db-machine-block:first-child { border-top: 0; padding-top: 0; }
+#dashboardOverview .db-machine-block h4, #dashboardOverview .db-machine-block h5 { margin: 0; font-size: 12px; }
+#dashboardOverview .db-machine-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 8px; }
+#dashboardOverview .db-machine-inherit, #dashboardOverview .db-machine-volume { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 12px; }
+#dashboardOverview .db-machine-inherit input, #dashboardOverview .db-machine-volume input { flex: none; }
+#dashboardOverview .db-machine-mount { overflow-wrap: anywhere; }
+#dashboardOverview .db-machine-volumes { display: grid; gap: 4px; }
 #dashboardOverview button.db-label-chip { font: inherit; font-size: 11px; line-height: 1.4; padding: 1px 7px; white-space: normal; overflow-wrap: anywhere; }
 /* A runner label as a pill, in Configure, Detail and Full. The label that put
    the runner in its group is highlighted; GitHub's own labels are dimmed, never
