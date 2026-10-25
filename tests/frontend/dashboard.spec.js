@@ -810,6 +810,23 @@ test("group label buttons round-trip through Rust and save on the click", async 
   expect(await commandArgs(page, "dashboard_save")).toEqual([]);
 });
 
+test("moving a group label to an end keeps keyboard focus in its row", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureRunners(page);
+  await page.locator("#dashboard-group-label").fill("gpu");
+  await page.locator("#dashboard-group-label").press("Enter");
+  const names = section.locator(".db-group-label-name");
+  await expect(names).toHaveText(["runner-large", "gpu"]);
+  await section.locator('[data-group-label="gpu"] [data-direction="up"]').focus();
+  await page.keyboard.press("Enter");
+  await expect(names).toHaveText(["gpu", "runner-large"]);
+  // Its ↑ is now disabled, so focus moves to the row's ↓ rather than to <body>.
+  await expect(section.locator('[data-group-label="gpu"] [data-direction="down"]')).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(names).toHaveText(["runner-large", "gpu"]);
+  await expect(section.locator('[data-group-label="gpu"] [data-direction="up"]')).toBeFocused();
+});
+
 test("label edits keep the Configure draft and refresh the preview", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const section = await configureRunners(page);

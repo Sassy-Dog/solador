@@ -1391,7 +1391,9 @@
   // from before this save, so it is discarded whatever its timing. The tile
   // draft is left as it is — the list is not the tile's — and the preview is
   // asked again, because a regrouping changes what the tile would show.
-  async function groupLabelChange(command, args, selector) {
+  // `fallback` names where focus goes when `selector` is gone or disabled —
+  // a label moved to an end disables the arrow that moved it.
+  async function groupLabelChange(command, args, selector, fallback = null) {
     if (!window.__TAURI__ || busy) return false;
     const inspector = active,
       restoreFocus = !!document.activeElement?.closest("[data-group-labels]");
@@ -1414,7 +1416,9 @@
       render(true);
       if (saved && active === inspector) schedulePreview();
       if (restoreFocus && active === inspector && document.activeElement === document.body)
-        (q(selector) || q("#dashboard-group-label"))?.focus({ preventScroll: true });
+        [selector, fallback, "#dashboard-group-label"]
+          .map((s) => s && q(`${s}:not(:disabled)`))
+          .find(Boolean)?.focus({ preventScroll: true });
     }
     return saved;
   }
@@ -1600,7 +1604,8 @@
       if (action === "group-label-remove")
         await groupLabelChange("runner_group_label_remove", { label }, selector);
       if (action === "group-label-move")
-        await groupLabelChange("runner_group_label_move", { label, up: b.dataset.direction === "up" }, selector);
+        await groupLabelChange("runner_group_label_move", { label, up: b.dataset.direction === "up" }, selector,
+          `[data-group-labels] [data-group-label="${CSS.escape(label)}"] button`);
       return;
     }
     if (action === "detail-toggle") {
