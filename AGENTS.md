@@ -135,8 +135,13 @@ detailed than this file.
   windows cached in panel state (GitHub, Claude rollups, Services) are set from
   the store by `sync_cadences` both at the top of each pass and in
   `panel_interval_save`/`_clear` before they re-render, so a shortened cadence
-  moves the window with the save and not one pass later. Azure Cost and the
-  plan limits read their cadence at render time, so a save already moves them.
+  moves the window with the save and not one pass later. Every other
+  cadence-following footer reads its cadence at render time, so a save already
+  moves it: Containers (2.5 cycles, never under 30s; the shared 150s floor would
+  loosen the 10s default five-fold, #633), Azure Cost (cadence + 1h) and the plan limits. Sentry
+  Crons and the metered Usage providers also read it at render time, but only
+  for the `freshness` age line: their warning window is a fixed 90 minutes, not
+  a function of the cadence.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness signal of
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,
