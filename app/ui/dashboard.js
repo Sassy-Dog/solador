@@ -39,6 +39,7 @@
   // whose id its source's command is sent. Only ever set while mode is
   // "details".
   let fullTile = null; // {id, source}
+  let viewMenu = null; // tile id
   let coveredTitle = null, fullNoteEl = null;
   let history = [],
     dragged = null,
@@ -474,14 +475,69 @@
           const more = button(t.moreLabel, "details", t.id, "db-more db-plain");
           rows.append(more);
         }
-        const footer = el.querySelector(".db-tile-footer");
-        footer.replaceChildren(
-          node("span", "", t.footer),
-          button(L("details"), "details", t.id, "db-plain"),
-        );
+        paintFooter(el, t);
       }
     });
   }
+  // A tile's footer: its count and the View button. An open View menu is part
+  // of it, so the 1s repaint that rebuilds the footer rebuilds the menu too;
+  // render's focus restore finds the same item again by its data-action.
+  function paintFooter(el, t) {
+    const footer = el.querySelector(".db-tile-footer");
+    footer.replaceChildren(node("span", "", t.footer));
+    const views = (t.views || []).filter((v) => VIEW_ACTIONS[v.id]);
+    if (!views.length) {
+      if (viewMenu === t.id) viewMenu = null;
+      return;
+    }
+    const open = viewMenu === t.id;
+    const trigger = button(L("view"), "views", t.id, "db-plain db-view-button");
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.setAttribute("aria-expanded", String(open));
+    footer.append(trigger);
+    if (!open) return;
+    const menu = node("div", "db-view-menu");
+    menu.setAttribute("role", "menu");
+    for (const v of views) {
+      const item = button(v.label, "view-" + v.id, t.id);
+      item.setAttribute("role", "menuitem");
+      menu.append(item);
+    }
+    footer.append(menu);
+  }
+  function closeViewMenu(refocus = false) {
+    const id = viewMenu;
+    if (!id) return;
+    viewMenu = null;
+    const el = tiles.get(id);
+    const t = model.tiles.find((x) => x.id === id);
+    if (el && t) paintFooter(el, t);
+    if (refocus)
+      el?.querySelector(".db-view-button")?.focus({ preventScroll: true });
+  }
+  function toggleViewMenu(id) {
+    if (viewMenu === id) {
+      closeViewMenu(true);
+      return;
+    }
+    closeViewMenu();
+    const el = tiles.get(id);
+    const t = model.tiles.find((x) => x.id === id);
+    if (!el || !t) return;
+    viewMenu = id;
+    paintFooter(el, t);
+    el.querySelector('.db-view-menu [role="menuitem"]')?.focus({ preventScroll: true });
+  }
+  function openTileDetail(id) {
+    const t = tile(id);
+    openInspector({ kind: "details", source: t.source, tile: id });
+  }
+  // What each view id Rust names opens. An id with no entry here is not
+  // painted: the frontend never offers a view it cannot open.
+  const VIEW_ACTIONS = {
+    detail: (id) => openTileDetail(id),
+    full: (id) => tileFull(id),
+  };
   function render(force = false) {
     // A tile's Full view never outlives its tile: hidden or removed, the
     // overview comes back, never the panel under a name it no longer has.
@@ -1905,7 +1961,7 @@
     await refresh(true);
     render(true);
     // Back on the tile that was open, unless it has gone.
-    const back = left && root.querySelector(`[data-tile="${CSS.escape(left)}"] .db-tile-footer button[data-action]`);
+    const back = left && root.querySelector(`[data-tile="${CSS.escape(left)}"] .db-tile-footer .db-view-button`);
     (back || q('[data-action="allPanels"]')).focus({preventScroll:true});
   }
   async function tileFull(tileId, runnerGroup = null) {
@@ -1981,8 +2037,17 @@
       return;
     }
     if (action === "details") {
-      const t = tile(id);
-      openInspector({ kind: "details", source: t.source, tile: id });
+      openTileDetail(id);
+      return;
+    }
+    if (action === "views") {
+      toggleViewMenu(id);
+      return;
+    }
+    if (action.startsWith("view-")) {
+      const open = VIEW_ACTIONS[action.slice(5)];
+      closeViewMenu();
+      if (open) await open(id);
       return;
     }
     if (action === "fitHeight") {
@@ -2240,6 +2305,38 @@
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !fullTile || settingsOpen) return;
     if (e.target === document.body || legacy.contains(e.target)) showOverview();
+  });
+  // The View menu. Registered ahead of the inspector's Escape so that Escape
+  // with a menu open closes the menu and nothing else.
+  root.addEventListener("keydown", (e) => {
+    if (!viewMenu) return;
+    const footer = tiles.get(viewMenu)?.querySelector(".db-tile-footer");
+    if (!footer?.contains(e.target)) return;
+    const items = [...footer.querySelectorAll('.db-view-menu [role="menuitem"]')];
+    const at = items.indexOf(e.target);
+    if (e.key === "Escape") {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      closeViewMenu(true);
+    } else if (e.key === "Tab") {
+      // Focus goes to View first, so Tab moves on from it, not from <body>.
+      footer.querySelector(".db-view-button")?.focus({ preventScroll: true });
+      closeViewMenu();
+    } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      const from = at < 0 ? (step > 0 ? -1 : 0) : at;
+      items[(from + step + items.length) % items.length].focus({ preventScroll: true });
+    }
+  });
+  // A click anywhere but the open menu or its button closes it.
+  document.addEventListener("click", (e) => {
+    if (!viewMenu) return;
+    const footer = tiles.get(viewMenu)?.querySelector(".db-tile-footer");
+    // composedPath, not target: choosing View repaints the footer, which
+    // detaches the very button that was clicked.
+    if (footer && e.composedPath().includes(footer)) return;
+    closeViewMenu();
   });
   root.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && active) {

@@ -1037,3 +1037,32 @@
 :is(#dashboardOverview, #cockpitView) .db-detail-table > :is(thead,tbody) > tr > :is(th,td) { overflow:hidden; text-overflow:ellipsis; }
 #cockpitView .db-detail-table .gh-runner-status { display:inline-block; max-width:100%; vertical-align:middle; }
 #dashboardOverview .db-volume-table { width:565px; }
+#dashboardOverview .db-tile-footer { position: relative; }
+#dashboardOverview .db-view-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  margin-top: 2px;
+  padding: 3px;
+  background: var(--db-raised);
+  border: 1px solid var(--db-line);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+}
+#dashboardOverview .db-view-menu button {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 4px 8px;
+  color: var(--db-text);
+  background: transparent;
+  border-color: transparent;
+}
+#dashboardOverview .db-view-menu button:hover,
+#dashboardOverview .db-view-menu button:focus-visible {
+  background: var(--db-panel);
+  border-color: var(--db-line);
+}

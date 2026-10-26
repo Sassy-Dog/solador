@@ -1316,7 +1316,7 @@ fn labels() -> Value {
             "Drag tiles or use the arrows. Hiding a tile keeps its source monitored.",
         ),
         ("empty", "No tiles in this view. Add a tile or restore a hidden one."),
-        ("details", "Detail →"),
+        ("view", "View"),
         ("table", "Table"),
         ("detailList", "List"),
         ("detailView", "Detail view"),

@@ -256,6 +256,11 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
 const action = (page, name) =>
   page.locator(`#dashboardOverview [data-action="${name}"]`);
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
+const viewButton = (page, source) => tile(page, source).getByRole("button", { name: "View", exact: true });
+async function openDetail(page, source) {
+  await viewButton(page, source).click();
+  await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
+}
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
 
@@ -347,7 +352,7 @@ test('an acknowledgement failure stays with its machine when changing inspectors
   await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
   await page.getByRole('button', {name:'Acknowledge RAM warning',exact:true}).click();
   await expect(page.locator('.db-action-error')).toBeVisible();
-  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghWorkflows');
   await page.evaluate(() => refreshPanels());
   await expect(page.locator('.db-action-error')).toHaveCount(0);
 });
@@ -485,7 +490,7 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
   await expect(list).toHaveAttribute('aria-pressed', 'true');
   expect((await savedLayout(page)).detailViews.ghRunners).toBe('list');
   await page.locator('.db-chrome [data-action="allPanels"]').click();
-  await tile(page,'ghRunners').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghRunners');
   await expect(page.getByRole('button',{name:'List',exact:true})).toHaveAttribute('aria-pressed','true');
   await page.getByRole('button',{name:'Table',exact:true}).click();
   await tile(page,'ghRunners').getByRole('button',{name:/MACOS · ARM64/}).click();
@@ -662,7 +667,7 @@ test('Settings header keeps space around the logo and Done button', async ({page
 
 test('Detail column positions stay fixed as readings and expanded content change', async ({page,baseURL}) => {
   const model = await openDashboard(page,baseURL);
-  await tile(page,'hosts').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'hosts');
   const table = page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll > table');
   const positions = () => table.locator(':scope > thead th').evaluateAll(cells=>cells.map(c=>({x:c.getBoundingClientRect().x,width:c.getBoundingClientRect().width})));
   const before = await positions();
@@ -702,7 +707,7 @@ test("attention chips toggle their inspector and keep expanded state through ref
 
 test("Detail uses compact aligned table rows and preserves focus through live readings", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, "ghWorkflows");
   const rows = page.locator('.db-detail-resource');
   await expect(rows).toHaveCount(6);
   await expect(page.locator('#dashboardOverview .db-detail-table')).toBeVisible();
@@ -753,7 +758,7 @@ test("Detail uses compact aligned table rows and preserves focus through live re
 
 test("Detail Table/List choice persists per source and failed saves keep the selected view", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
-  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghWorkflows');
   const table = page.locator('#dashboardOverview').getByRole('button', {name:'Table', exact:true});
   const list = page.locator('#dashboardOverview').getByRole('button', {name:'List', exact:true});
   await expect(table).toHaveAttribute('aria-pressed', 'true');
@@ -767,11 +772,11 @@ test("Detail Table/List choice persists per source and failed saves keep the sel
   await expect(page.locator('.db-detail-grid details')).toHaveCount(6);
   expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('list');
   await page.reload();
-  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghWorkflows');
   await expect(list).toHaveAttribute('aria-pressed', 'true');
-  await tile(page, 'hosts').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'hosts');
   await expect(table).toHaveAttribute('aria-pressed', 'true');
-  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghWorkflows');
   await table.click();
   await expect(table).toHaveAttribute('aria-pressed', 'true');
   expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('table');
@@ -779,7 +784,7 @@ test("Detail Table/List choice persists per source and failed saves keep the sel
 
 test("delayed Detail view saves preserve keyboard focus without stealing it after navigation", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
-  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghWorkflows');
   const table = page.locator('#dashboardOverview').getByRole('button', {name:'Table', exact:true});
   const list = page.locator('#dashboardOverview').getByRole('button', {name:'List', exact:true});
   const hold = async fail => {
@@ -1315,7 +1320,7 @@ test("repo selections persist and filter the tile and its Details", async ({ pag
   await action(page,"apply").click();
   expect((await savedLayout(page)).tiles.find(t => t.source === "ghWorkflows").selectedRepos).toEqual(["acme/pipe-fitting","acme/widget"]);
   await expect(tile(page,"ghWorkflows").locator('.db-item-name')).toHaveText(["pipe-fitting","widget"]);
-  await tile(page,"ghWorkflows").locator('[data-action="details"]').click();
+  await openDetail(page, "ghWorkflows");
   await expect(page.locator('.db-detail-resource')).toHaveCount(2);
   await page.reload();
   await action(page,"edit").click();
@@ -1371,7 +1376,7 @@ test('runner groups open the shared inline Detail panel like machines', async ({
   await expect(inspector.locator('.db-detail-title strong')).toHaveText(macs.map(r => r.label));
   await inspector.getByRole('button', {name:'Close', exact:true}).click();
   await expect(inspector).toBeHidden();
-  await tile(page, 'ghRunners').locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, 'ghRunners');
   await expect(inspector.getByRole('heading')).toHaveText('Runners');
   await expect(inspector.locator('.db-detail-resource')).toHaveCount(6);
 });
@@ -1525,7 +1530,7 @@ function splitRunnerFixture(view) {
 test("Detail shows each runner's labels with the match highlighted", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, true, splitRunnerFixture);
   const inspector = page.locator("#dashboardInspector");
-  await tile(page, "ghRunners").locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, "ghRunners");
   await expect(inspector.locator("thead th")).toContainText(["Labels"]);
   for (const view of ["Table", "List"]) {
     await inspector.getByRole("button", { name: view, exact: true }).click();
@@ -1994,7 +1999,7 @@ test("a connection detour keeps a new tile's draft and returns to its preview", 
 test("resource details open their editor while aggregate links show only relevant connections", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:null,kinds:["account"],heading:"GitHub connections",help:"Choose a connection."}; });
-  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, "ghWorkflows");
   await action(page, "manage").click();
   await expect(page.locator("#settingsBody > .connection-heading h2")).toHaveText("GitHub connections");
   await expect(page.locator(".connection-row:not([data-kind='account'])")).toHaveCount(0);
@@ -2201,7 +2206,7 @@ test("details reach the tile's Full view and the source's connection settings", 
   baseURL,
 }) => {
   await openDashboard(page, baseURL);
-  await tile(page, "hosts").locator('[data-action="details"]').click();
+  await openDetail(page, "hosts");
   await expect(page.locator(".db-detail-resource")).toHaveCount(4);
   await expect(action(page, "tileFull")).toHaveText("Full view");
   await action(page, "tileFull").click();
@@ -2214,9 +2219,7 @@ test("details reach the tile's Full view and the source's connection settings", 
   await page.locator('.db-chrome [data-action="allPanels"]').click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await action(page, "close").click();
-  await tile(page, "ghWorkflows")
-    .locator('.db-tile-footer [data-action="details"]')
-    .click();
+  await openDetail(page, "ghWorkflows");
   await action(page, "manage").click();
   await expect(page.locator("#settings")).toBeVisible();
   await expect(
@@ -2245,14 +2248,15 @@ const lastArgs = (page, command) =>
 const callCount = (page, command) =>
   page.evaluate((command) => window.__CALLS__.filter((c) => c.command === command).length, command);
 async function openTileFull(page, tileId) {
-  await page.locator(`[data-tile="${tileId}"] .db-tile-footer [data-action="details"]`).click();
+  await page.locator(`[data-tile="${tileId}"]`).getByRole("button", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
   await detailFull(page).click();
   await expect(page.locator("#cockpitView")).toBeVisible();
 }
 
 test("Detail's Full view opens the tile's own scoped panel", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, healthyRepos);
-  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, "ghWorkflows");
   await detailFull(page).click();
   await expect(page.locator("#dashboardOverview")).toBeHidden();
   await expect(page.locator("#cockpitView")).toHaveAttribute("data-detail-source", "ghWorkflows");
@@ -2276,7 +2280,7 @@ test("Detail's Full view opens the tile's own scoped panel", async ({ page, base
 
 test("Escape returns to the overview and restores the panel", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, healthyRepos);
-  const back = tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]');
+  const back = viewButton(page, "ghWorkflows");
   for (const blur of [false, true]) {
     await openTileFull(page, "overview-ghWorkflows");
     await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
@@ -2361,7 +2365,7 @@ test("Detail's Full view refuses a tile that left the overview while Detail was 
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const view = await openDashboard(page, baseURL, false, healthyRepos);
-  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  await openDetail(page, "ghWorkflows");
   await page.evaluate((layout) => {
     const next = structuredClone(layout);
     next.tiles.find((t) => t.id === "overview-ghWorkflows").hidden = true;
@@ -2725,4 +2729,90 @@ test("the Usage tile's three cadences each save, and refuse, on their own box", 
   await planBox.locator('[data-action="cadence-apply"]').click();
   await expect(planBox.locator(":scope > .db-action-error")).toContainText(`${plans.min}s floor`);
   await expect(providerBox.locator(".db-action-error")).toHaveCount(0);
+});
+
+const viewItems = (page, source) => tile(page, source).getByRole("menuitem");
+
+test("the View button lists the tile's views and opens each", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  const button = viewButton(page, "ghWorkflows");
+  await expect(button).toHaveAttribute("aria-haspopup", "menu");
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#dashboardOverview .db-tile-footer").first()).not.toContainText("Detail →");
+  await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+  await expect(viewItems(page, "ghWorkflows")).toHaveText(["Detail", "Full view"]);
+  await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
+  await expect(page.locator("#dashboardInspector")).toBeVisible();
+  await expect(page.locator(".db-detail-resource")).toHaveCount(2);
+  await expect(viewItems(page, "ghWorkflows")).toHaveCount(0);
+  await action(page, "close").click();
+  await button.click();
+  await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
+  await expect(page.locator("#cockpitView")).toBeVisible();
+  await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
+});
+
+test("the View menu survives a live repaint", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  await viewButton(page, "ghWorkflows").click();
+  await expect(viewItems(page, "ghWorkflows").first()).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(viewItems(page, "ghWorkflows").nth(1)).toBeFocused();
+  const polls = await callCount(page, "dashboard_view");
+  await expect.poll(() => callCount(page, "dashboard_view"), { timeout: 5000 }).toBeGreaterThan(polls);
+  await page.waitForTimeout(1200);
+  await expect(viewItems(page, "ghWorkflows")).toHaveCount(2);
+  await expect(page.evaluate(() => document.activeElement.textContent)).resolves.toBe("Full view");
+});
+
+test("the View menu is keyboard operable: arrows wrap, Escape returns to View, Tab and outside clicks close it", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  const button = viewButton(page, "ghWorkflows");
+  const items = viewItems(page, "ghWorkflows");
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(items).toHaveCount(0);
+  await expect(button).toBeFocused();
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  // Escape closed only the menu: nothing else opened or closed.
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await button.click();
+  await expect(items).toHaveCount(2);
+  await page.keyboard.press("Tab");
+  await expect(items).toHaveCount(0);
+  await button.click();
+  await expect(items).toHaveCount(2);
+  await page.locator(".db-chrome").click({ position: { x: 2, y: 2 } });
+  await expect(items).toHaveCount(0);
+});
+
+test("Escape closes the View menu and returns focus to View", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  await viewButton(page, "hosts").click();
+  await expect(viewItems(page, "hosts").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(viewItems(page, "hosts")).toHaveCount(0);
+  await expect(viewButton(page, "hosts")).toBeFocused();
+});
+
+test("a view the frontend cannot open is not painted", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, (view) => {
+    for (const t of view.tiles) t.views = [...t.views, { id: "chart", label: "Chart" }];
+  });
+  await viewButton(page, "hosts").click();
+  await expect(viewItems(page, "hosts")).toHaveText(["Detail", "Full view"]);
+  await expect(page.getByRole("menuitem", { name: "Chart" })).toHaveCount(0);
+});
+
+test("no tile footer reads Detail →", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await expect(tile(page, "hosts")).toBeVisible();
+  await expect(page.getByText("Detail →")).toHaveCount(0);
 });
