@@ -59,8 +59,9 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             // dashboard::scope_note's projection, for a tile the test re-scoped;
             // Rust's own test pins the wording.
             const picked = t.selectedRepos?.length || 0;
+            const totals = t.source === "hosts" ? "" : ` Totals still cover all of ${source.title}.`;
             const fullNote = t.scope === "all" && !picked ? null :
-              `Scoped to ${t.scope !== "all" ? scopeLabel : picked === 1 ? "1 selected repo" : `${picked} selected repos`}. Totals still cover all of ${source.title}.`;
+              `Scope: ${t.scope !== "all" ? scopeLabel : picked === 1 ? "1 selected repo" : `${picked} selected repos`}.${totals}`;
             return {
               ...base,
               ...t,
@@ -2237,7 +2238,7 @@ test("details reach the tile's Full view and the source's connection settings", 
 });
 
 // The Repos tile scoped to Healthy repos; Rust's note for it, word for word.
-const HEALTHY = { title: "Healthy Repos", note: "Scoped to Healthy repos. Totals still cover all of GitHub Repos." };
+const HEALTHY = { title: "Healthy Repos", note: "Scope: Healthy repos. Totals still cover all of GitHub Repos." };
 function healthyRepos(view) {
   Object.assign(view.layout.tiles.find((t) => t.source === "ghWorkflows"), { scope: "healthy", title: HEALTHY.title });
 }
@@ -2412,7 +2413,7 @@ test("two tiles of one source each open their own scope", async ({ page, baseURL
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await openTileFull(page, "repos-attention");
   await expect(page.locator("#reposTitle")).toHaveText("Repos Needing Attention");
-  await expect(page.locator(".db-full-note")).toHaveText("Scoped to Needs Attention. Totals still cover all of GitHub Repos.");
+  await expect(page.locator(".db-full-note")).toHaveText("Scope: Needs Attention. Totals still cover all of GitHub Repos.");
   await page.evaluate(() => refreshPanels());
   const asked = await page.evaluate(() =>
     window.__CALLS__.filter((c) => c.command === "repos" && c.args?.tile).map((c) => c.args.tile));

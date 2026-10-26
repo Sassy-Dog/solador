@@ -1256,9 +1256,12 @@ the bundle's floor.
   an open menu is rebuilt with the footer on each repaint.
   Detail opened from a tile (View, `N more`, a row or a runner group) offers
   **Full view**, the tile's Full view: its source's panel holding only the tile's
-  rows (the panel command takes the tile id and `tile_scope` filters; Machines
-  cards before layout), titled with the tile's name, with Rust's `fullNote` under
-  the header row when the scope filters. It keeps the selected group, and Full's
+  rows (the panel command takes the tile id and `tile_scope` filters, never
+  inserting a key the payload lacks; Machines cards before layout, while `No
+  hosts configured` still counts the configured hosts, not the kept cards),
+  titled with the tile's name, with Rust's `fullNote` under the header row when
+  the scope filters (`Scope: …`, plus the totals clause on every source but
+  Machines, which has no totals). It keeps the selected group, and Full's
   All runners clears that filter. Escape or the toolbar toggle returns to the
   overview, focused on that tile's View button; a tile hidden or removed meanwhile sends the
   overview back with `tileGone` and closes the Detail opened from it. The

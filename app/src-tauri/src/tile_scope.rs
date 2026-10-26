@@ -6,6 +6,13 @@
 //! gives that row. Only the rows are filtered. Every other key (`trailing`,
 //! `stats`, `chips`, `footer`, `freshness`, `message`, `health`, section header
 //! counts) is the source-wide total the scope note refers to and is left as is.
+//!
+//! **Nothing here writes through `IndexMut`.** `value["key"]` on a `&mut Value`
+//! inserts a missing key and turns a `null` into an object, so a runtime whose
+//! `agents` was `null` came back as `{"rows": null}` and the OpenClaw panel
+//! painted empty AGENTS and CHANNELS sections under its pairing banner. Every
+//! write goes through [`field_mut`], and a key that is absent or `null` stays
+//! exactly as it was.
 
 use crate::dashboard::scoped_row_ids;
 use serde_json::Value;
@@ -64,15 +71,35 @@ fn str_of<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or_default()
 }
 
-/// Keeps the entries of `container[key]` whose id is in `kept`. An absent or
-/// non-array key is left alone.
+/// `container[key]` when `container` is an object holding `key`, never
+/// inserting either (see the module note).
+fn field_mut<'a>(container: &'a mut Value, key: &str) -> Option<&'a mut Value> {
+    container.as_object_mut()?.get_mut(key)
+}
+
+/// The array at `container[key]`, if there is one.
+fn array_mut<'a>(container: &'a mut Value, key: &str) -> Option<&'a mut Vec<Value>> {
+    field_mut(container, key)?.as_array_mut()
+}
+
+/// Sets `container[key]` to `null` when the key is there. An absent key stays
+/// absent.
+fn clear(container: &mut Value, key: &str) {
+    if let Some(v) = field_mut(container, key) {
+        *v = Value::Null;
+    }
+}
+
+/// Keeps the entries of `container[key]` whose id is in `kept`. An absent,
+/// `null` or non-array key, or a container that is not an object, is left
+/// alone.
 fn retain_in(
     container: &mut Value,
     key: &str,
     id: impl Fn(&Value) -> String,
     kept: &BTreeSet<String>,
 ) {
-    if let Some(items) = container[key].as_array_mut() {
+    if let Some(items) = array_mut(container, key) {
         items.retain(|v| kept.contains(&id(v)));
     }
 }
@@ -86,7 +113,7 @@ fn has_rows(v: &Value) -> bool {
 }
 
 fn scope_containers(payload: &mut Value, kept: &BTreeSet<String>) {
-    let Some(sections) = payload["sections"].as_array_mut() else {
+    let Some(sections) = array_mut(payload, "sections") else {
         return;
     };
     for section in sections.iter_mut() {
@@ -104,7 +131,7 @@ fn scope_containers(payload: &mut Value, kept: &BTreeSet<String>) {
 /// Retains the `{group.id}:{label}` rows of each group under `key`, then drops
 /// the groups left with none.
 fn scope_groups(payload: &mut Value, key: &str, kept: &BTreeSet<String>) {
-    let Some(groups) = payload[key].as_array_mut() else {
+    let Some(groups) = array_mut(payload, key) else {
         return;
     };
     for group in groups.iter_mut() {
@@ -140,7 +167,7 @@ fn scope_claude(payload: &mut Value, kept: &BTreeSet<String>, plans_scope: bool)
 
 fn scope_azure(payload: &mut Value, kept: &BTreeSet<String>) {
     if !kept.contains("mtd") {
-        payload["headline"] = Value::Null;
+        clear(payload, "headline");
     }
     retain_in(
         payload,
@@ -149,31 +176,32 @@ fn scope_azure(payload: &mut Value, kept: &BTreeSet<String>) {
         kept,
     );
     if !kept.contains("budget") {
-        payload["budget"] = Value::Null;
+        clear(payload, "budget");
     }
 }
 
 fn scope_openclaw(payload: &mut Value, kept: &BTreeSet<String>) {
-    let Some(runtimes) = payload["runtimes"].as_array_mut() else {
+    let Some(runtimes) = array_mut(payload, "runtimes") else {
         return;
     };
     for runtime in runtimes.iter_mut() {
         let rid = str_of(runtime, "id").to_owned();
-        retain_in(
-            &mut runtime["agents"],
-            "rows",
-            |v| format!("{rid}:agent:{}", str_of(v, "id")),
-            kept,
-        );
-        retain_in(
-            &mut runtime["channels"],
-            "rows",
-            |v| format!("{rid}:channel:{}", str_of(v, "id")),
-            kept,
-        );
+        // A runtime that is pairing or erroring has `agents: null` and
+        // `channels: null`, and `openclaw.js` reads a non-null one as a section
+        // to paint: they must stay `null`.
+        for (key, kind) in [("agents", "agent"), ("channels", "channel")] {
+            if let Some(section) = field_mut(runtime, key) {
+                retain_in(
+                    section,
+                    "rows",
+                    |v| format!("{rid}:{kind}:{}", str_of(v, "id")),
+                    kept,
+                );
+            }
+        }
         for key in ["connection", "hint", "pairing", "cron"] {
             if !kept.contains(&format!("{rid}-{key}")) {
-                runtime[key] = Value::Null;
+                clear(runtime, key);
             }
         }
     }
@@ -397,6 +425,85 @@ mod tests {
         assert_eq!(r["connection"], json!({"text":"up"}));
         assert_eq!(r["agents"]["rows"], json!([]));
         assert_eq!(r["cron"], Value::Null);
+    }
+
+    /// The two states an attention-scoped OpenClaw tile keeps while a runtime
+    /// is not answering: a pairing request, and a red hint. Such a runtime has
+    /// no agents or channels (`null`, from `sample-openclaw-pairing.json`'s
+    /// shape, or the key absent), and the scope must not invent either.
+    #[test]
+    fn openclaw_attention_keeps_pairing_and_hint_without_inventing_sections() {
+        let red = viewmodel::color::hex(viewmodel::color::RED);
+        let p = json!({"runtimes":[
+            {"id":"r1","agents":null,"channels":null,"connection":null,"hint":null,"cron":null,
+                "pairing":{"title":"device pairing required","command":"openclaw devices approve req-7f31",
+                    "dotColor":"#e0a03a"}},
+            {"id":"r2","agents":null,"connection":null,"pairing":null,
+                "hint":{"text":"gateway refused","color":red}},
+            {"id":"r3","agents":{"rows":[{"id":"a1","name":"A1","status":"ok"}]},
+                "channels":{"rows":[]},"connection":{"text":"up"},"hint":null,"pairing":null,"cron":null}]});
+        let out = scope_payload(&tile("openclawAgents", "attention"), p);
+        let runtimes = out["runtimes"].as_array().unwrap();
+        let ids: Vec<&str> = runtimes.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(
+            ids,
+            ["r1", "r2"],
+            "the healthy runtime has nothing in scope"
+        );
+        let (r1, r2) = (&runtimes[0], &runtimes[1]);
+        assert_eq!(r1.get("agents"), Some(&Value::Null), "pairing: {r1}");
+        assert_eq!(r1.get("channels"), Some(&Value::Null), "pairing: {r1}");
+        assert_eq!(
+            r1["pairing"]["command"],
+            "openclaw devices approve req-7f31"
+        );
+        assert_eq!(r2.get("agents"), Some(&Value::Null), "hint: {r2}");
+        assert_eq!(
+            r2.get("channels"),
+            None,
+            "hint: an absent key stays absent: {r2}"
+        );
+        assert_eq!(r2["hint"]["text"], "gateway refused");
+        assert_eq!(r2.get("hint").map(Value::is_null), Some(false));
+        // A status key the scope drops is nulled where it exists, never added.
+        assert_eq!(r1.get("cron"), Some(&Value::Null), "{r1}");
+        assert_eq!(
+            r2.get("cron"),
+            None,
+            "an absent status key stays absent: {r2}"
+        );
+    }
+
+    /// A payload without the list a source's rows live in (a setup or error
+    /// state) comes back exactly as it went in: no `rows`, `sections`,
+    /// `runtimes`, `headline` or `budget` key is invented, and a `null` one
+    /// stays `null`.
+    #[test]
+    fn a_payload_without_rows_gets_no_rows_invented() {
+        for (source, scope) in [
+            ("services", "item:gone"),
+            ("sentryCrons", "active"),
+            ("ghWorkflows", "failing"),
+            ("ghRunners", "LINUX"),
+            ("containers", "item:hostA|db"),
+            ("claudeUsage", "plans"),
+            ("azureCost", "item:budget"),
+            ("openclawAgents", "attention"),
+        ] {
+            let absent = json!({"message":"Add a token in Settings","footer":{"text":"f"}});
+            assert_eq!(
+                scope_payload(&tile(source, scope), absent.clone()),
+                absent,
+                "{source} {scope}: absent"
+            );
+            let null = json!({"rows":null,"sections":null,"runtimes":null,"windows":null,
+                "plans":null,"providers":null,"stats":null});
+            assert_eq!(
+                scope_payload(&tile(source, scope), null.clone()),
+                null,
+                "{source} {scope}: null"
+            );
+        }
     }
 
     #[test]

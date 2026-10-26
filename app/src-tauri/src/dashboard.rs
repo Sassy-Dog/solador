@@ -1098,6 +1098,9 @@ pub(crate) fn scoped_row_ids(tile: &DashboardTile, payload: &Value) -> Option<BT
 }
 
 /// Says a tile's Full view is narrowed. `None` exactly when `scoped_row_ids` is.
+///
+/// The totals clause is left off for Machines: its panel is cards and nothing
+/// else, so there is no total for the clause to be about.
 fn scope_note(tile: &DashboardTile, source_title: &str, scope_label: &str) -> Option<String> {
     if !filters_rows(tile) {
         return None;
@@ -1110,9 +1113,12 @@ fn scope_note(tile: &DashboardTile, source_title: &str, scope_label: &str) -> Op
     } else {
         scope_label.to_owned()
     };
-    Some(format!(
-        "Scoped to {scope}. Totals still cover all of {source_title}."
-    ))
+    let totals = if tile.source == "hosts" {
+        String::new()
+    } else {
+        format!(" Totals still cover all of {source_title}.")
+    };
+    Some(format!("Scope: {scope}.{totals}"))
 }
 
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
@@ -2809,18 +2815,42 @@ mod tile_scope_ids_tests {
         );
         assert_eq!(
             tile_view(&tile("ghWorkflows", "healthy"), &src)["fullNote"],
-            "Scoped to Healthy repos. Totals still cover all of GitHub Repos."
+            "Scope: Healthy repos. Totals still cover all of GitHub Repos."
         );
         let mut t = tile("ghWorkflows", "all");
         t.selected_repos = vec!["o/a".into(), "o/b".into()];
         assert_eq!(
             tile_view(&t, &src)["fullNote"],
-            "Scoped to 2 selected repos. Totals still cover all of GitHub Repos."
+            "Scope: 2 selected repos. Totals still cover all of GitHub Repos."
         );
         t.selected_repos.truncate(1);
         assert_eq!(
             tile_view(&t, &src)["fullNote"],
-            "Scoped to 1 selected repo. Totals still cover all of GitHub Repos."
+            "Scope: 1 selected repo. Totals still cover all of GitHub Repos."
+        );
+    }
+
+    /// Machines has no totals to cover, so its note is the scope alone.
+    #[test]
+    fn a_machines_note_names_the_scope_and_claims_no_totals() {
+        let src = source_view("hosts", "Machines", &json!({"hosts": []}));
+        assert_eq!(
+            tile_view(&tile("hosts", "local"), &src)["fullNote"],
+            "Scope: This machine."
+        );
+        assert_eq!(
+            tile_view(&tile("hosts", "attention"), &src)["fullNote"],
+            "Scope: Needs Attention."
+        );
+        assert_eq!(
+            tile_view(&tile("hosts", "all"), &src)["fullNote"],
+            Value::Null
+        );
+        // Every other source keeps the clause.
+        let src = source_view("services", "Service Health", &Value::Null);
+        assert_eq!(
+            tile_view(&tile("services", "attention"), &src)["fullNote"],
+            "Scope: Needs Attention. Totals still cover all of Service Health."
         );
     }
 
@@ -2831,7 +2861,7 @@ mod tile_scope_ids_tests {
         t.selected_repos = vec!["o/a".into()];
         assert_eq!(
             tile_view(&t, &src)["fullNote"],
-            "Scoped to Healthy repos. Totals still cover all of GitHub Repos."
+            "Scope: Healthy repos. Totals still cover all of GitHub Repos."
         );
     }
 }

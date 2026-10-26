@@ -459,9 +459,16 @@ fn view_for(s: &HostState) -> Value {
 /// and colour is: `host_columns` is the tested breakpoint math (a card needs
 /// [`HOST_CARD_MIN_WIDTH`]), and a CSS `auto-fit` restating it is a second
 /// implementation free to disagree with the first.
+///
+/// `configured_remotes` is how many remote hosts are configured, which is not
+/// `hosts.len()` once a tile's scope has dropped some: a Machines tile scoped
+/// to this machine keeps no remote, and reading the kept count as the
+/// configured one told the operator to add the hosts they already have.
+#[allow(clippy::too_many_arguments)]
 fn cockpit_view(
     local: Option<Value>,
     hosts: &[Arc<Mutex<HostState>>],
+    configured_remotes: usize,
     available: f64,
     overflow: HostOverflowMode,
     core_row_span: usize,
@@ -472,13 +479,12 @@ fn cockpit_view(
         .iter()
         .map(|host| view_for(&host.lock().expect("host state poisoned")))
         .collect();
-    let remote_count = remote.len();
     // Local first, matching `HostsPanel.hosts` in the original (`[local] + remoteHosts`).
     // This machine is the one you are looking at; it leads.
     let cards: Vec<Value> = local.into_iter().chain(remote).collect();
     cockpit_payload(
         cards,
-        remote_count,
+        configured_remotes,
         available,
         overflow,
         core_row_span,
@@ -3145,10 +3151,14 @@ fn cockpit_with(width: f64, state: &App, keep: Option<&BTreeSet<String>>) -> Val
             volumes::Hidden::from_store(&store),
         )
     };
+    // Counted before the scope drops any: whether hosts are configured is a
+    // question about the store, never about which cards a tile kept.
+    let configured_remotes = hosts.len();
     let (local, hosts) = keep_cards(Some(local), hosts, keep);
     let mut payload = cockpit_view(
         local,
         &hosts,
+        configured_remotes,
         width,
         overflow,
         core_row_span,
@@ -8059,6 +8069,7 @@ mod tests {
         cockpit_view(
             local,
             hosts,
+            hosts.len(),
             available,
             HostOverflowMode::Stack,
             viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
@@ -8254,6 +8265,11 @@ mod tests {
         let payload = cockpit_with(3600.0, &app, Some(&keep));
         assert_eq!(card_ids(&payload), ["local"]);
         assert_eq!(payload["hostColumns"], 1, "layout saw one card");
+        assert!(
+            payload["empty"].is_null(),
+            "two hosts are configured, so the scope dropping them is not an empty setup: {}",
+            payload["empty"]
+        );
     }
 
     #[test]
@@ -8269,6 +8285,42 @@ mod tests {
         let (_dir, _rt, app) = app_with_remotes(2);
         let payload = cockpit_with(1400.0, &app, Some(&BTreeSet::new()));
         assert!(card_ids(&payload).is_empty());
+        assert!(
+            payload["empty"].is_null(),
+            "two hosts are configured, so the scope dropping them is not an empty setup: {}",
+            payload["empty"]
+        );
+    }
+
+    /// The other half of the rule above: with no remote configured, the setup
+    /// line is true, and a scope must not hide it either.
+    #[test]
+    fn a_store_with_no_remotes_says_so_scoped_or_not() {
+        let (_dir, _rt, app) = app_with_remotes(0);
+        let message = json!({ "message": "No hosts configured. Add one in Settings." });
+        let local = keep_of(&["local".to_owned()]);
+        for (case, keep) in [
+            ("unscoped", None),
+            ("this machine", Some(&local)),
+            ("nothing kept", Some(&BTreeSet::new())),
+        ] {
+            let payload = cockpit_with(1400.0, &app, keep);
+            assert_eq!(payload["empty"], message, "{case}");
+        }
+    }
+
+    /// A Machines tile scoped `all` with no `selectedRepos` keeps every card, so
+    /// its Full view is the Machines panel itself, through the command's path.
+    #[test]
+    fn a_machines_tile_scoped_all_gets_the_cockpit_payload_unchanged() {
+        let (_dir, _rt, app) = app_with_remotes(2);
+        tile_in(&app, "t-all", "hosts", "all", false);
+        let tile = tile_from_store(&app, "t-all", "hosts").unwrap();
+        assert!(tile.selected_repos.is_empty(), "no repo selection");
+        assert_eq!(
+            cockpit_for_tile(1400.0, &app, "t-all").unwrap(),
+            cockpit_with(1400.0, &app, None)
+        );
     }
 
     #[test]
