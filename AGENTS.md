@@ -172,7 +172,8 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
   `Applications` symlink must be present and point at `/Applications`; and,
   #586, only `hdiutil attach`'s transient EAGAIN is retried; #629, a failed
-  attempt's device is detached, not left behind), the
+  attempt's device is swept, unless it appears more than 2 s after the last
+  failure), the
   notarization outcome test (`scripts/notarize-outcome-test.sh`, #551 — a stub
   `xcrun`: a timed-out wait is "still in progress", never "rejected"), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
@@ -1292,8 +1293,10 @@ failed attempt detaches whatever now stands on that image path before the next
 one (never a device that stood there before the attach: the release image's
 path repeats across builds and an earlier one may still be mounted), which is
 what makes retrying safe. The last failure waits 2 s and sweeps once more; a
-device that appears later than that is not covered, and the next build warns
-about it by name (it is kept, never detached). Detach is by the whole-disk device node
+device that appears later than that is not covered. A re-run of the SAME
+version names it (it is kept, never detached) on its next attach, successful or
+not; once the CalVer moves the image path (`<product>-<version>.dmg`) changes
+and nothing revisits the old one, so `hdiutil info` is how to see it. Detach is by the whole-disk device node
 (`attach_dmg_readonly` leaves it in `ATTACHED_DEV`; a mount point names nothing
 once the unmount succeeds and the eject does not), retried with a backoff,
 `-force` only on the last try, then checked against `hdiutil info -plist` (read

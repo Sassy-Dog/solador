@@ -816,13 +816,25 @@ release_dmg_image() {
 # failure is final at once, and the last hdiutil error is printed. A failed
 # attempt can still have attached the device (#629), so every failure detaches
 # what is now attached for this image (beyond the pre-existing ones) before the
-# next attempt or the return: a retry never stacks on a half-attached device and
-# no failure leaves one behind. EAGAIN has also been seen with nothing leaked
-# (concurrent attaches), so the retry stays regardless.
+# next attempt or the return: a retry never stacks on a half-attached device,
+# and the last failure waits 2 s and sweeps once more. A device that appears
+# later than that is not covered; a re-run of the same version warns about it
+# by name once its attach succeeds (or fails: see below). EAGAIN has also been
+# seen with nothing leaked (concurrent attaches), so the retry stays regardless.
 # Measured on macOS 27.0.1, `diskutil image attach` (the replacement the
 # deprecation warning names) works but returns bare `diskN` entries, has no
 # -noverify analogue and is unmeasured on the 14.0 floor and the runner; it is
 # not used, so one code path serves the runner and the 14.0 floor.
+# Say, for each device in the newline-separated <list>, that it stands on <dmg>,
+# is left alone, and how to remove it if it is not an image the operator opened.
+warn_kept_dmg_devices() {
+    local dmg="$1" list="$2" kept
+    while IFS= read -r kept; do
+        [[ -n "$kept" ]] || continue
+        log_warning "$kept was already attached for $dmg and is left alone; if this is not an image you opened: hdiutil detach $kept"
+    done <<< "$list"
+}
+
 attach_dmg_readonly() {
     local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile
     ATTACHED_DEV=""
@@ -872,6 +884,7 @@ attach_dmg_readonly() {
     # `|| true`: a failure here was already reported on stderr by the helper,
     # and the return is unconditional; the original attach error is printed above.
     release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
+    warn_kept_dmg_devices "$dmg" "$ATTACH_PREEXISTING"
     return 1
 }
 
@@ -897,13 +910,12 @@ assert_dmg_layout() {
         return 1
     fi
     dev="$ATTACHED_DEV"
-    local preexisting="$ATTACH_PREEXISTING" kept
-    # Never detached, but never silent either: a device that appeared late
-    # during an earlier failed attempt lands here on the next build.
-    while IFS= read -r kept; do
-        [[ -n "$kept" ]] || continue
-        log_warning "$kept was already attached for $dmg and is left alone; if this is not an image you opened: hdiutil detach $kept"
-    done <<< "$preexisting"
+    local preexisting="$ATTACH_PREEXISTING"
+    # Never detached, but never silent either. A device that appeared late
+    # during an earlier failed attempt is named here on a re-run of the SAME
+    # version (the image path is ${product}-${version}.dmg; once the version
+    # moves nothing revisits the old path).
+    warn_kept_dmg_devices "$dmg" "$preexisting"
 
     entries="$(ls -A "$mnt" | LC_ALL=C sort)"
     target="$(readlink "$mnt/Applications" 2>/dev/null || true)"

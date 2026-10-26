@@ -107,7 +107,7 @@ trap 'exit 130' INT TERM
 # mutated revision of one function.
 build_sh="${BUILD_SH:-$SCRIPT_DIR/build.sh}"
 lift() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$1"; }
-helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image"
+helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image warn_kept_dmg_devices"
 {
     for fn in $helpers; do
         lift "$SCRIPT_DIR/build.sh" "$fn"
@@ -457,9 +457,22 @@ fi
 # returns if it is still queued, so without the final pause the device is left.
 cat > "$work/late-hdiutil.sh" <<'EOF'
 late_attach() {
+    local n out
     if [[ -e "$STUB_PENDING" ]]; then
         rm -f "$STUB_PENDING"
-        command hdiutil attach -plist -nobrowse -readonly -noverify -mountpoint "$STUB_MNT" "$STUB_DMG" >/dev/null 2>&1
+        # Retried on EAGAIN, as the suite does: a concurrent suite must not turn
+        # this into a case that passes because the late attach never happened.
+        for n in 1 2 3 4 5; do
+            if out="$(command hdiutil attach -plist -nobrowse -readonly -noverify -mountpoint "$STUB_MNT" "$STUB_DMG" 2>&1)"; then
+                : > "$STUB_PENDING.done"
+                return 0
+            fi
+            case "$out" in
+                *"Resource temporarily unavailable"*) command sleep "$((n * 2))" ;;
+                *) return 1 ;;
+            esac
+        done
+        return 1
     fi
 }
 hdiutil() {
@@ -473,6 +486,7 @@ hdiutil() {
 sleep() { late_attach; }
 EOF
 late_rc=0
+rm -f "$work/pending-attach.done"
 (
     export STUB_PENDING="$work/pending-attach" STUB_DMG="$work/good.dmg"
     STUB_MNT="$(mktemp -d "$work/mnt.XXXXXX")"; export STUB_MNT
@@ -484,7 +498,9 @@ late_rc=0
     exit "$rc"
 ) || late_rc=$?
 late_left="$(leftover)"
-if [[ "$late_rc" == 1 && -z "$late_left" ]]; then
+if [[ ! -e "$work/pending-attach.done" ]]; then
+    fail "a device that attaches after the last failed attempt is swept by the final pause (the late attach never happened)"
+elif [[ "$late_rc" == 1 && -z "$late_left" ]]; then
     pass "a device that attaches after the last failed attempt is swept by the final pause"
 else
     fail "a device that attaches after the last failed attempt is swept by the final pause (status $late_rc; left: $late_left)"
