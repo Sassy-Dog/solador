@@ -56,13 +56,13 @@ if grep -q '^solador-subscription ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves solador-subscription — that crate reads Claude Code's and Codex's saved sign-ins for the cockpit's Usage panel; the agent must never carry it"
     exit 1
 fi
-# The other absence AGENTS.md names, asserted the same way now that the
+# The other absence AGENTS.md names (docs/PROJECT-STRUCTURE.md, Security Considerations in AGENTS.md), asserted the same way now that the
 # agent has an HTTP stack and a failure enum that make "report a failed
 # update to Sentry" the obvious next shortcut (#393): crates/crashreport is
 # the ONLY crate carrying the Sentry SDK, and only app/src-tauri may
 # depend on it. A daemon on strangers' hosts phones nowhere.
 if grep -qE '^(solador-crashreport|sentry|sentry-[a-z]+) ' <<< "$agent_tree"; then
-    echo "::error::agent/ resolves crates/crashreport or the Sentry SDK — the agent must never carry crash reporting (AGENTS.md: only app/src-tauri depends on crashreport)"
+    echo "::error::agent/ resolves crates/crashreport or the Sentry SDK — the agent must never carry crash reporting (docs/PROJECT-STRUCTURE.md: only app/src-tauri depends on crashreport)"
     exit 1
 fi
 # A third absence, since #447: agent/Cargo.toml deliberately pins `rcgen`,

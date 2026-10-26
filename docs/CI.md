@@ -55,3 +55,11 @@ Run the selector tests alone with:
 ```sh
 python3 -B -m unittest -v scripts.ci_changes_test
 ```
+
+## Agent-guide size budget (#638)
+
+`scripts/agent-guide-size-guard.sh` (with its negative control
+`agent-guide-size-guard-test.sh`) fails when any chain of tracked `AGENTS.md`
+files exceeds 32,768 bytes, the org budget and Codex's default
+`project_doc_max_bytes`. It runs in the always-running **Secrets guard** job and
+in `./dev lint`; a docs-only PR, where the guide grows, therefore cannot skip it.

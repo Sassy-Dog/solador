@@ -636,3 +636,79 @@ asserts each artifact's compiled-in version against the number it was named
 with, and `release.yml` (and, for the agent, `release-agent.yml`) asserts on
 every build leg that the tag is the mint's own answer at that commit (#404,
 above).
+
+## Implementation notes (moved from `AGENTS.md`, #638)
+
+
+Two decoupled numbers, both derived from git — never hand-maintained:
+- **Marketing version**: CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded
+  month, floored at 1) — `scripts/get-version-info.sh --version`.
+- **Build number**: total commit count, monotonic forever —
+  `scripts/get-build-number.sh [--at <ref>]`.
+
+Never compute a version anywhere else. `app/src-tauri/tauri.conf.json` no
+longer authors a `version` key at all (#303) — the bundle's two plist numbers
+come from those two scripts and are asserted back out of the artifact.
+`app/src-tauri/Cargo.toml`'s `0.1.0` is unpublished package metadata, like the
+sibling crates', and nothing reads it any more: `app/src-tauri/build.rs`
+publishes the derived CalVer as `SOLADOR_MARKETING_VERSION`, and
+`settings::VERSION` is an `Option<&str>` over it. **The build script derives
+nothing itself** — it shells out to `get-version-info.sh`, honouring an explicit
+`MARKETING_VERSION` pin ahead of it, because the algorithm has exactly one home.
+
+**Two shipping tiers, two numbers (#472, #490).** The agent has a version of its
+own, which moves only when an agent release is cut: `agent-vYYYY.M.N`. It is
+derived in the same one home, `scripts/get-version-info.sh`, and nowhere else:
+- `--agent-version` is the version of the checkout. An `agent-v*` tag at HEAD is
+  that tag's version; otherwise a source build is `<base>+dev.<k>.g<sha>` — the
+  base is the highest reachable `agent-v*` tag (before one exists,
+  `LAST_COMBINED_AGENT_RELEASE` in `scripts/config.sh`, the last `v*` release
+  that carried agent binaries), `<k>` the commits since it. A shallow clone, or
+  one without the base tag, yields nothing. The `+dev` marker is how a source
+  build never claims to be a release: `solador-agent update` answers it "no
+  applicable release" (exit 4).
+- `--agent-tag` is the agent's mint (`./dev publish --agent` runs it, pre-flight
+  and push included, and needs none of the cockpit's credentials; it also
+  refuses while HEAD lacks `.github/workflows/release-agent.yml`, since a tag
+  push runs the workflow as it is at the tagged commit). It reuses an
+  `agent-v*` tag already on the remote at HEAD; otherwise it mints `agent-v` +
+  this UTC month with N = 1 + the highest patch among **this month's** shipped
+  versions (1 in a month with none) — the **remote's** `agent-v*`
+  tags (`git ls-remote`, never local tags) plus `LAST_COMBINED_AGENT_RELEASE`. It
+  **refuses** a result that does not sort strictly above everything shipped and a
+  name whose *release* already exists, because a deleted tag's number must not be
+  re-minted with different bytes: **never delete an `agent-v*` tag.**
+  `scripts/assert-release-tag.sh --agent <tag>` re-runs it read-only and requires
+  `action=reuse` for exactly that tag.
+
+`agent/build.rs` calls `crates/buildversion`'s agent entry point, beside the
+cockpit's, so the *plumbing* around the one script (a worktree's `.git` file,
+the ref file a commit rewrites, the shallow-clone refusal, and for the agent
+the tag refs a fetch moves) exists once. Its order is the pin
+`AGENT_MARKETING_VERSION`, then the shallow refusal, then the script —
+**`MARKETING_VERSION` never reaches the agent**; it is a desktop release's
+number. `scripts/build-agent.sh` takes the same pin, else `--agent-version`, for
+its `--version` assertion and the artifact names, so `./dev agent` (and CI's
+musl build for agent/build changes) is a `+dev` build that passes.
+`solador-agent --version` prints it and nothing else — a contract both `agent/deploy/lib.sh` and the
+release workflow read directly — and `/v1/health` serves the same string.
+`agent/Cargo.toml`'s semver is unpublished metadata in exactly the sense
+`app/src-tauri`'s `0.1.0` is, kept as the wire-contract marker and read by
+nothing at runtime.
+
+**A shallow clone refuses rather than counts.** CalVer's patch is commits this
+month (and the agent's `+dev` count is commits since its base), and a
+`fetch-depth: 1` checkout answers that question with `1` instead of
+failing — CI's bundle job already pins `fetch-depth: 0` for exactly this reason,
+and selection also fetches full history; the other jobs are still shallow
+(`agent-tests` unshallows inside the one step that needs a version, its musl build). So the build script checks
+`--is-shallow-repository` and emits *no* version there; About renders `Version —`
+and the Sentry release is omitted entirely. Sentry groups and regresses by
+release, so a placeholder is worse than nothing: every un-nameable build would
+share one release and a fixed crash would read as regressed. The refusal, the
+rule that each track's pin is consulted before the checkout is looked at, and
+the agent entry point ignoring `MARKETING_VERSION` are
+tested in `crates/buildversion` against real `--depth 1` and full clones the
+tests build (#417, #490); the crate still has zero dependencies. The agent's
+derivation and mint, and `publish --agent`, are tested in
+`scripts/versioning-test.sh` against temporary bare origins with a `gh` shim.
