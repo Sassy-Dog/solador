@@ -1470,13 +1470,13 @@ fn containers(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result
         &state,
         "containers",
         tile.as_deref(),
-        containers_unscoped(state.clone()),
+        containers_unscoped(&state),
     )
 }
 
 /// [`containers`] without a tile: the whole source, as the dashboard reads it.
-fn containers_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
-    let payload = containers_view_in(&state, containers::now_unix());
+fn containers_unscoped(state: &App) -> Value {
+    let payload = containers_view_in(state, containers::now_unix());
     // The same terminal-side signal `cockpit` and `settings_view` print, and
     // for the same reason: this is a third command on an IPC boundary with no
     // automated coverage (#123), and every way it can break from outside Rust
@@ -2618,12 +2618,12 @@ fn repos(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Valu
         &state,
         "ghWorkflows",
         tile.as_deref(),
-        repos_unscoped(state.clone()),
+        repos_unscoped(&state),
     )
 }
 
 /// [`repos`] without a tile: the whole source, as the dashboard reads it.
-fn repos_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn repos_unscoped(state: &App) -> Value {
     let payload = {
         let panel = state.github.lock().expect("github state poisoned");
         github::repos_view(&panel, github::now_utc())
@@ -2648,12 +2648,12 @@ fn runners(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Va
         &state,
         "ghRunners",
         tile.as_deref(),
-        runners_unscoped(state.clone()),
+        runners_unscoped(&state),
     )
 }
 
 /// [`runners`] without a tile: the whole source, as the dashboard reads it.
-fn runners_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn runners_unscoped(state: &App) -> Value {
     // Copied out and released before the GitHub state's lock: the two are
     // never held together, so this adds no lock ordering. Read on every
     // request, so a Settings edit regroups the next frame without a poll.
@@ -2924,6 +2924,12 @@ static FIRST_REQUEST: std::sync::Once = std::sync::Once::new();
 /// Cached readings only: editing or duplicating tiles never starts a poller.
 #[tauri::command]
 fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
+    dashboard_view_in(width, &state)
+}
+
+/// [`dashboard_view`] over the app itself: every source whole, never scoped.
+fn dashboard_view_in(width: f64, app: &App) -> Value {
+    let state = app;
     let layout = state
         .store
         .lock()
@@ -2931,7 +2937,7 @@ fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         .dashboard()
         .cloned()
         .unwrap_or_else(dashboard::default_layout);
-    let mut hosts = cockpit_with(width, &state, None);
+    let mut hosts = cockpit_with(width, state, None);
     hosts["id"] = json!("hosts");
     machine_alerts::attach(
         &mut hosts,
@@ -2950,13 +2956,13 @@ fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         .clone();
     let mut payloads = vec![
         hosts,
-        repos_unscoped(state.clone()),
-        runners_unscoped(state.clone()),
-        containers_unscoped(state.clone()),
-        services_unscoped(state.clone()),
-        crons_unscoped(state.clone()),
-        usage_unscoped(state.clone()),
-        azure_cost_unscoped(state.clone()),
+        repos_unscoped(state),
+        runners_unscoped(state),
+        containers_unscoped(state),
+        services_unscoped(state),
+        crons_unscoped(state),
+        usage_unscoped(state),
+        azure_cost_unscoped(state),
         openclaw_unscoped(state),
     ];
     cadence::attach(&mut payloads, &settings);
@@ -3026,37 +3032,28 @@ fn cockpit(
         let hosts = state.hosts.lock().expect("poll set poisoned").len();
         eprintln!("cockpit: first frontend request ({hosts} host(s), {width}pt)");
     });
-    let Some(id) = tile.as_deref() else {
-        return Ok(cockpit_with(width, &state, None));
-    };
-    let tile = tile_from_store(&state, id, "hosts")?;
-    let payload = cockpit_with(width, &state, None);
-    let alerts = state
-        .store
-        .lock()
-        .expect("store poisoned")
-        .settings()
-        .machine_alerts
-        .clone();
-    Ok(match kept_hosts(&tile, &payload, &alerts) {
-        Some(keep) => cockpit_with(width, &state, Some(&keep)),
+    match tile.as_deref() {
+        None => Ok(cockpit_with(width, &state, None)),
+        Some(id) => cockpit_for_tile(width, &state, id),
+    }
+}
+
+/// The Machines payload narrowed to tile `id`'s scope, or why it has none.
+fn cockpit_for_tile(width: f64, app: &App, id: &str) -> Result<Value, String> {
+    let tile = tile_from_store(app, id, "hosts")?;
+    let payload = cockpit_with(width, app, None);
+    Ok(match kept_hosts(&tile, &payload) {
+        Some(keep) => cockpit_with(width, app, Some(&keep)),
         None => payload,
     })
 }
 
-/// The card ids a Machines tile keeps. The copy is prepared the way
-/// `dashboard_view` prepares hosts (the `hosts` id, then the alerts), because a
-/// scope such as `attention` reads the alert-derived `attention` flag; without
-/// it a scoped Full view would keep different cards from the ones the tile shows.
-fn kept_hosts(
-    tile: &store::DashboardTile,
-    payload: &Value,
-    alerts: &store::machine_alerts::MachineAlerts,
-) -> Option<BTreeSet<String>> {
-    let mut copy = payload.clone();
-    copy["id"] = json!("hosts");
-    machine_alerts::attach(&mut copy, alerts);
-    dashboard::scoped_row_ids(tile, &copy)
+/// The card ids a Machines tile keeps, read from the payload `cockpit_with`
+/// returns. That payload is already past `apply_machine_preferences`, and a
+/// host's attention comes from the card fields that call sets, so a scope such
+/// as `attention` keeps the cards the tile shows.
+fn kept_hosts(tile: &store::DashboardTile, payload: &Value) -> Option<BTreeSet<String>> {
+    dashboard::scoped_row_ids(tile, payload)
 }
 
 /// The tile a panel command was asked for, read from the stored dashboard the
@@ -3625,12 +3622,12 @@ fn crons(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Valu
         &state,
         "sentryCrons",
         tile.as_deref(),
-        crons_unscoped(state.clone()),
+        crons_unscoped(&state),
     )
 }
 
 /// [`crons`] without a tile: the whole source, as the dashboard reads it.
-fn crons_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn crons_unscoped(state: &App) -> Value {
     // The operator's cadence for this panel, read at render time like the Azure
     // panel's and for the same reason: it is what the reading's age is measured
     // against, so a shortened interval must re-date the card now rather than an
@@ -3823,12 +3820,12 @@ fn usage(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Valu
         &state,
         "claudeUsage",
         tile.as_deref(),
-        usage_unscoped(state.clone()),
+        usage_unscoped(&state),
     )
 }
 
 /// [`usage`] without a tile: the whole source, as the dashboard reads it.
-fn usage_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn usage_unscoped(state: &App) -> Value {
     // Read at render time, not captured by the poller: changing the quota or
     // the rates must repaint now, and no API call is involved in either.
     let (quota, rates) = {
@@ -3869,12 +3866,12 @@ fn services(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<V
         &state,
         "services",
         tile.as_deref(),
-        services_unscoped(state.clone()),
+        services_unscoped(&state),
     )
 }
 
 /// [`services`] without a tile: the whole source, as the dashboard reads it.
-fn services_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn services_unscoped(state: &App) -> Value {
     let payload = {
         let statuses = state.services.lock().expect("services poisoned");
         services::view(&statuses)
@@ -3905,12 +3902,12 @@ fn azure_cost(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result
         &state,
         "azureCost",
         tile.as_deref(),
-        azure_cost_unscoped(state.clone()),
+        azure_cost_unscoped(&state),
     )
 }
 
 /// [`azure_cost`] without a tile: the whole source, as the dashboard reads it.
-fn azure_cost_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn azure_cost_unscoped(state: &App) -> Value {
     let budget = {
         let store = state.store.lock().expect("store poisoned");
         store.settings().azure_monthly_budget_usd
@@ -4097,12 +4094,12 @@ fn openclaw(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<V
         &state,
         "openclawAgents",
         tile.as_deref(),
-        openclaw_unscoped(state.clone()),
+        openclaw_unscoped(&state),
     )
 }
 
 /// [`openclaw`] without a tile: the whole source, as the dashboard reads it.
-fn openclaw_unscoped(state: tauri::State<'_, Arc<App>>) -> Value {
+fn openclaw_unscoped(state: &App) -> Value {
     let payload = {
         let panel = state.openclaw.lock().expect("openclaw state poisoned");
         openclaw::view(panel.snapshots())
@@ -8204,39 +8201,73 @@ mod tests {
         app.store.lock().unwrap().save_dashboard(layout).unwrap();
     }
 
-    fn scoped_cards(keep: &[&str]) -> Value {
-        let remote = [
-            shared(named_state("a", None, None, None)),
-            shared(named_state("b", None, None, None)),
-        ];
-        let keep: BTreeSet<String> = keep.iter().map(|s| (*s).to_owned()).collect();
-        let (local, hosts) = keep_cards(
-            Some(json!({"id": local::CARD_ID, "hostName": "this"})),
-            remote.to_vec(),
-            Some(&keep),
-        );
-        stacked_view(local, &hosts, 1400.0)
+    /// An App with `n` remote hosts (ids `Uuid::from_u128(1..=n)`), each
+    /// holding the fixture snapshot.
+    fn app_with_remotes(n: u128) -> (tempfile::TempDir, tokio::runtime::Runtime, App) {
+        let (dir, rt, app) = test_app();
+        for i in 1..=n {
+            let key = HostKey {
+                id: Uuid::from_u128(i),
+                base_url: "http://127.0.0.1:1".into(),
+                tls_fingerprint: None,
+            };
+            // Built by hand, with a task that does nothing: a real poll task
+            // would overwrite the state set here with its own failure.
+            let mut state = named_state(&format!("remote-{i}"), None, None, None);
+            state.id = key.id.to_string();
+            // The fixture's /boot is 92% full, which would raise attention on
+            // its own and hide the limits under test.
+            let mut snapshot = fixture();
+            snapshot.volumes.clear();
+            state.latest = Some(snapshot);
+            state.last_success = Some(Instant::now());
+            let polled = PolledHost {
+                client: Arc::new(agent_client(&key, String::new())),
+                key,
+                state: shared(state),
+                token_available: true,
+                task: app.runtime.spawn(async {}),
+            };
+            app.hosts.lock().unwrap().push(polled);
+        }
+        (dir, rt, app)
+    }
+
+    fn keep_of(ids: &[String]) -> BTreeSet<String> {
+        ids.iter().cloned().collect()
+    }
+
+    fn card_ids(payload: &Value) -> Vec<String> {
+        payload["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_owned())
+            .collect()
     }
 
     #[test]
     fn scoping_hosts_filters_cards_before_layout() {
-        let payload = scoped_cards(&["local"]);
-        let cards = payload["hosts"].as_array().unwrap();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0]["id"], "local");
+        let (_dir, _rt, app) = app_with_remotes(2);
+        let keep = keep_of(&["local".to_owned()]);
+        let payload = cockpit_with(1400.0, &app, Some(&keep));
+        assert_eq!(card_ids(&payload), ["local"]);
         assert_eq!(payload["hostColumns"], 1, "layout saw one card");
     }
 
     #[test]
     fn a_remote_scoped_machines_tile_keeps_both_remotes() {
-        let payload = scoped_cards(&["id-a", "id-b"]);
-        let ids: Vec<&str> = payload["hosts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c["id"].as_str().unwrap())
-            .collect();
-        assert_eq!(ids, ["id-a", "id-b"]);
+        let (_dir, _rt, app) = app_with_remotes(2);
+        let remotes: Vec<String> = (1..=2).map(|i| Uuid::from_u128(i).to_string()).collect();
+        let payload = cockpit_with(1400.0, &app, Some(&keep_of(&remotes)));
+        assert_eq!(card_ids(&payload), remotes);
+    }
+
+    #[test]
+    fn a_scope_that_keeps_no_machine_renders_no_cards() {
+        let (_dir, _rt, app) = app_with_remotes(2);
+        let payload = cockpit_with(1400.0, &app, Some(&BTreeSet::new()));
+        assert!(card_ids(&payload).is_empty());
     }
 
     #[test]
@@ -8264,60 +8295,48 @@ mod tests {
 
     #[test]
     fn a_machines_tile_scoped_to_attention_keeps_the_cards_it_shows() {
-        let mut payload = dump_cockpit(1400.0, 1, store::HostOverflowMode::Stack);
-        for card in payload["hosts"].as_array_mut().unwrap() {
-            let hot = card["id"] != local::CARD_ID;
-            for key in ["cpuFraction", "cpuSustainedFraction"] {
-                card[key] = json!(if hot { 0.97 } else { 0.1 });
-            }
-            card["memFraction"] = json!(0.1);
-            card["volumes"] = json!([]);
-        }
-        let alerts = store::machine_alerts::MachineAlerts::default();
-        machine_alerts::apply(&mut payload, &alerts);
-        let mut layout = dashboard::default_layout();
-        let mut tile = layout.tiles.remove(0);
-        tile.source = "hosts".into();
-        tile.scope = "attention".into();
-        let keep = kept_hosts(&tile, &payload, &alerts).expect("attention filters");
-        let hot: Vec<&str> = payload["hosts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|c| c["id"] != local::CARD_ID)
-            .map(|c| c["id"].as_str().unwrap())
-            .collect();
-        assert!(!hot.is_empty());
-        assert!(hot.iter().all(|id| keep.contains(*id)), "{keep:?}");
-        assert!(!keep.contains(local::CARD_ID));
+        let (_dir, _rt, app) = app_with_remotes(1);
+        let remote = Uuid::from_u128(1).to_string();
+        tile_in(&app, "t-attention", "hosts", "attention", false);
+        let tile = tile_from_store(&app, "t-attention", "hosts").unwrap();
+        let keeps_remote = |app: &App| {
+            let payload = cockpit_with(1400.0, app, None);
+            kept_hosts(&tile, &payload)
+                .expect("attention filters")
+                .contains(&remote)
+        };
+        assert!(!keeps_remote(&app), "within the default limits");
+        // The stored RAM limit now sits under the host's reading.
+        machine_alerts::save(
+            &mut app.store.lock().unwrap(),
+            None,
+            Some(&json!({"cpuWarning":50,"cpuCritical":60,"ramWarning":1,"ramCritical":2})),
+        )
+        .unwrap();
+        assert!(keeps_remote(&app), "over the stored limit");
+        let scoped = cockpit_for_tile(1400.0, &app, "t-attention").unwrap();
+        assert!(card_ids(&scoped).contains(&remote));
+        let keep = kept_hosts(&tile, &cockpit_with(1400.0, &app, None)).unwrap();
+        assert_eq!(
+            card_ids(&scoped).into_iter().collect::<BTreeSet<_>>(),
+            keep,
+            "the scoped payload holds exactly the kept cards"
+        );
     }
 
     #[test]
     fn dashboard_view_never_scopes() {
-        let (_dir, _rt, app) = test_app();
+        let (_dir, _rt, app) = app_with_remotes(1);
         tile_in(&app, "t-local", "hosts", "local", false);
-        let key = HostKey {
-            id: Uuid::from_u128(7),
-            base_url: "http://127.0.0.1:1".into(),
-            tls_fingerprint: None,
-        };
-        let polled = spawn_host(&app, key, "remote".into());
-        app.hosts.lock().unwrap().push(polled);
-        assert_eq!(
-            cockpit_with(1400.0, &app, None)["hosts"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-        let keep: BTreeSet<String> = ["local".to_owned()].into();
-        assert_eq!(
-            cockpit_with(1400.0, &app, Some(&keep))["hosts"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        let view = dashboard_view_in(1400.0, &app);
+        let hosts = view["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "hosts")
+            .unwrap();
+        let rows = hosts["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "this machine and the remote");
     }
 
     /// The fixture's CPU reading as a card renders it. Derived from the
