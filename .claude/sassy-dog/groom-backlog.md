@@ -9,7 +9,9 @@ gotcha_summary: >
   Windows job gates every merge. Renaming `SERVICE` (the OS credential-store service name) orphans
   every stored credential, and renaming `LEGACY_APP_DIR_NAME` breaks the store migration that reads
   from it. Versions are derived from git by `scripts/get-version-info.sh` and are never
-  hand-set anywhere. `agent/` must never depend on `crates/updatefeed` or `crates/crashreport`.
+  hand-set anywhere. `agent/` must never resolve `crates/updatefeed`, `crates/agentrelease`,
+  `crates/hostsetup`, `crates/subscription` or `crates/crashreport` (nor the Sentry SDK or
+  `aws-lc-rs`); `scripts/agent-deps-guard.sh` fails CI if it does.
   The Tauri IPC boundary is deliberately not automated, so changes there need the manual smoke
   checklist in `app/README.md`.
 board:
