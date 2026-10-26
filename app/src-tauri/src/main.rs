@@ -98,6 +98,7 @@ const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// 1 Hz host poll is the time axis of the sparklines and agent health is
 /// liveness rather than a panel.
 fn panel_interval(store: &Mutex<Store>, panel: PanelInterval) -> std::time::Duration {
+    assert_store_not_held(store);
     let secs = {
         let store = store.lock().expect("store poisoned");
         u64::from(store.settings().panel_interval_secs(panel))
@@ -1273,6 +1274,7 @@ fn host_token<C: CredentialStore + ?Sized>(credentials: &C, id: Uuid) -> HostTok
 /// history, failure streak and last-success time exactly where they were.
 /// Mirrors `RemoteHostsCoordinator.reload()` in the original.
 fn reload_hosts(app: &App) {
+    assert_store_not_held(&app.store);
     let desired: Vec<(HostKey, String)> = {
         let store = app.store.lock().expect("store poisoned");
         display_order(store.hosts())
@@ -2753,28 +2755,25 @@ fn agent_versions(app: &App) -> Vec<(Uuid, String)> {
         .collect()
 }
 
-/// Fails a test loudly where the code would deadlock (#630): the Settings
-/// payload locks the store, so building it while the calling thread still holds
+/// Fails a test loudly where the code would deadlock (#630): these entry
+/// points lock the store, so calling one while the calling thread still holds
 /// the store's guard hangs forever. `try_lock` cannot tell "this thread holds
 /// it" from "another thread does", so this is test-only, where no poll loop
 /// runs against the `App`; in a running app a `WouldBlock` is routine.
 #[cfg(test)]
-fn assert_store_not_held(app: &App) {
+fn assert_store_not_held(store: &Mutex<Store>) {
     assert!(
-        !matches!(
-            app.store.try_lock(),
-            Err(std::sync::TryLockError::WouldBlock)
-        ),
-        "store lock re-entered: a settings answer was built while the store was held"
+        !matches!(store.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+        "store lock re-entered: the store was already held when a store-locking entry point ran"
     );
 }
 
 #[cfg(not(test))]
-fn assert_store_not_held(_app: &App) {}
+fn assert_store_not_held(_store: &Mutex<Store>) {}
 
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
-    assert_store_not_held(app);
+    assert_store_not_held(&app.store);
     // Read before the store's lock is taken, and never while it is held: the
     // OpenClaw session loop takes them in the same order, so there is one
     // ordering between the two and no way to invert it here.
@@ -3308,6 +3307,7 @@ async fn usage_loop(app: Arc<App>) {
 
 /// The two plan opt-ins and their cadence, as the store holds them now.
 fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
+    assert_store_not_held(store);
     let (claude, codex) = {
         let store = store.lock().expect("store poisoned");
         let settings = store.settings();
@@ -4666,12 +4666,12 @@ mod account_org_tests {
     use std::time::Duration;
     use store::{MemoryCredentialStore, VendorAccount, VendorKind};
 
-    /// An App over a temp-dir store and an in-memory credential store: nothing
-    /// here reaches the OS keychain or the operator's `store.json`. (Duplicates
-    /// any shared App fixture; collapse when one lands.)
+    /// An App built by `new_app`, the constructor startup uses, over a temp-dir
+    /// store and an in-memory credential store: nothing here reaches the OS
+    /// keychain or the operator's `store.json`, and no poll loop is spawned.
     struct Fixture {
         app: Arc<App>,
-        rt: tokio::runtime::Runtime,
+        _rt: tokio::runtime::Runtime,
         _dir: tempfile::TempDir,
     }
 
@@ -4681,42 +4681,19 @@ mod account_org_tests {
         for account in accounts {
             store.upsert_account(account);
         }
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
         let reporting = start_crash_reporting(&store);
-        let app = Arc::new(App {
-            store: Mutex::new(store),
-            credentials: Box::new(MemoryCredentialStore::new()),
-            hosts: Mutex::new(Vec::new()),
-            local: Arc::new(Mutex::new(LocalHostState::new())),
-            containers: Mutex::new(ContainersState::new()),
-            containers_wake: tokio::sync::Notify::new(),
-            github: Mutex::new(GitHubState::new()),
-            github_wake: tokio::sync::Notify::new(),
-            services_wake: tokio::sync::Notify::new(),
-            usage: Mutex::new(UsageState::new()),
-            usage_wake: tokio::sync::Notify::new(),
-            usage_providers_due: std::sync::atomic::AtomicBool::new(false),
-            plan_usage_wake: tokio::sync::Notify::new(),
-            crons: Mutex::new(CronsState::new()),
-            crons_wake: tokio::sync::Notify::new(),
-            azure: Mutex::new(AzureState::new()),
-            azure_wake: tokio::sync::Notify::new(),
-            openclaw: Mutex::new(OpenClawState::new()),
-            openclaw_wake: tokio::sync::Notify::new(),
-            approvals: Mutex::new(github::notify::ApprovalWatch::new()),
-            service_status: Mutex::new(services::StatusWatch::new()),
-            services: Mutex::new(services::ServiceStatuses::new()),
-            host_reachability: Mutex::new(services::HostWatch::new()),
-            update: Mutex::new(UpdateState::new()),
-            agent_release: Mutex::new(viewmodel::agent_release::Latest::NotChecked),
-            handle: std::sync::OnceLock::new(),
-            runtime: rt.handle().clone(),
-            crash_reporting: reporting,
-        });
-        Fixture { app, rt, _dir: dir }
+        let app = Arc::new(new_app(
+            store,
+            MemoryCredentialStore::new(),
+            rt.handle().clone(),
+            reporting,
+        ));
+        Fixture {
+            app,
+            _rt: rt,
+            _dir: dir,
+        }
     }
 
     fn account(label: &str, orgs: Option<Vec<&str>>) -> VendorAccount {
@@ -4747,11 +4724,7 @@ mod account_org_tests {
 
     /// Whether `github_wake` holds a pending wake (consuming it).
     fn woke(f: &Fixture) -> bool {
-        f.rt.block_on(async {
-            tokio::time::timeout(Duration::from_millis(50), f.app.github_wake.notified())
-                .await
-                .is_ok()
-        })
+        futures_util::FutureExt::now_or_never(f.app.github_wake.notified()).is_some()
     }
 
     fn status(v: &Value) -> &str {
