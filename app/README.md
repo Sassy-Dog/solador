@@ -5,7 +5,7 @@ compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Healt
 and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings in Detail, and Detail opens the tile's own
-**Full view** (see [A tile's Full view](#a-tiles-full-view)); the toolbar's **Full
+**Full view** (see [Dashboard tiles](#dashboard-tiles)); the toolbar's **Full
 view** toggles between the overview and the full cockpit. Connections and credentials remain
 in **Settings**, backed by the OS credential store. Both views share a compact
 toolbar with the logo, app name and actions, without a background frame or
@@ -39,35 +39,36 @@ at narrow widths, keeping all columns available without widening the page.
 Column widths are fixed by the view definition, so changing readings, names or
 status words do not move neighboring columns. Truncated cells retain their full
 text on hover.
-
-#### A tile's Full view
-
-Detail opened from a tile (its footer link, its `N more` link, or one of its rows
-or runner groups) has a **Full view** button. It opens the source's full panel
-holding only the tile's rows: its scope and, on Repos, its selected repositories.
-Machines keeps only the tile's cards, laid out for that many. Each panel command
-takes the tile's id (`tile`) and Rust does the filtering (`tile_scope`). The panel
-is titled with the tile's name. When the scope filters, Rust's note sits under the
-header row, for example `Scoped to Healthy repos. Totals still cover all of GitHub
-Repos.`: header counts, trailing summaries and freshness lines still describe the
-whole source. A tile scoped to everything gets the source's panel unchanged, with
-no note. A runner group selected in Detail carries in as the panel's filter.
-**Escape**, or the toolbar's **Full view** toggle, returns to the overview with
-focus on that tile's footer link, and the panel gets its own title back. A tile
-hidden or removed while its Full view is open sends the overview back within a
-second, with `That tile is no longer on the overview.`, never the source-wide
-panel under the tile's name. Detail opened from a **Needs Attention** chip has no
-tile, so its **Full view** opens the whole source.
 Expand a resource for explanations, volumes and actions; opening one specific
 resource starts it expanded. Machine volumes use an alphabetized table of mount,
 used, total and usage percentage in both views. This does not change the Full host card's fullest-first
 ordering or which volume triggers attention. List shows key readings and context
 immediately, with secondary fields on expansion. Expansion, table scroll position
 and keyboard focus survive live reading updates, and collapsing a row releases the extra
-height. **Full** opens the complete source panel with its specialized readings
-and controls.
+height. Detail's **Full view** button opens a full panel: from a tile's Detail,
+that tile's Full view (below); from a **Needs Attention** chip's Detail, which has
+no tile, the whole source's panel with its specialized readings and controls.
 Clicking an active **Needs Attention** chip again closes its Detail view;
 clicking a different chip switches sources. The active chip is highlighted.
+
+**A tile's Full view.** In Detail opened from a tile (its footer link, its
+`N more` link, or one of its rows or runner groups), **Full view** opens the
+source's full panel holding only the tile's rows: its scope and, on Repos, its
+selected repositories. Machines keeps only the tile's cards, laid out for that
+many. Each panel command takes the tile's id (`tile`) and Rust does the filtering
+(`tile_scope`). The panel is titled with the tile's name. When the scope filters,
+Rust's note sits under the header row, for example `Scoped to Healthy repos.
+Totals still cover all of GitHub Repos.`: header counts, trailing summaries and
+freshness lines still describe the whole source. A tile scoped to everything gets
+the source's panel unchanged, with no note. A runner group selected in Detail
+carries in as the panel's filter. **Escape**, or the toolbar's **Full view**
+toggle, returns to the overview with focus on that tile's footer link, and the
+panel gets its own title back. A tile hidden or removed while its Full view is
+open sends the overview back within a second, with `That tile is no longer on the
+overview.`, and closes the Detail opened from it; it never leaves the source-wide
+panel under the tile's name. **Full view** pressed in the Detail of a tile that
+has since left the overview answers with the same sentence and stays on the
+overview.
 
 **Machines** displays colored CPU and RAM utilization bars alongside the exact
 readings, with configurable green/amber/red utilization thresholds. Fractions

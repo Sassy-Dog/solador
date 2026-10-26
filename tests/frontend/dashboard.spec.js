@@ -2336,18 +2336,63 @@ test("a tile that disappears while its Full view is open returns to the overview
   await expect(page.locator(".db-live-note")).toHaveText("That tile is no longer on the overview.");
   await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
   await expect(page.locator(".db-full-note")).toHaveCount(0);
-  // Detail is still open on the tile. Out to Solador's Full view and back
-  // clears the status; then Detail's Full view must say it again, and ask nothing.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
-  await expect(page.locator("#cockpitView")).toBeVisible();
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  // A missing tile has no views: its Detail, and the Full view offered there, are gone.
+  await expect(page.locator("#dashboardInspector")).toBeHidden();
+  await expect(page.locator('[data-action="tileFull"]')).toHaveCount(0);
+  await expect(page.locator('[data-action="tileFull"][data-id="overview-ghWorkflows"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("Detail opened from a row of a tile that disappears closes with it", async ({ page, baseURL }) => {
+  const view = await openDashboard(page, baseURL, true);
+  await tile(page, "ghRunners").getByRole("button", { name: /LINUX · ARM64/ }).click();
+  await detailFull(page).click();
+  await expect(page.locator("#runnersPanel")).toBeVisible();
+  await page.evaluate((layout) => {
+    window.__SET_LAYOUT__({ ...layout, tiles: layout.tiles.filter((t) => t.id !== "overview-ghRunners") });
+  }, view.layout);
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await expect(page.locator(".db-live-note")).toHaveText("That tile is no longer on the overview.");
+  await expect(page.locator("#dashboardInspector")).toBeHidden();
+  await expect(page.locator('[data-action="tileFull"]')).toHaveCount(0);
+});
+
+test("Detail's Full view refuses a tile that left the overview while Detail was open", async ({ page, baseURL }) => {
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const view = await openDashboard(page, baseURL, false, healthyRepos);
+  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  await page.evaluate((layout) => {
+    const next = structuredClone(layout);
+    next.tiles.find((t) => t.id === "overview-ghWorkflows").hidden = true;
+    window.__SET_LAYOUT__(next);
+  }, view.layout);
+  await expect(tile(page, "ghWorkflows")).toHaveCount(0);
   await expect(page.locator(".db-live-note")).toHaveText("");
   const asked = await callCount(page, "repos");
   await detailFull(page).click();
   await expect(page.locator(".db-live-note")).toHaveText("That tile is no longer on the overview.");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await expect(page.locator("#cockpitView")).toBeHidden();
   expect(await callCount(page, "repos")).toBe(asked);
   expect(errors).toEqual([]);
+});
+
+test("the overview's read leaves a tile's Full view in place", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, true);
+  await openTileFull(page, "overview-ghRunners");
+  const first = page.locator("#runnersBody .gh-runner-name").first();
+  await expect(first).toBeVisible();
+  await page.evaluate(() => { window.__RUNNER_NODE__ = document.querySelector("#runnersBody .gh-runner-name"); });
+  // Two more overview reads: the first has rendered by the time the second
+  // is asked (one read at a time), so at least one full tick has passed.
+  const reads = await callCount(page, "dashboard_view");
+  await expect.poll(() => callCount(page, "dashboard_view")).toBeGreaterThanOrEqual(reads + 2);
+  expect(await page.evaluate(() =>
+    window.__RUNNER_NODE__.isConnected &&
+    document.querySelector("#runnersBody .gh-runner-name") === window.__RUNNER_NODE__)).toBe(true);
+  // The tick still paints the tile's heading.
+  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
 });
 
 test("two tiles of one source each open their own scope", async ({ page, baseURL }) => {

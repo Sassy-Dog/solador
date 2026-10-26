@@ -1257,8 +1257,11 @@ the bundle's floor.
   the header row when the scope filters. It keeps the selected group, and Full's
   All runners clears that filter. Escape or the toolbar toggle returns to the
   overview, focused on that tile; a tile hidden or removed meanwhile sends the
-  overview back with `tileGone`. Detail from an attention chip has no tile and
-  opens the whole source.
+  overview back with `tileGone` and closes the Detail opened from it. The
+  overview's 1s read keeps running in a tile's Full view only to notice that,
+  and repaints nothing there but the tile's heading: `updateView` runs on a
+  forced render, so the open panel is not rebuilt every second. Detail from an
+  attention chip has no tile and opens the whole source.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage, each

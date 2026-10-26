@@ -485,8 +485,19 @@
   function render(force = false) {
     // A tile's Full view never outlives its tile: hidden or removed, the
     // overview comes back, never the panel under a name it no longer has.
+    // A missing tile has no views, so its Detail (and the Full view button
+    // there) closes too.
     if (fullTile && !model.tiles.some((t) => t.id === fullTile.id)) {
+      if (active && (active.tile ?? active.fromTile) === fullTile.id) closeInspector();
       showOverview().then(() => status(L("tileGone"), true));
+      return;
+    }
+    // In details mode only a forced render repaints; the unforced one is the
+    // overview's 1s read in a tile's Full view, which does the check above and
+    // the tile's heading and nothing else, so the open panel (Runners above
+    // all, via updateView) is not rebuilt under the pointer every second.
+    if (mode !== "overview" && !force) {
+      paintTileHeading();
       return;
     }
     // Live readings may change while someone tabs through row buttons. Restore
