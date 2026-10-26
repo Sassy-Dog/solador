@@ -75,7 +75,7 @@ function rowNode(row) {
 }
 
 function renderCrons(payload) {
-  $c("cronsTitle").textContent = payload.title;
+  $c("cronsTitle").textContent = window.soladorDashboard?.tileHeading?.("sentryCrons") || payload.title;
   $c("cronsTrailing").textContent = payload.trailing || "";
 
   const children = [];
@@ -126,7 +126,7 @@ async function refresh() {
   try {
     // Offline (no Tauri), the dumped-fixture path every other panel uses, so this
     // one opens in a plain browser and in the Playwright suite.
-    const payload = await callRust("crons", {}, "sample-crons.json");
+    const payload = await callRust("crons", window.soladorDashboard?.tileArgs?.("sentryCrons") ?? {}, "sample-crons.json");
     if (payload) renderCrons(payload);
     return Boolean(payload && payload.loading);
   } catch {

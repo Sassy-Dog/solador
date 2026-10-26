@@ -194,7 +194,7 @@ function renderAvailability(id, chip) {
 
 function renderRepos(payload) {
   lastRepos = payload;
-  $g("reposTitle").textContent = payload.title;
+  $g("reposTitle").textContent = window.soladorDashboard?.tileHeading?.("ghWorkflows") || payload.title;
   renderAvailability("reposAvailability", payload.availability);
   $g("reposTrailing").textContent = payload.trailing || "";
 
@@ -443,7 +443,7 @@ function renderRunners(payload) {
   const view = runnerViewControls(payload);
   $g('runnersBody').dataset.detailState = JSON.stringify([runnerGroup?.id || 'all', view]);
   const group = runnerGroup && payload.groups?.find(group => group.id === runnerGroup.id);
-  $g("runnersTitle").textContent = payload.title;
+  $g("runnersTitle").textContent = window.soladorDashboard?.tileHeading?.("ghRunners") || payload.title;
   renderAvailability("runnersAvailability", payload.availability);
   $g("runnersTrailing").textContent = runnerGroup ? group?.value || "" : payload.trailing || "";
 
@@ -525,8 +525,8 @@ async function refresh() {
   // Containers panel all use, so these panels open in a plain browser and in
   // the Playwright suite.
   const [repos, runners] = await Promise.all([
-    callRust("repos", {}, "sample-repos.json").catch(() => null),
-    callRust("runners", {}, "sample-runners.json").catch(() => null),
+    callRust("repos", window.soladorDashboard?.tileArgs?.("ghWorkflows") ?? {}, "sample-repos.json").catch(() => null),
+    callRust("runners", window.soladorDashboard?.tileArgs?.("ghRunners") ?? {}, "sample-runners.json").catch(() => null),
   ]);
   // A failed poll leaves the last good panel on screen rather than blanking
   // it: Rust already retains last-known rows through a bad fetch, and wiping

@@ -1007,6 +1007,9 @@
 #cockpitView .panel { background:var(--db-raised); border-color:var(--db-line); border-radius:9px; padding:16px; }
 #cockpitView .panel-title { font-weight:500; }
 #cockpitView[data-detail-source] .panel-title { font-size:14px; }
+/* A tile's Full view: Rust's note under the header row, muted like the
+   panel's trailing and freshness lines. */
+#cockpitView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }
 #cockpitView .panel-hdr { gap:8px; }
 #runnersPanel { container-type:inline-size; }
 #runnersPanel .panel-hdr { flex-wrap:wrap; }
@@ -1034,3 +1037,32 @@
 :is(#dashboardOverview, #cockpitView) .db-detail-table > :is(thead,tbody) > tr > :is(th,td) { overflow:hidden; text-overflow:ellipsis; }
 #cockpitView .db-detail-table .gh-runner-status { display:inline-block; max-width:100%; vertical-align:middle; }
 #dashboardOverview .db-volume-table { width:565px; }
+#dashboardOverview .db-tile-footer { position: relative; }
+#dashboardOverview .db-view-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  margin-bottom: 2px;
+  padding: 3px;
+  background: var(--db-raised);
+  border: 1px solid var(--db-line);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+}
+#dashboardOverview .db-view-menu button {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 4px 8px;
+  color: var(--db-text);
+  background: transparent;
+  border-color: transparent;
+}
+#dashboardOverview .db-view-menu button:hover,
+#dashboardOverview .db-view-menu button:focus-visible {
+  background: var(--db-panel);
+  border-color: var(--db-line);
+}

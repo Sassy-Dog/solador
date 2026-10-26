@@ -206,7 +206,7 @@ function runtimeNode(runtime) {
 }
 
 function renderOpenClaw(payload) {
-  $o("openclawTitle").textContent = payload.title;
+  $o("openclawTitle").textContent = window.soladorDashboard?.tileHeading?.("openclawAgents") || payload.title;
   $o("openclawTrailing").textContent = payload.trailing || "";
 
   const children = [];
@@ -222,7 +222,7 @@ function renderOpenClaw(payload) {
 async function refresh() {
   if (overviewOpen) return false;
   try {
-    const payload = await callRust("openclaw", {}, "sample-openclaw.json");
+    const payload = await callRust("openclaw", window.soladorDashboard?.tileArgs?.("openclawAgents") ?? {}, "sample-openclaw.json");
     if (payload) renderOpenClaw(payload);
   } catch {
     // A failed read leaves the last good panel on screen. Rust owns the

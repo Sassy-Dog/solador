@@ -60,7 +60,7 @@ function rowNode(row) {
 }
 
 function render(payload) {
-  $s("servicesTitle").textContent = payload.title;
+  $s("servicesTitle").textContent = window.soladorDashboard?.tileHeading?.("services") || payload.title;
   $s("servicesTrailing").textContent = payload.trailing || "";
   // Rust's staleness line (the last successful pass against the Services
   // cadence), in the header like every panel's so a warning costs no height.
@@ -84,7 +84,7 @@ async function refresh() {
   try {
     // Offline (no Tauri), the dumped-fixture path every other panel uses, so
     // this one opens in a plain browser and in the Playwright suite.
-    const payload = await callRust("services", {}, "sample-services.json");
+    const payload = await callRust("services", window.soladorDashboard?.tileArgs?.("services") ?? {}, "sample-services.json");
     if (payload) render(payload);
     // Rust's own flag, like the Containers panel's. It used to be inferred from
     // every row reading "Unknown", which stopped being the pre-first-pass

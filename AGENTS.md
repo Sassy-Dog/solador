@@ -1250,7 +1250,25 @@ the bundle's floor.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
   group identity each runner row carries (`groupId`, label split included);
   membership and counts refresh together.
-  Open full panel retains the group, and Full's All runners clears that filter.
+  A tile's footer ends in a **View** button (`views` in the tile JSON,
+  authored in `dashboard.rs`'s `TILE_VIEWS`) whose menu opens Detail or Full
+  view; the frontend paints only the view ids its `VIEW_ACTIONS` can open, and
+  an open menu is rebuilt with the footer on each repaint.
+  Detail opened from a tile (View, `N more`, a row or a runner group) offers
+  **Full view**, the tile's Full view: its source's panel holding only the tile's
+  rows (the panel command takes the tile id and `tile_scope` filters, never
+  inserting a key the payload lacks; Machines cards before layout, while `No
+  hosts configured` still counts the configured hosts, not the kept cards),
+  titled with the tile's name, with Rust's `fullNote` under the header row when
+  the scope filters (`Scope: …`, plus the totals clause on every source but
+  Machines, which has no totals). It keeps the selected group, and Full's
+  All runners clears that filter. Escape or the toolbar toggle returns to the
+  overview, focused on that tile's View button; a tile hidden or removed meanwhile sends the
+  overview back with `tileGone` and closes the Detail opened from it. The
+  overview's 1s read keeps running in a tile's Full view only to notice that,
+  and repaints nothing there but the tile's heading: `updateView` runs on a
+  forced render, so the open panel is not rebuilt every second. Detail from an
+  attention chip has no tile and opens the whole source.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage, each
