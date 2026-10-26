@@ -62,6 +62,13 @@ function rowNode(row) {
 function render(payload) {
   $s("servicesTitle").textContent = payload.title;
   $s("servicesTrailing").textContent = payload.trailing || "";
+  // Rust's staleness line (the last successful pass against the Services
+  // cadence), in the header like every panel's so a warning costs no height.
+  const stale = $s("servicesStale");
+  stale.textContent = payload.footer ? payload.footer.text : "";
+  stale.title = payload.footer ? payload.footer.text : "";
+  stale.style.color = payload.footer ? payload.footer.color : "";
+  stale.hidden = !payload.footer;
   // One sentence when there are no rows, and it is Rust's: "no pass has looked
   // yet" and "nothing is configured to watch" are different facts and read
   // differently. The body is never left blank, because an empty panel under a

@@ -1214,6 +1214,20 @@ from an RSS incident feed, and lowers all three onto one `ComponentStatus`. The
 Services panel renders a row each; the GitHub reading additionally feeds the
 Repos/Runners conjunction chip.
 
+**The panel has a staleness footer** ([#627](https://github.com/Sassy-Dog/solador/issues/627)),
+in the header like every polling panel's: the last *successful* pass against
+2.5 cycles of the Services cadence, never under 150s (`MIN_STALE_AFTER_SECS`; at
+the 30s floor the window is 150s) (`ServiceStatuses::pass_finished`). A pass
+succeeds when it watched nothing or read at least one vendor — one status page
+being down is on its own row and does not turn the panel amber — while a pass
+that watched vendors and read none keeps the clock where it was and the footer
+reads `⚠ couldn't read any status page · last ok …`. Before the first pass
+there is only the loading line, never an age, and the "nothing to watch yet"
+sentence is unchanged. `--dump-services … --stale` renders the amber case. The
+first time every vendor fails the loop logs one `services: no status page could
+be read; all N watched vendor(s) failed (label: kind, …)` line (fixed kind words
+only, never a URL or header), one line when it recovers, and nothing in between.
+
 **The watched list is derived, never shipped**
 ([#284](https://github.com/Sassy-Dog/solador/issues/284), wired up in
 [#375](https://github.com/Sassy-Dog/solador/issues/375)). `services::active_vendors`
@@ -1753,10 +1767,11 @@ the snapshot would churn several times a minute for no visible reason. The
 command only reads what the socket has already published; the 2s frontend
 interval decides how soon the window notices, and drives nothing.
 
-**Which is why there is no staleness warning.** Every other panel here carries a
-`status_footer` because it polls and can therefore be stale. This one's
-connection line already answers "is this current", exactly; a staleness clock
-beside it would be a second, weaker answer to the same question.
+**Which is why there is no staleness signal of any kind.** Every other panel
+says when it may be stale: the polling panels carry a `status_footer`, and Hosts
+warns per card (`sampler_stale`, unreachable). This one's connection line
+already answers "is this current", exactly; a staleness clock beside it would
+be a second, weaker answer to the same question.
 
 **A dot needs both its colour and its opacity.** `unknown` and `disabled` are the
 same muted colour — the opacity (0.4 for disabled) is the only thing separating a
@@ -2061,8 +2076,9 @@ a portfolio fetch on a credential it has no use for.
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
+| Claude rollups appearing or disappearing, seen by a usage pass | the Services loop, once (`claude_presence_wakes_services`, [#627](https://github.com/Sassy-Dog/solador/issues/627)): Anthropic's row is derived from `claude_present()`, which no edit changes, so nothing else would wake the loop for it. A pass where presence did not change wakes nothing |
 | a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
-| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
+| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Azure Cost and the plan limits read their cadence at render time and need no such step. The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |
@@ -2789,6 +2805,10 @@ cargo run -p solador-app -- --dump-services sample-services.json   # the Service
 #   incidents", and one never read). Plus `--empty` — a pass that LOOKED and
 #   found nothing to watch, which is what an unconfigured cockpit now gets and
 #   is deliberately not the same payload as one that has not looked yet.
+#   Plus `--stale` — a pass of 5 reads and 0 failures dated 3600s back, so the
+#   amber staleness footer renders — `--fresh` — the same pass dated now, so
+#   the footer is null because the clock is current — and `--loading` — no
+#   pass yet, the panel's loading line.
 cargo run -p solador-app -- --dump-dashboard sample-showcase-dashboard.json --showcase
 #   …and every panel dump above, plus `--dump-cockpit`, takes `--showcase`: the
 #   marketing counterpart the README and solador.app screenshots render.

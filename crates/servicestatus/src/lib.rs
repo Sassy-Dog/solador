@@ -145,6 +145,18 @@ pub enum StatusError {
 }
 
 impl StatusError {
+    /// The failure's class as a fixed word, for a log line. Carries nothing
+    /// from the error itself -- not the URL, the body or the status code's
+    /// text -- so it cannot leak what the error's own message might.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            StatusError::Unreachable(_) => "unreachable",
+            StatusError::HttpStatus(_) => "http-status",
+            StatusError::DecodeFailed(_) => "undecodable",
+        }
+    }
+
     /// What the panel shows. Deliberately blames the *status page*, never the
     /// vendor itself — the two fail independently, and an unreachable page says
     /// nothing about whether the service is up.

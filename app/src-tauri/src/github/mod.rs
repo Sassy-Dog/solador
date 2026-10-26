@@ -390,7 +390,7 @@ impl GitHubState {
     }
 
     /// How old a runner reading may be before the panel says so.
-    fn stale_after_secs(&self) -> u64 {
+    pub(crate) fn stale_after_secs(&self) -> u64 {
         self.cadence_secs.map_or(
             RUNNERS_STALE_AFTER_SECS,
             crate::panel::stale_after_for_cadence,
