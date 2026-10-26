@@ -1289,13 +1289,22 @@ EAGAIN locally. Leaks are one observed correlate, not established as the
 cause: the same EAGAIN was also seen with no fixture device attached, most
 plausibly from concurrent `hdiutil attach` activity, so the retry stays. Every
 failed attempt detaches whatever now stands on that image path before the next
-one, which is what makes retrying safe. Detach is by the whole-disk device node
+one (never a device that stood there before the attach: the release image's
+path repeats across builds and an earlier one may still be mounted), which is
+what makes retrying safe. Detach is by the whole-disk device node
 (`attach_dmg_readonly` leaves it in `ATTACHED_DEV`; a mount point names nothing
 once the unmount succeeds and the eject does not), retried with a backoff,
 `-force` only on the last try, then checked against `hdiutil info -plist` (read
-with `plutil`). A device that will not go fails `assert_dmg_layout`, naming it
-and `hdiutil detach -force <dev>`: the check runs before signing, so a re-run
-is cheap, and a release machine that shrugged would accumulate devices. The
+with `plutil`). A device is the pair (device, image path), never its number:
+macOS hands a freed `/dev/diskN` to the next image at once, so the pair is
+re-checked before every detach and none is sent, `-force` included, once it
+no longer matches. A listing with no images (a CI runner's usual) is empty; one
+that cannot be read is a failure, never "nothing attached". A device that will
+not go fails `assert_dmg_layout`, naming it and `hdiutil detach -force <dev>`:
+the check runs before signing, so a re-run is cheap, and a release machine that
+shrugged would accumulate devices. On GitHub Actions it only warns: the runner
+is thrown away, and failing would cost a `prd` approval and a rebuild for a
+correct artifact. The
 suite's EXIT trap detaches everything under its temp dir before deleting it,
 ends by asserting nothing is left, and at start reaps earlier runs' leaks by
 one rule (`dmg_is_leaked_fixture`: `$TMPDIR/tmp.*/<fixture>.dmg` with the

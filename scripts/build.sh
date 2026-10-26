@@ -673,11 +673,20 @@ stage_dmg_source() {
 
 # Every attached disk image, one "<whole-disk device>\t<image path>" line each,
 # from `hdiutil info -plist` (plutil ships with macOS; no Python). An image
-# with no device entry is skipped: there is nothing to detach.
+# with no device entry is skipped: there is nothing to detach. Three outcomes
+# that must not read alike: a readable listing with images, a readable listing
+# with NONE (a CI runner usually has none: the `images` key is an empty array
+# or absent) which prints nothing and succeeds, and a listing that cannot be
+# read at all, which fails. "Nothing attached" is never inferred from the last.
 dmg_attached_images() {
     local info count i dev path
     info="$(hdiutil info -plist 2>/dev/null)" || return 1
-    count="$(printf '%s' "$info" | plutil -extract images raw -o - - 2>/dev/null)" || return 1
+    # A readable plist's dictionary prints starting with "{".
+    case "$(printf '%s' "$info" | plutil -p - 2>/dev/null)" in
+        "{"*) ;;
+        *) return 1 ;;
+    esac
+    count="$(printf '%s' "$info" | plutil -extract images raw -o - - 2>/dev/null)" || return 0
     for ((i = 0; i < count; i++)); do
         dev="$(printf '%s' "$info" | plutil -extract "images.$i.system-entities.0.dev-entry" raw -o - - 2>/dev/null)" || continue
         path="$(printf '%s' "$info" | plutil -extract "images.$i.image-path" raw -o - - 2>/dev/null)" || continue
@@ -685,82 +694,142 @@ dmg_attached_images() {
     done
 }
 
-# The devices attached for exactly <dmg>. hdiutil reports the resolved path
-# (/private/var/...), a caller may hold the /var/... spelling, so both are tried.
-dmg_devices_for_image() {
-    local dmg="$1" canon="$1" dev path
-    if [[ -e "$dmg" ]]; then
-        canon="$(cd "$(dirname "$dmg")" && pwd -P)/$(basename "$dmg")"
-    fi
-    while IFS=$'\t' read -r dev path; do
-        if [[ "$path" == "$dmg" || "$path" == "$canon" ]]; then
-            printf '%s\n' "$dev"
-        fi
-    done < <(dmg_attached_images)
+# A comparable spelling of <path>: its directory resolved when that exists (the
+# file itself may be gone), then /private dropped from /private/var, /private/tmp
+# and /private/etc, so /var/folders/... and /private/var/folders/... agree.
+# hdiutil echoes the spelling it was given; a caller may hold either.
+dmg_norm_path() {
+    local p="$1" dir
+    dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" && p="$dir/$(basename "$p")"
+    case "$p" in
+        /private/var/*|/private/tmp/*|/private/etc/*) p="${p#/private}" ;;
+    esac
+    printf '%s' "$p"
 }
 
-# Is <dev> still attached?
-dmg_device_attached() {
-    # Not `... | grep -q`: under pipefail grep's early exit SIGPIPEs the writer
-    # and a device that IS attached would read as gone.
-    local list
-    # A listing that cannot be read is not evidence the device is gone.
-    list="$(dmg_attached_images)" || return 0
-    list="$(printf '%s\n' "$list" | cut -f1)"
-    case $'\n'"$list"$'\n' in
+# Do <a> and <b> name the same image file?
+dmg_same_image() {
+    [[ "$1" == "$2" || "$(dmg_norm_path "$1")" == "$(dmg_norm_path "$2")" ]]
+}
+
+# Is <dev> a line of the newline-separated <list>?
+dmg_in_list() {
+    case $'\n'"$2"$'\n' in
         *$'\n'"$1"$'\n'*) return 0 ;;
     esac
     return 1
 }
 
-# Detach <dev> BY DEVICE NODE (a mount point stops naming anything once the
-# unmount succeeds and the eject does not, which is how a device leaked, #629),
-# retrying a busy/EAGAIN answer with a backoff, `-force` only on the last try,
-# then confirm the device is gone from `hdiutil info`. A device that will not go
-# is reported with the command that removes it, never swallowed.
-detach_dmg_device() {
-    local dev="$1" attempt attempts=4
-    for ((attempt = 1; attempt <= attempts; attempt++)); do
-        dmg_device_attached "$dev" || return 0
-        if ((attempt < attempts)); then
-            hdiutil detach "$dev" >/dev/null 2>&1 || true
-        else
-            hdiutil detach -force "$dev" >/dev/null 2>&1 || true
+# The devices attached for exactly <dmg>, one per line. Fails when the listing
+# cannot be read, so a caller can never mistake that for "nothing attached".
+dmg_devices_for_image() {
+    local dmg="$1" listing dev path
+    listing="$(dmg_attached_images)" || return 1
+    while IFS=$'\t' read -r dev path; do
+        [[ -n "$dev" ]] || continue
+        if dmg_same_image "$path" "$dmg"; then
+            printf '%s\n' "$dev"
         fi
-        dmg_device_attached "$dev" || return 0
+    done <<< "$listing"
+}
+
+# Is <dev> attached AS <dmg> right now? 0 yes, 1 no (gone, or the number has
+# been reused by another image), 2 the listing could not be read. macOS hands a
+# freed /dev/diskN to the next image at once, so a device is identified by the
+# (device, image path) pair and never by its number alone (#629): matching the
+# number would send a detach, `-force` included, to whoever holds it next.
+dmg_device_state() {
+    local dev="$1" dmg="$2" listing d p
+    listing="$(dmg_attached_images)" || return 2
+    while IFS=$'\t' read -r d p; do
+        if [[ "$d" == "$dev" ]] && dmg_same_image "$p" "$dmg"; then
+            return 0
+        fi
+    done <<< "$listing"
+    return 1
+}
+
+# Detach <dev> as <dmg> BY DEVICE NODE (a mount point stops naming anything once
+# the unmount succeeds and the eject does not, which is how a device leaked,
+# #629), retrying a busy/EAGAIN answer with a backoff, `-force` only on the last
+# try. The pair is re-checked immediately before EVERY detach call, and none is
+# sent once it no longer matches. An unreadable listing sends nothing. A device
+# that will not go is reported with the command that removes it, never
+# swallowed.
+detach_dmg_device() {
+    local dev="$1" dmg="$2" attempt attempts=4 state
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        state=0
+        dmg_device_state "$dev" "$dmg" || state=$?
+        if ((state == 1)); then
+            return 0
+        fi
+        if ((state == 0)); then
+            if ((attempt < attempts)); then
+                hdiutil detach "$dev" >/dev/null 2>&1 || true
+            else
+                hdiutil detach -force "$dev" >/dev/null 2>&1 || true
+            fi
+        fi
         if ((attempt < attempts)); then
             sleep "$((attempt * 2))"
         fi
     done
-    log_error "could not detach $dev; remove it with: hdiutil detach -force $dev"
+    state=0
+    dmg_device_state "$dev" "$dmg" || state=$?
+    if ((state == 1)); then
+        return 0
+    elif ((state == 2)); then
+        log_error "could not read 'hdiutil info' to confirm $dev ($dmg) is detached; if it is still attached: hdiutil detach -force $dev"
+    else
+        log_error "could not detach $dev ($dmg); remove it with: hdiutil detach -force $dev"
+    fi
     return 1
 }
 
-# Detach whatever is attached for <dmg>, by device.
+# Detach whatever is attached for <dmg>, by device, except the devices in the
+# newline-separated <keep> (the ones that stood there before this run attached).
+# Fails when the listing cannot be read.
 release_dmg_image() {
-    local dev status=0
+    local dmg="$1" keep="${2:-}" devs dev status=0
+    devs="$(dmg_devices_for_image "$dmg")" || {
+        log_error "could not read 'hdiutil info' to look for devices attached for $dmg"
+        return 1
+    }
     while IFS= read -r dev; do
         [[ -n "$dev" ]] || continue
-        detach_dmg_device "$dev" || status=1
-    done < <(dmg_devices_for_image "$1")
+        if dmg_in_list "$dev" "$keep"; then
+            continue
+        fi
+        detach_dmg_device "$dev" "$dmg" || status=1
+    done <<< "$devs"
     return "$status"
 }
 
-# Mount <dmg> read-only at <mnt> and leave the whole-disk device it attached in
-# ATTACHED_DEV. hdiutil can answer "Resource temporarily unavailable" (EAGAIN)
-# while diskimages-helper is still busy, which ejected a merge-queue group in
-# #586; only that error is retried, with a short backoff. Any other failure is
-# final at once, and the last hdiutil error is printed. A failed attempt can
-# still have attached the device (#629), so every failure detaches whatever is
-# now attached for this image before the next attempt or the return: a retry
-# never stacks on a half-attached device and no failure leaves one behind.
+# Mount <dmg> read-only at <mnt>. Leaves the whole-disk device it attached in
+# ATTACHED_DEV and the devices that already stood on this image before it
+# attached in ATTACH_PREEXISTING: the release image's path repeats across builds
+# and an operator's earlier build may still be mounted in Finder, which nothing
+# here may detach. hdiutil can answer "Resource temporarily unavailable"
+# (EAGAIN) while diskimages-helper is still busy, which ejected a merge-queue
+# group in #586; only that error is retried, with a short backoff. Any other
+# failure is final at once, and the last hdiutil error is printed. A failed
+# attempt can still have attached the device (#629), so every failure detaches
+# what is now attached for this image (beyond the pre-existing ones) before the
+# next attempt or the return: a retry never stacks on a half-attached device and
+# no failure leaves one behind. EAGAIN has also been seen with nothing leaked
+# (concurrent attaches), so the retry stays regardless.
 # Measured on macOS 27.0.1, `diskutil image attach` (the replacement the
 # deprecation warning names) works but returns bare `diskN` entries, has no
-# -noverify analogue and is unmeasured on the 14.0 floor and the runner; it is not used, so one
-# code path serves the runner and the 14.0 floor.
+# -noverify analogue and is unmeasured on the 14.0 floor and the runner; it is
+# not used, so one code path serves the runner and the 14.0 floor.
 attach_dmg_readonly() {
     local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile
     ATTACHED_DEV=""
+    ATTACH_PREEXISTING="$(dmg_devices_for_image "$dmg")" || {
+        log_error "could not read 'hdiutil info' before attaching $dmg"
+        return 1
+    }
     errfile="$(mktemp)"
     for ((attempt = 1; attempt <= attempts; attempt++)); do
         if out="$(hdiutil attach -plist -nobrowse -readonly -noverify -mountpoint "$mnt" "$dmg" 2>"$errfile")"; then
@@ -773,12 +842,16 @@ attach_dmg_readonly() {
                 return 0
             fi
             # Attached, but the device is unnamed: detach by image, then fail.
-            release_dmg_image "$dmg" || true
+            release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
             log_error "hdiutil attached $dmg but reported no device"
             return 1
         fi
         err="$(cat "$errfile")"
-        release_dmg_image "$dmg" || { rm -f "$errfile"; return 1; }
+        if ! release_dmg_image "$dmg" "$ATTACH_PREEXISTING"; then
+            rm -f "$errfile"
+            printf '%s\n' "$err" >&2
+            return 1
+        fi
         case "$err" in
             *"Resource temporarily unavailable"*) ;;
             *) break ;;
@@ -796,13 +869,17 @@ attach_dmg_readonly() {
 # Mount the finished image read-only and require its root to hold exactly the
 # app and an `Applications` symlink whose target is `/Applications`. The
 # `.DS_Store`-style Finder metadata is not expected: no window layout is built.
-# A device that will not detach FAILS this check even when the layout passed:
-# the artifact is fine, but it runs before signing, so a re-run is cheap, and
-# a release machine that shrugged would accumulate devices until attaches
-# fail (#629). The error names the device and the command that removes it.
+# A device that will not detach is a failure even when the layout passed, except
+# on GitHub Actions: the artifact is fine, but locally (a release machine) the
+# devices pile up until attaches fail (#629), and the check runs before
+# signing, so a re-run is cheap. A hosted runner is thrown away, and failing
+# there would cost a `prd` approval and a full rebuild for a correct artifact,
+# so it warns instead. Either way the message names the device and the command
+# that removes it. Devices that stood on this image before the attach (an
+# earlier build still mounted) are never swept or detached.
 assert_dmg_layout() {
     local dmg="$1" app_name="$2"
-    local mnt entries target dev status=0
+    local mnt entries target dev status=0 detach_failed=0
     mnt="$(mktemp -d)"
 
     if ! attach_dmg_readonly "$mnt" "$dmg"; then
@@ -811,6 +888,7 @@ assert_dmg_layout() {
         return 1
     fi
     dev="$ATTACHED_DEV"
+    local preexisting="$ATTACH_PREEXISTING"
 
     entries="$(ls -A "$mnt" | LC_ALL=C sort)"
     target="$(readlink "$mnt/Applications" 2>/dev/null || true)"
@@ -825,10 +903,20 @@ assert_dmg_layout() {
         status=1
     fi
 
-    detach_dmg_device "$dev" || status=1
+    # An attach that landed on a device that was already there is not ours.
+    if ! dmg_in_list "$dev" "$preexisting"; then
+        detach_dmg_device "$dev" "$dmg" || detach_failed=1
+    fi
     # A failed attempt's device can finish attaching after hdiutil reported
-    # failure; sweep anything still standing on this image.
-    release_dmg_image "$dmg" || status=1
+    # failure; sweep anything new standing on this image.
+    release_dmg_image "$dmg" "$preexisting" || detach_failed=1
+    if ((detach_failed)); then
+        if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+            log_warning "a disk image device is still attached; continuing on a throwaway runner"
+        else
+            status=1
+        fi
+    fi
     rmdir "$mnt" 2>/dev/null || true
     return "$status"
 }

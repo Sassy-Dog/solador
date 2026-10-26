@@ -20,13 +20,14 @@ fi
 
 work="$(mktemp -d)"
 
-# dmg_under <path> <dir>: is <path> inside <dir>, in either spelling of it
-# (mktemp says /var/folders/..., hdiutil reports /private/var/folders/...)?
+# dmg_under <path> <dir>: is <path> inside <dir>? /private/var and /var are one
+# place; hdiutil reports the spelling it was given, a caller may hold either.
 dmg_under() {
-    local canon
+    local a="${1#/private}" b="${2#/private}" canon
     canon="$(cd "$2" 2>/dev/null && pwd -P)" || canon="$2"
-    case "$1" in
-        "$2"/*|"$canon"/*) return 0 ;;
+    canon="${canon#/private}"
+    case "$a" in
+        "$b"/*|"$canon"/*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -35,14 +36,17 @@ dmg_under() {
 # only for an image that is <temp root>/tmp.*/<one of this suite's fixture
 # names>.dmg AND whose backing file is gone. A live run's fixtures (another
 # worktree's suite, this one) still have their file, so they never match;
-# neither do ~/Downloads installers or the simulator runtime images.
+# neither do ~/Downloads installers or the simulator runtime images. The temp
+# root is compared with /private dropped from either side, since the leaked
+# image's directory is gone and cannot be resolved.
 dmg_is_leaked_fixture() {
     local path="$1" root="$2" canon_root parent grand
     parent="$(dirname "$path")"
     grand="$(dirname "$parent")"
     canon_root="$(cd "$root" 2>/dev/null && pwd -P)" || canon_root="$root"
+    grand="${grand#/private}"
     case "$grand" in
-        "$root"|"$canon_root") ;;
+        "${root#/private}"|"${canon_root#/private}") ;;
         *) return 1 ;;
     esac
     case "$(basename "$parent")" in
@@ -56,45 +60,58 @@ dmg_is_leaked_fixture() {
     [[ ! -e "$path" ]]
 }
 
-# reap_leaked_fixtures <temp root>: detach, and say so, every device the rule
-# above matches. Nothing else is ever touched.
+# reap_leaked_fixtures <temp root>: detach, and say so, every (device, image)
+# pair the rule above matches. Nothing else is ever touched.
 reap_leaked_fixtures() {
-    local dev path
+    local listing dev path
+    listing="$(dmg_attached_images)" || {
+        echo "reap: could not read 'hdiutil info'; leaked fixtures, if any, were not reaped" >&2
+        return 0
+    }
     while IFS=$'\t' read -r dev path; do
+        [[ -n "$dev" ]] || continue
         if dmg_is_leaked_fixture "$path" "$1"; then
             echo "reaping leaked fixture device $dev (image $path is gone)"
-            detach_dmg_device "$dev" || true
+            detach_dmg_device "$dev" "$path" || true
         fi
-    done < <(dmg_attached_images)
+    done <<< "$listing"
 }
 
 # #629: the trap detaches before it deletes, so a mid-suite death, a `set -e`
 # exit or a Ctrl-C leaks no attached image. INT/TERM exit so this still runs.
+# A listing it cannot read is said, never taken for "nothing attached".
 # shellcheck disable=SC2329  # invoked through the trap
 cleanup() {
-    local dev path
+    local listing dev path
     if declare -F dmg_attached_images >/dev/null; then
-        while IFS=$'\t' read -r dev path; do
-            if dmg_under "$path" "$work"; then
-                detach_dmg_device "$dev" || true
-            fi
-        done < <(dmg_attached_images)
+        if listing="$(dmg_attached_images)"; then
+            while IFS=$'\t' read -r dev path; do
+                [[ -n "$dev" ]] || continue
+                if dmg_under "$path" "$work"; then
+                    detach_dmg_device "$dev" "$path" || true
+                fi
+            done <<< "$listing"
+        else
+            echo "cleanup: could not read 'hdiutil info'; devices under $work may remain attached" >&2
+        fi
     fi
     rm -rf "$work"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-# BUILD_SH points at another copy of build.sh (the negative controls). Only the
-# code under test comes from it; the helpers that OBSERVE attached images always
-# come from this checkout, so an old build.sh is judged by the same eyes.
+# BUILD_SH points at another copy of build.sh (the negative controls). The
+# helpers come from this checkout first; anything BUILD_SH defines under the
+# same name replaces them, which is how a control swaps in an earlier or
+# mutated revision of one function.
 build_sh="${BUILD_SH:-$SCRIPT_DIR/build.sh}"
 lift() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$1"; }
+helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image"
 {
-    for fn in dmg_attached_images dmg_devices_for_image dmg_device_attached detach_dmg_device release_dmg_image; do
+    for fn in $helpers; do
         lift "$SCRIPT_DIR/build.sh" "$fn"
     done
-    for fn in stage_dmg_source dmg_attached_images dmg_devices_for_image dmg_device_attached detach_dmg_device release_dmg_image attach_dmg_readonly assert_dmg_layout make_dmg; do
+    for fn in stage_dmg_source $helpers attach_dmg_readonly assert_dmg_layout make_dmg; do
         lift "$build_sh" "$fn"
     done
 } > "$work/under-test.sh"
@@ -270,8 +287,9 @@ hdiutil() {
 }
 sleep() { :; }
 EOF
-# leak_run <attach fails> <detach mode>: assert_dmg_layout on the good image
-# under the stub; prints the status. Files: $work/{err,detaches,pre}.
+# leak_run <attach fails> <detach mode> [github]: assert_dmg_layout on the good
+# image under the stub; prints the status. Files: $work/{err,detaches,pre}.
+# GITHUB_ACTIONS is cleared (CI runs this suite with it set) unless asked for.
 leak_run() {
     local status=0
     rm -f "$work/attaches" "$work/detaches" "$work/pre"
@@ -279,13 +297,21 @@ leak_run() {
     (
         export STUB_ATTACHES="$work/attaches" STUB_DETACHES="$work/detaches" STUB_PRE="$work/pre"
         export STUB_DMG="$work/good.dmg" STUB_ATTACH_FAILS="$1" STUB_DETACH_MODE="$2"
+        unset GITHUB_ACTIONS
+        if [[ "${3:-}" == github ]]; then export GITHUB_ACTIONS=true; fi
         # shellcheck source=/dev/null
         source "$work/leaky-hdiutil.sh"
         assert_dmg_layout "$work/good.dmg" Solador.app
     ) 2>"$work/err" || status=$?
     echo "$status"
 }
-leftover() { dmg_devices_for_image "$work/good.dmg" | tr '\n' ' '; }
+# What stands on the good image; "UNREADABLE" if the listing cannot be read, so
+# a failed read never passes for "nothing attached".
+leftover() {
+    local d
+    d="$(dmg_devices_for_image "$work/good.dmg")" || { echo UNREADABLE; return 0; }
+    printf '%s' "$d" | tr '\n' ' '
+}
 
 result="$(leak_run 2 pass)"
 if [[ "$result" == "0" && -z "$(leftover)" && "$(tr '\n' ' ' < "$work/pre")" == "0 0 0 " ]]; then
@@ -307,7 +333,7 @@ release_dmg_image "$work/good.dmg" || true
 
 result="$(leak_run 0 always)"
 stuck="$(leftover)"
-if [[ "$result" == "1" && -n "$stuck" ]] \
+if [[ "$result" == "1" && "$stuck" == /dev/disk* ]] \
     && grep -q "could not detach /dev/disk" "$work/err" \
     && grep -q "hdiutil detach -force /dev/disk" "$work/err"; then
     pass "a detach that always fails is reported with the device named"
@@ -317,16 +343,84 @@ fi
 # Our own device, left by the stub on purpose: remove it with the real hdiutil.
 release_dmg_image "$work/good.dmg" || fail "could not clean up the stubbed-stuck device"
 
+# Local vs hosted runner: the same unconfirmed detach fails locally (above) and
+# only warns on GitHub Actions, where the runner is thrown away.
+result="$(leak_run 0 always github)"
+if [[ "$result" == "0" ]] && grep -q "continuing on a throwaway runner" "$work/err"; then
+    pass "an unconfirmed detach warns instead of failing on GitHub Actions"
+else
+    fail "an unconfirmed detach warns instead of failing on GitHub Actions (status $result; $(cat "$work/err"))"
+fi
+release_dmg_image "$work/good.dmg" || fail "could not clean up the stubbed-stuck device"
+
+# A freed /dev/diskN is handed to the next image at once. A device is the pair
+# (device, image): once the listing shows the number under another image, no
+# further detach, -force included, may be sent (that would hit its new owner).
+# And an empty listing is not an unreadable one. A fake listing stands in for
+# `hdiutil info`; nothing real is attached or detached.
+cat > "$work/fake-hdiutil.sh" <<'EOF'
+fake_plist() {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>images</key><array><dict><key>image-path</key><string>%s</string><key>system-entities</key><array><dict><key>dev-entry</key><string>%s</string></dict></array></dict></array></dict></plist>\n' "$1" "$2"
+}
+hdiutil() {
+    case "$1" in
+        info)
+            case "$FAKE_LISTING" in
+                reuse)
+                    if [[ -s "$FAKE_DETACHES" ]]; then fake_plist /elsewhere/other.dmg /dev/disk77; else fake_plist /elsewhere/mine.dmg /dev/disk77; fi ;;
+                empty-array) printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array/></dict></plist>\n' ;;
+                no-key) printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>framework</key><string>704</string></dict></plist>\n' ;;
+                junk) echo "not a plist" ;;
+            esac ;;
+        detach) echo "$*" >> "$FAKE_DETACHES" ;;
+    esac
+}
+sleep() { :; }
+EOF
+# fake_run <listing> <function and arguments...>: prints "<status> <detaches sent>".
+fake_run() {
+    local status=0 listing="$1"
+    shift
+    : > "$work/fake-detaches"
+    (
+        export FAKE_LISTING="$listing" FAKE_DETACHES="$work/fake-detaches"
+        # shellcheck source=/dev/null
+        source "$work/fake-hdiutil.sh"
+        "$@"
+    ) >"$work/fake-out" 2>"$work/err" || status=$?
+    echo "$status $(wc -l < "$work/fake-detaches" | tr -d ' ')"
+}
+result="$(fake_run reuse detach_dmg_device /dev/disk77 /elsewhere/mine.dmg)"
+if [[ "$result" == "0 1" ]] && ! grep -q force "$work/fake-detaches"; then
+    pass "a device number reused by another image after a detach is not detached again"
+else
+    fail "a device number reused by another image after a detach is not detached again (status, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"))"
+fi
+empty_bad=""
+for mode in empty-array no-key; do
+    [[ "$(fake_run "$mode" dmg_attached_images)" == "0 0" && ! -s "$work/fake-out" ]] || empty_bad="$empty_bad $mode:list"
+    [[ "$(fake_run "$mode" detach_dmg_device /dev/disk77 /elsewhere/mine.dmg)" == "0 0" ]] || empty_bad="$empty_bad $mode:detach"
+    [[ "$(fake_run "$mode" release_dmg_image /elsewhere/mine.dmg)" == "0 0" ]] || empty_bad="$empty_bad $mode:release"
+done
+if [[ -z "$empty_bad" ]]; then pass "a readable listing with no images is empty, not unreadable"; else fail "a readable listing with no images is empty, not unreadable:$empty_bad"; fi
+unreadable_bad=""
+[[ "$(fake_run junk dmg_attached_images)" == "1 0" ]] || unreadable_bad="$unreadable_bad list"
+[[ "$(fake_run junk release_dmg_image /elsewhere/mine.dmg)" == "1 0" ]] || unreadable_bad="$unreadable_bad release"
+if [[ "$(fake_run junk detach_dmg_device /dev/disk77 /elsewhere/mine.dmg)" != "1 0" ]] || ! grep -q "could not read 'hdiutil info'" "$work/err"; then unreadable_bad="$unreadable_bad detach"; fi
+if [[ -z "$unreadable_bad" ]]; then pass "an unreadable listing fails, and no detach is sent on it"; else fail "an unreadable listing fails, and no detach is sent on it:$unreadable_bad"; fi
+
 # The EXIT trap: a child that dies mid-suite with an image attached.
 probe_status=0
 probe="$("${BASH:-bash}" "${BASH_SOURCE[0]}" --probe-die 2>"$work/probe-err")" || probe_status=$?
 probe_work=""; probe_dev=""
 read -r _ probe_work probe_dev <<< "$(printf '%s\n' "$probe" | grep '^PROBE ' || true)"
-if [[ "$probe_status" == 3 && -n "$probe_dev" && ! -e "$probe_work" ]] && ! dmg_device_attached "$probe_dev"; then
+# 1 = that device is no longer attached as the probe's image (2 = unreadable).
+probe_state() { local st=0; dmg_device_state "$probe_dev" "$probe_work/good.dmg" || st=$?; echo "$st"; }
+if [[ "$probe_status" == 3 && -n "$probe_dev" && ! -e "$probe_work" ]] && [[ "$(probe_state)" == 1 ]]; then
     pass "the EXIT trap detaches before it deletes (a mid-suite exit leaks nothing)"
 else
     fail "the EXIT trap detaches before it deletes (status $probe_status; $probe; work gone: $([[ ! -e "$probe_work" ]] && echo yes || echo no); $(cat "$work/probe-err"))"
-    [[ -n "$probe_dev" ]] && detach_dmg_device "$probe_dev" || true
+    [[ -n "$probe_dev" ]] && detach_dmg_device "$probe_dev" "$probe_work/good.dmg" || true
 fi
 
 # The reaper rule: leaked fixtures match, nothing else does.
@@ -351,6 +445,20 @@ for c in "${reaper_cases[@]}"; do
     got=no; dmg_is_leaked_fixture "$img" "$root" && got=yes
     [[ "$got" == "$want" ]] || reaper_bad="$reaper_bad [$want: $img]"
 done
+# The leaked image's directory is gone, so the spelling of the root decides:
+# /var and /private/var are one place, whichever side carries the prefix.
+case "$root" in
+    /var/*)
+        got=no; dmg_is_leaked_fixture "/private$root/tmp.AbC123/wrong.dmg" "$root" && got=yes
+        [[ "$got" == yes ]] || reaper_bad="$reaper_bad [yes: /private path against a /var root]"
+        got=no; dmg_is_leaked_fixture "$root/tmp.AbC123/wrong.dmg" "/private$root" && got=yes
+        [[ "$got" == yes ]] || reaper_bad="$reaper_bad [yes: /var path against a /private root]"
+        got=no; dmg_is_leaked_fixture "/elsewhere/tmp.AbC123/wrong.dmg" "/private$root" && got=yes
+        [[ "$got" == no ]] || reaper_bad="$reaper_bad [no: foreign path against a /private root]"
+        got=no; dmg_is_leaked_fixture "/private$root/tmp.live/good.dmg" "$root" && got=yes
+        [[ "$got" == no ]] || reaper_bad="$reaper_bad [no: live /private path]"
+        ;;
+esac
 if [[ -z "$reaper_bad" ]]; then pass "the reaper rule matches leaked fixtures and nothing else"; else fail "the reaper rule matches leaked fixtures and nothing else:$reaper_bad"; fi
 
 # End to end, on a device this run attaches itself: attach, delete the backing
@@ -359,17 +467,20 @@ if [[ -z "$reaper_bad" ]]; then pass "the reaper rule matches leaked fixtures an
 mkdir -p "$root/tmp.Leak" "$root/tmp.Live"
 cp "$work/good.dmg" "$root/tmp.Leak/wrong.dmg"
 cp "$work/good.dmg" "$root/tmp.Live/wrong.dmg"
-attach_dmg_readonly "$(mktemp -d "$work/mnt.XXXXXX")" "$root/tmp.Leak/wrong.dmg"; leak_dev="$ATTACHED_DEV"
-attach_dmg_readonly "$(mktemp -d "$work/mnt.XXXXXX")" "$root/tmp.Live/wrong.dmg"; live_dev="$ATTACHED_DEV"
-rm -f "$root/tmp.Leak/wrong.dmg"
+leak_img="$root/tmp.Leak/wrong.dmg"; live_img="$root/tmp.Live/wrong.dmg"
+attach_dmg_readonly "$(mktemp -d "$work/mnt.XXXXXX")" "$leak_img"; leak_dev="$ATTACHED_DEV"
+attach_dmg_readonly "$(mktemp -d "$work/mnt.XXXXXX")" "$live_img"; live_dev="$ATTACHED_DEV"
+rm -f "$leak_img"
 reap_leaked_fixtures "$root" >"$work/reap-out"
-if ! dmg_device_attached "$leak_dev" && dmg_device_attached "$live_dev" && grep -q "reaping leaked fixture device $leak_dev" "$work/reap-out"; then
+leak_st=0; dmg_device_state "$leak_dev" "$leak_img" || leak_st=$?
+live_st=0; dmg_device_state "$live_dev" "$live_img" || live_st=$?
+if [[ "$leak_st" == 1 && "$live_st" == 0 ]] && grep -q "reaping leaked fixture device $leak_dev" "$work/reap-out"; then
     pass "the reaper detaches a leaked fixture device and leaves a live one"
 else
     fail "the reaper detaches a leaked fixture device and leaves a live one ($(cat "$work/reap-out"))"
 fi
-detach_dmg_device "$leak_dev" || true
-detach_dmg_device "$live_dev" || true
+detach_dmg_device "$leak_dev" "$leak_img" || true
+detach_dmg_device "$live_dev" "$live_img" || true
 
 # make_dmg itself (the wiring: stage -> hdiutil -> assert -> sign). codesign is
 # stubbed; everything else is real. Run in a subshell because make_dmg traps
@@ -405,9 +516,13 @@ fi
 
 # Last: nothing this run attached is still attached (#629).
 left_attached=""
-while IFS=$'\t' read -r dev path; do
-    if dmg_under "$path" "$work"; then left_attached="$left_attached $dev($path)"; fi
-done < <(dmg_attached_images)
+if final_listing="$(dmg_attached_images)"; then
+    while IFS=$'\t' read -r dev path; do
+        if [[ -n "$dev" ]] && dmg_under "$path" "$work"; then left_attached="$left_attached $dev($path)"; fi
+    done <<< "$final_listing"
+else
+    left_attached=" (could not read 'hdiutil info')"
+fi
 if [[ -z "$left_attached" ]]; then pass "nothing under the suite's temp dir is still attached"; else fail "devices still attached under the suite's temp dir:$left_attached"; fi
 
 if [[ "$failures" -ne 0 ]]; then
