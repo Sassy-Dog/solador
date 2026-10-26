@@ -84,6 +84,8 @@ app/ui/sample-azure-stale.json
 app/ui/sample-services.json
 app/ui/sample-services-empty.json
 app/ui/sample-services-stale.json
+app/ui/sample-services-fresh.json
+app/ui/sample-services-loading.json
 app/ui/sample-crons.json
 app/ui/sample-crons-empty.json
 app/ui/sample-crons-error.json

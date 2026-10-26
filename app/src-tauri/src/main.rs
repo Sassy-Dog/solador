@@ -1892,7 +1892,13 @@ async fn poll_service_status(app: &Arc<App>) {
         store.settings().notify_on_service_change
     };
 
-    let notices = {
+    let watched = vendors.len();
+    let labels: Vec<(services::ServiceId, String)> = vendors
+        .iter()
+        .map(|vendor| (vendor.service, vendor.label.clone()))
+        .collect();
+    let mut failures: Vec<(String, &'static str)> = Vec::new();
+    let (notices, transition) = {
         let mut statuses = app.services.lock().expect("services poisoned");
         // Before the results are folded in, so a vendor that left the watched
         // set takes its last reading with it rather than lingering in the map
@@ -1915,6 +1921,11 @@ async fn poll_service_status(app: &Arc<App>) {
                 }
                 Err(e) => {
                     failed += 1;
+                    let label = labels
+                        .iter()
+                        .find(|(id, _)| *id == service)
+                        .map_or_else(|| service.id(), |(_, label)| label.clone());
+                    failures.push((label, e.kind()));
                     if service == services::ServiceId::GitHub {
                         app.github
                             .lock()
@@ -1927,15 +1938,31 @@ async fn poll_service_status(app: &Arc<App>) {
         }
         // The footer's last-success clock; what counts as a success is
         // `pass_finished`'s doc.
-        statuses.pass_finished(panel::now_unix(), read, failed);
+        let transition = statuses.pass_finished(panel::now_unix(), read, failed);
         // Diffed against what this pass actually obtained. A failed refresh
         // keeps the last good status for *rendering*, and treating that
         // retained value as a fresh observation would make an unreachable page
         // look like a steady state forever — so `readings()` reports `None`
         // wherever the last read failed.
         let mut watch = app.service_status.lock().expect("status watch poisoned");
-        watch.observe(&statuses.readings(), notify_changes)
+        (
+            watch.observe(&statuses.readings(), notify_changes),
+            transition,
+        )
     };
+
+    // One line on entering "every vendor failed" and one on leaving it, never
+    // one per failed pass (the `refusal_transition` rule). Labels and fixed
+    // kind words only.
+    match transition {
+        Some(services::PassTransition::Entered) => {
+            eprintln!("{}", services::pass_failed_log_line(watched, &failures));
+        }
+        Some(services::PassTransition::Recovered) => {
+            eprintln!("services: status pages are readable again");
+        }
+        None => {}
+    }
 
     // Last, and outside every lock: showing a banner is the one thing in this
     // function that leaves the process.
@@ -3016,20 +3043,7 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
         .map_err(|e| eprintln!("Claude usage walk failed: {e}"))
         .ok();
     if let Some((summary, error)) = claude {
-        let (was_present, is_present) = {
-            let mut usage = app.usage.lock().expect("usage state poisoned");
-            let was_present = usage.claude_present();
-            usage.apply_claude(summary, now, error);
-            (was_present, usage.claude_present())
-        };
-        // Anthropic's row in Services is evidence-driven by exactly this, and
-        // nothing edited by hand changes it, so nothing else would wake the
-        // Services loop for it: it would appear (or go) a whole Services
-        // cadence late. Only on a change -- a wake per usage pass would make
-        // the cadence setting a lie.
-        if claude_presence_wakes_services(was_present, is_present) {
-            wake_services(app);
-        }
+        apply_claude_pass(&app.usage, &app.services_wake, summary, now, error);
     }
 
     if !providers {
@@ -4079,15 +4093,24 @@ fn runner_group_label_move(
 ///
 /// [#301]: https://github.com/Sassy-Dog/solador/issues/301
 fn wake_panel(app: &App, panel: PanelInterval) {
-    match wake_target(panel) {
-        WakeTarget::Containers => app.containers_wake.notify_one(),
-        WakeTarget::GitHub => wake_github(app),
-        WakeTarget::Services => wake_services(app),
-        // Not the providers' half: a cadence change spends no vendor request.
-        WakeTarget::Usage => wake_usage(app, false),
-        WakeTarget::Azure => app.azure_wake.notify_one(),
-        WakeTarget::Crons => app.crons_wake.notify_one(),
-        WakeTarget::PlanUsage => app.plan_usage_wake.notify_one(),
+    // Every loop's wake is a plain `notify_one`. The usage wake is deliberately
+    // not forced onto its provider half: a cadence change spends no vendor
+    // request, which is why this does not go through `wake_usage(app, true)`.
+    wake_notify(app, wake_target(panel)).notify_one();
+}
+
+/// The `Notify` each target's loop sleeps on. A function of its own so a test
+/// can hold each target to its own field: `wake_target` being right does not
+/// help if the arm below it wakes a neighbour.
+fn wake_notify(app: &App, target: WakeTarget) -> &tokio::sync::Notify {
+    match target {
+        WakeTarget::Containers => &app.containers_wake,
+        WakeTarget::GitHub => &app.github_wake,
+        WakeTarget::Services => &app.services_wake,
+        WakeTarget::Usage => &app.usage_wake,
+        WakeTarget::Azure => &app.azure_wake,
+        WakeTarget::Crons => &app.crons_wake,
+        WakeTarget::PlanUsage => &app.plan_usage_wake,
     }
 }
 
@@ -4117,6 +4140,35 @@ fn wake_target(panel: PanelInterval) -> WakeTarget {
         PanelInterval::Crons => WakeTarget::Crons,
         PanelInterval::PlanUsage => WakeTarget::PlanUsage,
     }
+}
+
+/// Folds one rollup walk into the usage state and wakes the Services loop if
+/// that changed whether Claude rollups exist.
+///
+/// Anthropic's row in Services is evidence-driven by exactly this, and nothing
+/// edited by hand changes it, so nothing else would wake the Services loop for
+/// it: the row would appear (or go) a whole Services cadence late. Only on a
+/// change -- a wake per usage pass would make the cadence setting a lie.
+/// Presence is read **before** the walk is applied: reading it after would
+/// compare the new state with itself.
+fn apply_claude_pass(
+    usage: &Mutex<UsageState>,
+    services_wake: &tokio::sync::Notify,
+    summary: Option<usage::UsageSummary>,
+    at: u64,
+    error: Option<String>,
+) -> bool {
+    let (was_present, is_present) = {
+        let mut usage = usage.lock().expect("usage state poisoned");
+        let was_present = usage.claude_present();
+        usage.apply_claude(summary, at, error);
+        (was_present, usage.claude_present())
+    };
+    let flipped = claude_presence_wakes_services(was_present, is_present);
+    if flipped {
+        services_wake.notify_one();
+    }
+    flipped
 }
 
 /// Whether a usage pass should wake the Services loop: only when Claude
@@ -4181,10 +4233,16 @@ fn panel_interval_save(
     width: f64,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
-    let kind = PanelInterval::parse(&panel).ok_or("Skipped \u{2014} unknown panel.")?;
+    panel_interval_save_in(&state, &panel, secs)?;
+    Ok(dashboard_view(width, state))
+}
+
+/// The command's body, over a plain `&App` so a test can drive it.
+fn panel_interval_save_in(app: &App, panel: &str, secs: u32) -> Result<(), String> {
+    let kind = PanelInterval::parse(panel).ok_or("Skipped \u{2014} unknown panel.")?;
     let secs = kind.check_secs(secs).map_err(|r| r.user_message())?;
     {
-        let mut store = state.store.lock().expect("store poisoned");
+        let mut store = app.store.lock().expect("store poisoned");
         let previous = store.settings().panel_intervals.clone();
         let outcome = store.settings_mut().set_panel_interval_secs(kind, secs);
         debug_assert!(
@@ -4198,9 +4256,9 @@ fn panel_interval_save(
     }
     // Before the re-render below, so its footers judge staleness by the saved
     // cadence and not the previous pass's.
-    sync_app_cadences(&state);
-    wake_panel(&state, kind);
-    Ok(dashboard_view(width, state))
+    sync_app_cadences(app);
+    wake_panel(app, kind);
+    Ok(())
 }
 
 /// Forget one panel's cadence override.
@@ -4214,9 +4272,15 @@ fn panel_interval_clear(
     width: f64,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
-    let kind = PanelInterval::parse(&panel).ok_or("Skipped \u{2014} unknown panel.")?;
+    panel_interval_clear_in(&state, &panel)?;
+    Ok(dashboard_view(width, state))
+}
+
+/// The command's body, over a plain `&App` so a test can drive it.
+fn panel_interval_clear_in(app: &App, panel: &str) -> Result<(), String> {
+    let kind = PanelInterval::parse(panel).ok_or("Skipped \u{2014} unknown panel.")?;
     {
-        let mut store = state.store.lock().expect("store poisoned");
+        let mut store = app.store.lock().expect("store poisoned");
         let previous = store.settings().panel_intervals.clone();
         store.settings_mut().clear_panel_interval(kind);
         if let Err(error) = store.save() {
@@ -4224,9 +4288,9 @@ fn panel_interval_clear(
             return Err(format!("Could not save the poll cadence: {error}"));
         }
     }
-    sync_app_cadences(&state);
-    wake_panel(&state, kind);
-    Ok(dashboard_view(width, state))
+    sync_app_cadences(app);
+    wake_panel(app, kind);
+    Ok(())
 }
 
 /// The crash-reporting opt-in. Its own command, and it saves immediately.
@@ -6656,12 +6720,20 @@ fn run_dump(args: &[String]) -> bool {
             let mut statuses = services::ServiceStatuses::new();
             statuses.watching(Vec::new());
             statuses
+        } else if args.iter().any(|arg| arg == "--loading") {
+            // No pass has run: the watched set is not derived yet, so the
+            // panel's loading line, built by the real `view`.
+            services::ServiceStatuses::new()
         } else {
             let mut statuses = services::fixture_statuses();
             if stale {
                 // The last good pass an hour ago, against the default cadence's
                 // window: the footer's amber line.
                 statuses.pass_finished(panel::now_unix().saturating_sub(3600), 5, 0);
+            } else if args.iter().any(|arg| arg == "--fresh") {
+                // A real pass that just finished (5 read, 0 failed): the footer
+                // is null because the clock is current, not because it never ran.
+                statuses.pass_finished(panel::now_unix(), 5, 0);
             }
             statuses
         };
@@ -6808,6 +6880,46 @@ fn display_order(hosts: &[Host]) -> Vec<&Host> {
     enabled
 }
 
+/// The app's shared state, fresh. One place, so startup and the tests build the
+/// same thing and a test can hold the real wake and cadence wiring.
+fn new_app(
+    store: Store,
+    credentials: impl CredentialStore + Send + Sync + 'static,
+    runtime: tokio::runtime::Handle,
+    crash_reporting: crashreport::Reporting,
+) -> App {
+    App {
+        store: Mutex::new(store),
+        credentials: Box::new(credentials),
+        hosts: Mutex::new(Vec::new()),
+        local: Arc::new(Mutex::new(LocalHostState::new())),
+        containers: Mutex::new(ContainersState::new()),
+        containers_wake: tokio::sync::Notify::new(),
+        github: Mutex::new(GitHubState::new()),
+        github_wake: tokio::sync::Notify::new(),
+        services_wake: tokio::sync::Notify::new(),
+        usage: Mutex::new(UsageState::new()),
+        usage_wake: tokio::sync::Notify::new(),
+        usage_providers_due: std::sync::atomic::AtomicBool::new(false),
+        plan_usage_wake: tokio::sync::Notify::new(),
+        crons: Mutex::new(CronsState::new()),
+        crons_wake: tokio::sync::Notify::new(),
+        azure: Mutex::new(AzureState::new()),
+        azure_wake: tokio::sync::Notify::new(),
+        openclaw: Mutex::new(OpenClawState::new()),
+        openclaw_wake: tokio::sync::Notify::new(),
+        approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+        service_status: Mutex::new(services::StatusWatch::new()),
+        services: Mutex::new(services::ServiceStatuses::new()),
+        host_reachability: Mutex::new(services::HostWatch::new()),
+        update: Mutex::new(UpdateState::new()),
+        agent_release: Mutex::new(viewmodel::agent_release::Latest::NotChecked),
+        handle: std::sync::OnceLock::new(),
+        runtime,
+        crash_reporting,
+    }
+}
+
 /// Read the operator's answer out of the store and start reporting only if it
 /// is yes.
 ///
@@ -6940,36 +7052,7 @@ fn main() {
     let reporting = start_crash_reporting(&store);
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let app = Arc::new(App {
-        store: Mutex::new(store),
-        credentials: Box::new(credentials),
-        hosts: Mutex::new(Vec::new()),
-        local: Arc::new(Mutex::new(LocalHostState::new())),
-        containers: Mutex::new(ContainersState::new()),
-        containers_wake: tokio::sync::Notify::new(),
-        github: Mutex::new(GitHubState::new()),
-        github_wake: tokio::sync::Notify::new(),
-        services_wake: tokio::sync::Notify::new(),
-        usage: Mutex::new(UsageState::new()),
-        usage_wake: tokio::sync::Notify::new(),
-        usage_providers_due: std::sync::atomic::AtomicBool::new(false),
-        plan_usage_wake: tokio::sync::Notify::new(),
-        crons: Mutex::new(CronsState::new()),
-        crons_wake: tokio::sync::Notify::new(),
-        azure: Mutex::new(AzureState::new()),
-        azure_wake: tokio::sync::Notify::new(),
-        openclaw: Mutex::new(OpenClawState::new()),
-        openclaw_wake: tokio::sync::Notify::new(),
-        approvals: Mutex::new(github::notify::ApprovalWatch::new()),
-        service_status: Mutex::new(services::StatusWatch::new()),
-        services: Mutex::new(services::ServiceStatuses::new()),
-        host_reachability: Mutex::new(services::HostWatch::new()),
-        update: Mutex::new(UpdateState::new()),
-        agent_release: Mutex::new(viewmodel::agent_release::Latest::NotChecked),
-        handle: std::sync::OnceLock::new(),
-        runtime: rt.handle().clone(),
-        crash_reporting: reporting,
-    });
+    let app = Arc::new(new_app(store, credentials, rt.handle().clone(), reporting));
     // One task per host: an unreachable host's 5s client timeout must not hold
     // up any other host's tick. Startup is the same code path a settings edit
     // takes, so there is one definition of "which hosts are polled".
@@ -7188,6 +7271,122 @@ mod tests {
             "still absent"
         );
         assert!(!claude_presence_wakes_services(true, true), "still present");
+    }
+
+    /// A real `App` over a throwaway store: the same constructor startup uses,
+    /// so the wake and cadence wiring under test is the wiring that ships.
+    /// The runtime and directory are returned to keep them alive.
+    fn test_app() -> (tempfile::TempDir, tokio::runtime::Runtime, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in(dir.path(), false).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reporting = start_crash_reporting(&store);
+        let app = new_app(
+            store,
+            MemoryCredentialStore::new(),
+            rt.handle().clone(),
+            reporting,
+        );
+        (dir, rt, app)
+    }
+
+    /// Whether the `Notify` holds a stored permit (consumes it).
+    fn woken(notify: &tokio::sync::Notify) -> bool {
+        futures_util::FutureExt::now_or_never(notify.notified()).is_some()
+    }
+
+    fn windows_of(app: &App) -> (u64, u64, u64) {
+        (
+            app.github.lock().unwrap().stale_after_secs(),
+            app.usage.lock().unwrap().claude_stale_after_secs(),
+            app.services.lock().unwrap().stale_after_secs(),
+        )
+    }
+
+    /// The usage pass seam (#627): Services wakes exactly when presence flips,
+    /// in both directions, and the permit is really stored on the loop's own
+    /// `Notify`. Deleting the wake, or reading presence after applying the
+    /// walk, fails this.
+    #[test]
+    fn a_usage_pass_wakes_services_only_when_claude_presence_flips() {
+        let usage = Mutex::new(UsageState::new());
+        let wake = tokio::sync::Notify::new();
+        let walk = |present: bool| {
+            apply_claude_pass(
+                &usage,
+                &wake,
+                present.then(usage::UsageSummary::default),
+                1,
+                None,
+            )
+        };
+
+        assert!(!walk(false), "absent -> absent");
+        assert!(!woken(&wake));
+        assert!(walk(true), "absent -> present");
+        assert!(woken(&wake), "and the Services loop was actually woken");
+        assert!(!walk(true), "present -> present");
+        assert!(!woken(&wake), "no wake on a pass that changed nothing");
+        assert!(walk(false), "present -> absent");
+        assert!(woken(&wake));
+    }
+
+    /// A save moves the GitHub, Claude-rollup and Services windows before any
+    /// pass has run -- through the command's own body, so dropping its
+    /// `sync_app_cadences` fails here.
+    #[test]
+    fn a_cadence_save_moves_its_window_before_any_pass() {
+        let (_dir, _rt, app) = test_app();
+        assert_eq!(windows_of(&app), (150, 150, 150), "defaults, no pass yet");
+
+        panel_interval_save_in(&app, "github", 300).unwrap();
+        assert_eq!(windows_of(&app).0, 750);
+        panel_interval_save_in(&app, "claude_rollups", 300).unwrap();
+        assert_eq!(windows_of(&app).1, 750);
+        panel_interval_save_in(&app, "services", 600).unwrap();
+        assert_eq!(windows_of(&app), (750, 750, 1500));
+        // Shortened: the window follows at once, not on the next pass.
+        panel_interval_save_in(&app, "services", 30).unwrap();
+        assert_eq!(windows_of(&app).2, 150);
+        assert!(woken(&app.services_wake), "and the save woke its own loop");
+    }
+
+    /// …and a clear returns every window to the default's, again before any pass.
+    #[test]
+    fn a_cadence_clear_moves_its_window_before_any_pass() {
+        let (_dir, _rt, app) = test_app();
+        for panel in ["github", "claude_rollups", "services"] {
+            panel_interval_save_in(&app, panel, 600).unwrap();
+        }
+        assert_eq!(windows_of(&app), (1500, 1500, 1500));
+        for (panel, index) in [("github", 0), ("claude_rollups", 1), ("services", 2)] {
+            panel_interval_clear_in(&app, panel).unwrap();
+            let windows = windows_of(&app);
+            let at = [windows.0, windows.1, windows.2][index];
+            assert_eq!(at, 150, "{panel} follows the default again");
+        }
+    }
+
+    /// Each target's `Notify` is its own loop's field, not a neighbour's
+    /// (#627): `wake_target` can be right while the arm under it is wrong.
+    #[test]
+    fn each_wake_target_fires_its_own_notify() {
+        let (_dir, _rt, app) = test_app();
+        let expected: [(WakeTarget, &tokio::sync::Notify); 7] = [
+            (WakeTarget::Containers, &app.containers_wake),
+            (WakeTarget::GitHub, &app.github_wake),
+            (WakeTarget::Services, &app.services_wake),
+            (WakeTarget::Usage, &app.usage_wake),
+            (WakeTarget::Azure, &app.azure_wake),
+            (WakeTarget::Crons, &app.crons_wake),
+            (WakeTarget::PlanUsage, &app.plan_usage_wake),
+        ];
+        for (target, notify) in expected {
+            assert!(
+                std::ptr::eq(wake_notify(&app, target), notify),
+                "{target:?}"
+            );
+        }
     }
 
     /// A just-saved shorter cadence moves every cadence-derived window before

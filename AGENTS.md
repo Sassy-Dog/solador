@@ -137,7 +137,9 @@ detailed than this file.
   `panel_interval_save`/`_clear` before they re-render, so a shortened cadence
   moves the window with the save and not one pass later.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
-  cadence at all**, which is why it is the one panel with no staleness footer.
+  cadence at all**, which is why it is the one panel with no staleness signal of
+  any kind (the polling panels carry a `status_footer`; Hosts warns per card,
+  via `sampler_stale` and unreachable).
 
 Rows are reflowed by `viewmodel::cockpit` for the measured width, and every card
 in a row is the same height. An in-app Settings surface over `crates/store`

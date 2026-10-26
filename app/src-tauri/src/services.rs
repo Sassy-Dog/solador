@@ -544,6 +544,42 @@ pub struct ServiceStatuses {
 /// Shown beside `last ok …` when a pass watched vendors and every read failed.
 pub const PASS_FAILED_MESSAGE: &str = "couldn't read any status page";
 
+/// The edge a Services pass can cross that is worth one log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassTransition {
+    /// The previous pass read something (or none had run) and this one read nothing.
+    Entered,
+    /// The previous pass read nothing and this one read something.
+    Recovered,
+}
+
+/// Whether a pass crossed into or out of "every vendor failed". A later failed
+/// pass while already failing is `None`: the line is for the *entry*, like
+/// `refusal_transition`, not a drumbeat.
+#[must_use]
+pub fn pass_transition(was_failing: bool, failing_now: bool) -> Option<PassTransition> {
+    match (was_failing, failing_now) {
+        (false, true) => Some(PassTransition::Entered),
+        (true, false) => Some(PassTransition::Recovered),
+        _ => None,
+    }
+}
+
+/// The log line for a pass entering the all-failed state: how many vendors were
+/// watched and each failed one's label and classified kind. Labels and fixed
+/// kind words only -- no URL, header or token is in reach.
+#[must_use]
+pub fn pass_failed_log_line(watched: usize, failures: &[(String, &str)]) -> String {
+    let detail = failures
+        .iter()
+        .map(|(label, kind)| format!("{label}: {kind}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "services: no status page could be read; all {watched} watched vendor(s) failed ({detail})"
+    )
+}
+
 impl ServiceStatuses {
     #[must_use]
     pub fn new() -> Self {
@@ -602,13 +638,23 @@ impl ServiceStatuses {
     /// its own row (`readFailed`) and must not turn the whole panel amber. A
     /// pass that watched vendors and read none is not a success: the clock
     /// stays on the last success and the footer says why, with `last ok`.
-    pub fn pass_finished(&mut self, now: u64, read: usize, failed: usize) {
+    ///
+    /// Answers the log-worthy transition, if this pass made one: see
+    /// [`pass_transition`].
+    pub fn pass_finished(
+        &mut self,
+        now: u64,
+        read: usize,
+        failed: usize,
+    ) -> Option<PassTransition> {
+        let was_failing = self.pass_error.is_some();
         if failed > 0 && read == 0 {
             self.pass_error = Some(PASS_FAILED_MESSAGE.to_owned());
         } else {
             self.last_success = Some(now);
             self.pass_error = None;
         }
+        pass_transition(was_failing, self.pass_error.is_some())
     }
 
     pub fn succeeded(&mut self, service: ServiceId, status: ServiceStatus) {
@@ -1860,6 +1906,46 @@ mod tests {
             footer_text(&statuses, FOOTER_NOW + 10_000).is_some(),
             "and still goes stale"
         );
+    }
+
+    /// Enter, stay and recover (#627): one line on the way in, none while it
+    /// persists, and the recovery is its own edge.
+    #[test]
+    fn the_log_transition_fires_on_entry_and_recovery_only() {
+        assert_eq!(pass_transition(false, true), Some(PassTransition::Entered));
+        assert_eq!(pass_transition(true, true), None, "stay");
+        assert_eq!(
+            pass_transition(true, false),
+            Some(PassTransition::Recovered)
+        );
+        assert_eq!(pass_transition(false, false), None, "healthy");
+
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(builtins());
+        assert_eq!(
+            statuses.pass_finished(FOOTER_NOW, 0, 5),
+            Some(PassTransition::Entered)
+        );
+        assert_eq!(statuses.pass_finished(FOOTER_NOW + 60, 0, 5), None);
+        assert_eq!(
+            statuses.pass_finished(FOOTER_NOW + 120, 1, 4),
+            Some(PassTransition::Recovered)
+        );
+        assert_eq!(statuses.pass_finished(FOOTER_NOW + 180, 5, 0), None);
+    }
+
+    #[test]
+    fn the_failure_line_names_the_count_and_each_kind() {
+        let line = pass_failed_log_line(
+            2,
+            &[
+                ("GitHub".to_owned(), "unreachable"),
+                ("Azure".to_owned(), "http-status"),
+            ],
+        );
+        assert!(line.contains("all 2 watched"), "{line}");
+        assert!(line.contains("GitHub: unreachable") && line.contains("Azure: http-status"));
+        assert!(!line.contains("http://") && !line.contains("https://"));
     }
 
     // MARK: - hosts

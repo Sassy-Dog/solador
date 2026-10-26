@@ -1216,13 +1216,17 @@ Repos/Runners conjunction chip.
 
 **The panel has a staleness footer** ([#627](https://github.com/Sassy-Dog/solador/issues/627)),
 in the header like every polling panel's: the last *successful* pass against
-2.5 cycles of the Services cadence (`ServiceStatuses::pass_finished`). A pass
+2.5 cycles of the Services cadence, never under 150s (`MIN_STALE_AFTER_SECS`; at
+the 30s floor the window is 150s) (`ServiceStatuses::pass_finished`). A pass
 succeeds when it watched nothing or read at least one vendor — one status page
 being down is on its own row and does not turn the panel amber — while a pass
 that watched vendors and read none keeps the clock where it was and the footer
 reads `⚠ couldn't read any status page · last ok …`. Before the first pass
 there is only the loading line, never an age, and the "nothing to watch yet"
-sentence is unchanged. `--dump-services … --stale` renders the amber case.
+sentence is unchanged. `--dump-services … --stale` renders the amber case. The
+first time every vendor fails the loop logs one `services: no status page could
+be read; all N watched vendor(s) failed (label: kind, …)` line (fixed kind words
+only, never a URL or header), one line when it recovers, and nothing in between.
 
 **The watched list is derived, never shipped**
 ([#284](https://github.com/Sassy-Dog/solador/issues/284), wired up in
@@ -1763,10 +1767,11 @@ the snapshot would churn several times a minute for no visible reason. The
 command only reads what the socket has already published; the 2s frontend
 interval decides how soon the window notices, and drives nothing.
 
-**Which is why there is no staleness warning.** Every other panel here carries a
-`status_footer` because it polls and can therefore be stale. This one's
-connection line already answers "is this current", exactly; a staleness clock
-beside it would be a second, weaker answer to the same question.
+**Which is why there is no staleness signal of any kind.** Every other panel
+says when it may be stale: the polling panels carry a `status_footer`, and Hosts
+warns per card (`sampler_stale`, unreachable). This one's connection line
+already answers "is this current", exactly; a staleness clock beside it would
+be a second, weaker answer to the same question.
 
 **A dot needs both its colour and its opacity.** `unknown` and `disabled` are the
 same muted colour — the opacity (0.4 for disabled) is the only thing separating a
@@ -2800,6 +2805,10 @@ cargo run -p solador-app -- --dump-services sample-services.json   # the Service
 #   incidents", and one never read). Plus `--empty` — a pass that LOOKED and
 #   found nothing to watch, which is what an unconfigured cockpit now gets and
 #   is deliberately not the same payload as one that has not looked yet.
+#   Plus `--stale` — a pass of 5 reads and 0 failures dated 3600s back, so the
+#   amber staleness footer renders — `--fresh` — the same pass dated now, so
+#   the footer is null because the clock is current — and `--loading` — no
+#   pass yet, the panel's loading line.
 cargo run -p solador-app -- --dump-dashboard sample-showcase-dashboard.json --showcase
 #   …and every panel dump above, plus `--dump-cockpit`, takes `--showcase`: the
 #   marketing counterpart the README and solador.app screenshots render.

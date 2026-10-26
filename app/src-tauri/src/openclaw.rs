@@ -10,11 +10,12 @@
 //!
 //! Three rules run through it.
 //!
-//! **The panel is event-driven, so it has no status footer.** Every other panel
-//! polls on a cadence and can therefore be stale; this one is fed by a live
-//! socket, and its connection line already says whether that socket is up. A
-//! staleness footer here would be a second, weaker answer to a question the
-//! connection line answers exactly.
+//! **The panel is event-driven, so it has no staleness signal of any kind.**
+//! Every other panel says when it may be stale (the polling panels with a
+//! `status_footer`, Hosts per card); this one is fed by a live socket, and its
+//! connection line already says whether that socket is up. A staleness footer
+//! here would be a second, weaker answer to a question the connection line
+//! answers exactly.
 //!
 //! **Nothing here logs, formats or returns a token, a seed or a signature.**
 //! The Settings tab carries a *boolean* for the bearer token, like every other

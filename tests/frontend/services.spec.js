@@ -158,15 +158,18 @@ test("a stale last pass paints Rust's footer", async ({ page, baseURL }) => {
 });
 
 test("a fresh pass paints no footer", async ({ page, baseURL }) => {
-  await gotoWithServices(page, baseURL);
+  // Rust's payload after a real `pass_finished` just now (`--fresh`): the
+  // footer is null because the clock is current, not because no pass ran.
+  const fresh = await gotoWithServices(page, baseURL, await fixture(baseURL, "sample-services-fresh.json"));
+  expect(fresh.footer).toBeNull();
   await expect(rows(page)).not.toHaveCount(0);
   await expect(page.locator("#servicesStale")).toBeHidden();
 });
 
 test("before any pass there is the loading line and no footer", async ({ page, baseURL }) => {
-  const base = await fixture(baseURL, "sample-services.json");
-  const loading = { ...base, rows: [], trailing: "", loading: true, footer: null, empty: { message: "reading status pages…" } };
-  await gotoWithServices(page, baseURL, loading);
-  await expect(page.locator("#servicesBody .svc-empty")).toHaveText("reading status pages…");
+  // Rust's payload before any pass (`--loading`), not a hand-edited fixture.
+  const loading = await gotoWithServices(page, baseURL, await fixture(baseURL, "sample-services-loading.json"));
+  expect(loading.loading).toBe(true);
+  await expect(page.locator("#servicesBody .svc-empty")).toHaveText(loading.empty.message);
   await expect(page.locator("#servicesStale")).toBeHidden();
 });
