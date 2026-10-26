@@ -144,6 +144,20 @@ else
     status=1
 fi
 
+# --- Every chain of AGENTS.md files must stay within the org's 32 KiB guidance
+# budget (#638), and the negative control proving the guard refuses an
+# over-budget chain. Lists tracked paths from the index, measures them on
+# disk; see the header of
+# agent-guide-size-guard.sh for why it exists.
+log_info "agent guide size budget…"
+if guide_out="$("$SCRIPT_DIR/agent-guide-size-guard.sh" 2>&1 && "$SCRIPT_DIR/agent-guide-size-guard-test.sh" 2>&1)"; then
+    log_success "every AGENTS.md chain is within 32768 bytes, and the guard's corpus behaves"
+else
+    echo "$guide_out"
+    log_error "the agent guide size guard, or its self-test, failed (see above)"
+    status=1
+fi
+
 # --- The Tauri CLI pin must share a minor train with Cargo.lock's `tauri`
 # (#485), and the negative control proving the guard fails when it should.
 # Text-only (no cargo), so unlike the check below it needs no toolchain.

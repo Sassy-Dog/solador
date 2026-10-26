@@ -4577,10 +4577,24 @@ fn settings_set_plan_usage(
     enabled: bool,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
-    let provider = match provider.as_str() {
+    let status = apply_plan_usage(&state.store, &state.usage, &provider, enabled);
+    state.plan_usage_wake.notify_one();
+    settings_response(&state, status)
+}
+
+/// The store-mutate-and-reset step of [`settings_set_plan_usage`], apart from
+/// the Tauri state so tests can drive it. The two locks are taken one after the
+/// other, never nested.
+fn apply_plan_usage(
+    store: &Mutex<Store>,
+    usage: &Mutex<UsageState>,
+    provider: &str,
+    enabled: bool,
+) -> Option<String> {
+    let provider = match provider {
         "claude" => subscription::Provider::Claude,
         "codex" => subscription::Provider::Codex,
-        _ => return settings_response(&state, Some("Skipped — unknown provider.".into())),
+        _ => return Some("Skipped — unknown provider.".into()),
     };
     let set = |store: &mut Store, on: bool| {
         let settings = store.settings_mut();
@@ -4591,7 +4605,7 @@ fn settings_set_plan_usage(
     };
     let name = provider.holder();
     let status = {
-        let mut store = state.store.lock().expect("store poisoned");
+        let mut store = store.lock().expect("store poisoned");
         set(&mut store, enabled);
         let status = save_status(
             &store,
@@ -4607,14 +4621,12 @@ fn settings_set_plan_usage(
         }
         status
     };
-    state
-        .usage
+    usage
         .lock()
         .expect("usage state poisoned")
         .plan_mut(provider)
         .reset();
-    state.plan_usage_wake.notify_one();
-    settings_response(&state, status)
+    status
 }
 
 /// The shared half of every Layout-tab mutation: read every band, let `edit`
@@ -7681,6 +7693,78 @@ mod tests {
     use super::*;
     use store::settings::ClampOutcome;
     use store::{MemoryCredentialStore, SecretError};
+
+    fn plan_fixture() -> (tempfile::TempDir, Mutex<Store>, Mutex<UsageState>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in(dir.path(), false).unwrap();
+        (dir, Mutex::new(store), Mutex::new(UsageState::new()))
+    }
+
+    #[test]
+    fn a_plan_enable_whose_save_fails_is_put_back_to_off() {
+        let (dir, store, usage) = plan_fixture();
+        // Make the save fail: its directory becomes a file.
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        std::fs::write(dir.path(), b"not a directory").unwrap();
+        let status = apply_plan_usage(&store, &usage, "claude", true).unwrap();
+        assert!(status.starts_with("Failed"), "{status}");
+        assert!(
+            !store.lock().unwrap().settings().claude_plan_usage_enabled,
+            "an enable that did not persist must not stay on"
+        );
+        std::fs::remove_file(dir.path()).unwrap();
+        std::fs::create_dir(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn a_plan_enable_that_saves_stays_on_and_reads_the_right_provider() {
+        let (_dir, store, usage) = plan_fixture();
+        apply_plan_usage(&store, &usage, "codex", true).unwrap();
+        let guard = store.lock().unwrap();
+        assert!(guard.settings().codex_plan_usage_enabled);
+        assert!(!guard.settings().claude_plan_usage_enabled);
+    }
+
+    #[test]
+    fn an_unknown_plan_provider_is_refused_and_changes_nothing() {
+        let (_dir, store, usage) = plan_fixture();
+        usage
+            .lock()
+            .unwrap()
+            .plan_mut(subscription::Provider::Claude)
+            .park_for_test();
+        let status = apply_plan_usage(&store, &usage, "gemini", true).unwrap();
+        assert!(status.starts_with("Skipped"), "{status}");
+        let guard = store.lock().unwrap();
+        assert!(!guard.settings().claude_plan_usage_enabled);
+        assert!(!guard.settings().codex_plan_usage_enabled);
+        drop(guard);
+        assert_eq!(
+            plan_usage::gate(
+                true,
+                usage.lock().unwrap().plan(subscription::Provider::Claude),
+                0,
+                900
+            ),
+            plan_usage::Gate::Parked,
+            "a refused request resets nothing"
+        );
+    }
+
+    #[test]
+    fn turning_a_parked_plan_provider_off_and_on_un_parks_it() {
+        let (_dir, store, usage) = plan_fixture();
+        let provider = subscription::Provider::Claude;
+        let gate = |usage: &Mutex<UsageState>| {
+            plan_usage::gate(true, usage.lock().unwrap().plan(provider), 0, 900)
+        };
+        apply_plan_usage(&store, &usage, "claude", true).unwrap();
+        usage.lock().unwrap().plan_mut(provider).park_for_test();
+        assert_eq!(gate(&usage), plan_usage::Gate::Parked);
+        apply_plan_usage(&store, &usage, "claude", false).unwrap();
+        apply_plan_usage(&store, &usage, "claude", true).unwrap();
+        assert_eq!(gate(&usage), plan_usage::Gate::Due);
+    }
 
     /// Which loop each cadence's save wakes (#627). The match in `wake_panel`
     /// is exhaustive, so a new cadence cannot be forgotten, but a wrong arm

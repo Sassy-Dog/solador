@@ -4,7 +4,7 @@
 //!
 //! This is a different reading from `crates/usage`'s Claude token rollups, and
 //! it must never be merged with them. The rollups walk `~/.claude/projects` and
-//! record what was consumed on this machine, never who paid for it (AGENTS.md,
+//! record what was consumed on this machine, never who paid for it (docs/APP-INTERNALS.md,
 //! "Usage → Claude"). This crate asks the service, using the sign-in a program
 //! on this machine already holds, and gets back that subscription's utilisation
 //! of its own plan limits. One source knows the subscription and the other
