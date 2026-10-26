@@ -2753,8 +2753,28 @@ fn agent_versions(app: &App) -> Vec<(Uuid, String)> {
         .collect()
 }
 
+/// Fails a test loudly where the code would deadlock (#630): the Settings
+/// payload locks the store, so building it while the calling thread still holds
+/// the store's guard hangs forever. `try_lock` cannot tell "this thread holds
+/// it" from "another thread does", so this is test-only, where no poll loop
+/// runs against the `App`; in a running app a `WouldBlock` is routine.
+#[cfg(test)]
+fn assert_store_not_held(app: &App) {
+    assert!(
+        !matches!(
+            app.store.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ),
+        "store lock re-entered: a settings answer was built while the store was held"
+    );
+}
+
+#[cfg(not(test))]
+fn assert_store_not_held(_app: &App) {}
+
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
+    assert_store_not_held(app);
     // Read before the store's lock is taken, and never while it is held: the
     // OpenClaw session loop takes them in the same order, so there is one
     // ordering between the two and no way to invert it here.
@@ -4584,39 +4604,233 @@ fn settings_set_account_org(
     selected: bool,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
-    let Ok(id) = Uuid::parse_str(&id) else {
-        return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
-    };
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        let org = if selected {
-            match settings::validated_org(&org, id, store.accounts()) {
-                Ok(org) => org,
-                Err(status) => return settings_response(&state, Some(status)),
-            }
-        } else {
-            org.trim().to_owned()
-        };
-        let Some(account) = store.account_mut(id) else {
-            return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
-        };
-        let orgs = account.orgs.get_or_insert_with(Vec::new);
-        if selected {
-            if !orgs.iter().any(|watched| watched == &org) {
-                orgs.push(org);
-            }
-        } else {
-            orgs.retain(|watched| watched != &org);
-        }
-        save_status(&store, "Saved.")
-    };
-    // The selection is what the runners half of the pass polls, so it has to
-    // reach the loop now — an org checked and then watched going nowhere for a
-    // full GitHub cadence reads as broken.
-    wake_github(&state);
-    settings_response(&state, status)
+    account_org_in(&state, &id, &org, selected)
 }
 
+/// The body of [`settings_set_account_org`], over a plain `&App` so tests can
+/// drive it without a Tauri runtime.
+///
+/// The store's guard lives only inside [`apply_account_org`], which answers
+/// with either a refusal or the saved status. Every `settings_response` call
+/// is out here, after the guard has dropped: it locks the store again, and a
+/// `std::sync::Mutex` locked twice on one thread deadlocks (#630).
+fn account_org_in(app: &App, id: &str, org: &str, selected: bool) -> Value {
+    let Ok(id) = Uuid::parse_str(id) else {
+        return settings_response(app, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+    };
+    match apply_account_org(app, id, org, selected) {
+        Err(refusal) => settings_response(app, Some(refusal)),
+        Ok(status) => {
+            // The selection is what the runners half of the pass polls, so it
+            // has to reach the loop now — an org checked and then watched going
+            // nowhere for a full GitHub cadence reads as broken. A refusal
+            // changed nothing, so it wakes nothing.
+            wake_github(app);
+            settings_response(app, status)
+        }
+    }
+}
+
+/// Applies the checkbox under the store's lock. `Err` is a refusal that changed
+/// nothing; `Ok` carries the save's status.
+fn apply_account_org(
+    app: &App,
+    id: Uuid,
+    org: &str,
+    selected: bool,
+) -> Result<Option<String>, String> {
+    let mut store = app.store.lock().expect("store poisoned");
+    let org = if selected {
+        settings::validated_org(org, id, store.accounts())?
+    } else {
+        org.trim().to_owned()
+    };
+    let Some(account) = store.account_mut(id) else {
+        return Err(UNKNOWN_ACCOUNT_MESSAGE.into());
+    };
+    let orgs = account.orgs.get_or_insert_with(Vec::new);
+    if selected {
+        if !orgs.iter().any(|watched| watched == &org) {
+            orgs.push(org);
+        }
+    } else {
+        orgs.retain(|watched| watched != &org);
+    }
+    Ok(save_status(&store, "Saved."))
+}
+
+#[cfg(test)]
+mod account_org_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use store::{MemoryCredentialStore, VendorAccount, VendorKind};
+
+    /// An App over a temp-dir store and an in-memory credential store: nothing
+    /// here reaches the OS keychain or the operator's `store.json`. (Duplicates
+    /// any shared App fixture; collapse when one lands.)
+    struct Fixture {
+        app: Arc<App>,
+        rt: tokio::runtime::Runtime,
+        _dir: tempfile::TempDir,
+    }
+
+    fn fixture(accounts: Vec<VendorAccount>) -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        for account in accounts {
+            store.upsert_account(account);
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let reporting = start_crash_reporting(&store);
+        let app = Arc::new(App {
+            store: Mutex::new(store),
+            credentials: Box::new(MemoryCredentialStore::new()),
+            hosts: Mutex::new(Vec::new()),
+            local: Arc::new(Mutex::new(LocalHostState::new())),
+            containers: Mutex::new(ContainersState::new()),
+            containers_wake: tokio::sync::Notify::new(),
+            github: Mutex::new(GitHubState::new()),
+            github_wake: tokio::sync::Notify::new(),
+            services_wake: tokio::sync::Notify::new(),
+            usage: Mutex::new(UsageState::new()),
+            usage_wake: tokio::sync::Notify::new(),
+            usage_providers_due: std::sync::atomic::AtomicBool::new(false),
+            plan_usage_wake: tokio::sync::Notify::new(),
+            crons: Mutex::new(CronsState::new()),
+            crons_wake: tokio::sync::Notify::new(),
+            azure: Mutex::new(AzureState::new()),
+            azure_wake: tokio::sync::Notify::new(),
+            openclaw: Mutex::new(OpenClawState::new()),
+            openclaw_wake: tokio::sync::Notify::new(),
+            approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+            service_status: Mutex::new(services::StatusWatch::new()),
+            services: Mutex::new(services::ServiceStatuses::new()),
+            host_reachability: Mutex::new(services::HostWatch::new()),
+            update: Mutex::new(UpdateState::new()),
+            agent_release: Mutex::new(viewmodel::agent_release::Latest::NotChecked),
+            handle: std::sync::OnceLock::new(),
+            runtime: rt.handle().clone(),
+            crash_reporting: reporting,
+        });
+        Fixture { app, rt, _dir: dir }
+    }
+
+    fn account(label: &str, orgs: Option<Vec<&str>>) -> VendorAccount {
+        let mut a = VendorAccount::new(VendorKind::GitHub, label, format!("vendor-{label}"));
+        a.orgs = orgs.map(|o| o.into_iter().map(str::to_owned).collect());
+        a
+    }
+
+    /// Runs the command body on its own thread and gives it a few seconds, so a
+    /// re-entrant lock fails the test with a message instead of hanging the
+    /// suite. (A thread stuck on the lock does not stop libtest from exiting.)
+    fn run_bounded(app: &Arc<App>, id: &str, org: &str, selected: bool) -> Value {
+        let (tx, rx) = mpsc::channel();
+        let (app, id, org) = (Arc::clone(app), id.to_owned(), org.to_owned());
+        std::thread::spawn(move || {
+            let _ = tx.send(account_org_in(&app, &id, &org, selected));
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the command deadlocked or panicked: the store lock was re-entered")
+    }
+
+    fn assert_store_free(app: &App) {
+        assert!(
+            app.store.try_lock().is_ok(),
+            "the store lock is still held after the command returned"
+        );
+    }
+
+    /// Whether `github_wake` holds a pending wake (consuming it).
+    fn woke(f: &Fixture) -> bool {
+        f.rt.block_on(async {
+            tokio::time::timeout(Duration::from_millis(50), f.app.github_wake.notified())
+                .await
+                .is_ok()
+        })
+    }
+
+    fn status(v: &Value) -> &str {
+        v["status"].as_str().expect("a status")
+    }
+
+    #[test]
+    fn an_org_another_account_watches_is_refused_and_wakes_nothing() {
+        let (a, b) = (account("a", Some(vec!["acme"])), account("b", None));
+        let b_id = b.id.to_string();
+        let f = fixture(vec![a, b]);
+        let v = run_bounded(&f.app, &b_id, "acme", true);
+        assert_eq!(status(&v), "Skipped — acme is already watched by a.");
+        assert_store_free(&f.app);
+        assert!(!woke(&f), "a refusal must not wake the GitHub loop");
+    }
+
+    #[test]
+    fn an_empty_org_is_refused_and_wakes_nothing() {
+        let a = account("a", None);
+        let id = a.id.to_string();
+        let f = fixture(vec![a]);
+        let v = run_bounded(&f.app, &id, "  ", true);
+        assert_eq!(status(&v), "Skipped — an organization name is required.");
+        assert_store_free(&f.app);
+        assert!(!woke(&f));
+    }
+
+    #[test]
+    fn an_unknown_account_is_refused_and_wakes_nothing() {
+        let f = fixture(vec![]);
+        let v = run_bounded(&f.app, &Uuid::new_v4().to_string(), "acme", true);
+        assert_eq!(status(&v), UNKNOWN_ACCOUNT_MESSAGE);
+        assert_store_free(&f.app);
+        assert!(!woke(&f));
+        // And an id that is not a UUID at all.
+        let v = run_bounded(&f.app, "not-a-uuid", "acme", true);
+        assert_eq!(status(&v), UNKNOWN_ACCOUNT_MESSAGE);
+        assert_store_free(&f.app);
+    }
+
+    #[test]
+    fn a_select_and_a_deselect_both_save_and_wake() {
+        let a = account("a", None);
+        let id = a.id.to_string();
+        let f = fixture(vec![a.clone()]);
+        let v = run_bounded(&f.app, &id, " acme ", true);
+        assert_eq!(status(&v), "Saved.");
+        assert_store_free(&f.app);
+        assert!(woke(&f));
+        let orgs = |f: &Fixture| {
+            f.app
+                .store
+                .lock()
+                .unwrap()
+                .account(a.id)
+                .unwrap()
+                .orgs
+                .clone()
+        };
+        assert_eq!(orgs(&f), Some(vec!["acme".to_owned()]));
+
+        let v = run_bounded(&f.app, &id, "acme", false);
+        assert_eq!(status(&v), "Saved.");
+        assert_store_free(&f.app);
+        assert!(woke(&f));
+        assert_eq!(orgs(&f), Some(vec![]));
+    }
+
+    /// The tripwire itself: a settings answer built while the store is held
+    /// must panic in tests rather than hang.
+    #[test]
+    #[should_panic(expected = "re-entered")]
+    fn answering_while_the_store_is_held_panics() {
+        let f = fixture(vec![]);
+        let _held = f.app.store.lock().unwrap();
+        let _ = settings_response(&f.app, None);
+    }
+}
 /// Every non-secret provider preference, in one argument.
 ///
 /// One struct rather than seven positional parameters: both Settings tabs send
