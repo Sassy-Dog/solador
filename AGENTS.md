@@ -131,11 +131,12 @@ detailed than this file.
   `stale_after_for_cadence` of the Services cadence. A pass succeeds when it
   watched nothing or read at least one vendor (one vendor down is its own row);
   a pass that watched vendors and read none keeps the clock and says so with
-  `last ok`. Before any pass there is the loading line, never an age. Every
-  cadence-derived window (GitHub, Claude rollups, Services) is refreshed from
+  `last ok`. Before any pass there is the loading line, never an age. The
+  windows cached in panel state (GitHub, Claude rollups, Services) are set from
   the store by `sync_cadences` both at the top of each pass and in
   `panel_interval_save`/`_clear` before they re-render, so a shortened cadence
-  moves the window with the save and not one pass later.
+  moves the window with the save and not one pass later. Azure Cost and the
+  plan limits read their cadence at render time, so a save already moves them.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness signal of
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,

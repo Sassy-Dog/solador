@@ -4177,14 +4177,15 @@ fn claude_presence_wakes_services(was_present: bool, is_present: bool) -> bool {
     was_present != is_present
 }
 
-/// Hands every cadence-derived staleness window the cadence the store holds
-/// *now*.
+/// Hands the staleness windows cached in panel state (GitHub, Claude rollups,
+/// Services) the cadence the store holds *now*.
 ///
 /// The loops call it at the top of each pass, and `panel_interval_save` /
 /// `_clear` call it before they re-render, so a shortened cadence does not
 /// leave the previous pass's window on screen (a reading fresh under 300s read
 /// stale under the new 30s, and Fleet Down `Unknown`, until the woken pass got
-/// round to it). Every footer that follows a cadence is set here.
+/// round to it). Azure Cost and the plan limits are not set here: they read
+/// their cadence at render time, so a save already moves them.
 fn sync_cadences(
     store: &Mutex<Store>,
     github: &Mutex<GitHubState>,
@@ -7367,6 +7368,37 @@ mod tests {
         }
     }
 
+    /// A save wakes exactly its own loop's `Notify` and no other, through
+    /// `wake_panel` itself (#627): hardcoding a target, or ignoring
+    /// `wake_target`, leaves every other test green.
+    #[test]
+    fn a_cadence_save_wakes_only_its_own_loop() {
+        for (panel, expected) in [
+            ("github", WakeTarget::GitHub),
+            ("claude_rollups", WakeTarget::Usage),
+            ("azure_cost", WakeTarget::Azure),
+            ("services", WakeTarget::Services),
+        ] {
+            let (_dir, _rt, app) = test_app();
+            panel_interval_save_in(&app, panel, 14_400).unwrap();
+            for target in [
+                WakeTarget::Containers,
+                WakeTarget::GitHub,
+                WakeTarget::Services,
+                WakeTarget::Usage,
+                WakeTarget::Azure,
+                WakeTarget::Crons,
+                WakeTarget::PlanUsage,
+            ] {
+                assert_eq!(
+                    woken(wake_notify(&app, target)),
+                    target == expected,
+                    "saving {panel}: {target:?}"
+                );
+            }
+        }
+    }
+
     /// Each target's `Notify` is its own loop's field, not a neighbour's
     /// (#627): `wake_target` can be right while the arm under it is wrong.
     #[test]
@@ -7389,7 +7421,7 @@ mod tests {
         }
     }
 
-    /// A just-saved shorter cadence moves every cadence-derived window before
+    /// A just-saved shorter cadence moves every cached staleness window before
     /// the next pass runs (#627): `sync_cadences` is what `panel_interval_save`
     /// calls ahead of its re-render.
     #[test]

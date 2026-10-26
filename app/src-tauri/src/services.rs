@@ -557,10 +557,17 @@ pub enum PassTransition {
 /// pass while already failing is `None`: the line is for the *entry*, like
 /// `refusal_transition`, not a drumbeat.
 #[must_use]
-pub fn pass_transition(was_failing: bool, failing_now: bool) -> Option<PassTransition> {
+pub fn pass_transition(
+    was_failing: bool,
+    failing_now: bool,
+    read_any: bool,
+) -> Option<PassTransition> {
     match (was_failing, failing_now) {
         (false, true) => Some(PassTransition::Entered),
-        (true, false) => Some(PassTransition::Recovered),
+        // "Readable again" is a claim that a vendor answered. A pass that
+        // watched nothing (the operator removed the last vendor) ends the
+        // failing state without reading anything, and says nothing.
+        (true, false) if read_any => Some(PassTransition::Recovered),
         _ => None,
     }
 }
@@ -654,7 +661,7 @@ impl ServiceStatuses {
             self.last_success = Some(now);
             self.pass_error = None;
         }
-        pass_transition(was_failing, self.pass_error.is_some())
+        pass_transition(was_failing, self.pass_error.is_some(), read > 0)
     }
 
     pub fn succeeded(&mut self, service: ServiceId, status: ServiceStatus) {
@@ -1912,13 +1919,16 @@ mod tests {
     /// persists, and the recovery is its own edge.
     #[test]
     fn the_log_transition_fires_on_entry_and_recovery_only() {
-        assert_eq!(pass_transition(false, true), Some(PassTransition::Entered));
-        assert_eq!(pass_transition(true, true), None, "stay");
         assert_eq!(
-            pass_transition(true, false),
+            pass_transition(false, true, false),
+            Some(PassTransition::Entered)
+        );
+        assert_eq!(pass_transition(true, true, false), None, "stay");
+        assert_eq!(
+            pass_transition(true, false, true),
             Some(PassTransition::Recovered)
         );
-        assert_eq!(pass_transition(false, false), None, "healthy");
+        assert_eq!(pass_transition(false, false, true), None, "healthy");
 
         let mut statuses = ServiceStatuses::new();
         statuses.watching(builtins());
@@ -1932,6 +1942,27 @@ mod tests {
             Some(PassTransition::Recovered)
         );
         assert_eq!(statuses.pass_finished(FOOTER_NOW + 180, 5, 0), None);
+    }
+
+    /// Failing, then the operator removes the last vendor: the footer clears
+    /// (nothing is failing) but the log must not claim a page was read.
+    #[test]
+    fn failing_then_watching_nothing_does_not_log_a_recovery() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(builtins());
+        assert_eq!(
+            statuses.pass_finished(FOOTER_NOW, 0, 5),
+            Some(PassTransition::Entered)
+        );
+        statuses.watching(Vec::new());
+        assert_eq!(statuses.pass_finished(FOOTER_NOW + 60, 0, 0), None);
+        assert_eq!(footer_text(&statuses, FOOTER_NOW + 61), None);
+        // And a later failure is a fresh entry, not a stay.
+        statuses.watching(builtins());
+        assert_eq!(
+            statuses.pass_finished(FOOTER_NOW + 120, 0, 5),
+            Some(PassTransition::Entered)
+        );
     }
 
     #[test]
