@@ -8249,8 +8249,9 @@ mod tests {
     #[test]
     fn scoping_hosts_filters_cards_before_layout() {
         let (_dir, _rt, app) = app_with_remotes(2);
+        // Wide enough that three cards would lay out in three columns.
         let keep = keep_of(&["local".to_owned()]);
-        let payload = cockpit_with(1400.0, &app, Some(&keep));
+        let payload = cockpit_with(3600.0, &app, Some(&keep));
         assert_eq!(card_ids(&payload), ["local"]);
         assert_eq!(payload["hostColumns"], 1, "layout saw one card");
     }
