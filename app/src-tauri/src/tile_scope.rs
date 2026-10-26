@@ -14,7 +14,7 @@
 //! write goes through [`field_mut`], and a key that is absent or `null` stays
 //! exactly as it was.
 
-use crate::dashboard::scoped_row_ids;
+use crate::dashboard::{scoped_empty, scoped_row_ids};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use store::{DashboardLayout, DashboardTile};
@@ -47,6 +47,8 @@ pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
     let Some(kept) = scoped_row_ids(tile, &payload) else {
         return payload;
     };
+    // Hosts are cards, filtered (and stamped) by `cockpit_for_tile`.
+    let empty = scoped_empty(tile, &payload).filter(|_| tile.source != "hosts");
     match tile.source.as_str() {
         "ghWorkflows" => retain_rows(&mut payload, |v| str_of(v, "repo").to_owned(), &kept),
         "ghRunners" => retain_rows(
@@ -64,7 +66,17 @@ pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
         // Hosts are filtered before layout (they are cards, not rows).
         _ => {}
     }
+    stamp_empty(&mut payload, empty);
     payload
+}
+
+/// Adds the tile's own sentence for a scope that keeps nothing, as `tileEmpty`.
+/// Only a payload that is an object takes it, and an absent sentence adds no
+/// key (see the module note on writes).
+pub(crate) fn stamp_empty(payload: &mut Value, empty: Option<String>) {
+    if let (Some(map), Some(sentence)) = (payload.as_object_mut(), empty) {
+        map.insert("tileEmpty".into(), Value::String(sentence));
+    }
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -298,6 +310,24 @@ mod tests {
     }
 
     #[test]
+    fn a_scope_that_keeps_nothing_carries_the_tiles_sentence() {
+        let p = json!({"rows":[{"id":"m1","label":"one","age":"1d","suppressed":false}]});
+        let out = scope_payload(&tile("services", "item:gone"), p.clone());
+        assert_eq!(out["rows"], json!([]));
+        assert!(out["tileEmpty"]
+            .as_str()
+            .unwrap()
+            .contains("no current reading"));
+        // A scope that keeps a row, and one that filters nothing, add no key.
+        assert!(scope_payload(&tile("services", "item:m1"), p.clone())
+            .get("tileEmpty")
+            .is_none());
+        assert!(scope_payload(&tile("services", "all"), p)
+            .get("tileEmpty")
+            .is_none());
+    }
+
+    #[test]
     fn services_and_crons_keep_rows_by_id() {
         let p = json!({"footer":{"text":"f"},"rows":[
             {"id":"m1","label":"one","age":"1d","suppressed":false},
@@ -491,18 +521,16 @@ mod tests {
             ("openclawAgents", "attention"),
         ] {
             let absent = json!({"message":"Add a token in Settings","footer":{"text":"f"}});
-            assert_eq!(
-                scope_payload(&tile(source, scope), absent.clone()),
-                absent,
-                "{source} {scope}: absent"
-            );
+            // `tileEmpty` is the tile's sentence, not a row: only rows are
+            // under test here.
+            let mut scoped = scope_payload(&tile(source, scope), absent.clone());
+            scoped.as_object_mut().unwrap().remove("tileEmpty");
+            assert_eq!(scoped, absent, "{source} {scope}: absent");
             let null = json!({"rows":null,"sections":null,"runtimes":null,"windows":null,
                 "plans":null,"providers":null,"stats":null});
-            assert_eq!(
-                scope_payload(&tile(source, scope), null.clone()),
-                null,
-                "{source} {scope}: null"
-            );
+            let mut scoped = scope_payload(&tile(source, scope), null.clone());
+            scoped.as_object_mut().unwrap().remove("tileEmpty");
+            assert_eq!(scoped, null, "{source} {scope}: null");
         }
     }
 

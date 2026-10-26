@@ -38,9 +38,12 @@
   // A tile's Full view is the single-panel mode with this set: the open tile,
   // whose id its source's command is sent. Only ever set while mode is
   // "details".
-  let fullTile = null; // {id, source}
+  let fullTile = null; // {id, source, loaded, empty}
+  // Bumped whenever a tile's Full view opens or closes; app.js's callRust drops
+  // a panel reading that comes back under another value than it was asked at.
+  let fullGeneration = 0;
   let viewMenu = null; // tile id
-  let coveredTitle = null, fullNoteEl = null;
+  let coveredTitle = null, fullNoteEl = null, fullStateEl = null;
   let history = [],
     dragged = null,
     initialized = false;
@@ -129,25 +132,50 @@
     if (fullTile?.source !== sourceId) return null;
     return model?.tiles.find((t) => t.id === fullTile.id)?.title ?? null;
   }
-  // The tile's name over its panel and Rust's scope note under the header row.
+  // The tile's name over its panel, Rust's scope note under the header row, and
+  // under that the one sentence the body is waiting on: Rust's loading line
+  // until this tile's own first reading lands, then Rust's reason when the scope
+  // kept nothing. Neither sentence is written here.
   function paintTileHeading() {
     const t = fullTile && model.tiles.find((x) => x.id === fullTile.id);
     const title = t && document.getElementById(sourceTitles[t.source]);
     if (!title) return;
     if (title.textContent !== t.title) text(title, t.title);
+    const header = title.parentElement;
     if (!t.fullNote) {
       fullNoteEl?.remove();
+    } else {
+      fullNoteEl ||= node("p", "db-full-note");
+      if (fullNoteEl.textContent !== t.fullNote) text(fullNoteEl, t.fullNote);
+      if (header.nextElementSibling !== fullNoteEl) header.after(fullNoteEl);
+    }
+    const state = fullTile.loaded ? fullTile.empty : t.fullLoading;
+    if (!state) {
+      fullStateEl?.remove();
       return;
     }
-    fullNoteEl ||= node("p", "db-full-note");
-    if (fullNoteEl.textContent !== t.fullNote) text(fullNoteEl, t.fullNote);
-    if (title.parentElement.nextElementSibling !== fullNoteEl) title.parentElement.after(fullNoteEl);
+    fullStateEl ||= node("p", "db-full-state");
+    if (fullStateEl.textContent !== state) text(fullStateEl, state);
+    const after = t.fullNote ? fullNoteEl : header;
+    if (after.nextElementSibling !== fullStateEl) after.after(fullStateEl);
+  }
+  // This tile's own first reading has landed (app.js's callRust). One for a
+  // tile that is no longer open is not this view's.
+  function tileResponse(tileId, payload) {
+    if (fullTile?.id !== tileId) return;
+    fullTile.loaded = true;
+    fullTile.empty = payload.tileEmpty ?? null;
+    legacy.removeAttribute("data-tile-loading");
+    paintTileHeading();
   }
   function leaveTile() {
     if (coveredTitle) text(coveredTitle.el, coveredTitle.text);
     coveredTitle = null;
     fullNoteEl?.remove();
+    fullStateEl?.remove();
+    legacy.removeAttribute("data-tile-loading");
     fullTile = null;
+    fullGeneration++;
   }
   function colored(tag, cls, value, color) {
     const el = node(tag, cls, value);
@@ -1981,7 +2009,11 @@
     // runners panel inside fullPanel, ahead of render.
     const title = document.getElementById(sourceTitles[t.source]);
     coveredTitle = title && { el: title, text: title.textContent };
-    fullTile = { id: t.id, source: t.source };
+    fullGeneration++;
+    fullTile = { id: t.id, source: t.source, loaded: false, empty: null };
+    // The panel still holds the rows it last painted, for Solador's Full view or
+    // another tile. They stay hidden until this tile's own reading replaces them.
+    legacy.dataset.tileLoading = "";
     await fullPanel(t.source, runnerGroup);
   }
   async function fullPanel(sourceId, runnerGroup = null) {
@@ -2447,6 +2479,8 @@
     // argument, and the name their title shows.
     tileArgs,
     tileHeading: fullTileTitle,
+    fullGeneration: () => fullGeneration,
+    tileResponse,
   };
   registerPanelRefresh(() => refresh(true));
   refresh(true);

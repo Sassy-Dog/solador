@@ -26,10 +26,26 @@ const esc = (v) =>
  * edit has nowhere to go in a plain browser, and pretending otherwise would
  * show a saved-looking form that saved nothing.
  */
-const callRust = async (command, args, fixture) => {
+const callRaw = async (command, args, fixture) => {
   if (window.__TAURI__) return await window.__TAURI__.core.invoke(command, args);
   if (!fixture) return null;
   return await (await fetch(fixture)).json();
+};
+
+// The panels' read commands. A tile's Full view (dashboard.js) is decided once,
+// here, rather than in each renderer: a reading that comes back after the view
+// it was asked for has gone (Escape, or another tile) is dropped as `null`,
+// which every renderer already treats as "paint nothing", and a reading asked
+// for a tile tells the dashboard that tile's first response has landed.
+const PANEL_READS = new Set(["cockpit", "repos", "runners", "containers", "services", "crons", "usage", "azure_cost", "openclaw"]);
+const callRust = async (command, args, fixture) => {
+  const dashboard = PANEL_READS.has(command) ? window.soladorDashboard : null;
+  const view = dashboard?.fullGeneration?.();
+  const payload = await callRaw(command, args, fixture);
+  if (!dashboard?.fullGeneration) return payload;
+  if (dashboard.fullGeneration() !== view) return null;
+  if (args?.tile !== undefined && payload) dashboard.tileResponse(args.tile, payload);
+  return payload;
 };
 
 // Set by settings.js. While the Settings view is up the cockpit is off-screen,

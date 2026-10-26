@@ -241,6 +241,18 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               if (!asked) throw "That tile is no longer on the overview.";
               if (asked.hidden) throw "That tile is hidden, so it has no views.";
               if (asked.source !== panelSource[command]) throw "That tile shows a different source.";
+              // A reading for the tile, as tile_scope hands it back. The rows are
+              // the unscoped fixture's unless a test says the scope kept nothing
+              // (`tileEmpty` is Rust's sentence; the test supplies the words) or
+              // holds this one reading back to land later (#640).
+              let scoped = fixtures[command];
+              if (window.__TILE_EMPTY__) scoped = { ...scoped, rows: [], tileEmpty: window.__TILE_EMPTY__ };
+              if (window.__HOLD_TILE__ === command) {
+                window.__HOLD_TILE__ = null;
+                scoped = window.__HELD_PAYLOAD__ ?? scoped;
+                return await new Promise(resolve => { window.__RELEASE_TILE__ = () => resolve(scoped); });
+              }
+              return scoped;
             }
             return fixtures[command] || null;
           },
@@ -2351,6 +2363,78 @@ test("Escape returns to the overview and restores the panel", async ({ page, bas
   await expect(page.locator("#cockpitView")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator("#cockpitView")).toBeVisible();
+});
+
+// A distinctive repo, so a reading painted where it should not be is findable.
+const STALE_REPO = "stale-marker/zzz";
+const holdRepos = (page) => page.evaluate(async (name) => {
+  const held = await (await fetch("/sample-repos.json")).json();
+  Object.assign(held.rows[0], { repo: name, name });
+  window.__HELD_PAYLOAD__ = held;
+  window.__HOLD_TILE__ = "repos";
+}, STALE_REPO);
+
+test("a tile's Full view shows a loading line, never the rows the panel last held (#640)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  // Solador's own Full view leaves source-wide repo rows in the panel.
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await expect(page.locator("#reposBody")).toBeVisible();
+  await expect(page.locator("#reposBody")).not.toBeEmpty();
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await page.evaluate(() => { window.__HOLD_TILE__ = "repos"; });
+  await openTileFull(page, "overview-ghWorkflows");
+  await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
+  // Rust's line, under the note, in place of the body.
+  await expect(page.locator("#reposPanel .db-full-state")).toHaveText(/first reading/);
+  await expect(page.locator("#reposBody")).toBeHidden();
+  await page.evaluate(() => window.__RELEASE_TILE__());
+  await expect(page.locator("#reposBody")).toBeVisible();
+  await expect(page.locator("#reposBody")).not.toBeEmpty();
+  await expect(page.locator(".db-full-state")).toHaveCount(0);
+});
+
+test("a tile's reading that lands after Escape, or after another tile opens, paints nothing (#640)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, (view) => {
+    healthyRepos(view);
+    const tiles = view.layout.tiles, repos = tiles.find((t) => t.source === "ghWorkflows");
+    tiles.find((t) => t.source === "services").hidden = true;
+    tiles.push({ ...repos, id: "repos-attention", title: "Repos Needing Attention", scope: "attention" });
+  });
+  const painted = () => page.evaluate(() => document.getElementById("reposBody").textContent);
+  for (const next of ["escape", "other tile"]) {
+    await holdRepos(page);
+    await openTileFull(page, "overview-ghWorkflows");
+    // The reading is still out, so focus never reached the view: Escape from
+    // nothing focused, as the view's own test does.
+    await page.evaluate(() => document.activeElement.blur());
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#dashboardOverview")).toBeVisible();
+    if (next === "other tile") {
+      await openTileFull(page, "repos-attention");
+      await expect(page.locator("#reposBody")).toBeVisible();
+    }
+    await page.evaluate(() => window.__RELEASE_TILE__());
+    await afterRepaints(page);
+    expect(await painted()).not.toContain(STALE_REPO);
+    if (next === "other tile") await page.keyboard.press("Escape");
+  }
+});
+
+test("a scope that keeps nothing shows the tile's own sentence in its Full view (#640)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  // Rust writes this (`dashboard::scoped_empty`); the double only carries it.
+  const sentence = "No attention items in available readings.";
+  await page.evaluate((sentence) => { window.__TILE_EMPTY__ = sentence; }, sentence);
+  await openTileFull(page, "overview-ghWorkflows");
+  await expect(page.locator("#reposPanel > .panel-hdr + .db-full-note + .db-full-state")).toHaveText(sentence);
+  await expect(page.locator("#reposBody")).toBeEmpty();
+  // A scope that keeps rows has no sentence.
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => { window.__TILE_EMPTY__ = null; });
+  await openTileFull(page, "overview-ghWorkflows");
+  await expect(page.locator("#reposBody")).not.toBeEmpty();
+  await expect(page.locator(".db-full-state")).toHaveCount(0);
 });
 
 test("Detail from an attention chip opens the source-wide panel", async ({ page, baseURL }) => {

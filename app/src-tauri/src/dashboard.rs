@@ -1057,6 +1057,9 @@ mod detail_table_tests {
     }
 }
 
+/// What a tile's Full view says until the tile's own first reading arrives.
+pub(crate) const FULL_LOADING: &str = "Waiting for this tile\u{2019}s first reading\u{2026}";
+
 /// The views a tile can open, in the order they are offered.
 pub(crate) const TILE_VIEWS: [(&str, &str); 2] = [("detail", "Detail"), ("full", "Full view")];
 
@@ -1097,6 +1100,24 @@ pub(crate) fn scoped_row_ids(tile: &DashboardTile, payload: &Value) -> Option<BT
     )
 }
 
+/// The sentence a tile's Full view shows when its scope keeps nothing: the same
+/// one its overview tile shows (`tile_view`'s `empty`). `None` when the tile
+/// keeps a row, or filters nothing.
+pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<String> {
+    if !filters_rows(tile) {
+        return None;
+    }
+    let title = SOURCES
+        .iter()
+        .find(|(id, _)| *id == tile.source)
+        .map_or("", |(_, title)| *title);
+    let source = source_view(&tile.source, title, payload);
+    if !matching_rows(tile, &source).is_empty() {
+        return None;
+    }
+    Some(empty_state(tile, &source, true).0.to_owned())
+}
+
 /// Says a tile's Full view is narrowed. `None` exactly when `scoped_row_ids` is.
 ///
 /// The totals clause is left off for Machines: its panel is cards and nothing
@@ -1119,6 +1140,44 @@ fn scope_note(tile: &DashboardTile, source_title: &str, scope_label: &str) -> Op
         format!(" Totals still cover all of {source_title}.")
     };
     Some(format!("Scope: {scope}.{totals}"))
+}
+
+/// Why a tile shows no rows, and the action that fixes it. One home for the
+/// overview tile's `empty` and for the sentence its Full view shows when the
+/// scope keeps nothing, so the two cannot say different things.
+fn empty_state<'a>(
+    tile: &DashboardTile,
+    source: &'a Value,
+    matching_empty: bool,
+) -> (&'a str, Option<&'static str>) {
+    if source["loading"] == true && list(source, "rows").is_empty() {
+        ("Waiting for the first reading…", None)
+    } else if tile.scope.starts_with("item:") && matching_empty {
+        (
+            "This resource has no current reading. Review its connection or choose another scope.",
+            Some("configure"),
+        )
+    } else if !tile.selected_repos.is_empty() && matching_empty {
+        (
+            "None of the selected repositories has a reading in this scope. Review the repository selection or scope.",
+            Some("configure"),
+        )
+    } else if tile.scope != "all" && !list(source, "rows").is_empty() {
+        (
+            if ["attention", "active"].contains(&tile.scope.as_str())
+                && list(source, "warnings").is_empty()
+            {
+                "No attention items in available readings."
+            } else {
+                "No resources match this scope."
+            },
+            Some("configure"),
+        )
+    } else if string(source, "message").is_empty() {
+        ("No readings are available yet.", Some("manage"))
+    } else {
+        (string(source, "message"), Some("manage"))
+    }
 }
 
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
@@ -1190,34 +1249,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .find(|s| s["value"] == tile.scope)
         .map(|s| string(s, "label").to_owned())
         .unwrap_or_else(|| "Resource no longer available".into());
-    let (empty, empty_action) = if source["loading"] == true && list(source, "rows").is_empty() {
-        ("Waiting for the first reading…", None)
-    } else if tile.scope.starts_with("item:") && matching.is_empty() {
-        (
-            "This resource has no current reading. Review its connection or choose another scope.",
-            Some("configure"),
-        )
-    } else if !tile.selected_repos.is_empty() && matching.is_empty() {
-        (
-            "None of the selected repositories has a reading in this scope. Review the repository selection or scope.",
-            Some("configure"),
-        )
-    } else if tile.scope != "all" && !list(source, "rows").is_empty() {
-        (
-            if ["attention", "active"].contains(&tile.scope.as_str())
-                && list(source, "warnings").is_empty()
-            {
-                "No attention items in available readings."
-            } else {
-                "No resources match this scope."
-            },
-            Some("configure"),
-        )
-    } else if string(source, "message").is_empty() {
-        ("No readings are available yet.", Some("manage"))
-    } else {
-        (string(source, "message"), Some("manage"))
-    };
+    let (empty, empty_action) = empty_state(tile, source, matching.is_empty());
     let footer = if grouped {
         let noun = if shown.len() == 1 { "group" } else { "groups" };
         format!(
@@ -1230,7 +1262,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     let full_note = scope_note(tile, string(source, "title"), &scope_label);
     json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
-        "views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
+        "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
         "sortColumns":if tile.source == "ghWorkflows" { json!([
             {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
         ]) } else {json!([])}})
@@ -2828,6 +2860,36 @@ mod tile_scope_ids_tests {
             tile_view(&t, &src)["fullNote"],
             "Scope: 1 selected repo. Totals still cover all of GitHub Repos."
         );
+    }
+
+    /// A scope that keeps nothing says why in the tile's own words, the ones its
+    /// overview tile shows, and a scope that keeps a row says nothing (#640).
+    #[test]
+    fn a_scope_that_keeps_nothing_has_the_tiles_own_sentence() {
+        let payload = repos_payload();
+        let src = source_view("ghWorkflows", "GitHub Repos", &payload);
+        let gone = tile("ghWorkflows", "item:o/gone");
+        assert_eq!(
+            scoped_empty(&gone, &payload).as_deref(),
+            tile_view(&gone, &src)["empty"].as_str()
+        );
+        assert_eq!(
+            scoped_empty(&gone, &payload).as_deref(),
+            Some("This resource has no current reading. Review its connection or choose another scope.")
+        );
+        // Everything healthy: `attention` keeps nothing.
+        let healthy = json!({"columns":[],"rows":[
+            {"repo":"o/a","name":"a","status":"healthy","statusLabel":"healthy","attention":false,"cells":[]}]});
+        assert_eq!(
+            scoped_empty(&tile("ghWorkflows", "attention"), &healthy).as_deref(),
+            Some("No attention items in available readings.")
+        );
+        // Kept rows, or no filter at all: no sentence.
+        assert_eq!(
+            scoped_empty(&tile("ghWorkflows", "attention"), &payload),
+            None
+        );
+        assert_eq!(scoped_empty(&tile("ghWorkflows", "all"), &payload), None);
     }
 
     /// Machines has no totals to cover, so its note is the scope alone.
