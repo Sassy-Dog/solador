@@ -1041,7 +1041,8 @@ the bundle's floor.
   `usage_loop`'s outer sleep. Each defaults to that interval's 60s with a 30s
   floor, so an unconfigured store polls as it did. A store that had chosen 30s
   or 5m is carried over once: on load, `Settings::seed_cadences_from_legacy_refresh_interval`
-  copies a non-default `refresh_interval_secs` into all three keys (a stored 60
+  copies a non-default `refresh_interval_secs` into each of the three keys not
+  already set (a stored 60
   is "never chosen" and seeds nothing), then empties the field, which is never
   serialised — so the first save drops the key and a cadence cleared afterwards
   is not seeded again. A footer's staleness window follows its cadence
