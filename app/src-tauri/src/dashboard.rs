@@ -1080,10 +1080,6 @@ fn filters_rows(tile: &DashboardTile) -> bool {
 /// The ids of the rows a tile keeps, or `None` when it keeps every row (so its
 /// source payload is used unchanged). An empty set means a filter that matches
 /// nothing, which is not the same as no filter.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first caller is the scoped Full view command")
-)]
 pub(crate) fn scoped_row_ids(tile: &DashboardTile, payload: &Value) -> Option<BTreeSet<String>> {
     if !filters_rows(tile) {
         return None;

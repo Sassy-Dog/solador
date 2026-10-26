@@ -34,6 +34,7 @@ mod resume;
 mod runner_groups;
 mod services;
 mod settings;
+mod tile_scope;
 mod update;
 mod usage;
 mod volumes;
