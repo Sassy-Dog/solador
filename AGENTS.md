@@ -191,7 +191,9 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
   `Applications` symlink must be present and point at `/Applications`; and,
-  #586, only `hdiutil attach`'s transient EAGAIN is retried), the
+  #586, only `hdiutil attach`'s transient EAGAIN is retried; #629, a failed
+  attempt's device is swept, unless it appears more than 2 s after the last
+  failure), the
   notarization outcome test (`scripts/notarize-outcome-test.sh`, #551 — a stub
   `xcrun`: a timed-out wait is "still in progress", never "rejected"), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
@@ -1302,7 +1304,43 @@ exactly those two; the test builds real images from a dummy bundle and proves
 the assertion refuses a missing or mis-targeted link. The mount retries only
 `hdiutil attach`'s "Resource temporarily unavailable", 5 tries with a 2-8s
 backoff, because that transient error ejected a merge-queue group (#586); any
-other failure is final at once, and a stub `hdiutil` proves both. macOS only,
+other failure is final at once, and a stub `hdiutil` proves both. **A failed
+attempt's device is detached, not left behind (#629):** `hdiutil attach` can report failure after it
+attached, and leaked devices were present both times the suite failed with
+EAGAIN locally. Leaks are one observed correlate, not established as the
+cause: the same EAGAIN was also seen with no fixture device attached, most
+plausibly from concurrent `hdiutil attach` activity, so the retry stays. Every
+failed attempt detaches whatever now stands on that image path before the next
+one (never a device that stood there before the attach: the release image's
+path repeats across builds and an earlier one may still be mounted), which is
+what makes retrying safe. The last failure waits 2 s and sweeps once more; a
+device that appears later than that is not covered. A re-run of the SAME
+version names it (it is kept, never detached) on its next attach, successful or
+not; once the CalVer moves the image path (`<product>-<version>.dmg`) changes
+and nothing revisits the old one, so `hdiutil info` is how to see it. Detach is by the whole-disk device node
+(`attach_dmg_readonly` leaves it in `ATTACHED_DEV`; a mount point names nothing
+once the unmount succeeds and the eject does not), retried with a backoff,
+`-force` only on the last try, then checked against `hdiutil info -plist` (read
+with `plutil`). A device is the pair (device, image path), never its number:
+macOS hands a freed `/dev/diskN` to the next image at once, so the pair is
+re-checked before every detach and none is sent, `-force` included, once it
+no longer matches. A listing with no images (a CI runner's usual) is empty; one
+that cannot be read is a failure, never "nothing attached". A device that will
+not go fails `assert_dmg_layout`, naming it and `hdiutil detach -force <dev>`:
+the check runs before signing, so a re-run is cheap, and a release machine that
+shrugged would accumulate devices. That holds for a detach that fails after a
+successful attach and a passing layout check: on GitHub Actions that case only
+warns (the runner is thrown away, and failing would cost a `prd` approval and a
+rebuild for a correct artifact). A device that cannot be detached during a
+failed attempt fails the build everywhere. The
+suite's EXIT trap detaches everything under its temp dir before deleting it,
+ends by asserting nothing is left, and at start reaps earlier runs' leaks by
+one rule (`dmg_is_leaked_fixture`: `$TMPDIR/tmp.*/<fixture>.dmg` with the
+backing file gone — a live run's images, `~/Downloads` installers and the
+simulator runtime images never match). `diskutil image attach`, the
+replacement macOS 27 names, is deliberately not used: it works there but
+returns bare `diskN` entries, has no `-noverify` and is unmeasured on the 14.0 floor and the runner,
+so one `hdiutil` path serves the runner and the 14.0 floor. macOS only,
 skips itself elsewhere), `scripts/notarize-outcome-test.sh` (#551: `notarize_and_staple`
 classifies a failed `notarytool submit --wait` by Apple's submission status
 from `notarytool info`, never by the exit code — the wait is 60 minutes, and
