@@ -930,12 +930,24 @@ test("label edits keep the Configure draft and refresh the preview", async ({ pa
   expect((await previews()).at(-1)).toMatchObject({ title: "Build fleet", width: "wide" });
 });
 
-test("a failed label save says so beside the section", async ({ page, baseURL }) => {
+// A shared section's failure notice is the section's own (#623): a direct child
+// of it, visible, and never inside the control that was clicked or edited.
+async function expectNoticeBesideSection(section, message) {
+  const notice = section.locator(":scope > .db-action-error");
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveText(message);
+  await expect(section.locator("button .db-action-error, input .db-action-error, select .db-action-error")).toHaveCount(0);
+}
+
+test("a failed label save says so beside the section, for remove and add (#623)", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await page.evaluate(() => { window.__FAIL_GROUP_LABEL__ = true; });
   const section = await configureRunners(page);
   await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
-  await expect(section.locator(".db-action-error")).toHaveText("Could not save the group labels.");
+  await expectNoticeBesideSection(section, "Could not save the group labels.");
+  await section.locator("#dashboard-group-label").fill("another");
+  await section.locator('[data-action="group-label-add"]').click();
+  await expectNoticeBesideSection(section, "Could not save the group labels.");
   await expect(section.locator("[data-group-label]")).toHaveCount(1);
   await page.evaluate(() => { window.__FAIL_GROUP_LABEL__ = false; });
   await section.locator('[data-group-label="runner-large"] [data-action="group-label-remove"]').click();
@@ -1021,8 +1033,17 @@ test("a failed container rule save says so beside the section (#613)", async ({ 
   await page.evaluate(() => { window.__FAIL_CONTAINER_RULE__ = true; });
   const section = await configureContainers(page);
   await section.locator('[data-container-rule="0"] [data-action="container-rule-remove"]').click();
-  await expect(section.locator(".db-action-error")).toHaveText("Could not save the container rules.");
+  await expectNoticeBesideSection(section, "Could not save the container rules.");
   await expect(section.locator("[data-container-rule]")).toHaveCount(t.rows.length);
+  // An add anchors on the Add rule button: its label must stay its label.
+  await section.locator('[data-action="container-rule-add"]').click();
+  await expectNoticeBesideSection(section, "Could not save the container rules.");
+  await expect(section.locator('[data-action="container-rule-add"]')).toHaveAccessibleName(model.sources.find(x => x.id === "containers").ruleEditor.addLabel);
+  // A field edit anchors on the edited input, where a <p> is never rendered.
+  const pattern = section.locator('[data-container-rule="0"] [data-field="pattern"]');
+  await pattern.fill("edited-*");
+  await pattern.blur();
+  await expectNoticeBesideSection(section, "Could not save the container rules.");
 });
 
 async function configureMachines(page) {
@@ -1243,11 +1264,42 @@ test("after a shared save, unticking Use shared defaults prefills the new defaul
 });
 
 // Several 1s polls: every render calls refreshDefaults on a kept block.
+// Counts dashboard_view only: the 1s cockpit poll and OpenClaw's 2s poll go
+// through the same stub and would satisfy a count of every call without a
+// dashboard render (#623).
 const afterRepaints = async (page) => {
-  const count = () => page.evaluate(() => window.__CALLS__.length);
+  const count = () => page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_view").length);
   const start = await count();
-  await expect.poll(count, { timeout: 8000 }).toBeGreaterThan(start + 2);
+  await expect.poll(count, { timeout: 8000 }).toBeGreaterThanOrEqual(start + 2);
 };
+
+test("a saved override equal to a default keeps its stored value when the defaults move under an unsaved tick (#623)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const [first] = model.sources.find(s => s.id === "hosts").rows;
+  const section = await configureMachines(page);
+  const block = machine(section, first.id);
+  const toggle = block.getByLabel("Use shared defaults", { exact: true });
+  const shared = machine(section, "defaults");
+  const cpuDefault = await limit(shared, "CPU warning (%)").inputValue();
+  // B saves an override whose CPU warning equals the shared default.
+  await toggle.uncheck();
+  await limit(block, "RAM warning (%)").fill("50");
+  await limit(block, "RAM critical (%)").fill("60");
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("50");
+  // Tick, unsaved; then the shared CPU warning moves.
+  await toggle.check();
+  const moved = String(Number(cpuDefault) + 10);
+  await limit(shared, "CPU warning (%)").fill(moved);
+  await shared.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(2);
+  await expect(limit(block, "CPU warning (%)")).toHaveValue(moved);
+  await afterRepaints(page);
+  await toggle.uncheck();
+  await expect(limit(block, "CPU warning (%)")).toHaveValue(cpuDefault);
+  await expect(limit(block, "RAM warning (%)")).toHaveValue("50");
+});
 
 test("a typed limit survives tick, a repaint and untick (#620)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
@@ -2663,13 +2715,42 @@ test("a typed cadence survives the dashboard's repaint (#614)", async ({ page, b
   await expect(section.locator("input")).toHaveValue("77");
 });
 
-test("a negative cadence is sent as 0 so Rust refuses it in the floor's words (#614)", async ({ page, baseURL }) => {
+test("negative or empty input is sent as 0 (#614)", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const section = await configureCadence(page, "containers");
+  const zero = { panel: "containers", secs: 0, width: expect.any(Number) };
   await section.locator("input").fill("-5");
   await section.locator('[data-action="cadence-apply"]').click();
+  await expect.poll(() => commandArgs(page, "panel_interval_save")).toEqual([zero]);
+  await section.locator("input").fill("");
+  await section.locator('[data-action="cadence-apply"]').click();
+  await expect.poll(() => commandArgs(page, "panel_interval_save")).toEqual([zero, zero]);
+});
+
+test("a cadence typed in exponent form is read as the number it is, and a fraction is refused, not cut (#623)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureCadence(page, "containers");
+  await section.locator("input").fill("1e3");
+  await section.locator('[data-action="cadence-apply"]').click();
   await expect.poll(() => commandArgs(page, "panel_interval_save"))
-    .toEqual([{ panel: "containers", secs: 0, width: expect.any(Number) }]);
+    .toEqual([{ panel: "containers", secs: 1000, width: expect.any(Number) }]);
+  await section.locator("input").fill("12.7");
+  await section.locator('[data-action="cadence-apply"]').click();
+  // 12.7 is never saved as 12: Rust is sent 0 and refuses it in the floor's words.
+  await expect.poll(async () => (await commandArgs(page, "panel_interval_save")).at(-1).secs).toBe(0);
+  await expect(page.locator("[data-cadence] > .db-action-error")).toBeVisible();
+});
+
+test("a draft is replaced by the saved value when the saved cadence changes under it (#623)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureCadence(page, "containers");
+  await section.locator("input").fill("45");
+  await section.locator('[data-action="cadence-apply"]').click();
+  await expect(section.locator(".db-cadence-status")).toHaveText("Set to 45s.");
+  await section.locator("input").fill("77");
+  await section.locator('[data-action="cadence-reset"]').click();
+  await expect(section.locator(".db-cadence-status")).toHaveText("Using the default.");
+  await expect(section.locator("input")).not.toHaveValue("77");
 });
 
 test("a failed cadence save says so beside the section, keeps the typed value and the status (#614)", async ({ page, baseURL }) => {
@@ -2679,8 +2760,7 @@ test("a failed cadence save says so beside the section, keeps the typed value an
   const section = await configureCadence(page, "containers");
   await section.locator("input").fill("45");
   await section.locator('[data-action="cadence-apply"]').click();
-  await expect(page.locator("[data-cadence] > .db-action-error")).toHaveText("Could not save the poll cadence.");
-  await expect(page.locator("[data-cadence] button .db-action-error")).toHaveCount(0);
+  await expectNoticeBesideSection(section, "Could not save the poll cadence.");
   await expect(section.locator("input")).toHaveValue("45");
   await expect(section.locator(".db-cadence-status")).toHaveText(c.status);
 });

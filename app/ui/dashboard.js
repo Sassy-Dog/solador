@@ -93,7 +93,8 @@
     // share; every other failure belongs to the overview.
     const inChrome = anchor && appChrome?.contains(anchor);
     const target = feedback && (inChrome ? appChrome : mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-group-labels, .db-machine-block, .db-cadence") || anchor
+      ? (feedback.scope && (anchor?.closest(feedback.scope) || q(feedback.scope)))
+        || anchor?.closest(".db-warning-control, .db-volumes, .db-metric, .db-machine-block") || anchor
       : active ? q(".db-inspector") : q(".db-attention")));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -104,11 +105,13 @@
       if (target.nextElementSibling !== feedbackNotice) target.after(feedbackNotice);
     } else if (feedbackNotice.parentElement !== target) target.append(feedbackNotice);
   }
-  function status(message, error = false, anchor = null) {
+  // `scope` names a shared section whose notice belongs to the section itself,
+  // whichever control inside it failed (never inside a button, input or select).
+  function status(message, error = false, anchor = null, scope = null) {
     const el = q(".db-live-note");
     if (!el) return;
     if (el.textContent !== message) text(el, message);
-    feedback = error && message ? {message, anchor} : null;
+    feedback = error && message ? {message, anchor, scope} : null;
     paintFeedback();
   }
   function source(id) {
@@ -1046,9 +1049,12 @@
       block.alertDefaults = next.defaults;
       if (inherit && !inherit.checked) return;
       // Only a draft entry still equal to the old defaults follows them; one
-      // the operator typed (or a saved override) is theirs and survives.
-      for (const k of Object.keys(next.defaults))
-        if (draft[k] === String(before[k])) draft[k] = String(next.defaults[k]);
+      // the operator typed is theirs and survives. A block built from a saved
+      // override has no prefilled entries: an override that happens to equal a
+      // default is still the override, so its draft is left alone.
+      if (g.inherited)
+        for (const k of Object.keys(next.defaults))
+          if (draft[k] === String(before[k])) draft[k] = String(next.defaults[k]);
       if (inherit) for (const [k, input] of inputs) input.value = String(next.defaults[k]);
     };
     inherit?.addEventListener("input", () => {
@@ -1871,7 +1877,7 @@
       saved = true;
     } catch (error) {
       if (active === inspector && mode === "overview")
-        status((typeof error === "string" ? error : error?.message) || L(failed), true, selector);
+        status((typeof error === "string" ? error : error?.message) || L(failed), true, selector, scope);
     } finally {
       busy = false;
       render(true);
@@ -2117,8 +2123,9 @@
         // Rust decides whether the number is legal and says why not; an empty
         // or negative entry is sent as 0 (a u32 cannot carry it), which every
         // floor refuses in its own words.
-        const secs = Number.parseInt(box.querySelector("input").value, 10);
-        await cadenceChange("panel_interval_save", { panel, secs: Number.isFinite(secs) ? Math.max(0, secs) : 0 }, selector);
+        // Number() keeps `1e3` as 1000; a fraction is sent as 0, not cut.
+        const secs = Number(box.querySelector("input").value);
+        await cadenceChange("panel_interval_save", { panel, secs: Number.isInteger(secs) ? Math.max(0, secs) : 0 }, selector);
       }
       return;
     }
