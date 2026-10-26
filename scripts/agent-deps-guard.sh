@@ -62,7 +62,7 @@ fi
 # the ONLY crate carrying the Sentry SDK, and only app/src-tauri may
 # depend on it. A daemon on strangers' hosts phones nowhere.
 if grep -qE '^(solador-crashreport|sentry|sentry-[a-z]+) ' <<< "$agent_tree"; then
-    echo "::error::agent/ resolves crates/crashreport or the Sentry SDK — the agent must never carry crash reporting (AGENTS.md: only app/src-tauri depends on crashreport)"
+    echo "::error::agent/ resolves crates/crashreport or the Sentry SDK — the agent must never carry crash reporting (docs/PROJECT-STRUCTURE.md: only app/src-tauri depends on crashreport)"
     exit 1
 fi
 # A third absence, since #447: agent/Cargo.toml deliberately pins `rcgen`,

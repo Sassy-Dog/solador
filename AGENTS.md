@@ -80,8 +80,8 @@ would resolve `app/src-tauri` and need webkit2gtk.
 Two release trains, neither triggers the other: a `v*` tag runs `release.yml`
 (signed, notarized, universal macOS bundle plus a signed NSIS Windows
 installer, attached to a **draft**; publishing runs `publish-feed.yml`), and an
-`agent-v*` tag runs `release-agent.yml` (four static agent binaries with
-minisign signatures; publishing runs `publish-agent-feed.yml`). Every job that
+`agent-v*` tag runs `release-agent.yml` (four agent binaries, the Linux musl
+ones static, with minisign signatures; publishing runs `publish-agent-feed.yml`). Every job that
 holds a credential declares `environment: prd`; `ci.yml` references zero
 secrets and `scripts/secrets-guard.sh` asserts it. Neither train can be
 exercised by a PR. Signing runs last, after the version stamp; the build
@@ -109,7 +109,11 @@ bundler; credentials in the OS credential store (macOS Keychain, Windows
 Credential Manager). **Transport rule:** a *paired* host is dialled over HTTPS
 pinned to its agent's certificate; an *unpaired* host over plain HTTP, and only
 on loopback or Tailscale. **The cockpit never sends the bearer token over plain
-HTTP to any other address** (`crates/agentclient`'s `plain`, #449). Detail:
+HTTP to any other address** (`crates/agentclient`'s `plain`, #449): Tailscale is
+IPv4 `100.64.0.0/10` and IPv6 `fd7a:115c:a1e0::/48` minus the 4via6 prefix
+`fd7a:115c:a1e0:b1a::/64`; a host name counts only if every address it resolves
+to does, the connection goes to those vetted addresses, and there are no
+redirects and no proxy. Detail:
 `docs/APP-INTERNALS.md`.
 
 ## Key Implementation Notes (rules that apply everywhere)
@@ -134,7 +138,8 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   → Claude rollups have **no account** and a subscription is not an account.
 - **Eight panel cadences are the operator's**, edited in the owning tile's
   Configure and read after every pass; a below-floor value is refused with its
-  reason, not clamped.
+  reason, not clamped (`set_panel_interval_secs` / `panel_interval_secs` still
+  clamp, because a hand-edited `store.json` never reaches the refusal).
 - **Responsive layout is CSS `auto-fit` math in `crates/viewmodel/src/cockpit.rs`**:
   per-panel `min_width`, spans on one fixed four-quarter grid, every row sums to
   four quarters.
@@ -154,7 +159,7 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
 e2e server bind, the multi-frame cockpit stub and the `dmg` / notarization
 suites in `docs/TESTING.md`). Agent tests run via `cargo test` in `agent/`;
 `agent/deploy/lib_test.sh` gates the deploy scripts. Do not weaken or
-reorder a guard without reading its test: every guard here ships a negative
+reorder a guard without reading its test: every guard here except `scripts/agent-deps-guard.sh` ships a negative
 control proving it fails when it should.
 
 ## Versioning (`docs/VERSIONING.md`)
@@ -192,8 +197,7 @@ Deploy, CSP and screenshot detail: `docs/WEBSITE.md`.
 Source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`); deploy via
 `agent/deploy`. **Read `docs/AGENT-DEPLOYMENT.md` before changing install,
 update, rollback, TLS, bind or timer behaviour** — its order of operations is
-the security design. Never install or deploy the agent onto a host the task did
-not name, and never run `sudo` from a script or test.
+the security design.
 
 ## Debugging
 

@@ -360,7 +360,7 @@
   is not seeded again. The GitHub, Services and Claude-rollup footers' staleness windows follow
   their cadence (`panel::stale_after_for_cadence`, 2.5 cycles, never under 150s)
   rather than a flat 150s; Containers, Azure Cost and the plan limits have their
-  own rules (see the footer list under Services).
+  own rules (see the footer list under Services in `docs/PANELS.md`).
 - Sentry cron monitors: `crates/usage/src/sentry.rs`'s `cron_monitors()` /
   `summarize_monitors()` plus `app/src-tauri/src/crons.rs`. Three wire traps are
   documented there and each has a test: there is **no** flat `projectSlug` (it is

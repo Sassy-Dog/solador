@@ -46,8 +46,10 @@
   text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh`, and
   `scripts/claude-dir-guard.sh` (nothing named `.claude` is tracked except
   `.claude/sassy-dog/<name>.md`) with its negative control
-  `scripts/claude-dir-guard-test.sh` — the scripts CI's `secrets-guard` job
-  runs; mirrors CI
+  `scripts/claude-dir-guard-test.sh`, and `scripts/agent-guide-size-guard.sh`
+  (#638: every chain of tracked `AGENTS.md`/`CLAUDE.md` files is at most
+  32,768 bytes) with its negative control `scripts/agent-guide-size-guard-test.sh`
+  — the scripts CI's `secrets-guard` job runs; mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — `cargo clean` (all of `target/`) plus the pre-Tauri `build/`
   and Playwright's `test-results/`. Cargo never prunes superseded dependency

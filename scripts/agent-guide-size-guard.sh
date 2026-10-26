@@ -20,8 +20,9 @@ set -euo pipefail
 # `./dev lint`.
 #
 # Not measured: an AGENTS.override.md (Codex reads it in place of AGENTS.md) and
-# untracked files. CLAUDE.md holds only the `@AGENTS.md` import here, so it adds
-# nothing to a chain. Depth belongs in docs/*.md, named from AGENTS.md by a
+# untracked files. A tracked CLAUDE.md is counted in its directory's chain beside
+# AGENTS.md (it should hold only the `@AGENTS.md` import, a few bytes), so it
+# cannot become a back door around the budget. Depth belongs in docs/*.md, named from AGENTS.md by a
 # "read before changing X" pointer, never behind an `@path` import.
 
 BUDGET=32768
@@ -38,7 +39,7 @@ fail() {
 listing="$(mktemp)"
 trap 'rm -f "$listing"' EXIT
 
-if ! git -C "$REPO_DIR" ls-files -z -- 'AGENTS.md' ':(glob)**/AGENTS.md' >"$listing" 2>&1; then
+if ! git -C "$REPO_DIR" ls-files -z -- 'AGENTS.md' ':(glob)**/AGENTS.md' 'CLAUDE.md' ':(glob)**/CLAUDE.md' >"$listing" 2>&1; then
     fail "git ls-files failed in $REPO_DIR, so the tracked AGENTS.md files could not be listed: $(tr '\0' ' ' <"$listing")"
 fi
 
@@ -73,16 +74,16 @@ size_of() {
     SIZE="$n"
 }
 
-# One chain per tracked AGENTS.md: its own directory and every ancestor.
+# One chain per tracked guide file: its own directory and every ancestor.
 worst=0
 for leaf in "${files[@]}"; do
     dir="$(dirname "$leaf")"
     total=0
     names=()
     while :; do
-        if [[ "$dir" == . ]]; then cand="AGENTS.md"; else cand="$dir/AGENTS.md"; fi
+        if [[ "$dir" == . ]]; then pre=""; else pre="$dir/"; fi
         for path in "${files[@]}"; do
-            if [[ "$path" == "$cand" ]]; then
+            if [[ "$path" == "${pre}AGENTS.md" || "$path" == "${pre}CLAUDE.md" ]]; then
                 size_of "$path"
                 total=$((total + SIZE))
                 names+=("$path")
@@ -93,7 +94,7 @@ for leaf in "${files[@]}"; do
     done
     if [[ $total -gt $worst ]]; then worst=$total; fi
     if [[ $total -gt $BUDGET ]]; then
-        fail "the AGENTS.md chain ending at $leaf is $total bytes (${names[*]}), over the $BUDGET-byte budget; Codex cuts the file that crosses it and drops every deeper one. Move depth into docs/*.md and name it from AGENTS.md."
+        fail "the guide chain ending at $leaf is $total bytes (${names[*]}), over the $BUDGET-byte budget; Codex cuts the file that crosses it and drops every deeper one. Move depth into docs/*.md and name it from AGENTS.md."
     fi
 done
 echo "Every AGENTS.md chain is within $BUDGET bytes (largest: $worst)."

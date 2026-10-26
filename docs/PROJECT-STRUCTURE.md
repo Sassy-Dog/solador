@@ -7,7 +7,7 @@
 ├── .claude/sassy-dog/      # config the OPTIONAL sassy-dog Claude Code plugin
 │                           #   reads, one .md per skill. The only tracked path
 │                           #   under .claude/ (see .gitignore and Security
-│                           #   Considerations below)
+│                           #   Considerations in `AGENTS.md`)
 ├── dev                     # Development entry point
 ├── prd                     # ./dev build --release
 ├── scripts/                # Build and development scripts
@@ -118,7 +118,7 @@
 ├── brand/                  # Brand assets
 ├── site/                   # solador.app: plain HTML/CSS + two small JS modules,
 │                           #   no build step; deployed by .github/workflows/pages.yml
-│                           #   (see **Website** below). assets/screenshots/ is
+│                           #   (see `docs/WEBSITE.md`). assets/screenshots/ is
 │                           #   generated (`npm run screenshots`), never authored
 └── docs/                   # Versioning, secrets, PRD
 ```

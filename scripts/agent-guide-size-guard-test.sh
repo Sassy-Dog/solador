@@ -71,7 +71,7 @@ expect "a root of exactly 32768 bytes passes (the boundary)" pass "within 32768"
 
 fresh_repo
 put AGENTS.md 32769
-expect "a root of 32769 bytes fails" fail "AGENTS.md chain" "32769 bytes"
+expect "a root of 32769 bytes fails" fail "guide chain" "32769 bytes"
 
 fresh_repo
 put AGENTS.md 20000
@@ -88,6 +88,16 @@ put AGENTS.md 20000
 put a/AGENTS.md 12000
 put b/AGENTS.md 12000
 expect "sibling subtrees are separate chains and both pass" pass "within 32768"
+
+fresh_repo
+put AGENTS.md 32700
+put CLAUDE.md 100
+expect "a CLAUDE.md that takes the chain over the budget fails" fail "AGENTS.md CLAUDE.md" "32800 bytes"
+
+fresh_repo
+put AGENTS.md 1000
+put CLAUDE.md 112
+expect "a small CLAUDE.md beside AGENTS.md passes" pass "within 32768"
 
 fresh_repo
 put README.md 10

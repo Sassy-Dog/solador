@@ -599,7 +599,7 @@ jobs:
     #
     # The agent-guide size pair (#638) fails when any chain of tracked AGENTS.md
     # files exceeds 32,768 bytes, Codex's default `project_doc_max_bytes`; it
-    # reads only the index too. A docs-only PR is exactly where the guide grows,
+    # lists tracked paths from the index and measures them on disk. A docs-only PR is exactly where the guide grows,
     # and this job always runs.
     runs-on: ubuntu-latest
     steps:
