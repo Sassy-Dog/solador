@@ -863,6 +863,11 @@ attach_dmg_readonly() {
     done
     rm -f "$errfile"
     printf '%s\n' "$err" >&2
+    # A device can finish attaching after hdiutil reported the last failure
+    # (seen: a failed attach, nothing listed, the device present seconds later).
+    # Look once more, after a pause, before giving up on this image.
+    sleep 2
+    release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
     return 1
 }
 

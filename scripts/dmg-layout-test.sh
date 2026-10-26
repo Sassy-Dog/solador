@@ -362,12 +362,27 @@ cat > "$work/fake-hdiutil.sh" <<'EOF'
 fake_plist() {
     printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>images</key><array><dict><key>image-path</key><string>%s</string><key>system-entities</key><array><dict><key>dev-entry</key><string>%s</string></dict></array></dict></array></dict></plist>\n' "$1" "$2"
 }
+fake_plist2() {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>images</key><array>'
+    for d in "$2" "$3"; do
+        printf '<dict><key>image-path</key><string>%s</string><key>system-entities</key><array><dict><key>dev-entry</key><string>%s</string></dict></array></dict>' "$1" "$d"
+    done
+    printf '</array></dict></plist>\n'
+}
 hdiutil() {
     case "$1" in
+        attach)
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk77s1</string></dict></array></dict></plist>\n'
+            ;;
         info)
             case "$FAKE_LISTING" in
                 reuse)
                     if [[ -s "$FAKE_DETACHES" ]]; then fake_plist /elsewhere/other.dmg /dev/disk77; else fake_plist /elsewhere/mine.dmg /dev/disk77; fi ;;
+                reuse-from-start) fake_plist /elsewhere/other.dmg /dev/disk77 ;;
+                adopt) fake_plist /elsewhere/mine.dmg /dev/disk77 ;;
+                two)
+                    # disk77 stays; disk78 goes once a detach names it.
+                    if grep -q disk78 "$FAKE_DETACHES"; then fake_plist /elsewhere/mine.dmg /dev/disk77; else fake_plist2 /elsewhere/mine.dmg /dev/disk77 /dev/disk78; fi ;;
                 empty-array) printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array/></dict></plist>\n' ;;
                 no-key) printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>framework</key><string>704</string></dict></plist>\n' ;;
                 junk) echo "not a plist" ;;
@@ -408,6 +423,47 @@ unreadable_bad=""
 [[ "$(fake_run junk release_dmg_image /elsewhere/mine.dmg)" == "1 0" ]] || unreadable_bad="$unreadable_bad release"
 if [[ "$(fake_run junk detach_dmg_device /dev/disk77 /elsewhere/mine.dmg)" != "1 0" ]] || ! grep -q "could not read 'hdiutil info'" "$work/err"; then unreadable_bad="$unreadable_bad detach"; fi
 if [[ -z "$unreadable_bad" ]]; then pass "an unreadable listing fails, and no detach is sent on it"; else fail "an unreadable listing fails, and no detach is sent on it:$unreadable_bad"; fi
+
+# The number is under another image from the very first read: nothing is sent,
+# so a pair check skipped on the first attempt cannot hide behind the later ones.
+reuse_bad=""
+[[ "$(fake_run reuse-from-start detach_dmg_device /dev/disk77 /elsewhere/mine.dmg)" == "0 0" ]] || reuse_bad="$reuse_bad detach"
+[[ "$(fake_run reuse-from-start release_dmg_image /elsewhere/mine.dmg)" == "0 0" ]] || reuse_bad="$reuse_bad release"
+if [[ -z "$reuse_bad" ]]; then pass "a device number that already belongs to another image gets no detach at all"; else fail "a device number that already belongs to another image gets no detach at all:$reuse_bad"; fi
+
+# The keep-list: devices that stood on the image before this run attached it
+# (an earlier build still mounted at the same path) are never detached. Fake
+# listing: two devices on one image, one kept; only the other may be named.
+result="$(fake_run two release_dmg_image /elsewhere/mine.dmg /dev/disk77)"
+if [[ "$result" == "0 1" ]] && grep -q '^detach /dev/disk78$' "$work/fake-detaches" && ! grep -q disk77 "$work/fake-detaches"; then
+    pass "release_dmg_image leaves the kept devices alone and detaches only the others"
+else
+    fail "release_dmg_image leaves the kept devices alone (status, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"))"
+fi
+# And an attach that lands on a device that was already there is not ours to
+# detach: the layout is bad (nothing mounted), but no detach may be sent.
+result="$(fake_run adopt assert_dmg_layout /elsewhere/mine.dmg Solador.app)"
+if [[ "$result" == "1 0" ]]; then
+    pass "an attach that lands on a pre-existing device does not detach it"
+else
+    fail "an attach that lands on a pre-existing device does not detach it (status, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"); $(cat "$work/err"))"
+fi
+
+# make_dmg's shape, on real devices: the image is attached, then replaced at the
+# same path (rm -f, then create -ov), then checked. The earlier device keeps its
+# image path and must survive the check's sweeps.
+keep_mnt="$(mktemp -d "$work/mnt.XXXXXX")"
+attach_dmg_readonly "$keep_mnt" "$work/good.dmg"; keep_dev="$ATTACHED_DEV"
+rm -f "$work/good.dmg"
+make_image good "$good"
+keep_rc=0; assert_dmg_layout "$work/good.dmg" Solador.app 2>"$work/err" || keep_rc=$?
+keep_st=0; dmg_device_state "$keep_dev" "$work/good.dmg" || keep_st=$?
+if [[ "$keep_rc" == 0 && "$keep_st" == 0 ]]; then
+    pass "a same-path image still mounted from before is not swept by the layout check"
+else
+    fail "a same-path image still mounted from before is not swept by the layout check (status $keep_rc; earlier device $keep_dev state $keep_st; $(cat "$work/err"))"
+fi
+detach_dmg_device "$keep_dev" "$work/good.dmg" || fail "could not detach the earlier device $keep_dev"
 
 # The EXIT trap: a child that dies mid-suite with an image attached.
 probe_status=0
