@@ -4192,9 +4192,9 @@ fn claude_presence_wakes_services(was_present: bool, is_present: bool) -> bool {
 ///
 /// Every other cadence-following footer reads its cadence at render time and
 /// needs no sync: Containers (`containers_view_in`, #633), Azure Cost and the
-/// plan limits. Sentry Crons (`crons`) and the metered Usage providers (`usage`)
-/// read it at render time too, but only for their `freshness` age line; their
-/// warning window is a fixed 90 minutes.
+/// plan limits (twice the cadence). Sentry Crons (`crons`) and the metered Usage
+/// providers (`usage`) read it at render time for `freshness` only; their
+/// warning window is still a fixed 90 minutes, a known gap tracked in #635.
 ///
 /// The loops call it at the top of each pass, and `panel_interval_save` /
 /// `_clear` call it before they re-render, so a shortened cadence does not
@@ -7435,20 +7435,61 @@ mod tests {
     /// itself (#633): dropping its `wake_panel` or aiming it elsewhere fails here.
     #[test]
     fn a_cadence_clear_wakes_only_its_own_loop() {
-        for (panel, expected) in [
-            ("github", WakeTarget::GitHub),
-            ("claude_rollups", WakeTarget::Usage),
-            ("azure_cost", WakeTarget::Azure),
-            ("containers", WakeTarget::Containers),
-            ("services", WakeTarget::Services),
+        // Every row saves a value that is NOT the panel's default, so the clear
+        // really changes the effective cadence (Azure's default is 14_400).
+        for (panel, kind, secs, expected) in [
+            ("github", PanelInterval::GitHub, 14_400, WakeTarget::GitHub),
+            (
+                "claude_rollups",
+                PanelInterval::ClaudeRollups,
+                14_400,
+                WakeTarget::Usage,
+            ),
+            (
+                "usage_providers",
+                PanelInterval::UsageProviders,
+                7_200,
+                WakeTarget::Usage,
+            ),
+            (
+                "azure_cost",
+                PanelInterval::AzureCost,
+                21_600,
+                WakeTarget::Azure,
+            ),
+            (
+                "containers",
+                PanelInterval::Containers,
+                14_400,
+                WakeTarget::Containers,
+            ),
+            (
+                "services",
+                PanelInterval::Services,
+                14_400,
+                WakeTarget::Services,
+            ),
+            ("crons", PanelInterval::Crons, 7_200, WakeTarget::Crons),
+            (
+                "plan_usage",
+                PanelInterval::PlanUsage,
+                1_800,
+                WakeTarget::PlanUsage,
+            ),
         ] {
             let (_dir, _rt, app) = test_app();
-            panel_interval_save_in(&app, panel, 14_400).unwrap();
+            panel_interval_save_in(&app, panel, secs).unwrap();
+            assert_eq!(panel_interval(&app.store, kind).as_secs(), u64::from(secs));
             // Drain the save's permit so only the clear can be what we see.
             for target in ALL_WAKE_TARGETS {
                 woken(wake_notify(&app, target));
             }
             panel_interval_clear_in(&app, panel).unwrap();
+            assert_ne!(
+                panel_interval(&app.store, kind).as_secs(),
+                u64::from(secs),
+                "clearing {panel} must change the effective cadence"
+            );
             for target in ALL_WAKE_TARGETS {
                 assert_eq!(
                     woken(wake_notify(&app, target)),

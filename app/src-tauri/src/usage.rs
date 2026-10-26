@@ -97,8 +97,10 @@ pub use usage::{summarize_logs, NeonClient, SentryClient, UsageSummary, VercelCl
 /// `UsageState::set_claude_cadence_secs`.
 pub const CLAUDE_STALE_AFTER_SECS: u64 = 150;
 
-/// Neon's and Sentry's `staleAfter: 90 * 60`. Both poll hourly, so the window
-/// has to sit above that cadence or every panel would be permanently stale.
+/// Neon's and Sentry's `staleAfter: 90 * 60`. The window sits above the
+/// *default* hourly cadence. It does not follow the operator's cadence (#301
+/// made it theirs), so a cadence over 90 minutes goes stale between healthy
+/// polls: a known gap, tracked in #635.
 pub const PROVIDER_STALE_AFTER_SECS: u64 = 90 * 60;
 
 /// How often the Neon and Sentry reads run — their own hourly cadence, not the
