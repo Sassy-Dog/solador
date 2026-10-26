@@ -142,3 +142,31 @@ test("a panel with rows paints no empty sentence", async ({ page, baseURL }) => 
   await expect(rows(page)).not.toHaveCount(0);
   await expect(page.locator("#servicesBody .svc-empty")).toHaveCount(0);
 });
+
+/**
+ * The staleness footer (#627) is Rust's line, painted in the header: amber with
+ * Rust's colour when the last successful pass is older than the cadence's
+ * window, absent on a fresh pass and before any pass.
+ */
+test("a stale last pass paints Rust's footer", async ({ page, baseURL }) => {
+  const stale = await gotoWithServices(page, baseURL, await fixture(baseURL, "sample-services-stale.json"));
+  expect(stale.footer, "the fixture must carry the footer").toBeTruthy();
+  const footer = page.locator("#servicesStale");
+  await expect(footer).toBeVisible();
+  await expect(footer).toHaveText(stale.footer.text);
+  await expect(footer).toHaveCSS("color", rgb(stale.footer.color));
+});
+
+test("a fresh pass paints no footer", async ({ page, baseURL }) => {
+  await gotoWithServices(page, baseURL);
+  await expect(rows(page)).not.toHaveCount(0);
+  await expect(page.locator("#servicesStale")).toBeHidden();
+});
+
+test("before any pass there is the loading line and no footer", async ({ page, baseURL }) => {
+  const base = await fixture(baseURL, "sample-services.json");
+  const loading = { ...base, rows: [], trailing: "", loading: true, footer: null, empty: { message: "reading status pages…" } };
+  await gotoWithServices(page, baseURL, loading);
+  await expect(page.locator("#servicesBody .svc-empty")).toHaveText("reading status pages…");
+  await expect(page.locator("#servicesStale")).toBeHidden();
+});

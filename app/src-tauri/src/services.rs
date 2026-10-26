@@ -529,7 +529,20 @@ pub struct ServiceStatuses {
     /// state is as much a fabrication as a defaulted number.
     vendors: Option<Vec<ActiveVendor>>,
     entries: BTreeMap<ServiceId, ServiceEntry>,
+    /// When the last **successful** pass finished, unix seconds. See
+    /// [`ServiceStatuses::pass_finished`] for what succeeded means. `None`
+    /// until one has, and the footer then says nothing rather than a made-up age.
+    last_success: Option<u64>,
+    /// Set when the last pass read nothing although it watched something; the
+    /// footer's error arm. Cleared by the next successful pass.
+    pass_error: Option<String>,
+    /// The Services cadence the staleness window follows. `None` until told:
+    /// the default's window.
+    cadence_secs: Option<u64>,
 }
+
+/// Shown beside `last ok …` when a pass watched vendors and every read failed.
+pub const PASS_FAILED_MESSAGE: &str = "couldn't read any status page";
 
 impl ServiceStatuses {
     #[must_use]
@@ -562,6 +575,40 @@ impl ServiceStatuses {
     #[must_use]
     pub fn watched(&self) -> Option<&[ActiveVendor]> {
         self.vendors.as_deref()
+    }
+
+    /// Records the Services cadence the staleness window follows. Told by the
+    /// loop at the top of each pass and again by `panel_interval_save` /
+    /// `_clear`, so a saved cadence moves the window before the next pass.
+    pub fn set_cadence_secs(&mut self, cadence_secs: u64) {
+        self.cadence_secs = Some(cadence_secs);
+    }
+
+    /// The staleness window of the cadence last told, or the default's.
+    #[must_use]
+    pub fn stale_after_secs(&self) -> u64 {
+        self.cadence_secs.map_or(
+            crate::panel::MIN_STALE_AFTER_SECS,
+            crate::panel::stale_after_for_cadence,
+        )
+    }
+
+    /// Closes a pass: `read` vendors answered, `failed` did not.
+    ///
+    /// **The rule for "a successful pass":** the loop ran to the end and either
+    /// had nothing to watch or read at least one vendor. This clock answers "is
+    /// the Services loop alive and reaching anyone", which is what a hung or
+    /// dead loop would stop doing; one vendor's page being down is already on
+    /// its own row (`readFailed`) and must not turn the whole panel amber. A
+    /// pass that watched vendors and read none is not a success: the clock
+    /// stays on the last success and the footer says why, with `last ok`.
+    pub fn pass_finished(&mut self, now: u64, read: usize, failed: usize) {
+        if failed > 0 && read == 0 {
+            self.pass_error = Some(PASS_FAILED_MESSAGE.to_owned());
+        } else {
+            self.last_success = Some(now);
+            self.pass_error = None;
+        }
     }
 
     pub fn succeeded(&mut self, service: ServiceId, status: ServiceStatus) {
@@ -654,6 +701,12 @@ pub const NOTHING_WATCHED_MESSAGE: &str =
 /// the panel claiming coverage it does not have.
 #[must_use]
 pub fn view(statuses: &ServiceStatuses) -> Value {
+    view_at(statuses, crate::panel::now_unix())
+}
+
+/// [`view`] against an explicit clock, for the footer's tests.
+#[must_use]
+pub fn view_at(statuses: &ServiceStatuses, now: u64) -> Value {
     let kind = PanelKind::Services;
     let watched = statuses.watched();
     let rows: Vec<Value> = watched
@@ -689,6 +742,14 @@ pub fn view(statuses: &ServiceStatuses) -> Value {
         // which stopped being the pre-first-pass rendering when the vendor list
         // became the operator's.
         "loading": watched.is_none(),
+        // The last successful pass against the Services cadence's window. Null
+        // before any pass (the loading line speaks then) and while healthy.
+        "footer": crate::panel::status_footer(
+            statuses.last_success,
+            statuses.pass_error.as_deref(),
+            now,
+            statuses.stale_after_secs(),
+        ),
     })
 }
 
@@ -1709,6 +1770,96 @@ mod tests {
         assert!(vm["empty"].is_null(), "{vm}");
         assert_eq!(vm["loading"], false);
         assert_eq!(vm["trailing"], "2 degraded");
+    }
+
+    // MARK: - the staleness footer (#627)
+
+    const FOOTER_NOW: u64 = 1_000_000;
+
+    fn footer_text(statuses: &ServiceStatuses, now: u64) -> Option<String> {
+        view_at(statuses, now)["footer"]["text"]
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// Before any pass there is no age to state: the loading line speaks and the
+    /// footer is absent, never "updated 0s ago".
+    #[test]
+    fn no_footer_before_the_first_pass() {
+        let statuses = ServiceStatuses::new();
+        let vm = view_at(&statuses, FOOTER_NOW);
+        assert!(vm["footer"].is_null());
+        assert_eq!(vm["empty"]["message"], LOADING_MESSAGE);
+    }
+
+    /// The window is the last success against the Services cadence's 2.5 cycles.
+    #[test]
+    fn the_footer_goes_stale_after_two_and_a_half_cadences_of_the_last_success() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(builtins());
+        statuses.set_cadence_secs(300);
+        statuses.pass_finished(FOOTER_NOW, 5, 0);
+        assert_eq!(
+            footer_text(&statuses, FOOTER_NOW + 750),
+            None,
+            "at the edge"
+        );
+        let text = footer_text(&statuses, FOOTER_NOW + 751).expect("stale");
+        assert!(text.starts_with("⚠ stale · updated "), "{text}");
+        // The same age under a 30s cadence is stale much sooner.
+        statuses.set_cadence_secs(30);
+        assert!(footer_text(&statuses, FOOTER_NOW + 151).is_some());
+        assert_eq!(footer_text(&statuses, FOOTER_NOW + 150), None);
+    }
+
+    /// One vendor down is on its own row; it must not turn the panel amber.
+    #[test]
+    fn a_partly_failed_pass_still_counts_as_a_success() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(builtins());
+        statuses.pass_finished(FOOTER_NOW, 4, 1);
+        assert_eq!(footer_text(&statuses, FOOTER_NOW + 1), None);
+    }
+
+    /// A pass that read nothing is not a success: the clock stays where it was
+    /// and the footer says so with `last ok`.
+    #[test]
+    fn a_pass_that_read_nothing_keeps_the_clock_and_says_why() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(builtins());
+        statuses.pass_finished(FOOTER_NOW, 5, 0);
+        statuses.pass_finished(FOOTER_NOW + 60, 0, 5);
+        let text = footer_text(&statuses, FOOTER_NOW + 120).expect("error footer");
+        assert!(text.contains(PASS_FAILED_MESSAGE), "{text}");
+        assert!(
+            text.contains("last ok 2m"),
+            "last ok counts from the success: {text}"
+        );
+        // Before any success there is no `last ok` to claim.
+        let mut never = ServiceStatuses::new();
+        never.watching(builtins());
+        never.pass_finished(FOOTER_NOW, 0, 5);
+        let text = footer_text(&never, FOOTER_NOW).expect("error footer");
+        assert!(!text.contains("last ok"), "{text}");
+        // Recovery clears it.
+        statuses.pass_finished(FOOTER_NOW + 180, 5, 0);
+        assert_eq!(footer_text(&statuses, FOOTER_NOW + 181), None);
+    }
+
+    /// A cockpit that watches nothing completes passes fine, and keeps its
+    /// unchanged sentence.
+    #[test]
+    fn a_pass_with_nothing_to_watch_is_a_success_and_keeps_its_sentence() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(Vec::new());
+        statuses.pass_finished(FOOTER_NOW, 0, 0);
+        let vm = view_at(&statuses, FOOTER_NOW + 1);
+        assert!(vm["footer"].is_null());
+        assert_eq!(vm["empty"]["message"], NOTHING_WATCHED_MESSAGE);
+        assert!(
+            footer_text(&statuses, FOOTER_NOW + 10_000).is_some(),
+            "and still goes stale"
+        );
     }
 
     // MARK: - hosts

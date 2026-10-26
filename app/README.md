@@ -1214,6 +1214,16 @@ from an RSS incident feed, and lowers all three onto one `ComponentStatus`. The
 Services panel renders a row each; the GitHub reading additionally feeds the
 Repos/Runners conjunction chip.
 
+**The panel has a staleness footer** ([#627](https://github.com/Sassy-Dog/solador/issues/627)),
+in the header like every polling panel's: the last *successful* pass against
+2.5 cycles of the Services cadence (`ServiceStatuses::pass_finished`). A pass
+succeeds when it watched nothing or read at least one vendor — one status page
+being down is on its own row and does not turn the panel amber — while a pass
+that watched vendors and read none keeps the clock where it was and the footer
+reads `⚠ couldn't read any status page · last ok …`. Before the first pass
+there is only the loading line, never an age, and the "nothing to watch yet"
+sentence is unchanged. `--dump-services … --stale` renders the amber case.
+
 **The watched list is derived, never shipped**
 ([#284](https://github.com/Sassy-Dog/solador/issues/284), wired up in
 [#375](https://github.com/Sassy-Dog/solador/issues/375)). `services::active_vendors`
@@ -2061,8 +2071,9 @@ a portfolio fetch on a credential it has no use for.
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
+| Claude rollups appearing or disappearing, seen by a usage pass | the Services loop, once (`claude_presence_wakes_services`, [#627](https://github.com/Sassy-Dog/solador/issues/627)): Anthropic's row is derived from `claude_present()`, which no edit changes, so nothing else would wake the loop for it. A pass where presence did not change wakes nothing |
 | a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
-| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
+| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes every cadence-derived staleness window from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen. The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |

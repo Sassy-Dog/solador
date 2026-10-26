@@ -1898,9 +1898,11 @@ async fn poll_service_status(app: &Arc<App>) {
         // set takes its last reading with it rather than lingering in the map
         // to be rendered as fresh if it is ever added back.
         statuses.watching(vendors);
+        let (mut read, mut failed) = (0_usize, 0_usize);
         for (service, result) in results {
             match result {
                 Ok(status) => {
+                    read += 1;
                     // GitHub's reading also feeds the Repos/Runners conjunction
                     // chip, which reads it from `GitHubState`.
                     if service == services::ServiceId::GitHub {
@@ -1912,6 +1914,7 @@ async fn poll_service_status(app: &Arc<App>) {
                     statuses.succeeded(service, status);
                 }
                 Err(e) => {
+                    failed += 1;
                     if service == services::ServiceId::GitHub {
                         app.github
                             .lock()
@@ -1922,6 +1925,9 @@ async fn poll_service_status(app: &Arc<App>) {
                 }
             }
         }
+        // The footer's last-success clock; what counts as a success is
+        // `pass_finished`'s doc.
+        statuses.pass_finished(panel::now_unix(), read, failed);
         // Diffed against what this pass actually obtained. A failed refresh
         // keeps the last good status for *rendering*, and treating that
         // retained value as a fresh observation would make an unreachable page
@@ -1956,13 +1962,7 @@ async fn poll_github(app: &Arc<App>) {
     //
     // This pass is told the staleness window of *its* cadence, so a 5-minute
     // GitHub cadence does not read as a stuck poller between two healthy passes.
-    {
-        let cadence = panel_interval(&app.store, PanelInterval::GitHub).as_secs();
-        app.github
-            .lock()
-            .expect("github state poisoned")
-            .set_cadence_secs(cadence);
-    }
+    sync_app_cadences(app);
 
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch. `legacy_org` is the
@@ -2541,6 +2541,7 @@ fn wake_github(app: &App) {
 /// Re-reads its cadence after every pass, like every loop here.
 async fn services_loop(app: Arc<App>) {
     loop {
+        sync_app_cadences(&app);
         poll_service_status(&app).await;
         let secs = panel_interval(&app.store, PanelInterval::Services);
         tokio::select! {
@@ -3015,10 +3016,20 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
         .map_err(|e| eprintln!("Claude usage walk failed: {e}"))
         .ok();
     if let Some((summary, error)) = claude {
-        app.usage
-            .lock()
-            .expect("usage state poisoned")
-            .apply_claude(summary, now, error);
+        let (was_present, is_present) = {
+            let mut usage = app.usage.lock().expect("usage state poisoned");
+            let was_present = usage.claude_present();
+            usage.apply_claude(summary, now, error);
+            (was_present, usage.claude_present())
+        };
+        // Anthropic's row in Services is evidence-driven by exactly this, and
+        // nothing edited by hand changes it, so nothing else would wake the
+        // Services loop for it: it would appear (or go) a whole Services
+        // cadence late. Only on a change -- a wake per usage pass would make
+        // the cadence setting a lie.
+        if claude_presence_wakes_services(was_present, is_present) {
+            wake_services(app);
+        }
     }
 
     if !providers {
@@ -3240,12 +3251,7 @@ async fn usage_loop(app: Arc<App>) {
             || providers_last.is_none_or(|at| at.elapsed() >= providers_every);
         // Told to the state before the pass, so the rollups' footer judges
         // staleness against the cadence this pass runs on.
-        app.usage
-            .lock()
-            .expect("usage state poisoned")
-            .set_claude_cadence_secs(
-                panel_interval(&app.store, PanelInterval::ClaudeRollups).as_secs(),
-            );
+        sync_app_cadences(&app);
         poll_usage(&app, due).await;
         if due {
             providers_last = Some(std::time::Instant::now());
@@ -4073,17 +4079,83 @@ fn runner_group_label_move(
 ///
 /// [#301]: https://github.com/Sassy-Dog/solador/issues/301
 fn wake_panel(app: &App, panel: PanelInterval) {
-    match panel {
-        PanelInterval::Containers => app.containers_wake.notify_one(),
-        PanelInterval::GitHub => wake_github(app),
-        PanelInterval::Services => wake_services(app),
-        // Not the providers' half: a rollups cadence change spends no vendor request.
-        PanelInterval::ClaudeRollups => wake_usage(app, false),
-        PanelInterval::UsageProviders => wake_usage(app, false),
-        PanelInterval::AzureCost => app.azure_wake.notify_one(),
-        PanelInterval::Crons => app.crons_wake.notify_one(),
-        PanelInterval::PlanUsage => app.plan_usage_wake.notify_one(),
+    match wake_target(panel) {
+        WakeTarget::Containers => app.containers_wake.notify_one(),
+        WakeTarget::GitHub => wake_github(app),
+        WakeTarget::Services => wake_services(app),
+        // Not the providers' half: a cadence change spends no vendor request.
+        WakeTarget::Usage => wake_usage(app, false),
+        WakeTarget::Azure => app.azure_wake.notify_one(),
+        WakeTarget::Crons => app.crons_wake.notify_one(),
+        WakeTarget::PlanUsage => app.plan_usage_wake.notify_one(),
     }
+}
+
+/// The loops a cadence save can wake: one value per loop, not per cadence,
+/// because the two Usage cadences share a loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeTarget {
+    Containers,
+    GitHub,
+    Services,
+    Usage,
+    Azure,
+    Crons,
+    PlanUsage,
+}
+
+/// Which loop a cadence's save wakes. Pure so a test can pin it: the match in
+/// [`wake_panel`] being exhaustive proves every cadence is *handled*, not that
+/// `Services` does not wake the GitHub loop.
+fn wake_target(panel: PanelInterval) -> WakeTarget {
+    match panel {
+        PanelInterval::Containers => WakeTarget::Containers,
+        PanelInterval::GitHub => WakeTarget::GitHub,
+        PanelInterval::Services => WakeTarget::Services,
+        PanelInterval::ClaudeRollups | PanelInterval::UsageProviders => WakeTarget::Usage,
+        PanelInterval::AzureCost => WakeTarget::Azure,
+        PanelInterval::Crons => WakeTarget::Crons,
+        PanelInterval::PlanUsage => WakeTarget::PlanUsage,
+    }
+}
+
+/// Whether a usage pass should wake the Services loop: only when Claude
+/// rollups appeared or disappeared (`services::active_vendors`' fifth input).
+fn claude_presence_wakes_services(was_present: bool, is_present: bool) -> bool {
+    was_present != is_present
+}
+
+/// Hands every cadence-derived staleness window the cadence the store holds
+/// *now*.
+///
+/// The loops call it at the top of each pass, and `panel_interval_save` /
+/// `_clear` call it before they re-render, so a shortened cadence does not
+/// leave the previous pass's window on screen (a reading fresh under 300s read
+/// stale under the new 30s, and Fleet Down `Unknown`, until the woken pass got
+/// round to it). Every footer that follows a cadence is set here.
+fn sync_cadences(
+    store: &Mutex<Store>,
+    github: &Mutex<GitHubState>,
+    usage: &Mutex<UsageState>,
+    services: &Mutex<services::ServiceStatuses>,
+) {
+    let secs = |panel| panel_interval(store, panel).as_secs();
+    github
+        .lock()
+        .expect("github state poisoned")
+        .set_cadence_secs(secs(PanelInterval::GitHub));
+    usage
+        .lock()
+        .expect("usage state poisoned")
+        .set_claude_cadence_secs(secs(PanelInterval::ClaudeRollups));
+    services
+        .lock()
+        .expect("services poisoned")
+        .set_cadence_secs(secs(PanelInterval::Services));
+}
+
+fn sync_app_cadences(app: &App) {
+    sync_cadences(&app.store, &app.github, &app.usage, &app.services);
 }
 
 /// One panel's poll cadence, from the Configure of a tile of that source.
@@ -4124,6 +4196,9 @@ fn panel_interval_save(
             return Err(format!("Could not save the poll cadence: {error}"));
         }
     }
+    // Before the re-render below, so its footers judge staleness by the saved
+    // cadence and not the previous pass's.
+    sync_app_cadences(&state);
     wake_panel(&state, kind);
     Ok(dashboard_view(width, state))
 }
@@ -4149,6 +4224,7 @@ fn panel_interval_clear(
             return Err(format!("Could not save the poll cadence: {error}"));
         }
     }
+    sync_app_cadences(&state);
     wake_panel(&state, kind);
     Ok(dashboard_view(width, state))
 }
@@ -6581,7 +6657,13 @@ fn run_dump(args: &[String]) -> bool {
             statuses.watching(Vec::new());
             statuses
         } else {
-            services::fixture_statuses()
+            let mut statuses = services::fixture_statuses();
+            if stale {
+                // The last good pass an hour ago, against the default cadence's
+                // window: the footer's amber line.
+                statuses.pass_finished(panel::now_unix().saturating_sub(3600), 5, 0);
+            }
+            statuses
         };
         write_json(&path, &services::view(&statuses));
         return true;
@@ -7074,6 +7156,99 @@ mod tests {
     use super::*;
     use store::settings::ClampOutcome;
     use store::{MemoryCredentialStore, SecretError};
+
+    /// Which loop each cadence's save wakes (#627). The match in `wake_panel`
+    /// is exhaustive, so a new cadence cannot be forgotten, but a wrong arm
+    /// (`Services` waking GitHub's loop) compiled and passed everything.
+    #[test]
+    fn each_cadence_wakes_exactly_its_own_loop() {
+        let expected = [
+            (PanelInterval::Containers, WakeTarget::Containers),
+            (PanelInterval::GitHub, WakeTarget::GitHub),
+            (PanelInterval::Services, WakeTarget::Services),
+            (PanelInterval::ClaudeRollups, WakeTarget::Usage),
+            (PanelInterval::UsageProviders, WakeTarget::Usage),
+            (PanelInterval::AzureCost, WakeTarget::Azure),
+            (PanelInterval::Crons, WakeTarget::Crons),
+            (PanelInterval::PlanUsage, WakeTarget::PlanUsage),
+        ];
+        for (panel, target) in expected {
+            assert_eq!(wake_target(panel), target, "{panel:?}");
+        }
+    }
+
+    /// A usage pass wakes Services only when Claude rollups appear or vanish
+    /// (#627), not on every pass.
+    #[test]
+    fn services_wake_only_when_claude_presence_changes() {
+        assert!(claude_presence_wakes_services(false, true), "appeared");
+        assert!(claude_presence_wakes_services(true, false), "disappeared");
+        assert!(
+            !claude_presence_wakes_services(false, false),
+            "still absent"
+        );
+        assert!(!claude_presence_wakes_services(true, true), "still present");
+    }
+
+    /// A just-saved shorter cadence moves every cadence-derived window before
+    /// the next pass runs (#627): `sync_cadences` is what `panel_interval_save`
+    /// calls ahead of its re-render.
+    #[test]
+    fn a_saved_cadence_moves_every_staleness_window_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Mutex::new(Store::open_in(dir.path(), false).unwrap());
+        let github = Mutex::new(GitHubState::new());
+        let usage = Mutex::new(UsageState::new());
+        let services = Mutex::new(services::ServiceStatuses::new());
+        let windows = || {
+            (
+                github.lock().unwrap().stale_after_secs(),
+                usage.lock().unwrap().claude_stale_after_secs(),
+                services.lock().unwrap().stale_after_secs(),
+            )
+        };
+
+        {
+            let mut store = store.lock().unwrap();
+            let settings = store.settings_mut();
+            settings.set_panel_interval_secs(PanelInterval::GitHub, 300);
+            settings.set_panel_interval_secs(PanelInterval::ClaudeRollups, 300);
+            settings.set_panel_interval_secs(PanelInterval::Services, 300);
+        }
+        sync_cadences(&store, &github, &usage, &services);
+        assert_eq!(windows(), (750, 750, 750));
+
+        // Shortened, then synced with no pass in between.
+        {
+            let mut store = store.lock().unwrap();
+            let settings = store.settings_mut();
+            settings.set_panel_interval_secs(PanelInterval::GitHub, 30);
+            settings.set_panel_interval_secs(PanelInterval::ClaudeRollups, 30);
+            settings.set_panel_interval_secs(PanelInterval::Services, 30);
+        }
+        sync_cadences(&store, &github, &usage, &services);
+        assert_eq!(windows(), (150, 150, 150));
+
+        // A cleared override follows the default again.
+        {
+            let mut store = store.lock().unwrap();
+            let settings = store.settings_mut();
+            settings.set_panel_interval_secs(PanelInterval::Services, 600);
+        }
+        sync_cadences(&store, &github, &usage, &services);
+        assert_eq!(services.lock().unwrap().stale_after_secs(), 1500);
+        store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .clear_panel_interval(PanelInterval::Services);
+        sync_cadences(&store, &github, &usage, &services);
+        let default = u64::from(store::settings::DEFAULT_REFRESH_INTERVAL_SECS);
+        assert_eq!(
+            services.lock().unwrap().stale_after_secs(),
+            panel::stale_after_for_cadence(default)
+        );
+    }
 
     /// The fix itself, asserted against the real `call_once` rather than a
     /// mock of it: our claim must land first, and the plugin's own call must

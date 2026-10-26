@@ -354,6 +354,15 @@ impl UsageState {
         self.claude_cadence_secs = Some(cadence_secs);
     }
 
+    /// How old the Claude rollups may be before the footer says so, following
+    /// the cadence last told.
+    pub(crate) fn claude_stale_after_secs(&self) -> u64 {
+        self.claude_cadence_secs.map_or(
+            CLAUDE_STALE_AFTER_SECS,
+            crate::panel::stale_after_for_cadence,
+        )
+    }
+
     /// A completed log walk. `error` is the shell's own existence check on
     /// `~/.claude/projects`, not a failure from the walk (which skips what it
     /// cannot read rather than failing).
@@ -777,10 +786,7 @@ pub fn view(
         state.claude_succeeded,
         state.claude_error.as_deref(),
         now,
-        state.claude_cadence_secs.map_or(
-            CLAUDE_STALE_AFTER_SECS,
-            crate::panel::stale_after_for_cadence,
-        ),
+        state.claude_stale_after_secs(),
     )];
 
     // `is_present`, not `!is_absent`: a provider nobody has looked for yet
