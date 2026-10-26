@@ -97,6 +97,9 @@ pub struct PlanSource {
     last_attempt: Option<u64>,
     /// No read before this instant: the service's `Retry-After`.
     not_before: Option<u64>,
+    /// The kind of the last read's failure, or `None` after a success (or a
+    /// reset). The memory the failure-transition log line is decided against.
+    last_failure: Option<&'static str>,
     /// Bumped by every reset, so a read that was in flight when the operator
     /// turned the provider off cannot land its result afterwards.
     generation: u64,
@@ -115,11 +118,83 @@ impl PlanSource {
         self.state.unconfigure();
     }
 
+    /// Parks the provider, as a refused keychain does. For tests elsewhere in
+    /// the crate that need a parked provider without a keychain.
+    #[cfg(test)]
+    pub fn park_for_test(&mut self) {
+        self.parked = true;
+    }
+
     /// Whether this provider is on and still waiting on its first answer.
     #[must_use]
     pub fn is_loading(&self, enabled: bool) -> bool {
         enabled && self.state.summary.is_none() && self.state.last_error.is_none()
     }
+}
+
+/// A name for a failure kind that is safe to write to the log: a fixed word per
+/// variant, never the `Unreachable` / `Undecodable` detail (which can carry
+/// transport text) and never a header, a URL or a token.
+const fn kind_label(kind: &PlanErrorKind) -> &'static str {
+    match kind {
+        PlanErrorKind::NotSignedIn => "not-signed-in",
+        PlanErrorKind::NoSubscription => "no-subscription",
+        PlanErrorKind::KeychainRefused => "keychain-refused",
+        PlanErrorKind::CredentialUnreadable => "credential-unreadable",
+        PlanErrorKind::SignInExpired => "sign-in-expired",
+        PlanErrorKind::MissingScope => "missing-scope",
+        PlanErrorKind::RateLimited { .. } => "rate-limited",
+        PlanErrorKind::Http { .. } => "http-status",
+        PlanErrorKind::Unreachable(_) => "unreachable",
+        PlanErrorKind::Undecodable(_) => "undecodable",
+    }
+}
+
+/// Records one read's outcome on `source` and returns the log lines it earns:
+/// one when the failure kind changes (ok to failed, failed to a different
+/// kind, failed to ok), one when this outcome parks the provider, and one when
+/// it defers the next read by a `Retry-After`. Polls the gate skips never get
+/// here, so a parked or waiting provider logs nothing more. The lines name the
+/// provider and fixed words only.
+fn record_outcome(
+    source: &mut PlanSource,
+    provider: Provider,
+    failure: Option<&PlanUsageError>,
+    now: u64,
+) -> Vec<String> {
+    let id = section_id(provider);
+    let mut lines = Vec::new();
+    let label = failure.map(|error| kind_label(&error.kind));
+    if label != source.last_failure {
+        match (source.last_failure, label) {
+            (None, Some(new)) => lines.push(format!("plan usage: {id} read failed ({new})")),
+            (Some(old), Some(new)) => {
+                lines.push(format!("plan usage: {id} failure changed ({old} -> {new})"));
+            }
+            (Some(old), None) => {
+                lines.push(format!("plan usage: {id} read ok again (was {old})"));
+            }
+            (None, None) => {}
+        }
+        source.last_failure = label;
+    }
+    if let Some(error) = failure {
+        if error.kind == PlanErrorKind::KeychainRefused {
+            source.parked = true;
+            lines.push(format!(
+                "plan usage: {id} parked until its toggle is flipped"
+            ));
+        }
+        source.not_before = error
+            .retry_after_secs()
+            .map(|secs| now.saturating_add(secs));
+        if let Some(secs) = error.retry_after_secs() {
+            lines.push(format!("plan usage: {id} retry-after {secs}s"));
+        }
+    } else {
+        source.not_before = None;
+    }
+    lines
 }
 
 /// What a pass does for one provider.
@@ -223,21 +298,21 @@ where
         // Turned off (or off and on) while this read was in flight.
         return Gate::Due;
     }
-    match outcome {
+    let lines = match outcome {
         Ok(reading) => {
-            source.not_before = None;
+            let lines = record_outcome(source, provider, None, now);
             let note = reading.is_empty().then(|| NO_WINDOWS_MESSAGE.to_owned());
             source.state.succeeded(reading, now, note);
+            lines
         }
         Err(error) => {
-            if error.kind == PlanErrorKind::KeychainRefused {
-                source.parked = true;
-            }
-            source.not_before = error
-                .retry_after_secs()
-                .map(|secs| now.saturating_add(secs));
+            let lines = record_outcome(source, provider, Some(&error), now);
             source.state.failed(error.user_message());
+            lines
         }
+    };
+    for line in lines {
+        eprintln!("{line}");
     }
     Gate::Due
 }
@@ -471,6 +546,84 @@ mod tests {
             },
         )
         .await
+    }
+
+    // ---- the log lines ---------------------------------------------------
+
+    fn failure(kind: PlanErrorKind) -> PlanUsageError {
+        PlanUsageError::new(Provider::Claude, kind)
+    }
+
+    #[test]
+    fn a_failure_logs_on_each_change_of_kind_and_on_recovery_never_per_poll() {
+        let mut source = PlanSource::default();
+        let p = Provider::Claude;
+        let expired = failure(PlanErrorKind::SignInExpired);
+        let first = record_outcome(&mut source, p, Some(&expired), NOW);
+        assert_eq!(
+            first,
+            ["plan usage: claude-plan read failed (sign-in-expired)"]
+        );
+        assert!(
+            record_outcome(&mut source, p, Some(&expired), NOW + 1).is_empty(),
+            "the same kind again is not news"
+        );
+        let other = failure(PlanErrorKind::Http { status: 503 });
+        assert_eq!(
+            record_outcome(&mut source, p, Some(&other), NOW + 2),
+            ["plan usage: claude-plan failure changed (sign-in-expired -> http-status)"]
+        );
+        assert_eq!(
+            record_outcome(&mut source, p, None, NOW + 3),
+            ["plan usage: claude-plan read ok again (was http-status)"]
+        );
+        assert!(record_outcome(&mut source, p, None, NOW + 4).is_empty());
+    }
+
+    #[test]
+    fn a_park_and_a_retry_after_log_once_each_and_carry_no_detail() {
+        let mut source = PlanSource::default();
+        let p = Provider::Codex;
+        let refused = failure(PlanErrorKind::KeychainRefused);
+        let lines = record_outcome(&mut source, p, Some(&refused), NOW);
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("parked")).count(),
+            1,
+            "{lines:?}"
+        );
+        assert!(source.parked);
+
+        let mut source = PlanSource::default();
+        let throttled = failure(PlanErrorKind::RateLimited {
+            retry_after_secs: Some(90),
+        });
+        let lines = record_outcome(&mut source, p, Some(&throttled), NOW);
+        assert_eq!(
+            lines,
+            [
+                "plan usage: codex-plan read failed (rate-limited)",
+                "plan usage: codex-plan retry-after 90s"
+            ]
+        );
+        assert_eq!(source.not_before, Some(NOW + 90));
+
+        let leaky = failure(PlanErrorKind::Unreachable(
+            "https://example.test/?token=SECRET".into(),
+        ));
+        let lines = record_outcome(&mut PlanSource::default(), p, Some(&leaky), NOW);
+        assert_eq!(lines, ["plan usage: codex-plan read failed (unreachable)"]);
+    }
+
+    #[test]
+    fn a_reset_forgets_the_last_failure_so_the_next_one_logs_again() {
+        let mut source = PlanSource::default();
+        let expired = failure(PlanErrorKind::SignInExpired);
+        record_outcome(&mut source, Provider::Claude, Some(&expired), NOW);
+        source.reset();
+        assert_eq!(
+            record_outcome(&mut source, Provider::Claude, Some(&expired), NOW).len(),
+            1
+        );
     }
 
     // ---- the gate --------------------------------------------------------
