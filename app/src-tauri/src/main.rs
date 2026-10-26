@@ -2760,6 +2760,13 @@ fn agent_versions(app: &App) -> Vec<(Uuid, String)> {
 /// the store's guard hangs forever. `try_lock` cannot tell "this thread holds
 /// it" from "another thread does", so this is test-only, where no poll loop
 /// runs against the `App`; in a running app a `WouldBlock` is routine.
+///
+/// Not covered: `cockpit`, `dashboard_view` and the `#[tauri::command]`
+/// wrappers that end in `Ok(dashboard_view(width, state))`, because they take
+/// `tauri::State`, which unit tests cannot build. Covering the running app
+/// would need a store wrapper that records the holder's `ThreadId`; a
+/// `debug_assertions` check would fire spuriously, because the poll loops hold
+/// the store briefly all the time.
 #[cfg(test)]
 fn assert_store_not_held(store: &Mutex<Store>) {
     assert!(
@@ -4794,14 +4801,55 @@ mod account_org_tests {
         assert_eq!(orgs(&f), Some(vec![]));
     }
 
-    /// The tripwire itself: a settings answer built while the store is held
-    /// must panic in tests rather than hang.
+    /// Holds the store on its own thread and calls `call` there. Passing means
+    /// the call panicked (the tripwire fired: the sender dropped). Returning
+    /// normally or hanging fails, the latter within the bound rather than
+    /// hanging the suite.
+    fn tripwire_fires(f: &Fixture, what: &str, call: impl FnOnce(&App) + Send + 'static) {
+        let (tx, rx) = mpsc::channel::<()>();
+        let app = Arc::clone(&f.app);
+        std::thread::spawn(move || {
+            let _held = app.store.lock().unwrap();
+            call(&app);
+            let _ = tx.send(());
+        });
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            Ok(()) => panic!("tripwire missing: {what} returned with the store held"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("tripwire missing: {what} re-entered the held store without panicking")
+            }
+        }
+    }
+
     #[test]
-    #[should_panic(expected = "re-entered")]
-    fn answering_while_the_store_is_held_panics() {
+    fn answering_while_the_store_is_held_trips_the_wire() {
         let f = fixture(vec![]);
-        let _held = f.app.store.lock().unwrap();
-        let _ = settings_response(&f.app, None);
+        tripwire_fires(&f, "settings_response", |app| {
+            let _ = settings_response(app, None);
+        });
+    }
+
+    #[test]
+    fn panel_interval_while_the_store_is_held_trips_the_wire() {
+        let f = fixture(vec![]);
+        tripwire_fires(&f, "panel_interval", |app| {
+            let _ = panel_interval(&app.store, PanelInterval::GitHub);
+        });
+    }
+
+    #[test]
+    fn plan_inputs_while_the_store_is_held_trips_the_wire() {
+        let f = fixture(vec![]);
+        tripwire_fires(&f, "plan_inputs", |app| {
+            let _ = plan_inputs(&app.store);
+        });
+    }
+
+    #[test]
+    fn reload_hosts_while_the_store_is_held_trips_the_wire() {
+        let f = fixture(vec![]);
+        tripwire_fires(&f, "reload_hosts", reload_hosts);
     }
 }
 /// Every non-secret provider preference, in one argument.
