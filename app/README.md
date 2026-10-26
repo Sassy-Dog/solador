@@ -926,6 +926,7 @@ await window.__TAURI__.core.invoke("containers");
     }]
   }],
   "footer": null                     // or {"text": "⚠ stale · updated 2m ago", "color": …}
+                                     // staleAfter 2.5 cadence cycles, never under 30s
 }
 ```
 
@@ -1404,8 +1405,8 @@ await window.__TAURI__.core.invoke("azure_cost");
 **Four sources, and Vercel is the odd one.** Claude Code's token rollups are
 a walk of `~/.claude/projects` on `PanelInterval::ClaudeRollups`
 (`staleAfter` 2.5 cycles, 150s at the default 60s). Neon consumption and Sentry event stats are hourly API reads
-inside the same loop (`staleAfter` 90m — above their own cadence, so a warning
-means a stuck poller and not the gap between polls). The Claude and Codex plan
+inside the same loop (`staleAfter` a flat 90m, above the *default* hourly cadence; it does not yet
+follow the operator's, so a cadence over 90 minutes warns between healthy polls, [#635](https://github.com/Sassy-Dog/solador/issues/635)). The Claude and Codex plan
 limits are a fifth, on a loop of their own (`plan_usage_loop`, every 15 minutes
 by default, `staleAfter` twice that) and only once the operator has opted in;
 see [the plans' own limits](#the-plans-own-limits). Azure cost is its own loop
@@ -2078,7 +2079,7 @@ a portfolio fetch on a credential it has no use for.
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
 | Claude rollups appearing or disappearing, seen by a usage pass | the Services loop, once (`claude_presence_wakes_services`, [#627](https://github.com/Sassy-Dog/solador/issues/627)): Anthropic's row is derived from `claude_present()`, which no edit changes, so nothing else would wake the loop for it. A pass where presence did not change wakes nothing |
 | a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
-| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Azure Cost and the plan limits read their cadence at render time and need no such step. The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
+| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read it at render time for `freshness` only, their warning window still being a fixed 90 minutes (a known gap, tracked in [#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |

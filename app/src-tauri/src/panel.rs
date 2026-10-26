@@ -460,7 +460,11 @@ mod tests {
     #[test]
     fn every_panels_staleness_window_matches_its_original_panel() {
         let windows: [(&str, u64, u64); 5] = [
-            ("containers", crate::containers::STALE_AFTER_SECS, 30),
+            (
+                "containers",
+                crate::containers::stale_after_for_cadence(crate::containers::POLL_INTERVAL_SECS),
+                30,
+            ),
             ("runners", crate::github::RUNNERS_STALE_AFTER_SECS, 150),
             ("claude usage", crate::usage::CLAUDE_STALE_AFTER_SECS, 150),
             (

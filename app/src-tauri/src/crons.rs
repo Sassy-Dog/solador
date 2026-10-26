@@ -48,8 +48,9 @@ use viewmodel::freshness::Freshness;
 use crate::panel::{freshness_payload, status_footer, Configured};
 
 /// The staleness window. Reuses the Neon/Sentry figure rather than restating it:
-/// this read is on the same hourly cadence, so the window has to sit above it or
-/// the panel would be permanently stale.
+/// the window sits above the *default* hourly cadence. It does not follow the
+/// operator's cadence (#301 made it theirs), so a cadence over 90 minutes goes
+/// stale between healthy polls: a known gap, tracked in #635.
 pub const STALE_AFTER_SECS: u64 = crate::usage::PROVIDER_STALE_AFTER_SECS;
 
 /// The panel's zero-setup state. An instruction, not a failure — and the only

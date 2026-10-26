@@ -29,9 +29,27 @@ use viewmodel::color;
 use group::{DisplayRow, Partition};
 use parse::{LocalRuntime, MergeOutcome};
 
-/// How long without a successful local poll before the footer says so.
-/// `PanelStatusFooter(..., staleAfter: 30)` in the original.
-pub const STALE_AFTER_SECS: u64 = 30;
+/// The shortest window without a successful local poll before the footer says
+/// so: `PanelStatusFooter(..., staleAfter: 30)` in the original, and exactly
+/// what the 10s default cadence has always had. It is a floor now, not the
+/// window: see [`stale_after_for_cadence`].
+pub const MIN_STALE_AFTER_SECS: u64 = 30;
+
+/// The staleness window for a Containers panel polling every `cadence_secs`:
+/// 2.5 cycles (the multiplier `panel::stale_after_for_cadence` uses, so one
+/// missed pass is not yet a warning), never under [`MIN_STALE_AFTER_SECS`].
+///
+/// Not the shared function, whose 150s floor would loosen detection five-fold
+/// at the 10s default (#633). At 10s and at the 5s floor this is the 30s it has
+/// always been; at 60s it is 150s, so a healthy poll is never stale between
+/// two passes at any cadence the operator can set (there is no ceiling).
+#[must_use]
+pub fn stale_after_for_cadence(cadence_secs: u64) -> u64 {
+    cadence_secs
+        .saturating_mul(5)
+        .div_ceil(2)
+        .max(MIN_STALE_AFTER_SECS)
+}
 
 /// Poll cadence for containers, local and remote alike — the original's
 /// `LocalContainerService.start(interval: 10)` and the remote container task's
@@ -158,12 +176,15 @@ struct Section<'a> {
 ///
 /// `now` is the wall clock at render time — the footer's staleness is measured
 /// against it, while every *presence* clock is a last-successful-poll time
-/// from [`ContainersState`], never this.
+/// from [`ContainersState`], never this. `cadence_secs` is the operator's
+/// Containers cadence *as the store holds it now*, read by the caller at render
+/// time: it sets the footer's staleness window ([`stale_after_for_cadence`]).
 pub fn view(
     state: &ContainersState,
     rules: &[ContainerGroupRule],
     presence: &BTreeMap<String, ContainerPresenceRecord>,
     now: u64,
+    cadence_secs: u64,
 ) -> Value {
     let mut sections = vec![Section {
         host: LOCAL_HOST_SCOPE,
@@ -219,7 +240,12 @@ pub fn view(
         // Sections are dropped entirely in the empty case, matching the original
         // panel: one sentence, not a stack of empty host headings.
         "sections": if empty || !looked { json!([]) } else { json!(rendered) },
-        "footer": footer(state.local_last_success, state.local_error.as_deref(), now),
+        "footer": footer(
+            state.local_last_success,
+            state.local_error.as_deref(),
+            now,
+            cadence_secs,
+        ),
         // Drives the frontend's refresh cadence while the panel fills in.
         "loading": !looked,
     })
@@ -371,8 +397,13 @@ fn trailing_label(state: &ContainersState, missing: usize) -> String {
 /// Local-only, matching the original: the original panel footer watches
 /// `LocalContainerService`, and a remote host's reachability is the Hosts
 /// panel's story to tell, told there with its own error card.
-fn footer(last_updated: Option<u64>, error: Option<&str>, now: u64) -> Value {
-    crate::panel::status_footer(last_updated, error, now, STALE_AFTER_SECS)
+fn footer(last_updated: Option<u64>, error: Option<&str>, now: u64, cadence_secs: u64) -> Value {
+    crate::panel::status_footer(
+        last_updated,
+        error,
+        now,
+        stale_after_for_cadence(cadence_secs),
+    )
 }
 
 /// A populated state, for the offline fixtures the Playwright suite renders
@@ -497,7 +528,7 @@ mod tests {
 
     fn fixture_view() -> Value {
         let (state, rules, presence) = fixture_state(NOW);
-        view(&state, &rules, &presence, NOW)
+        view(&state, &rules, &presence, NOW, POLL_INTERVAL_SECS)
     }
 
     /// A state whose local pass has completed and found no runtimes at all.
@@ -516,7 +547,13 @@ mod tests {
     /// — before the first `docker ps` had returned.
     #[test]
     fn a_panel_that_has_not_looked_yet_says_so_rather_than_reporting_nothing() {
-        let payload = view(&ContainersState::new(), &[], &BTreeMap::new(), NOW);
+        let payload = view(
+            &ContainersState::new(),
+            &[],
+            &BTreeMap::new(),
+            NOW,
+            POLL_INTERVAL_SECS,
+        );
         assert_eq!(payload["empty"]["message"], LOADING_MESSAGE);
         assert_eq!(payload["loading"], true);
         assert!(payload["sections"].as_array().expect("sections").is_empty());
@@ -529,7 +566,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_panel_says_so_instead_of_rendering_nothing() {
-        let payload = view(&looked(), &[], &BTreeMap::new(), NOW);
+        let payload = view(&looked(), &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         assert_eq!(payload["empty"]["message"], "no containers detected");
         assert_eq!(payload["loading"], false, "we looked; this is not loading");
         assert!(payload["sections"].as_array().expect("sections").is_empty());
@@ -542,7 +579,7 @@ mod tests {
         // section still renders, and it must say which of the two it is.
         let mut state = looked();
         state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         let sections = payload["sections"].as_array().expect("sections");
         assert_eq!(sections[0]["host"], LOCAL_HOST_SCOPE);
         assert_eq!(sections[0]["empty"]["message"], "no container runtimes");
@@ -554,7 +591,13 @@ mod tests {
             NOW,
         );
         with_runtime.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
-        let payload = view(&with_runtime, &[], &BTreeMap::new(), NOW);
+        let payload = view(
+            &with_runtime,
+            &[],
+            &BTreeMap::new(),
+            NOW,
+            POLL_INTERVAL_SECS,
+        );
         assert_eq!(
             payload["sections"][0]["empty"]["message"], "no containers",
             "an installed runtime reporting nothing is a different sentence"
@@ -575,7 +618,7 @@ mod tests {
             NOW,
         );
 
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         let hosts: Vec<&str> = payload["sections"]
             .as_array()
             .expect("sections")
@@ -612,7 +655,7 @@ mod tests {
             "",
             store::ContainerRuleAction::Hide,
         )];
-        let payload = view(&state, &rules, &BTreeMap::new(), NOW);
+        let payload = view(&state, &rules, &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         assert_eq!(
             payload["trailing"], "3 total · 2 up · 1 stopped",
             "a hidden container is still cruft on the machine and must stay in the numbers"
@@ -627,7 +670,7 @@ mod tests {
     #[test]
     fn a_present_row_carries_its_status_and_a_running_colour() {
         let (state, rules, presence) = fixture_state(NOW);
-        let payload = view(&state, &rules, &presence, NOW);
+        let payload = view(&state, &rules, &presence, NOW, POLL_INTERVAL_SECS);
         let local = &payload["sections"][0];
         let running = rows(local)
             .iter()
@@ -712,7 +755,7 @@ mod tests {
             store::ContainerRuleAction::Collapse,
         );
         rule.expected_count = Some(4);
-        let payload = view(&state, &[rule], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[rule], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         let section = &payload["sections"][0];
         assert_eq!(section["empty"]["message"], "no containers");
         let aggregate = &rows(section)[0];
@@ -735,17 +778,67 @@ mod tests {
     fn a_stale_reading_says_so_rather_than_passing_as_current() {
         let (mut state, rules, presence) = fixture_state(NOW);
         state.local_last_success = Some(NOW - 120);
-        let payload = view(&state, &rules, &presence, NOW);
+        let payload = view(&state, &rules, &presence, NOW, POLL_INTERVAL_SECS);
         assert_eq!(payload["footer"]["text"], "⚠ stale · updated 2m ago");
         assert_eq!(payload["footer"]["color"], color::hex(color::AMBER));
 
-        state.local_last_success = Some(NOW - STALE_AFTER_SECS);
-        let fresh_enough = view(&state, &rules, &presence, NOW);
+        state.local_last_success = Some(NOW - MIN_STALE_AFTER_SECS);
+        let fresh_enough = view(&state, &rules, &presence, NOW, POLL_INTERVAL_SECS);
         assert_eq!(
             fresh_enough["footer"],
             Value::Null,
             "exactly at the threshold is not yet stale"
         );
+    }
+
+    /// The window is 2.5 cycles under a 30s floor (#633): the 10s default and
+    /// the 5s floor keep their 30s, and a long cadence is never stale between
+    /// two healthy polls.
+    #[test]
+    fn the_staleness_window_follows_the_cadence() {
+        assert_eq!(stale_after_for_cadence(POLL_INTERVAL_SECS), 30, "default");
+        assert_eq!(stale_after_for_cadence(5), 30, "the floor");
+        assert_eq!(stale_after_for_cadence(12), 30, "30s exactly");
+        assert_eq!(stale_after_for_cadence(13), 33);
+        assert_eq!(stale_after_for_cadence(60), 150);
+        assert_eq!(stale_after_for_cadence(600), 1500);
+        assert_eq!(
+            stale_after_for_cadence(u64::MAX),
+            u64::MAX.div_ceil(2),
+            "saturates"
+        );
+        for cadence in [5, 10, 60, 600, 86_400] {
+            let (mut state, rules, presence) = fixture_state(NOW);
+            // A healthy loop's worst case: the last poll is a full cadence old.
+            state.local_last_success = Some(NOW - cadence);
+            let payload = view(&state, &rules, &presence, NOW, cadence);
+            assert_eq!(payload["footer"], Value::Null, "cadence {cadence}s");
+        }
+    }
+
+    /// The same age is stale at a short cadence and healthy at a long one.
+    #[test]
+    fn the_same_age_is_stale_at_one_cadence_and_fresh_at_another() {
+        let (mut state, rules, presence) = fixture_state(NOW);
+        state.local_last_success = Some(NOW - 100);
+        let short = view(&state, &rules, &presence, NOW, 10);
+        assert_eq!(short["footer"]["text"], "⚠ stale · updated 1m ago");
+        assert_eq!(
+            view(&state, &rules, &presence, NOW, 60)["footer"],
+            Value::Null
+        );
+    }
+
+    /// Before the first pass the footer is absent and the panel is loading:
+    /// no age is invented, at any cadence.
+    #[test]
+    fn before_the_first_pass_there_is_no_footer_age() {
+        for cadence in [5, 10, 600] {
+            let payload = view(&ContainersState::new(), &[], &BTreeMap::new(), NOW, cadence);
+            assert_eq!(payload["footer"], Value::Null);
+            assert_eq!(payload["loading"], true);
+            assert_eq!(payload["empty"]["message"], LOADING_MESSAGE);
+        }
     }
 
     #[test]
@@ -777,7 +870,7 @@ mod tests {
             NOW,
         );
 
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         // A minute, which is when tart last actually answered — not the `0s ago`
         // this asserted while the footer was fed "when we last looked". The
         // failing pass advances that clock, so a permanently broken runtime
@@ -813,7 +906,7 @@ mod tests {
         state.advance_clock(LOCAL_HOST_SCOPE, NOW);
 
         state.retain_hosts(&BTreeSet::new());
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         let sections = payload["sections"].as_array().expect("sections");
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0]["host"], LOCAL_HOST_SCOPE);
@@ -834,7 +927,7 @@ mod tests {
             parse::merge(vec![(LocalRuntime::Docker, None)], BTreeMap::new()),
             NOW,
         );
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         assert_eq!(payload["footer"]["text"], "⚠ couldn't read docker");
         assert_eq!(
             payload["loading"], false,
@@ -849,7 +942,7 @@ mod tests {
         let mut state = looked();
         state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
         state.retain_hosts(&BTreeSet::from(["ubu-01".to_owned()]));
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
         assert_eq!(payload["sections"][1]["rows"][0]["name"], "web");
     }
 

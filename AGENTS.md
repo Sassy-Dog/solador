@@ -135,8 +135,13 @@ detailed than this file.
   windows cached in panel state (GitHub, Claude rollups, Services) are set from
   the store by `sync_cadences` both at the top of each pass and in
   `panel_interval_save`/`_clear` before they re-render, so a shortened cadence
-  moves the window with the save and not one pass later. Azure Cost and the
-  plan limits read their cadence at render time, so a save already moves them.
+  moves the window with the save and not one pass later. Every other
+  cadence-following footer reads its cadence at render time, so a save already
+  moves it: Containers (2.5 cycles, never under 30s; the shared 150s floor would
+  loosen the 10s default five-fold, #633), Azure Cost (cadence + 1h) and the plan limits (twice the
+  cadence). Sentry Crons and the metered Usage providers read it at render time
+  for `freshness` only; their warning window is still a fixed 90 minutes, a
+  known gap tracked in #635.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness signal of
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,
@@ -1060,9 +1065,10 @@ the bundle's floor.
   already set (a stored 60
   is "never chosen" and seeds nothing), then empties the field, which is never
   serialised — so the first save drops the key and a cadence cleared afterwards
-  is not seeded again. A footer's staleness window follows its cadence
-  (`panel::stale_after_for_cadence`, 2.5 cycles, never under 150s) rather than a
-  flat 150s.
+  is not seeded again. The GitHub, Services and Claude-rollup footers' staleness windows follow
+  their cadence (`panel::stale_after_for_cadence`, 2.5 cycles, never under 150s)
+  rather than a flat 150s; Containers, Azure Cost and the plan limits have their
+  own rules (see the footer list under Services).
 - Sentry cron monitors: `crates/usage/src/sentry.rs`'s `cron_monitors()` /
   `summarize_monitors()` plus `app/src-tauri/src/crons.rs`. Three wire traps are
   documented there and each has a test: there is **no** flat `projectSlug` (it is

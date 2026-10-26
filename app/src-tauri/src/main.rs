@@ -1464,6 +1464,20 @@ static FIRST_CONTAINERS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = containers_view_in(&state, containers::now_unix());
+    // The same terminal-side signal `cockpit` and `settings_view` print, and
+    // for the same reason: this is a third command on an IPC boundary with no
+    // automated coverage (#123), and every way it can break from outside Rust
+    // looks identical from in here — this function never runs.
+    FIRST_CONTAINERS_REQUEST.call_once(|| {
+        let sections = payload["sections"].as_array().map_or(0, Vec::len);
+        eprintln!("containers: first frontend request ({sections} section(s))");
+    });
+    payload
+}
+
+/// The panel's payload as of `now`, over a plain `&App` so a test can drive it.
+fn containers_view_in(state: &App, now: u64) -> Value {
     // Rules and presence first, then the panel state — one lock at a time, in
     // the same sequence `poll_containers` uses.
     let (rules, presence, hosts) = {
@@ -1474,19 +1488,15 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
             store.hosts().to_vec(),
         )
     };
+    // The operator's cadence, read at render time like Crons' and Azure's: it
+    // sets the footer's staleness window, so a save or clear moves it at once
+    // (#633), with nothing for `sync_cadences` to cache.
+    let cadence_secs = panel_interval(&state.store, PanelInterval::Containers).as_secs();
     let mut payload = {
         let panel = state.containers.lock().expect("containers state poisoned");
-        containers::view(&panel, &rules, &presence, containers::now_unix())
+        containers::view(&panel, &rules, &presence, now, cadence_secs)
     };
     payload["ruleEditor"] = settings::rules_section(&rules, &hosts);
-    // The same terminal-side signal `cockpit` and `settings_view` print, and
-    // for the same reason: this is a third command on an IPC boundary with no
-    // automated coverage (#123), and every way it can break from outside Rust
-    // looks identical from in here — this function never runs.
-    FIRST_CONTAINERS_REQUEST.call_once(|| {
-        let sections = payload["sections"].as_array().map_or(0, Vec::len);
-        eprintln!("containers: first frontend request ({sections} section(s))");
-    });
     payload
 }
 
@@ -4207,12 +4217,17 @@ fn claude_presence_wakes_services(was_present: bool, is_present: bool) -> bool {
 /// Hands the staleness windows cached in panel state (GitHub, Claude rollups,
 /// Services) the cadence the store holds *now*.
 ///
+/// Every other cadence-following footer reads its cadence at render time and
+/// needs no sync: Containers (`containers_view_in`, #633), Azure Cost and the
+/// plan limits (twice the cadence). Sentry Crons (`crons`) and the metered Usage
+/// providers (`usage`) read it at render time for `freshness` only; their
+/// warning window is still a fixed 90 minutes, a known gap tracked in #635.
+///
 /// The loops call it at the top of each pass, and `panel_interval_save` /
 /// `_clear` call it before they re-render, so a shortened cadence does not
 /// leave the previous pass's window on screen (a reading fresh under 300s read
 /// stale under the new 30s, and Fleet Down `Unknown`, until the woken pass got
-/// round to it). Azure Cost and the plan limits are not set here: they read
-/// their cadence at render time, so a save already moves them.
+/// round to it). The render-time readers above are not set here.
 fn sync_cadences(
     store: &Mutex<Store>,
     github: &Mutex<GitHubState>,
@@ -6254,10 +6269,14 @@ fn dump_github_showcase(runners: bool) -> Value {
     }
 }
 
+/// The cadence the offline container fixtures are judged against: the default.
+const DUMP_CONTAINERS_CADENCE_SECS: u64 = PanelInterval::Containers.spec().default_secs as u64;
+
 fn dump_containers_showcase() -> Value {
     const NOW: u64 = 1_700_000_000;
     let (state, rules, presence) = containers::showcase_state(NOW);
-    let mut payload = containers::view(&state, &rules, &presence, NOW);
+    let mut payload =
+        containers::view(&state, &rules, &presence, NOW, DUMP_CONTAINERS_CADENCE_SECS);
     payload["ruleEditor"] = settings::rules_section(&rules, &[]);
     payload
 }
@@ -6676,12 +6695,19 @@ fn dump_containers(empty: bool) -> Value {
             ),
             NOW - 90,
         );
-        let mut payload = containers::view(&state, &[], &std::collections::BTreeMap::new(), NOW);
+        let mut payload = containers::view(
+            &state,
+            &[],
+            &std::collections::BTreeMap::new(),
+            NOW,
+            DUMP_CONTAINERS_CADENCE_SECS,
+        );
         payload["ruleEditor"] = settings::rules_section(&[], &[]);
         return payload;
     }
     let (state, rules, presence) = containers::fixture_state(NOW);
-    let mut payload = containers::view(&state, &rules, &presence, NOW);
+    let mut payload =
+        containers::view(&state, &rules, &presence, NOW, DUMP_CONTAINERS_CADENCE_SECS);
     // The Settings fixture's rule list, not `fixture_state`'s: it carries every
     // rendering the editor has, including a scope naming a host that is gone.
     payload["ruleEditor"] = settings::rules_section(&dump_container_rules(), &[]);
@@ -7600,6 +7626,112 @@ mod tests {
             let windows = windows_of(&app);
             let at = [windows.0, windows.1, windows.2][index];
             assert_eq!(at, 150, "{panel} follows the default again");
+        }
+    }
+
+    /// The Containers footer judges staleness by the cadence the store holds
+    /// *now*: a save or clear moves the window before any pass (#633), through
+    /// the command's own render body.
+    #[test]
+    fn the_containers_window_moves_with_a_save_and_a_clear() {
+        let (_dir, _rt, app) = test_app();
+        const NOW: u64 = 1_700_000_000;
+        app.containers.lock().unwrap().apply_local(
+            vec![containers::parse::LocalRuntime::Docker],
+            containers::parse::merge(
+                vec![(containers::parse::LocalRuntime::Docker, Some(Vec::new()))],
+                std::collections::BTreeMap::new(),
+            ),
+            NOW - 100,
+        );
+        let stale = |app: &App| !containers_view_in(app, NOW)["footer"].is_null();
+        assert!(stale(&app), "100s old is stale at the 10s default (30s)");
+        panel_interval_save_in(&app, "containers", 60).unwrap();
+        assert!(!stale(&app), "60s cadence -> 150s window, at once");
+        panel_interval_save_in(&app, "containers", 5).unwrap();
+        assert!(stale(&app), "shortened: the window follows at once");
+        panel_interval_save_in(&app, "containers", 600).unwrap();
+        assert!(!stale(&app));
+        panel_interval_clear_in(&app, "containers").unwrap();
+        assert!(stale(&app), "cleared: back to the default's 30s");
+    }
+
+    const ALL_WAKE_TARGETS: [WakeTarget; 7] = [
+        WakeTarget::Containers,
+        WakeTarget::GitHub,
+        WakeTarget::Services,
+        WakeTarget::Usage,
+        WakeTarget::Azure,
+        WakeTarget::Crons,
+        WakeTarget::PlanUsage,
+    ];
+
+    /// A clear wakes exactly its own loop, through `panel_interval_clear_in`
+    /// itself (#633): dropping its `wake_panel` or aiming it elsewhere fails here.
+    #[test]
+    fn a_cadence_clear_wakes_only_its_own_loop() {
+        // Every row saves a value that is NOT the panel's default, so the clear
+        // really changes the effective cadence (Azure's default is 14_400).
+        for (panel, kind, secs, expected) in [
+            ("github", PanelInterval::GitHub, 14_400, WakeTarget::GitHub),
+            (
+                "claude_rollups",
+                PanelInterval::ClaudeRollups,
+                14_400,
+                WakeTarget::Usage,
+            ),
+            (
+                "usage_providers",
+                PanelInterval::UsageProviders,
+                7_200,
+                WakeTarget::Usage,
+            ),
+            (
+                "azure_cost",
+                PanelInterval::AzureCost,
+                21_600,
+                WakeTarget::Azure,
+            ),
+            (
+                "containers",
+                PanelInterval::Containers,
+                14_400,
+                WakeTarget::Containers,
+            ),
+            (
+                "services",
+                PanelInterval::Services,
+                14_400,
+                WakeTarget::Services,
+            ),
+            ("crons", PanelInterval::Crons, 7_200, WakeTarget::Crons),
+            (
+                "plan_usage",
+                PanelInterval::PlanUsage,
+                1_800,
+                WakeTarget::PlanUsage,
+            ),
+        ] {
+            let (_dir, _rt, app) = test_app();
+            panel_interval_save_in(&app, panel, secs).unwrap();
+            assert_eq!(panel_interval(&app.store, kind).as_secs(), u64::from(secs));
+            // Drain the save's permit so only the clear can be what we see.
+            for target in ALL_WAKE_TARGETS {
+                woken(wake_notify(&app, target));
+            }
+            panel_interval_clear_in(&app, panel).unwrap();
+            assert_ne!(
+                panel_interval(&app.store, kind).as_secs(),
+                u64::from(secs),
+                "clearing {panel} must change the effective cadence"
+            );
+            for target in ALL_WAKE_TARGETS {
+                assert_eq!(
+                    woken(wake_notify(&app, target)),
+                    target == expected,
+                    "clearing {panel}: {target:?}"
+                );
+            }
         }
     }
 
