@@ -1057,14 +1057,70 @@ mod detail_table_tests {
     }
 }
 
-fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
-    let mut matching: Vec<_> = list(source, "rows")
+/// The views a tile can open, in the order they are offered.
+pub(crate) const TILE_VIEWS: [(&str, &str); 2] = [("detail", "Detail"), ("full", "Full view")];
+
+/// The source rows a tile keeps: its scope and repository selection, applied
+/// before sorting, grouping and the row limit.
+fn matching_rows<'a>(tile: &DashboardTile, source: &'a Value) -> Vec<&'a Value> {
+    list(source, "rows")
         .iter()
         .filter(|r| in_scope(r, &tile.scope))
         .filter(|r| {
             tile.selected_repos.is_empty() || tile.selected_repos.iter().any(|id| r["id"] == *id)
         })
-        .collect();
+        .collect()
+}
+
+/// A tile filters only by a scope other than `all` or a repository selection.
+fn filters_rows(tile: &DashboardTile) -> bool {
+    tile.scope != "all" || !tile.selected_repos.is_empty()
+}
+
+/// The ids of the rows a tile keeps, or `None` when it keeps every row (so its
+/// source payload is used unchanged). An empty set means a filter that matches
+/// nothing, which is not the same as no filter.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "first caller is the scoped Full view command")
+)]
+pub(crate) fn scoped_row_ids(tile: &DashboardTile, payload: &Value) -> Option<BTreeSet<String>> {
+    if !filters_rows(tile) {
+        return None;
+    }
+    let title = SOURCES
+        .iter()
+        .find(|(id, _)| *id == tile.source)
+        .map_or("", |(_, title)| *title);
+    let source = source_view(&tile.source, title, payload);
+    Some(
+        matching_rows(tile, &source)
+            .iter()
+            .map(|r| string(r, "id").to_owned())
+            .collect(),
+    )
+}
+
+/// Says a tile's Full view is narrowed. `None` exactly when `scoped_row_ids` is.
+fn scope_note(tile: &DashboardTile, source_title: &str, scope_label: &str) -> Option<String> {
+    if !filters_rows(tile) {
+        return None;
+    }
+    let scope = if tile.scope == "all" {
+        match tile.selected_repos.len() {
+            1 => "1 selected repo".to_owned(),
+            n => format!("{n} selected repos"),
+        }
+    } else {
+        scope_label.to_owned()
+    };
+    Some(format!(
+        "Scoped to {scope}. Totals still cover all of {source_title}."
+    ))
+}
+
+fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
+    let mut matching = matching_rows(tile, source);
     if tile.source == "ghWorkflows" {
         viewmodel::dashboard::sort_repos(&mut matching, &tile.sort_by, tile.sort_descending);
     }
@@ -1169,8 +1225,10 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     } else {
         format!("{} shown · {problems} need attention", shown.len())
     };
+    let full_note = scope_note(tile, string(source, "title"), &scope_label);
     json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
+        "views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
         "sortColumns":if tile.source == "ghWorkflows" { json!([
             {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
         ]) } else {json!([])}})
@@ -2669,5 +2727,112 @@ mod tests {
         std::fs::create_dir(store.path()).unwrap();
         assert!(crate::persist_dashboard(&mut store, default_layout(), 1).is_err());
         assert_eq!(store.dashboard(), Some(&saved));
+    }
+}
+
+#[cfg(test)]
+mod tile_scope_ids_tests {
+    use super::*;
+
+    fn tile(source: &str, scope: &str) -> DashboardTile {
+        let mut t = default_layout()
+            .tiles
+            .into_iter()
+            .find(|t| t.source == source)
+            .unwrap();
+        t.scope = scope.into();
+        t
+    }
+
+    fn repos_payload() -> Value {
+        let repo = |name: &str, status: &str| {
+            json!({"repo":format!("o/{name}"),"name":name,"status":status,
+                "statusLabel":status,"attention":status != "healthy","cells":[]})
+        };
+        json!({"columns":[],"rows":[repo("a","healthy"),repo("b","failing"),repo("c","healthy")]})
+    }
+
+    fn ids(v: &[&str]) -> BTreeSet<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_all_scope_tile_scopes_nothing() {
+        assert_eq!(
+            scoped_row_ids(&tile("ghWorkflows", "all"), &repos_payload()),
+            None
+        );
+    }
+
+    #[test]
+    fn scoped_ids_are_the_rows_the_tile_matches_before_its_row_limit() {
+        let mut t = tile("ghWorkflows", "healthy");
+        t.row_limit = "1".into();
+        assert_eq!(
+            scoped_row_ids(&t, &repos_payload()),
+            Some(ids(&["o/a", "o/c"]))
+        );
+    }
+
+    #[test]
+    fn selected_repos_scope_by_repo() {
+        let mut t = tile("ghWorkflows", "all");
+        t.selected_repos = vec!["o/b".into()];
+        assert_eq!(scoped_row_ids(&t, &repos_payload()), Some(ids(&["o/b"])));
+    }
+
+    #[test]
+    fn a_scope_that_matches_nothing_is_an_empty_set_not_none() {
+        assert_eq!(
+            scoped_row_ids(&tile("ghWorkflows", "item:o/gone"), &repos_payload()),
+            Some(ids(&[]))
+        );
+    }
+
+    #[test]
+    fn every_tile_lists_its_views_in_order() {
+        let v = tile_view(
+            &tile("services", "all"),
+            &source_view("services", "Service Health", &Value::Null),
+        );
+        assert_eq!(
+            v["views"],
+            json!([{"id":"detail","label":"Detail"},{"id":"full","label":"Full view"}])
+        );
+    }
+
+    #[test]
+    fn the_full_note_names_the_scope_only_when_it_filters() {
+        let src = source_view("ghWorkflows", "GitHub Repos", &repos_payload());
+        assert_eq!(
+            tile_view(&tile("ghWorkflows", "all"), &src)["fullNote"],
+            Value::Null
+        );
+        assert_eq!(
+            tile_view(&tile("ghWorkflows", "healthy"), &src)["fullNote"],
+            "Scoped to Healthy repos. Totals still cover all of GitHub Repos."
+        );
+        let mut t = tile("ghWorkflows", "all");
+        t.selected_repos = vec!["o/a".into(), "o/b".into()];
+        assert_eq!(
+            tile_view(&t, &src)["fullNote"],
+            "Scoped to 2 selected repos. Totals still cover all of GitHub Repos."
+        );
+        t.selected_repos.truncate(1);
+        assert_eq!(
+            tile_view(&t, &src)["fullNote"],
+            "Scoped to 1 selected repo. Totals still cover all of GitHub Repos."
+        );
+    }
+
+    #[test]
+    fn a_non_all_scope_wins_over_selected_repos_in_the_note() {
+        let src = source_view("ghWorkflows", "GitHub Repos", &repos_payload());
+        let mut t = tile("ghWorkflows", "healthy");
+        t.selected_repos = vec!["o/a".into()];
+        assert_eq!(
+            tile_view(&t, &src)["fullNote"],
+            "Scoped to Healthy repos. Totals still cover all of GitHub Repos."
+        );
     }
 }
