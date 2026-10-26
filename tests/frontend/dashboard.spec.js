@@ -2781,7 +2781,6 @@ test("the View menu is keyboard operable: arrows wrap, Escape returns to View, T
   await expect(items).toHaveCount(0);
   await expect(button).toBeFocused();
   await expect(button).toHaveAttribute("aria-expanded", "false");
-  // Escape closed only the menu: nothing else opened or closed.
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await button.click();
   await expect(items).toHaveCount(2);
@@ -2815,4 +2814,39 @@ test("no tile footer reads Detail →", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await expect(tile(page, "hosts")).toBeVisible();
   await expect(page.getByText("Detail →")).toHaveCount(0);
+});
+
+test("Escape closes only the View menu: an open inspector stays and focus lands on that tile's View", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  await openDetail(page, "ghWorkflows");
+  await expect(page.locator("#dashboardInspector")).toBeVisible();
+  await viewButton(page, "hosts").click();
+  await expect(viewItems(page, "hosts").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(viewItems(page, "hosts")).toHaveCount(0);
+  await expect(page.locator("#dashboardInspector")).toBeVisible();
+  await expect(viewButton(page, "hosts")).toBeFocused();
+});
+
+test("the View menu of a bottom-row tile stays inside a fitted window and adds no scroll", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  // Fit window to tiles: the viewport is exactly as tall as the body.
+  const fitted = await page.evaluate(() => Math.ceil(document.body.getBoundingClientRect().height));
+  await page.setViewportSize({ width: 1280, height: fitted });
+  const scrollHeight = () => page.evaluate(() => document.scrollingElement.scrollHeight);
+  const before = await scrollHeight();
+  const bottom = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll("#dashboardOverview .db-tile")];
+    return tiles.reduce((a, b) => (b.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? b : a)).dataset.tile;
+  });
+  await page.locator(`[data-tile="${bottom}"]`).getByRole("button", { name: "View", exact: true }).click();
+  const items = page.locator(`[data-tile="${bottom}"]`).getByRole("menuitem");
+  await expect(items).toHaveCount(2);
+  const viewport = page.viewportSize();
+  for (const box of await items.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()))) {
+    expect(box.top).toBeGreaterThanOrEqual(0);
+    expect(box.bottom).toBeLessThanOrEqual(viewport.height);
+  }
+  expect(await scrollHeight()).toBe(before);
 });

@@ -1040,13 +1040,13 @@
 #dashboardOverview .db-tile-footer { position: relative; }
 #dashboardOverview .db-view-menu {
   position: absolute;
-  top: 100%;
+  bottom: 100%;
   right: 0;
   z-index: 5;
   display: flex;
   flex-direction: column;
   min-width: 120px;
-  margin-top: 2px;
+  margin-bottom: 2px;
   padding: 3px;
   background: var(--db-raised);
   border: 1px solid var(--db-line);
