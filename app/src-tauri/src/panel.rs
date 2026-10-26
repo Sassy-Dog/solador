@@ -107,11 +107,14 @@ pub fn stale_after_for_cadence(cadence_secs: u64) -> u64 {
 ///
 /// Used by Sentry Crons and the metered Usage providers (Neon, Sentry, Vercel),
 /// each passing **its own** cadence. At the 1h default it is exactly the 90
-/// minutes those footers have always had. A healthy loop's reading is never
-/// older than one cycle (plus the pass's own duration, seconds against the
-/// half-cycle of grace, which is at least 150s at the 300s floor), so it is
-/// never stale between two healthy polls at any legal cadence; a stuck poller
-/// is flagged after 1.5 cycles rather than a fixed 18 at the floor.
+/// minutes those footers have always had. It is never stale between two healthy
+/// polls provided each loop really polls on its own cadence and stamps its
+/// reading when the read completes: Crons' loop sleeps its cadence, and the
+/// usage loop sleeps `min(rollups cadence, time until the providers are due)`
+/// (`usage_loop_sleep`), with the providers stamped as each read finishes. What
+/// is left over is the pass's own duration, seconds against a half-cycle of
+/// grace that is 150s at the 300s floor. A stuck poller is flagged after 1.5
+/// cycles rather than a fixed 18 at the floor.
 #[must_use]
 pub fn stale_after_for_slow_cadence(cadence_secs: u64) -> u64 {
     cadence_secs.saturating_mul(3).div_ceil(2)
@@ -492,7 +495,9 @@ mod tests {
             ),
             (
                 "sentry crons",
-                crate::crons::stale_after_secs(crate::usage::PROVIDER_POLL_INTERVAL_SECS),
+                crate::crons::stale_after_secs(u64::from(
+                    store::settings::PanelInterval::Crons.spec().default_secs,
+                )),
                 90 * 60,
             ),
             // Azure Cost's window is derived from the operator's cadence

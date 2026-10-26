@@ -949,6 +949,9 @@ mod tests {
     fn before_the_first_pass_there_is_no_footer_and_no_age() {
         let payload = view(&CronsState::new(), CADENCE, NOW);
         assert_eq!(payload["footer"], Value::Null);
+        assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
+        let text = payload["freshness"]["text"].as_str().unwrap_or_default();
+        assert!(!text.contains("ago"), "no fabricated age: {text}");
     }
 
     /// An unreadable credential store keeps a live panel's rows and adds the

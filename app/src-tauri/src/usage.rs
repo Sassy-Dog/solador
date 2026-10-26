@@ -107,7 +107,7 @@ pub fn provider_stale_after_secs(cadence_secs: u64) -> u64 {
     crate::panel::stale_after_for_slow_cadence(cadence_secs)
 }
 
-/// How often the Neon and Sentry reads run — their own hourly cadence, not the
+/// How often the Neon and Sentry reads run by default — hourly, on a cadence of their own, not the
 /// Claude rollups' cadence. Consumption and event stats move on the
 /// order of hours; asking every 30 seconds spends rate-limit budget to learn
 /// nothing.
@@ -1145,7 +1145,14 @@ mod tests {
 
     #[test]
     fn at_the_floor_a_stuck_provider_poller_is_flagged_within_two_cycles() {
-        assert!(!providers_footer(NOW - 2 * 300, 300).is_null());
+        let text = providers_footer(NOW - 2 * 300, 300)["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            text,
+            "⚠ neon: stale · updated 10m ago ⚠ sentry: stale · updated 10m ago"
+        );
     }
 
     // MARK: plan block
@@ -1320,6 +1327,11 @@ mod tests {
         );
         assert_eq!(payload["loading"], true);
         assert!(state.neon.is_loading());
+        // Before the first read there is no age to show: no warning, and no
+        // `ago` anywhere in the section's freshness.
+        assert!(payload["footer"].is_null());
+        let text = payload["freshness"]["text"].as_str().unwrap_or_default();
+        assert!(!text.contains("ago"), "no fabricated age: {text}");
     }
 
     /// The log root could not even be located, so nothing was read. Distinct

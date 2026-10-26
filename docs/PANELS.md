@@ -114,8 +114,10 @@
   read it at render time too, each its own (`PanelInterval::Crons` and
   `UsageProviders`): the window is 1.5 cycles
   (`panel::stale_after_for_slow_cadence`; 90 minutes at the 1h default, 7.5
-  minutes at the 300s floor), so a healthy loop is never stale between polls
-  and a stuck one is flagged within two cycles (#635).
+  minutes at the 300s floor), so a healthy loop is not stale between polls
+  (the usage loop sleeps `min(rollups cadence, time until the providers are
+  due)` and stamps each provider as its read completes) and a stuck one is
+  flagged within two cycles (#635).
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness signal of
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,

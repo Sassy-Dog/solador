@@ -268,8 +268,8 @@ struct App {
     /// this one (and the GitHub one too, where they also change what it fetches).
     services_wake: tokio::sync::Notify,
     /// The Usage panel's state: Claude token rollups on
-    /// [`PanelInterval::ClaudeRollups`], Neon and Sentry on their own fixed
-    /// hourly cadence.
+    /// [`PanelInterval::ClaudeRollups`], Neon and Sentry on their own
+    /// cadence (hourly by default).
     usage: Mutex<UsageState>,
     /// Cuts the usage loop's sleep short, for the same reason
     /// [`App::github_wake`] exists.
@@ -286,7 +286,7 @@ struct App {
     /// because it runs on its own cadence and reads another program's sign-in,
     /// which nothing else on the usage loop does.
     plan_usage_wake: tokio::sync::Notify,
-    /// The Sentry Crons panel's state, on the same fixed hourly cadence as the
+    /// The Sentry Crons panel's state, on the same default hourly cadence as the
     /// other Sentry read — not the Claude rollups' cadence.
     ///
     /// Its own lock rather than a field on [`UsageState`]: the two share a
@@ -296,7 +296,7 @@ struct App {
     /// the Usage card.
     crons: Mutex<CronsState>,
     /// Cuts the crons loop's sleep short after the Sentry token or org slug
-    /// changes. An hourly cadence is long enough that waiting one out is
+    /// changes. A long cadence is long enough that waiting one out is
     /// indistinguishable from the credential having been rejected.
     crons_wake: tokio::sync::Notify,
     /// The Azure Cost panel's state, on its own 4h cadence.
@@ -3189,7 +3189,7 @@ fn apply_machine_preferences(
 // MARK: the Usage + Azure Cost panels
 //
 // Two loops rather than one because they share nothing: different credentials,
-// different sources, and cadences an order of magnitude apart (an hourly API
+// different sources, and cadences an order of magnitude apart (an hourly-by-default API
 // read vs a daily blob export). Both follow `github_loop`'s shape — poll,
 // re-read the interval, sleep interruptibly — so a Settings edit applies now
 // rather than on the far side of a cadence that can be four hours long.
@@ -3197,7 +3197,7 @@ fn apply_machine_preferences(
 /// One pass over the Usage panel's sources.
 ///
 /// Claude is a local file walk and runs every pass. Neon and Sentry are network
-/// reads on their own hourly cadence, so they run only when `providers` says
+/// reads on their own cadence (hourly by default), so they run only when `providers` says
 /// they are due — either the hour elapsed, or a Settings edit changed what they
 /// would fetch.
 async fn poll_usage(app: &Arc<App>, providers: bool) {
@@ -3273,7 +3273,7 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
                     // without consumption history.
                     Ok(summary) => state.neon_mut().succeeded(
                         summary,
-                        now,
+                        panel::now_unix(),
                         summary
                             .is_unmeasured()
                             .then(|| usage::NEON_NO_CONSUMPTION_MESSAGE.to_owned()),
@@ -3288,7 +3288,9 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
             let invoice_result = client.invoices(&neon_org).await;
             let mut state = app.usage.lock().expect("usage state poisoned");
             match invoice_result {
-                Ok(summary) => state.neon_invoice_mut().succeeded(summary, now, None),
+                Ok(summary) => state
+                    .neon_invoice_mut()
+                    .succeeded(summary, panel::now_unix(), None),
                 Err(e) => state
                     .neon_invoice_mut()
                     .failed(format!("invoices: {}", e.user_message())),
@@ -3369,7 +3371,7 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
                     let empty = summary.is_unmeasured();
                     state.vercel_mut().succeeded(
                         summary,
-                        now,
+                        panel::now_unix(),
                         empty.then(|| usage::VERCEL_NO_SPEND_MESSAGE.to_owned()),
                     );
                 }
@@ -3414,6 +3416,20 @@ fn read_claude_usage() -> (Option<usage::UsageSummary>, Option<String>) {
 /// rather than assumed: a pass can refresh the tokens without spending a
 /// provider request.
 ///
+/// How long [`usage_loop`] sleeps: the rollups cadence, cut short to the time
+/// remaining until the providers are due, so the provider half runs on its own
+/// cadence rather than that cadence rounded up to a multiple of the rollups'
+/// (#635). `since_providers` is `None` before the first provider pass.
+fn usage_loop_sleep(
+    rollups: std::time::Duration,
+    providers_every: std::time::Duration,
+    since_providers: Option<std::time::Duration>,
+) -> std::time::Duration {
+    since_providers.map_or(rollups, |since| {
+        rollups.min(providers_every.saturating_sub(since))
+    })
+}
+
 /// Both are re-read every pass — the outer one at the bottom of the loop, the
 /// provider one at the top — so either can be changed in Settings without
 /// waiting out the old value. See [`panel_interval`].
@@ -3437,7 +3453,13 @@ async fn usage_loop(app: Arc<App>) {
             providers_last = Some(std::time::Instant::now());
         }
 
-        let secs = panel_interval(&app.store, PanelInterval::ClaudeRollups);
+        // The providers' own cadence bounds the sleep (#635): sleeping the
+        // rollups cadence alone rounded the provider gap up to a multiple of it.
+        let secs = usage_loop_sleep(
+            panel_interval(&app.store, PanelInterval::ClaudeRollups),
+            panel_interval(&app.store, PanelInterval::UsageProviders),
+            providers_last.map(|at| at.elapsed()),
+        );
         tokio::select! {
             () = tokio::time::sleep(secs) => {}
             () = app.usage_wake.notified() => {}
@@ -3697,7 +3719,7 @@ fn read_credential<C: CredentialStore + ?Sized>(credentials: &C, key: SecretKey)
     }
 }
 
-/// Cuts the usage loop's sleep short. `providers` also forces the hourly half to
+/// Cuts the usage loop's sleep short. `providers` also forces the provider half to
 /// run on that pass — a newly-saved Neon key must fill its section now.
 fn wake_usage(app: &App, providers: bool) {
     if providers {
@@ -7538,11 +7560,11 @@ fn main() {
     rt.spawn(services_loop(Arc::clone(&app)));
     // This machine, on the host cadence — the card that leads the grid.
     rt.spawn(local::poll_loop(Arc::clone(&app.local), POLL_INTERVAL));
-    // Usage: Claude on its rollup cadence, Neon and Sentry hourly inside the
+    // Usage: Claude on its rollup cadence, Neon and Sentry on their own cadence inside the
     // same loop.
     rt.spawn(usage_loop(Arc::clone(&app)));
     rt.spawn(plan_usage_loop(Arc::clone(&app)));
-    // Sentry cron monitors, on the same fixed hourly cadence as the Sentry read
+    // Sentry cron monitors, on the same default hourly cadence as the Sentry read
     // inside the usage loop — a persistence watch, not a real-time alarm.
     rt.spawn(crons_loop(Arc::clone(&app)));
     // Azure cost, on the reader's own 4h cadence.
@@ -7827,6 +7849,26 @@ mod tests {
             app.usage.lock().unwrap().claude_stale_after_secs(),
             app.services.lock().unwrap().stale_after_secs(),
         )
+    }
+
+    /// #635: the loop's sleep never carries the providers past their own
+    /// cadence. At the 300s provider floor, a 240s or 600s rollups cadence must
+    /// not stretch the gap to 480s / 600s.
+    #[test]
+    fn the_usage_loop_wakes_when_the_providers_are_due() {
+        use std::time::Duration as D;
+        let s = |r: u64, p: u64, since: Option<u64>| {
+            usage_loop_sleep(D::from_secs(r), D::from_secs(p), since.map(D::from_secs))
+        };
+        assert_eq!(s(240, 300, Some(240)), D::from_secs(60));
+        assert_eq!(s(600, 300, Some(0)), D::from_secs(300));
+        assert_eq!(
+            s(60, 3_600, Some(0)),
+            D::from_secs(60),
+            "rollups still bound it"
+        );
+        assert_eq!(s(60, 3_600, None), D::from_secs(60));
+        assert_eq!(s(60, 300, Some(900)), D::ZERO, "overdue means due now");
     }
 
     /// #635: the Crons and metered-provider footer windows follow their own
