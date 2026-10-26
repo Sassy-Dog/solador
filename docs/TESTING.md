@@ -117,8 +117,11 @@ records what it found (#642)**, before the sweep: one `dmg attach:` line on
 stderr with the attempt number, how long `hdiutil attach` took, its exit status,
 the (device, image) pairs standing on this image path (any that stood there
 before the attach marked `pre-existing`), whether the mountpoint is mounted,
-and the *count* of images attached in total (never another image's path). One
-more such line follows the final sweep. It exists to answer what macOS 27.0.1's
+and the *count* of images attached in total (never another image's path), and the
+first line of that attempt's error. Two more such lines end a give-up: one
+after the final 2 s settle but *before* the last sweep (the sweep detaches
+silently, so this is the only trace of a device that appeared during the
+pause) and one after it, reading what remains. It exists to answer what macOS 27.0.1's
 EAGAIN means: whether `hdiutil attach` reports it for an attach that succeeded,
 and whether a device appears after the last failure. The lines are read-only
 (they never detach), a read that fails prints `unknown` in its fields and

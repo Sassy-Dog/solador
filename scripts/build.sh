@@ -841,12 +841,13 @@ warn_kept_dmg_devices() {
 # (a device on this path, <mnt> mounted) could not be told afterwards. Every
 # line starts `dmg attach:` so a log can be searched for it. It records the
 # (device, image) pairs on THIS image path (marking any in the newline-separated
-# <keep>, which stood there before the attach), whether <mnt> is a mountpoint,
+# <keep>, which stood there before the attach), the first line of the attempt's
+# error when one is passed, whether <mnt> is a mountpoint,
 # and only the COUNT of images attached in total: other images' paths are the
 # operator's own. It never detaches anything, and a read that fails prints
 # `unknown` for its fields; callers add `|| true` and no outcome depends on it.
 dmg_attach_diag() {
-    local what="$1" mnt="$2" dmg="$3" keep="${4:-}" listing mounts line mp nmnt dev path tag
+    local what="$1" mnt="$2" dmg="$3" keep="${4:-}" errtext="${5:-}" listing mounts line mp nmnt dev path tag
     local devs="unknown" total="unknown" mounted="unknown"
     if listing="$(dmg_attached_images)"; then
         devs="" total=0
@@ -877,8 +878,8 @@ dmg_attach_diag() {
             esac
         done <<< "$mounts"
     fi
-    printf 'dmg attach: %s: devices on %s: %s; %s mounted: %s; images attached in total: %s\n' \
-        "$what" "$dmg" "$devs" "$mnt" "$mounted" "$total" >&2
+    printf 'dmg attach: %s: devices on %s: %s; %s mounted: %s; images attached in total: %s%s\n' \
+        "$what" "$dmg" "$devs" "$mnt" "$mounted" "$total" "${errtext:+; error: $errtext}" >&2
 }
 
 attach_dmg_readonly() {
@@ -910,7 +911,7 @@ attach_dmg_readonly() {
             return 1
         fi
         err="$(cat "$errfile")"
-        dmg_attach_diag "attempt $attempt/$attempts failed after $((SECONDS - started))s, hdiutil exit $rc" "$mnt" "$dmg" "$ATTACH_PREEXISTING" || true
+        dmg_attach_diag "attempt $attempt/$attempts failed after $((SECONDS - started))s, hdiutil exit $rc" "$mnt" "$dmg" "$ATTACH_PREEXISTING" "$(printf '%s' "$err" | head -n 1)" || true
         if ! release_dmg_image "$dmg" "$ATTACH_PREEXISTING"; then
             rm -f "$errfile"
             printf '%s\n' "$err" >&2
@@ -931,10 +932,13 @@ attach_dmg_readonly() {
     # (seen: a failed attach, nothing listed, the device present seconds later).
     # Look once more, after a pause, before giving up on this image.
     sleep 2
+    # Read before the sweep: `release_dmg_image` detaches silently, so a device
+    # that appeared during the pause would otherwise leave no trace (#642).
+    dmg_attach_diag "after the 2 s settle, before the final sweep" "$mnt" "$dmg" "$ATTACH_PREEXISTING" || true
     # `|| true`: a failure here was already reported on stderr by the helper,
     # and the return is unconditional; the original attach error is printed above.
     release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
-    dmg_attach_diag "after the final sweep" "$mnt" "$dmg" "$ATTACH_PREEXISTING" || true
+    dmg_attach_diag "after the final sweep (what remains)" "$mnt" "$dmg" "$ATTACH_PREEXISTING" || true
     warn_kept_dmg_devices "$dmg" "$ATTACH_PREEXISTING"
     return 1
 }
