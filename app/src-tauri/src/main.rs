@@ -7806,6 +7806,100 @@ mod tests {
         }
     }
 
+    /// Makes the next `Store::save` fail: the store file's path becomes a
+    /// directory, so the atomic rename onto it is refused on every platform.
+    fn break_store_saves(app: &App) {
+        let path = app.store.lock().unwrap().path().to_path_buf();
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(&path).unwrap();
+    }
+
+    fn github_secs(app: &App) -> (u32, bool) {
+        let store = app.store.lock().unwrap();
+        (
+            store.settings().panel_interval_secs(PanelInterval::GitHub),
+            store
+                .settings()
+                .panel_interval_is_configured(PanelInterval::GitHub),
+        )
+    }
+
+    /// A below-floor value is refused in the floor's words before the store is
+    /// touched: nothing stored, no window moved, no loop woken (#623).
+    #[test]
+    fn a_refused_cadence_leaves_the_store_untouched() {
+        let (_dir, _rt, app) = test_app();
+        let before = github_secs(&app);
+        let error = panel_interval_save_in(&app, "github", 0).unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(github_secs(&app), before, "the refusal stored nothing");
+        assert!(!github_secs(&app).1, "and did not mark it configured");
+        assert_eq!(windows_of(&app), (150, 150, 150));
+        assert!(!woken(&app.github_wake), "a refusal wakes nothing");
+    }
+
+    /// A failed disk write puts the previous cadence back, for a save and a
+    /// clear alike, and wakes nothing (#623).
+    #[test]
+    fn a_failed_cadence_save_rolls_back_and_wakes_nothing() {
+        let (_dir, _rt, app) = test_app();
+        panel_interval_save_in(&app, "github", 300).unwrap();
+        assert!(woken(&app.github_wake), "the successful save woke its loop");
+        break_store_saves(&app);
+
+        let error = panel_interval_save_in(&app, "github", 600).unwrap_err();
+        assert!(
+            error.starts_with("Could not save the poll cadence"),
+            "{error}"
+        );
+        assert_eq!(github_secs(&app), (300, true), "the save rolled back");
+        assert_eq!(windows_of(&app).0, 750, "the window kept the saved cadence");
+        assert!(!woken(&app.github_wake), "a failed save wakes nothing");
+
+        let error = panel_interval_clear_in(&app, "github").unwrap_err();
+        assert!(
+            error.starts_with("Could not save the poll cadence"),
+            "{error}"
+        );
+        assert_eq!(github_secs(&app), (300, true), "the clear rolled back");
+        assert!(!woken(&app.github_wake), "a failed clear wakes nothing");
+    }
+
+    /// The wake follows a success and only a success, on its own loop (#623).
+    #[test]
+    fn a_cadence_change_wakes_its_loop_only_on_success() {
+        let (_dir, _rt, app) = test_app();
+        panel_interval_save_in(&app, "github", 300).unwrap();
+        assert!(woken(&app.github_wake));
+        assert!(!woken(&app.services_wake), "and no neighbour");
+        panel_interval_clear_in(&app, "github").unwrap();
+        assert!(woken(&app.github_wake), "a clear wakes it too");
+    }
+
+    /// A panel id the shell does not know is refused by both commands, with
+    /// nothing changed and nothing woken (#623).
+    #[test]
+    fn an_unknown_cadence_panel_is_refused() {
+        let (_dir, _rt, app) = test_app();
+        let before = github_secs(&app);
+        let error = panel_interval_save_in(&app, "nonesuch", 300).unwrap_err();
+        assert!(error.contains("unknown panel"), "{error}");
+        let error = panel_interval_clear_in(&app, "nonesuch").unwrap_err();
+        assert!(error.contains("unknown panel"), "{error}");
+        assert_eq!(github_secs(&app), before);
+        for target in [
+            WakeTarget::Containers,
+            WakeTarget::GitHub,
+            WakeTarget::Services,
+            WakeTarget::Usage,
+            WakeTarget::Azure,
+            WakeTarget::Crons,
+            WakeTarget::PlanUsage,
+        ] {
+            assert!(!woken(wake_notify(&app, target)), "{target:?}");
+        }
+    }
+
     /// The Containers footer judges staleness by the cadence the store holds
     /// *now*: a save or clear moves the window before any pass (#633), through
     /// the command's own render body.
