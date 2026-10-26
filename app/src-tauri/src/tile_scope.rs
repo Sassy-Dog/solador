@@ -18,10 +18,6 @@ pub(crate) const TILE_WRONG_SOURCE: &str = "That tile shows a different source."
 
 /// The tile a Full view was asked for, or why it has none. Checked in order:
 /// missing, hidden, then a different source.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first caller is the scoped Full view command")
-)]
 pub(crate) fn find_tile<'a>(
     layout: &'a DashboardLayout,
     id: &str,
@@ -40,10 +36,6 @@ pub(crate) fn find_tile<'a>(
 /// `payload` with every item the tile's scope does not keep removed. A tile
 /// that keeps everything gets the payload back unchanged; one that keeps
 /// nothing gets an empty panel, never the whole list.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first caller is the scoped Full view command")
-)]
 pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
     let Some(kept) = scoped_row_ids(tile, &payload) else {
         return payload;
