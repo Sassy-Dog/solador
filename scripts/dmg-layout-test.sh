@@ -36,7 +36,8 @@ dmg_under() {
 # only for an image that is <temp root>/tmp.*/<one of this suite's fixture
 # names>.dmg AND whose backing file is gone. A live run's fixtures (another
 # worktree's suite, this one) still have their file, so they never match;
-# neither do ~/Downloads installers or the simulator runtime images. The temp
+# neither do ~/Downloads installers or the simulator runtime images (a fixture
+# replaced in place must therefore never be absent from its path). The temp
 # root is compared with /private dropped from either side, since the leaked
 # image's directory is gone and cannot be resolved.
 dmg_is_leaked_fixture() {
@@ -449,16 +450,60 @@ else
     fail "an attach that lands on a pre-existing device does not detach it (status, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"); $(cat "$work/err"))"
 fi
 
+# A device that finishes attaching AFTER a failed attach reported its error (and
+# after the in-loop sweep found nothing) is caught by the pause-and-sweep at the
+# end. The stub fails the attach with a non-retried error and queues a real
+# attach; `sleep` performs it, and the harness performs it after the function
+# returns if it is still queued, so without the final pause the device is left.
+cat > "$work/late-hdiutil.sh" <<'EOF'
+late_attach() {
+    if [[ -e "$STUB_PENDING" ]]; then
+        rm -f "$STUB_PENDING"
+        command hdiutil attach -plist -nobrowse -readonly -noverify -mountpoint "$STUB_MNT" "$STUB_DMG" >/dev/null 2>&1
+    fi
+}
+hdiutil() {
+    if [[ "$1" == attach ]]; then
+        : > "$STUB_PENDING"
+        echo "hdiutil: attach failed - no mountable file systems" >&2
+        return 1
+    fi
+    command hdiutil "$@"
+}
+sleep() { late_attach; }
+EOF
+late_rc=0
+(
+    export STUB_PENDING="$work/pending-attach" STUB_DMG="$work/good.dmg"
+    STUB_MNT="$(mktemp -d "$work/mnt.XXXXXX")"; export STUB_MNT
+    # shellcheck source=/dev/null
+    source "$work/late-hdiutil.sh"
+    rc=0
+    attach_dmg_readonly "$STUB_MNT" "$work/good.dmg" 2>/dev/null || rc=$?
+    late_attach
+    exit "$rc"
+) || late_rc=$?
+late_left="$(leftover)"
+if [[ "$late_rc" == 1 && -z "$late_left" ]]; then
+    pass "a device that attaches after the last failed attempt is swept by the final pause"
+else
+    fail "a device that attaches after the last failed attempt is swept by the final pause (status $late_rc; left: $late_left)"
+fi
+release_dmg_image "$work/good.dmg" || fail "could not clean up the late-attached device"
+
 # make_dmg's shape, on real devices: the image is attached, then replaced at the
 # same path (rm -f, then create -ov), then checked. The earlier device keeps its
 # image path and must survive the check's sweeps.
 keep_mnt="$(mktemp -d "$work/mnt.XXXXXX")"
 attach_dmg_readonly "$keep_mnt" "$work/good.dmg"; keep_dev="$ATTACHED_DEV"
-rm -f "$work/good.dmg"
-make_image good "$good"
+# The replacement is written under another name and moved over the path, so the
+# old inode is unlinked as make_dmg's `rm -f` does but the path is never absent:
+# a leaked-fixture reaper in a concurrent suite would take the gap for a leak.
+hdiutil create -volname Solador -srcfolder "$good" -ov -format UDZO "$work/replacement.dmg" >/dev/null 2>&1
+mv -f "$work/replacement.dmg" "$work/good.dmg"
 keep_rc=0; assert_dmg_layout "$work/good.dmg" Solador.app 2>"$work/err" || keep_rc=$?
 keep_st=0; dmg_device_state "$keep_dev" "$work/good.dmg" || keep_st=$?
-if [[ "$keep_rc" == 0 && "$keep_st" == 0 ]]; then
+if [[ "$keep_rc" == 0 && "$keep_st" == 0 ]] && grep -q "$keep_dev was already attached .* left alone" "$work/err"; then
     pass "a same-path image still mounted from before is not swept by the layout check"
 else
     fail "a same-path image still mounted from before is not swept by the layout check (status $keep_rc; earlier device $keep_dev state $keep_st; $(cat "$work/err"))"

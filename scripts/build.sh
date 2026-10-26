@@ -842,6 +842,8 @@ attach_dmg_readonly() {
                 return 0
             fi
             # Attached, but the device is unnamed: detach by image, then fail.
+            # `|| true`: release_dmg_image has already reported any failure on
+            # stderr, and the return below is unconditional.
             release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
             log_error "hdiutil attached $dmg but reported no device"
             return 1
@@ -867,6 +869,8 @@ attach_dmg_readonly() {
     # (seen: a failed attach, nothing listed, the device present seconds later).
     # Look once more, after a pause, before giving up on this image.
     sleep 2
+    # `|| true`: a failure here was already reported on stderr by the helper,
+    # and the return is unconditional; the original attach error is printed above.
     release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
     return 1
 }
@@ -893,7 +897,13 @@ assert_dmg_layout() {
         return 1
     fi
     dev="$ATTACHED_DEV"
-    local preexisting="$ATTACH_PREEXISTING"
+    local preexisting="$ATTACH_PREEXISTING" kept
+    # Never detached, but never silent either: a device that appeared late
+    # during an earlier failed attempt lands here on the next build.
+    while IFS= read -r kept; do
+        [[ -n "$kept" ]] || continue
+        log_warning "$kept was already attached for $dmg and is left alone; if this is not an image you opened: hdiutil detach $kept"
+    done <<< "$preexisting"
 
     entries="$(ls -A "$mnt" | LC_ALL=C sort)"
     target="$(readlink "$mnt/Applications" 2>/dev/null || true)"
