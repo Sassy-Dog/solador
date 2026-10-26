@@ -84,7 +84,7 @@ function breakdownNode(column) {
 }
 
 function renderAzure(payload) {
-  $a("azureTitle").textContent = payload.title;
+  $a("azureTitle").textContent = window.soladorDashboard?.tileHeading?.("azureCost") || payload.title;
   $a("azureTrailing").textContent = payload.trailing || "";
 
   const children = [];
@@ -180,7 +180,7 @@ function renderAzure(payload) {
 async function refresh() {
   if (overviewOpen) return false;
   try {
-    const payload = await callRust("azure_cost", {}, "sample-azure.json");
+    const payload = await callRust("azure_cost", window.soladorDashboard?.tileArgs?.("azureCost") ?? {}, "sample-azure.json");
     if (payload) renderAzure(payload);
     return Boolean(payload && payload.loading);
   } catch {

@@ -4,7 +4,8 @@ The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app opening on a
 compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Health**
 and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
-and OpenClaw. Each tile opens its readings and the existing full panel; **Full
+and OpenClaw. Each tile opens its readings in Detail, and Detail opens the tile's own
+**Full view** (see [A tile's Full view](#a-tiles-full-view)); the toolbar's **Full
 view** toggles between the overview and the full cockpit. Connections and credentials remain
 in **Settings**, backed by the OS credential store. Both views share a compact
 toolbar with the logo, app name and actions, without a background frame or
@@ -38,6 +39,25 @@ at narrow widths, keeping all columns available without widening the page.
 Column widths are fixed by the view definition, so changing readings, names or
 status words do not move neighboring columns. Truncated cells retain their full
 text on hover.
+
+#### A tile's Full view
+
+Detail opened from a tile (its footer link, its `N more` link, or one of its rows
+or runner groups) has a **Full view** button. It opens the source's full panel
+holding only the tile's rows: its scope and, on Repos, its selected repositories.
+Machines keeps only the tile's cards, laid out for that many. Each panel command
+takes the tile's id (`tile`) and Rust does the filtering (`tile_scope`). The panel
+is titled with the tile's name. When the scope filters, Rust's note sits under the
+header row, for example `Scoped to Healthy repos. Totals still cover all of GitHub
+Repos.`: header counts, trailing summaries and freshness lines still describe the
+whole source. A tile scoped to everything gets the source's panel unchanged, with
+no note. A runner group selected in Detail carries in as the panel's filter.
+**Escape**, or the toolbar's **Full view** toggle, returns to the overview with
+focus on that tile's footer link, and the panel gets its own title back. A tile
+hidden or removed while its Full view is open sends the overview back within a
+second, with `That tile is no longer on the overview.`, never the source-wide
+panel under the tile's name. Detail opened from a **Needs Attention** chip has no
+tile, so its **Full view** opens the whole source.
 Expand a resource for explanations, volumes and actions; opening one specific
 resource starts it expanded. Machine volumes use an alphabetized table of mount,
 used, total and usage percentage in both views. This does not change the Full host card's fullest-first
@@ -184,8 +204,8 @@ Attention; a fully busy type never does. Grouping follows the tile's scope and
 precedes its row limit. Selecting a group opens the inline **Detail** inspector,
 just like selecting a machine, while keeping the dashboard visible. It shows
 that group across the source with current counts and individual
-members. **Open full panel** carries the selected group into Full; the tile's
-**Details** link opens all runners within its scope. The saved Runners Table/List
+members. Detail's **Full view** opens the tile's Full view with the selected group
+as its filter; the tile's **Details** link opens all runners within its scope. The saved Runners Table/List
 choice applies to both Detail and Full; List stays in one vertical column.
 In Full, **All runners** clears the temporary filter, and returning to Overview
 restores the inline Detail selection. Membership and counts follow live readings
@@ -362,9 +382,11 @@ settings only; it still uses the normal credential service. A separate credentia
 service is needed only for a deliberately credential-free run. Ad-hoc builds do
 not preserve Keychain recognition across rebuilds. For a native smoke check, use
 the scratch-store procedure below, then hide/restore a tile, duplicate Machines
-with a Remote machines scope, relaunch, and verify the saved view. Open Details
-and connection settings, and confirm Overview returns correctly. The existing full-panel
-smoke checklist starts from **Full view**. The macOS dashboard smoke
+with a Remote machines scope, relaunch, and verify the saved view. Open the
+duplicate's Details and its **Full view**: only its machines, under its name and
+scope note; Escape returns to it. Open connection settings, and confirm Overview
+returns correctly. The existing full-panel smoke checklist starts from the toolbar's
+**Full view**; the tile's Full view has its own row in the extras below. The macOS dashboard smoke
 passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
 credential service in the test build. It covered hide/restore, duplication and
 independent scope, rename, width, presentation, arrow ordering, Undo, pointer
@@ -3019,6 +3041,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
 | `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
+| a tile's Full view: the panel commands' `tile` argument (`cockpit` here; the other eight take it the same way) | with the seeded host from step 2: **Edit dashboard** → **Add tile** → **Machines**, set **Show** to *This machine*, **Add tile**, **Done editing**; open that tile's **Detail →**, press **Full view**, then **Escape** | the host grid holds only this machine's card, titled with the tile's name, with `Scoped to This machine. Totals still cover all of Machines.` under the title row. Escape returns to the overview with focus on the tile's **Detail →**. The seeded host's card in that view, or a refusal sentence on screen, is the defect this row exists to catch |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 

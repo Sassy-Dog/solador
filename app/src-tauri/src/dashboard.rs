@@ -1407,7 +1407,10 @@ fn labels() -> Value {
         ("removeNote", "Removing a tile keeps its connection and monitoring. Undo brings the tile back."),
         ("removed", "Tile removed. Its connection is still monitored. Undo restores the tile."),
         ("source", "Source"),
-        ("fullPanel", "Open full panel"),
+        ("fullPanel", "Full view"),
+        // The panel commands' own refusal: a tile's Full view that loses its
+        // tile says what they would.
+        ("tileGone", crate::tile_scope::TILE_GONE),
         ("back", "Overview"),
         ("manage", "Manage connection"),
         ("editScope", "Choose scope"),
@@ -1647,7 +1650,7 @@ mod tests {
     }
 
     /// A grouped tile's groups are the payload rows' own: the tile's group id
-    /// is what inline Detail and Open full panel filter the source rows by, so
+    /// is what inline Detail and its Full view filter the source rows by, so
     /// a tile that regrouped by OS · architecture under a label split would
     /// open every split group onto nothing.
     #[test]

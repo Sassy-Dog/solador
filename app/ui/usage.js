@@ -148,7 +148,7 @@ function planNode(plan) {
 }
 
 function renderUsage(payload) {
-  $u("usageTitle").textContent = payload.title;
+  $u("usageTitle").textContent = window.soladorDashboard?.tileHeading?.("claudeUsage") || payload.title;
   $u("usageTrailing").textContent = payload.trailing || "";
 
   const children = [];
@@ -240,7 +240,7 @@ async function refresh() {
   try {
     // Offline (no Tauri), the dumped-fixture path every other panel uses, so
     // this one opens in a plain browser and in the Playwright suite.
-    const payload = await callRust("usage", {}, "sample-usage.json");
+    const payload = await callRust("usage", window.soladorDashboard?.tileArgs?.("claudeUsage") ?? {}, "sample-usage.json");
     if (payload) renderUsage(payload);
     return Boolean(payload && payload.loading);
   } catch {

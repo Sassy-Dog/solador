@@ -1007,6 +1007,9 @@
 #cockpitView .panel { background:var(--db-raised); border-color:var(--db-line); border-radius:9px; padding:16px; }
 #cockpitView .panel-title { font-weight:500; }
 #cockpitView[data-detail-source] .panel-title { font-size:14px; }
+/* A tile's Full view: Rust's note under the header row, muted like the
+   panel's trailing and freshness lines. */
+#cockpitView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }
 #cockpitView .panel-hdr { gap:8px; }
 #runnersPanel { container-type:inline-size; }
 #runnersPanel .panel-hdr { flex-wrap:wrap; }

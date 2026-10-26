@@ -14,6 +14,18 @@
     sentryCrons: "cronsPanel",
     openclawAgents: "openclawPanel",
   };
+  // Each source's panel title, which a tile's Full view names after the tile.
+  const sourceTitles = {
+    hosts: "hostsTitle",
+    containers: "containersTitle",
+    ghWorkflows: "reposTitle",
+    ghRunners: "runnersTitle",
+    claudeUsage: "usageTitle",
+    azureCost: "azureTitle",
+    services: "servicesTitle",
+    sentryCrons: "cronsTitle",
+    openclawAgents: "openclawTitle",
+  };
   let model = null,
     editing = false,
     busy = false,
@@ -23,6 +35,11 @@
     new URLSearchParams(location.search).get("view") === "details"
       ? "details"
       : "overview";
+  // A tile's Full view is the single-panel mode with this set: the open tile,
+  // whose id its source's command is sent. Only ever set while mode is
+  // "details".
+  let fullTile = null; // {id, source}
+  let coveredTitle = null, fullNoteEl = null;
   let history = [],
     dragged = null,
     initialized = false;
@@ -98,6 +115,35 @@
   }
   function tile(id) {
     return model.layout.tiles.find((t) => t.id === id);
+  }
+  // What a panel's command is sent: the open tile, for that tile's source only.
+  function tileArgs(sourceId) {
+    return fullTile?.source === sourceId ? { tile: fullTile.id } : {};
+  }
+  // The open tile's name, for the panel of that tile's source; null otherwise.
+  function fullTileTitle(sourceId) {
+    if (fullTile?.source !== sourceId) return null;
+    return model?.tiles.find((t) => t.id === fullTile.id)?.title ?? null;
+  }
+  // The tile's name over its panel and Rust's scope note under the header row.
+  function paintTileHeading() {
+    const t = fullTile && model.tiles.find((x) => x.id === fullTile.id);
+    const title = t && document.getElementById(sourceTitles[t.source]);
+    if (!title) return;
+    if (title.textContent !== t.title) text(title, t.title);
+    if (!t.fullNote) {
+      fullNoteEl?.remove();
+      return;
+    }
+    fullNoteEl ||= node("p", "db-full-note");
+    if (fullNoteEl.textContent !== t.fullNote) text(fullNoteEl, t.fullNote);
+    if (title.parentElement.nextElementSibling !== fullNoteEl) title.parentElement.after(fullNoteEl);
+  }
+  function leaveTile() {
+    if (coveredTitle) text(coveredTitle.el, coveredTitle.text);
+    coveredTitle = null;
+    fullNoteEl?.remove();
+    fullTile = null;
   }
   function colored(tag, cls, value, color) {
     const el = node(tag, cls, value);
@@ -437,6 +483,12 @@
     });
   }
   function render(force = false) {
+    // A tile's Full view never outlives its tile: hidden or removed, the
+    // overview comes back, never the panel under a name it no longer has.
+    if (fullTile && !model.tiles.some((t) => t.id === fullTile.id)) {
+      showOverview().then(() => status(L("tileGone"), true));
+      return;
+    }
     // Live readings may change while someone tabs through row buttons. Restore
     // the same logical control if painting replaced its DOM node.
     const focused = root.contains(document.activeElement)
@@ -502,6 +554,7 @@
     if (active?.kind === "hidden") fillHidden();
     paintFeedback();
     if (mode !== "overview") window.soladorGitHub?.updateView();
+    paintTileHeading();
     if (focused && !focused.isConnected && focusData && document.activeElement === document.body) {
       const scope = focusTile
         ? root.querySelector(`[data-tile="${CSS.escape(focusTile)}"]`)
@@ -1155,9 +1208,12 @@
       views.append(button(L("table"), "detail-view", "table"), button(L("detailList"), "detail-view", "list"));
       tools.append(views, head.lastElementChild);
       head.append(tools);
+      // Detail opened from a tile opens that tile's Full view; from an
+      // attention chip there is no tile, so it opens the whole source.
+      const owner = next.tile ?? next.fromTile;
       const actions = node("div", "db-form-actions");
       actions.append(
-        button(L("fullPanel"), "full", next.source),
+        owner ? button(L("fullPanel"), "tileFull", owner) : button(L("fullPanel"), "full", next.source),
         button(L("manage"), "manage", next.source),
       );
       box.append(actions);
@@ -1825,6 +1881,8 @@
     openInspector({ kind: "configure", id: newTile.id, draft: newTile, position: original ? `after:${original.id}` : "end" });
   }
   async function showOverview() {
+    const left = fullTile?.id;
+    leaveTile();
     status("");
     mode = "overview";
     window.soladorGitHub.setRunnerGroup(null);
@@ -1835,7 +1893,23 @@
     render(true);
     await refresh(true);
     render(true);
-    q('[data-action="allPanels"]').focus({preventScroll:true});
+    // Back on the tile that was open, unless it has gone.
+    const back = left && root.querySelector(`[data-tile="${CSS.escape(left)}"] .db-tile-footer button[data-action]`);
+    (back || q('[data-action="allPanels"]')).focus({preventScroll:true});
+  }
+  async function tileFull(tileId, runnerGroup = null) {
+    // Only a tile on the overview has views; a hidden or removed one has none.
+    const t = model.tiles.find((x) => x.id === tileId);
+    if (!t) {
+      status(L("tileGone"), true);
+      return;
+    }
+    // Kept before the tile's name can reach it: setRunnerGroup repaints the
+    // runners panel inside fullPanel, ahead of render.
+    const title = document.getElementById(sourceTitles[t.source]);
+    coveredTitle = title && { el: title, text: title.textContent };
+    fullTile = { id: t.id, source: t.source };
+    await fullPanel(t.source, runnerGroup);
   }
   async function fullPanel(sourceId, runnerGroup = null) {
     status("");
@@ -1886,12 +1960,13 @@
         }
         return;
       }
-      openInspector({ kind: "details", source: b.dataset.source, row: id });
+      // `fromTile`, not `tile`: `tile` changes which rows Detail selects.
+      openInspector({ kind: "details", source: b.dataset.source, row: id, fromTile: b.closest("[data-tile]")?.dataset.tile });
       return;
     }
     if (action === "runner-group") {
       const group = model.tiles.find(t => t.id === b.dataset.tileId)?.rows.find(r => r.id === id);
-      if (group) openInspector({ kind: "details", source: b.dataset.source, group: {id, label:group.label} });
+      if (group) openInspector({ kind: "details", source: b.dataset.source, group: {id, label:group.label}, fromTile: b.closest("[data-tile]")?.dataset.tile });
       return;
     }
     if (action === "details") {
@@ -1923,6 +1998,10 @@
     }
     if (action === "full") {
       await fullPanel(id, active?.source === id ? active.group : null);
+      return;
+    }
+    if (action === "tileFull") {
+      await tileFull(id, active?.group ?? null);
       return;
     }
     if (action === "manage" || action === "manage-resource") {
@@ -2145,6 +2224,12 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && pointerDrag) clearDrag();
   });
+  // Escape leaves a tile's Full view, from anywhere in it or with nothing
+  // focused. A menu with its own Escape (the runners' Forget) sits outside it.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !fullTile || settingsOpen) return;
+    if (e.target === document.body || legacy.contains(e.target)) showOverview();
+  });
   root.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && active) {
       closeInspector();
@@ -2242,11 +2327,17 @@
       model.layout = next;
       return true;
     },
+    // The panel renderers ask these for the open tile: the command's `tile`
+    // argument, and the name their title shows.
+    tileArgs,
+    tileHeading: fullTileTitle,
   };
   registerPanelRefresh(() => refresh(true));
   refresh(true);
   if (window.__TAURI__)
     setInterval(() => {
-      if (mode === "overview" && !settingsOpen) refresh();
+      // A tile's Full view keeps reading the overview too: its name, its
+      // note, and whether the tile is still there.
+      if ((mode === "overview" || fullTile) && !settingsOpen) refresh();
     }, 1000);
 })();

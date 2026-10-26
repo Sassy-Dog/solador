@@ -73,7 +73,7 @@ function sectionNode(section) {
 }
 
 function renderPanel(payload) {
-  $c("containersTitle").textContent = payload.title;
+  $c("containersTitle").textContent = window.soladorDashboard?.tileHeading?.("containers") || payload.title;
   $c("containersTrailing").textContent = payload.trailing;
 
   const body = $c("containersBody");
@@ -103,7 +103,7 @@ async function refresh() {
     // Offline (no Tauri), the dumped-fixture path the cockpit and Settings
     // both use, so the panel can be opened in a plain browser and by the
     // Playwright suite.
-    const payload = await callRust("containers", {}, "sample-containers.json");
+    const payload = await callRust("containers", window.soladorDashboard?.tileArgs?.("containers") ?? {}, "sample-containers.json");
     if (payload) renderPanel(payload);
     return Boolean(payload && payload.loading);
   } catch {

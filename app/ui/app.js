@@ -556,7 +556,7 @@ function renderCockpit(p) {
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
 
   const hostsPanel = (p.panels || []).find((panel) => panel.id === "hosts");
-  $("hostsTitle").textContent = hostsPanel ? hostsPanel.title : "";
+  $("hostsTitle").textContent = window.soladorDashboard?.tileHeading?.("hosts") || (hostsPanel ? hostsPanel.title : "");
 
   // The Settings button's label is Rust's too, and it arrives here because the
   // button has to exist before anything has asked for the settings payload.
@@ -622,7 +622,7 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
   const gridWidth = () => $("cockpit").clientWidth || $("cockpitView").clientWidth;
 
   const poll = async () =>
-    renderCockpit(await callRust("cockpit", { width: gridWidth() }, "sample.json"));
+    renderCockpit(await callRust("cockpit", { width: gridWidth(), ...(window.soladorDashboard?.tileArgs?.("hosts") ?? {}) }, "sample.json"));
 
   refreshCockpit = async () => { if (overviewOpen) return; try { await poll(); } catch {} };
 
