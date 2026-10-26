@@ -26,8 +26,8 @@
 //! panel is pixel-identical to its Claude-only self: no heading, no em dash, no
 //! layout shift. The em dash is for "configured, and we could not find out".
 //!
-//! **Three clocks, one warning line.** Claude reads local files on the store's
-//! refresh interval (`staleAfter` 150s); Neon and Sentry are hourly API reads
+//! **Three clocks, one warning line.** Claude reads local files on its own
+//! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon and Sentry are hourly API reads
 //! whose staleness window sits above their own cadence (90m), so a warning means
 //! a stuck poller rather than the normal gap between polls. Each section decides
 //! its own warning because each can fail on its own — and every one of them is
@@ -92,7 +92,9 @@ pub use usage::vercel::NO_SPEND_MESSAGE as VERCEL_NO_SPEND_MESSAGE;
 pub use usage::{summarize_logs, NeonClient, SentryClient, UsageSummary, VercelClient};
 
 /// Claude's `PanelStatusFooter(..., staleAfter: 150)` — 2.5× the default 60s
-/// refresh interval, so one missed pass is not yet a warning.
+/// rollup cadence, so one missed pass is not yet a warning. The window at the
+/// default; the live one follows [`PanelInterval::ClaudeRollups`] through
+/// `UsageState::set_claude_cadence_secs`.
 pub const CLAUDE_STALE_AFTER_SECS: u64 = 150;
 
 /// Neon's and Sentry's `staleAfter: 90 * 60`. Both poll hourly, so the window
@@ -100,7 +102,7 @@ pub const CLAUDE_STALE_AFTER_SECS: u64 = 150;
 pub const PROVIDER_STALE_AFTER_SECS: u64 = 90 * 60;
 
 /// How often the Neon and Sentry reads run — their own hourly cadence, not the
-/// store's shared refresh interval. Consumption and event stats move on the
+/// Claude rollups' cadence. Consumption and event stats move on the
 /// order of hours; asking every 30 seconds spends rate-limit budget to learn
 /// nothing.
 ///
@@ -319,6 +321,9 @@ pub struct UsageState {
     /// reading that never happened.
     claude_succeeded: Option<u64>,
     claude_error: Option<String>,
+    /// The Claude-rollup cadence the last pass ran on, which the footer's
+    /// staleness window follows. `None` before the first pass: the default's.
+    claude_cadence_secs: Option<u64>,
     /// True from startup until the first walk finishes — what separates
     /// [`LOADING_MESSAGE`] from [`NO_DATA_MESSAGE`].
     claude_loading: bool,
@@ -341,6 +346,12 @@ impl UsageState {
             claude_loading: true,
             ..UsageState::default()
         }
+    }
+
+    /// Told by the loop at the top of each pass, so a cadence edit moves the
+    /// footer's window with the very pass that runs on it.
+    pub fn set_claude_cadence_secs(&mut self, cadence_secs: u64) {
+        self.claude_cadence_secs = Some(cadence_secs);
     }
 
     /// A completed log walk. `error` is the shell's own existence check on
@@ -695,7 +706,7 @@ fn vercel_section(
 /// same reason as the two
 /// above: a shortened interval must re-date the sections now rather than an hour
 /// from now. Claude's own rollups are not measured against it — they are on the
-/// store's much faster refresh interval, and their footer already covers that
+/// much faster `PanelInterval::ClaudeRollups` cadence, and their footer already covers that
 /// clock.
 #[must_use]
 pub fn view(
@@ -766,7 +777,10 @@ pub fn view(
         state.claude_succeeded,
         state.claude_error.as_deref(),
         now,
-        CLAUDE_STALE_AFTER_SECS,
+        state.claude_cadence_secs.map_or(
+            CLAUDE_STALE_AFTER_SECS,
+            crate::panel::stale_after_for_cadence,
+        ),
     )];
 
     // `is_present`, not `!is_absent`: a provider nobody has looked for yet
@@ -792,7 +806,7 @@ pub fn view(
             .then(|| vercel_section(&state.vercel, cadence_secs, now)),
     ];
     // Claude contributes no clock, only a warning. Its rollups are on the
-    // store's refresh interval rather than `cadence_secs`, so classifying them
+    // `ClaudeRollups` cadence rather than `cadence_secs`, so classifying them
     // against the metered providers' cycle would date a local log walk by a
     // stranger's edge — and its own 150s window is already what the warning
     // above measures.
@@ -1187,6 +1201,29 @@ mod tests {
     }
 
     // MARK: Claude states
+
+    /// The Claude footer's staleness window follows the rollup cadence the loop
+    /// last told the state (#615): 150s with none set and at 60s, 750s at 300s.
+    #[test]
+    fn the_claude_stale_window_follows_the_rollup_cadence() {
+        let footer = |cadence: Option<u64>, age: u64| {
+            let mut state = measured_with_claude_at(NOW - age);
+            if let Some(secs) = cadence {
+                state.set_claude_cadence_secs(secs);
+            }
+            view(&state, QUOTA, RATES, CADENCE, NOW)["footer"].clone()
+        };
+        for cadence in [None, Some(60)] {
+            assert!(footer(cadence, 150).is_null(), "{cadence:?} at the edge");
+            assert!(!footer(cadence, 151).is_null(), "{cadence:?} past it");
+        }
+        assert!(footer(Some(300), 151).is_null(), "a healthy 5-minute gap");
+        assert!(footer(Some(300), 750).is_null(), "2.5 cycles is the edge");
+        assert!(
+            !footer(Some(300), 751).is_null(),
+            "past it the walk looks stuck"
+        );
+    }
 
     #[test]
     fn before_the_first_walk_the_panel_says_it_is_reading() {

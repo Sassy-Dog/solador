@@ -14,10 +14,16 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
-/// The cadences Settings offers, in seconds (`RefreshInterval` in the original).
+/// The cadences the retired shared Refresh Interval offered, in seconds
+/// (`RefreshInterval` in the original). Settings no longer offers it (#615);
+/// what is left is the allow-list a stored `refresh_interval_secs` is read
+/// through before it seeds the per-source cadences.
 pub const REFRESH_INTERVAL_CHOICES: [u32; 3] = [30, 60, 300];
 
-/// `RefreshInterval.default` — 1 minute.
+/// `RefreshInterval.default` — 1 minute. Still the default of the three
+/// cadences that interval became ([`PanelInterval::GitHub`],
+/// [`PanelInterval::Services`], [`PanelInterval::ClaudeRollups`]), so an
+/// unconfigured store polls exactly as it always did.
 pub const DEFAULT_REFRESH_INTERVAL_SECS: u32 = 60;
 
 /// Inclusive bounds for the CPU-core grid's row span (`coreRowSpan`).
@@ -98,6 +104,12 @@ impl From<HostOverflowMode> for String {
 pub enum PanelInterval {
     /// Containers/VMs — local docker/podman/tart plus every host's agent.
     Containers,
+    /// The one GitHub poll that fills both the Repos and the Runners tiles.
+    GitHub,
+    /// The Services tile's third-party status pages.
+    Services,
+    /// The Usage panel's Claude token rollups: a local walk of `~/.claude/projects`.
+    ClaudeRollups,
     /// The Usage panel's metered providers: Neon, Sentry and Vercel.
     UsageProviders,
     /// The Azure Cost panel's daily export read.
@@ -154,8 +166,11 @@ pub struct IntervalSpec {
 
 impl PanelInterval {
     /// Every panel that has a settable cadence, in a stable order for UI.
-    pub const ALL: [PanelInterval; 5] = [
+    pub const ALL: [PanelInterval; 8] = [
         PanelInterval::Containers,
+        PanelInterval::GitHub,
+        PanelInterval::Services,
+        PanelInterval::ClaudeRollups,
         PanelInterval::UsageProviders,
         PanelInterval::AzureCost,
         PanelInterval::Crons,
@@ -179,6 +194,9 @@ impl PanelInterval {
     /// | panel | default | today's constant |
     /// |---|---|---|
     /// | Containers | 10s | `containers::POLL_INTERVAL_SECS` |
+    /// | `GitHub` | 1m | the retired shared `refresh_interval_secs` default |
+    /// | `Services` | 1m | the same, formerly riding `github_loop` |
+    /// | `ClaudeRollups` | 1m | the same, formerly `usage_loop`'s outer sleep |
     /// | `UsageProviders` | 1h | `usage::PROVIDER_POLL_INTERVAL_SECS` |
     /// | `AzureCost` | 4h | `azurecost::POLL_INTERVAL` |
     /// | Crons | 1h | *shares* `usage::PROVIDER_POLL_INTERVAL_SECS` |
@@ -198,6 +216,46 @@ impl PanelInterval {
                 label: "Containers/VMs",
                 floor_reason:
                     "every pass shells out to docker, podman and tart, and a container list changes on human timescales",
+            },
+            // The retired shared Refresh Interval (#615) drove this poll, the
+            // Services pass and the Claude rollups from one number; it is three
+            // cadences now, each defaulting to that interval's 60s. Floor 30s,
+            // the shortest the old control offered, so a value someone already
+            // chose stays valid. One pass spends several requests per tracked
+            // repo (health, counts, a Ready read) plus the org's runners
+            // against one PAT's hourly budget, which is why this one is not
+            // lower.
+            PanelInterval::GitHub => IntervalSpec {
+                key: "github",
+                default_secs: DEFAULT_REFRESH_INTERVAL_SECS,
+                floor_secs: 30,
+                label: "GitHub \u{2014} Repos and Runners",
+                floor_reason:
+                    "every pass spends several requests per tracked repo plus the org's runner list against one token's hourly rate-limit budget",
+            },
+            // Status pages are public and need no credential, but they are
+            // someone else's servers: five or so vendors per pass, each its own
+            // request. A vendor's state does not change on a shorter timescale
+            // than the page itself is updated, so 30s is already generous.
+            PanelInterval::Services => IntervalSpec {
+                key: "services",
+                default_secs: DEFAULT_REFRESH_INTERVAL_SECS,
+                floor_secs: 30,
+                label: "Services",
+                floor_reason:
+                    "every pass asks each watched vendor's public status page, and those are other people's servers that update on the order of minutes",
+            },
+            // A walk of `~/.claude/projects` on local disk: it costs no money,
+            // only a read of every session log, and the logs grow with every
+            // conversation. Floor 30s for the same compatibility reason as
+            // GitHub's.
+            PanelInterval::ClaudeRollups => IntervalSpec {
+                key: "claude_rollups",
+                default_secs: DEFAULT_REFRESH_INTERVAL_SECS,
+                floor_secs: 30,
+                label: "Usage \u{2014} Claude token rollups",
+                floor_reason:
+                    "every pass re-reads every session log under ~/.claude/projects, which grow with each conversation",
             },
             // `app/src-tauri/src/usage.rs`'s `PROVIDER_POLL_INTERVAL_SECS = 60 * 60`.
             // Floor 300s: three vendor APIs (Neon, Sentry, Vercel) on one pass,
@@ -420,11 +478,23 @@ impl ClampOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Poll cadence for the periodic services, in seconds. Always one of
-    /// [`REFRESH_INTERVAL_CHOICES`] — anything else read from disk becomes
-    /// [`DEFAULT_REFRESH_INTERVAL_SECS`].
-    #[serde(deserialize_with = "de_refresh_interval_secs")]
-    pub refresh_interval_secs: u32,
+    /// **Retired (#615): the shared Refresh Interval, read once and never written.**
+    ///
+    /// It used to drive the GitHub poll, the Services pass and the Claude
+    /// rollups from one number. Each is its own [`PanelInterval`] now, and
+    /// [`Settings::seed_cadences_from_legacy_refresh_interval`] copies a
+    /// non-default value into all three the first time a store that has one
+    /// loads, then empties this field. `skip_serializing` is what makes that
+    /// one-shot: the first save after it drops the key from the file, so a
+    /// cadence the operator later clears is not seeded again. `None` is "no
+    /// such key" and so is anything not in [`REFRESH_INTERVAL_CHOICES`].
+    #[serde(
+        default,
+        rename = "refresh_interval_secs",
+        skip_serializing,
+        deserialize_with = "de_legacy_refresh_interval_secs"
+    )]
+    pub legacy_refresh_interval_secs: Option<u32>,
     /// How many grid rows the per-host CPU core chart spans. Always within
     /// [`CORE_ROW_SPAN_RANGE`]; an out-of-range value read from disk is clamped
     /// into it rather than dropped, since the intent still survives.
@@ -625,6 +695,38 @@ impl Settings {
         }
     }
 
+    /// Carries a store's retired shared Refresh Interval over to the three
+    /// cadences it became (#615), so nobody's polling silently changes.
+    ///
+    /// **Seeded only when the value is not the default.** A stored 60 cannot be
+    /// told from "never chosen" — `Settings` wrote it on every save — and
+    /// seeding it would turn three controls to "configured" for an operator who
+    /// chose nothing. Polling is identical either way. A key the store already
+    /// holds is left alone.
+    ///
+    /// **One-shot, by emptying the legacy field**: it is never serialised, so
+    /// the first save after this runs removes the key from disk, and a
+    /// cadence cleared afterwards falls back to its default rather than being
+    /// seeded again. Returns whether it seeded anything.
+    pub fn seed_cadences_from_legacy_refresh_interval(&mut self) -> bool {
+        let Some(secs) = self.legacy_refresh_interval_secs.take() else {
+            return false;
+        };
+        if secs == DEFAULT_REFRESH_INTERVAL_SECS {
+            return false;
+        }
+        for panel in [
+            PanelInterval::GitHub,
+            PanelInterval::Services,
+            PanelInterval::ClaudeRollups,
+        ] {
+            self.panel_intervals
+                .entry(panel.spec().key.to_owned())
+                .or_insert(secs);
+        }
+        true
+    }
+
     /// Drop this panel's override, returning it to today's constant.
     ///
     /// Distinct from setting it *to* the default: this restores "never
@@ -637,7 +739,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
+            legacy_refresh_interval_secs: None,
             core_row_span: DEFAULT_CORE_ROW_SPAN,
             // Zero on purpose, and the field says why.
             row_gap_px: DEFAULT_ROW_GAP_PX,
@@ -668,13 +770,15 @@ impl Default for Settings {
     }
 }
 
-/// `null` or a cadence Settings never offers reads as the default, the way
-/// `RefreshInterval(rawValue:) ?? .default` does in the original.
-fn de_refresh_interval_secs<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+/// `null` or a cadence the old control never offered reads as absent, the way
+/// `RefreshInterval(rawValue:) ?? .default` did in the original: a hand-edited
+/// 7 seeds nothing, rather than seeding three cadences with a number nobody
+/// could have chosen.
+fn de_legacy_refresh_interval_secs<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<u32>, D::Error> {
     let raw = Option::<u32>::deserialize(d)?;
-    Ok(raw
-        .filter(|secs| REFRESH_INTERVAL_CHOICES.contains(secs))
-        .unwrap_or(DEFAULT_REFRESH_INTERVAL_SECS))
+    Ok(raw.filter(|secs| REFRESH_INTERVAL_CHOICES.contains(secs)))
 }
 
 /// Clamped, not defaulted: a stored `9` means "as many rows as possible", and
@@ -704,7 +808,7 @@ mod tests {
     #[test]
     fn defaults_match_the_original_app() {
         let s = Settings::default();
-        assert_eq!(s.refresh_interval_secs, 60);
+        assert_eq!(s.legacy_refresh_interval_secs, None);
         assert_eq!(s.core_row_span, 2);
         assert_eq!(
             s.row_gap_px, 0,
@@ -812,7 +916,7 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let s = Settings {
-            refresh_interval_secs: 300,
+            legacy_refresh_interval_secs: None,
             core_row_span: 4,
             // Off the default so the round trip proves the field persists
             // rather than reappearing from `Default`.
@@ -889,16 +993,102 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_refresh_interval_reads_as_the_default() {
+    fn out_of_range_legacy_refresh_interval_reads_as_absent() {
         for raw in ["0", "45", "null"] {
             let json = format!(r#"{{"refresh_interval_secs":{raw}}}"#);
             let s: Settings = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(s.refresh_interval_secs, 60, "raw {raw}");
+            assert_eq!(s.legacy_refresh_interval_secs, None, "raw {raw}");
         }
         for secs in REFRESH_INTERVAL_CHOICES {
             let json = format!(r#"{{"refresh_interval_secs":{secs}}}"#);
             let s: Settings = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(s.refresh_interval_secs, secs);
+            assert_eq!(s.legacy_refresh_interval_secs, Some(secs));
+        }
+    }
+
+    /// The retired shared Refresh Interval becomes the three cadences it drove,
+    /// so nobody's polling changes (#615).
+    #[test]
+    fn a_non_default_legacy_refresh_interval_seeds_the_three_cadences_it_drove() {
+        for secs in [30, 300] {
+            let mut s: Settings =
+                serde_json::from_str(&format!(r#"{{"refresh_interval_secs":{secs}}}"#))
+                    .expect("deserialize");
+            assert!(s.seed_cadences_from_legacy_refresh_interval());
+            for panel in [
+                PanelInterval::GitHub,
+                PanelInterval::Services,
+                PanelInterval::ClaudeRollups,
+            ] {
+                assert_eq!(s.panel_interval_secs(panel), secs, "{panel:?}");
+                assert!(s.panel_interval_is_configured(panel), "{panel:?}");
+            }
+            // Only those three: the others never rode the shared interval.
+            assert_eq!(s.panel_intervals.len(), 3);
+        }
+    }
+
+    /// 60 is what every save wrote, so it cannot be told from "never chosen";
+    /// seeding it would mark three controls configured that nobody touched.
+    #[test]
+    fn a_default_legacy_refresh_interval_seeds_nothing() {
+        let mut s: Settings =
+            serde_json::from_str(r#"{"refresh_interval_secs":60}"#).expect("deserialize");
+        assert!(!s.seed_cadences_from_legacy_refresh_interval());
+        assert!(s.panel_intervals.is_empty());
+        assert_eq!(s.legacy_refresh_interval_secs, None);
+    }
+
+    /// One-shot: the field is emptied by the seed and never written, so a
+    /// cadence the operator clears afterwards is not seeded again on the next
+    /// load.
+    #[test]
+    fn seeding_is_one_shot_and_the_legacy_key_is_never_written_back() {
+        let mut s: Settings =
+            serde_json::from_str(r#"{"refresh_interval_secs":300}"#).expect("deserialize");
+        assert!(s.seed_cadences_from_legacy_refresh_interval());
+        assert!(
+            !s.seed_cadences_from_legacy_refresh_interval(),
+            "a second pass must find nothing left to seed"
+        );
+        s.clear_panel_interval(PanelInterval::GitHub);
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(
+            !json.contains("refresh_interval_secs"),
+            "the retired key must leave the file on the first save: {json}"
+        );
+        let mut reloaded: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert!(!reloaded.seed_cadences_from_legacy_refresh_interval());
+        assert!(!reloaded.panel_interval_is_configured(PanelInterval::GitHub));
+        assert!(reloaded.panel_interval_is_configured(PanelInterval::Services));
+    }
+
+    /// A cadence the store already holds is the operator's, not the seed's.
+    #[test]
+    fn seeding_never_overwrites_a_cadence_already_chosen() {
+        let mut s: Settings = serde_json::from_str(
+            r#"{"refresh_interval_secs":300,"panel_intervals":{"github":30}}"#,
+        )
+        .expect("deserialize");
+        s.seed_cadences_from_legacy_refresh_interval();
+        assert_eq!(s.panel_interval_secs(PanelInterval::GitHub), 30);
+        assert_eq!(s.panel_interval_secs(PanelInterval::Services), 300);
+    }
+
+    /// Every value the old control offered must stay a legal cadence for the
+    /// panels it seeds, or seeding would hand the store a number its own floor
+    /// then moves.
+    #[test]
+    fn every_old_choice_clears_the_floor_of_every_cadence_it_seeds() {
+        for panel in [
+            PanelInterval::GitHub,
+            PanelInterval::Services,
+            PanelInterval::ClaudeRollups,
+        ] {
+            for secs in REFRESH_INTERVAL_CHOICES {
+                assert!(panel.check_secs(secs).is_ok(), "{panel:?} at {secs}s");
+            }
+            assert_eq!(panel.spec().default_secs, DEFAULT_REFRESH_INTERVAL_SECS);
         }
     }
 
@@ -1022,7 +1212,7 @@ mod tests {
             );
         }
         // The rest of the file still parsed.
-        assert_eq!(s.refresh_interval_secs, 30);
+        assert_eq!(s.legacy_refresh_interval_secs, Some(30));
         assert_eq!(s.core_row_span, 3);
     }
 
@@ -1278,6 +1468,9 @@ mod tests {
             keys,
             [
                 "containers",
+                "github",
+                "services",
+                "claude_rollups",
                 "usage_providers",
                 "azure_cost",
                 "crons",

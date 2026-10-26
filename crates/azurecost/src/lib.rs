@@ -64,7 +64,7 @@ pub use reader::{
 /// How often a caller should poll.
 ///
 /// The Cost Management export is published roughly once a day, so this is its
-/// own fixed cadence rather than the app's shared refresh interval — polling a
+/// own fixed cadence (`PanelInterval::AzureCost`'s default) rather than a minute-scale one — polling a
 /// daily file every 30 seconds moves a great deal of egress to learn nothing.
 /// Paired with the fingerprint cache, an unchanged cycle downloads nothing at
 /// all.
@@ -74,7 +74,7 @@ pub const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4 
 mod tests {
     use super::*;
 
-    /// Azure cost runs on its own cadence, not the shared refresh interval.
+    /// Azure cost runs on its own cadence, not the GitHub, Services or rollup cadence.
     #[test]
     fn the_poll_interval_is_four_hours() {
         assert_eq!(POLL_INTERVAL.as_secs(), 4 * 60 * 60);

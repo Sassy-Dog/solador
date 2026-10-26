@@ -20,9 +20,7 @@ use serde_json::{json, Value};
 // The probe behind the Services tab's two-step add flow. The logic is the
 // crate's; this module only decides how its findings are painted.
 use servicestatus::discover::{self, Component, ProbeError};
-use store::settings::{
-    interval_label, PanelInterval, CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES, ROW_GAP_PX_RANGE,
-};
+use store::settings::{interval_label, PanelInterval, CORE_ROW_SPAN_RANGE, ROW_GAP_PX_RANGE};
 use store::{
     ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
     StatusVendor, TrackedRepo, VendorAccount, VendorKind, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
@@ -155,21 +153,6 @@ impl SecretField {
         .into_iter()
         .find(|field| field.id() == raw)
     }
-}
-
-/// `RefreshInterval.displayName` (ported).
-///
-/// The three offered cadences render exactly as the original spelled them —
-/// `30 seconds`, `1 minute`, `5 minutes` — which is what
-/// [`store::settings::interval_label`] produces for them, so this delegates
-/// rather than keeping a second ladder. Two ladders is how a floor comes to read
-/// `1 hour` on one row and `3600 seconds` on another.
-///
-/// A value the picker cannot produce is still rendered as the real number
-/// rather than a default, so a store edited by hand reads as what it is.
-#[must_use]
-pub fn refresh_interval_label(secs: u32) -> String {
-    interval_label(secs)
 }
 
 /// `HostOverflowMode.displayName` (ported).
@@ -704,9 +687,10 @@ pub fn apply_rule_edit(
     true
 }
 
-/// The General tab's three values, laundered through the same rules the store
-/// enforces on deserialize: an unoffered cadence reads as the default, a row
-/// span outside 1–4 is clamped, and so is a row gap outside 0–16.
+/// The General tab's two values, laundered through the same rules the store
+/// enforces on deserialize: a row span outside 1–4 is clamped, and so is a row
+/// gap outside 0–16. (The shared Refresh Interval that used to be the first is
+/// three per-source cadences in the tiles' Configure now, #615.)
 ///
 /// Applied on the way *in* as well as on the way out so a webview that sends a
 /// value no picker can produce cannot write one to disk either.
@@ -718,17 +702,8 @@ pub fn apply_rule_edit(
 /// layout of its own is migrated from — read by [`breakpoints`], written by
 /// nothing.
 #[must_use]
-pub fn normalized_general(
-    refresh_interval_secs: u32,
-    core_row_span: u8,
-    row_gap_px: u8,
-) -> Settings {
+pub fn normalized_general(core_row_span: u8, row_gap_px: u8) -> Settings {
     Settings {
-        refresh_interval_secs: if REFRESH_INTERVAL_CHOICES.contains(&refresh_interval_secs) {
-            refresh_interval_secs
-        } else {
-            store::settings::DEFAULT_REFRESH_INTERVAL_SECS
-        },
         core_row_span: core_row_span
             .clamp(*CORE_ROW_SPAN_RANGE.start(), *CORE_ROW_SPAN_RANGE.end()),
         row_gap_px: row_gap_px.clamp(*ROW_GAP_PX_RANGE.start(), *ROW_GAP_PX_RANGE.end()),
@@ -1254,20 +1229,10 @@ fn connections_section(
 fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
     json!({
         "heading": "Preferences",
-        "refreshInterval": {
-            "label": "Refresh Interval",
-            "value": settings.refresh_interval_secs,
-            "options": REFRESH_INTERVAL_CHOICES
-                .iter()
-                .map(|secs| json!({ "value": secs, "label": refresh_interval_label(*secs) }))
-                .collect::<Vec<_>>(),
-            // Honest about the gap rather than silent: the shell polls every
-            // host once a second because one history sample is one fixed time
-            // slice (see POLL_INTERVAL), and it has none of the periodic
-            // services this cadence governs in the original app. The preference
-            // is stored for parity; nothing here reads it yet.
-            "help": "Cadence for the periodic services. Host metrics poll every second regardless — that cadence is the charts' time axis.",
-        },
+        // Where the shared Refresh Interval went (#615), said once so an
+        // operator who looks for it is told rather than left to wonder. Each
+        // source polls on its own cadence, edited in its tile's Configure.
+        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, Usage, Containers, Azure Cost, Scheduled Jobs). Host metrics poll every second regardless — that cadence is the charts' time axis.",
         "coreRowSpan": {
             "label": "CPU core rows",
             "value": settings.core_row_span,
@@ -3102,16 +3067,14 @@ mod tests {
 
     #[test]
     fn general_values_are_laundered_on_the_way_in_too() {
-        let s = normalized_general(45, 9, 40);
-        assert_eq!(s.refresh_interval_secs, 60);
+        let s = normalized_general(9, 40);
         assert_eq!(s.core_row_span, 4);
         assert_eq!(
             s.row_gap_px, 16,
             "a gap wider than the range is clamped, not dropped"
         );
 
-        let s = normalized_general(300, 1, 0);
-        assert_eq!(s.refresh_interval_secs, 300);
+        let s = normalized_general(1, 0);
         assert_eq!(s.core_row_span, 1);
         assert_eq!(s.row_gap_px, 0, "zero is a value an operator may send");
     }
@@ -3129,9 +3092,6 @@ mod tests {
 
     #[test]
     fn the_picker_labels_match_the_original_display_names() {
-        assert_eq!(refresh_interval_label(30), "30 seconds");
-        assert_eq!(refresh_interval_label(60), "1 minute");
-        assert_eq!(refresh_interval_label(300), "5 minutes");
         assert_eq!(
             host_overflow_label(HostOverflowMode::Stack),
             "Stack vertically"
@@ -3143,7 +3103,6 @@ mod tests {
 
     fn sample() -> (Settings, Vec<Host>, Vec<TrackedRepo>, StoredSecrets) {
         let mut settings = Settings {
-            refresh_interval_secs: 300,
             core_row_span: 3,
             row_gap_px: 6,
             host_overflow_mode: HostOverflowMode::Tabs,
@@ -3442,20 +3401,18 @@ mod tests {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let general = &vm["general"];
-        assert_eq!(general["refreshInterval"]["value"], 300);
+        // The shared Refresh Interval is gone from Preferences (#615): each
+        // source's cadence is in its tile's Configure, and this says so.
+        assert!(general["refreshInterval"].is_null());
+        assert!(general["cadenceNote"]
+            .as_str()
+            .is_some_and(|note| note.contains("Configure")));
         assert_eq!(general["coreRowSpan"]["value"], 3);
         assert_eq!(general["rowGapPx"]["value"], 6);
         // The sample's `host_overflow_mode` is `tabs`; it now seeds the Layout
         // tab's first band rather than a picker here.
         assert_eq!(vm["layout"]["breakpoints"][0]["hostOverflow"], "tabs");
 
-        let labels: Vec<&str> = general["refreshInterval"]["options"]
-            .as_array()
-            .expect("options")
-            .iter()
-            .map(|o| o["label"].as_str().expect("label"))
-            .collect();
-        assert_eq!(labels, vec!["30 seconds", "1 minute", "5 minutes"]);
         assert_eq!(general["coreRowSpan"]["min"], 1);
         assert_eq!(general["coreRowSpan"]["max"], 4);
         // The bounds are Rust's, so the number input cannot offer a value the

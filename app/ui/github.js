@@ -25,7 +25,7 @@
 /** How often both panels ask Rust for a fresh payload.
  *
  *  Deliberately faster than the Rust-side poll (the store's
- *  `refresh_interval_secs`, 30s–5m): the payloads are not static between
+ *  `panel_intervals.github`, 30s and up): the payloads are not static between
  *  fetches. The Repos panel's LONGEST column is elapsed-since-start, so a
  *  running job has to tick up, and the Runners footer goes stale on a clock
  *  this side never sees move. Asking every 10s costs one lock and one JSON

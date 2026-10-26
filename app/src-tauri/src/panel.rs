@@ -79,6 +79,28 @@ pub fn now_unix() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// The shortest staleness window a footer on a short cadence ever gets: 2.5
+/// polls of the 60s default, which is what `PanelStatusFooter(..., staleAfter:
+/// 150)` was.
+pub const MIN_STALE_AFTER_SECS: u64 = 150;
+
+/// The staleness window for a panel polling every `cadence_secs`: 2.5 cycles,
+/// so one missed pass is not yet a warning, and never under
+/// [`MIN_STALE_AFTER_SECS`].
+///
+/// The windows used to be the flat 150s of the 60s default. That was right
+/// while one shared interval was 30, 60 or 300 and wrong at 300 — a healthy
+/// 5-minute poll was "stale" for half of every cycle. Each cadence is the
+/// operator's own now (#615), so the window follows it. At the default 60s (and
+/// at the 30s floor) it is exactly the 150s it has always been.
+#[must_use]
+pub fn stale_after_for_cadence(cadence_secs: u64) -> u64 {
+    cadence_secs
+        .saturating_mul(5)
+        .div_ceil(2)
+        .max(MIN_STALE_AFTER_SECS)
+}
+
 /// The footer line for one panel, or `Null` when it is healthy and fresh.
 ///
 /// Ladder, in order: an error wins over staleness and carries how long ago the
@@ -404,6 +426,14 @@ mod tests {
             text_of(&status_footer(Some(NOW + 60), Some("boom"), NOW, 150)),
             Some("⚠ boom · last ok 0s ago")
         );
+    }
+
+    #[test]
+    fn a_staleness_window_is_two_and_a_half_cycles_and_never_under_the_default_one() {
+        assert_eq!(stale_after_for_cadence(30), 150, "the floor's cycle");
+        assert_eq!(stale_after_for_cadence(60), 150, "the original's 150s");
+        assert_eq!(stale_after_for_cadence(300), 750);
+        assert_eq!(stale_after_for_cadence(u64::MAX), u64::MAX / 2 + 1);
     }
 
     /// Every panel's staleness window, pinned against the original panel that

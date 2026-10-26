@@ -155,13 +155,13 @@ test("leaving or closing an editor protects typed fields and explicitly discards
 test("an unapplied preference selection is protected when navigating", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "general").click();
-  const interval = settings.general.refreshInterval;
-  const other = interval.options.find(option => String(option.value) !== String(interval.value));
-  await page.locator("#general-interval").selectOption(String(other.value));
+  const rows = settings.general.coreRowSpan;
+  const other = rows.value === rows.max ? rows.min : rows.max;
+  await page.locator("#general-core-rows").fill(String(other));
   await tab(page, "connections").click();
   await expect(page.locator("#settingsConfirm")).toBeVisible();
   await page.locator("#settingsConfirm .primary").click();
-  await expect(page.locator("#general-interval")).toHaveValue(String(other.value));
+  await expect(page.locator("#general-core-rows")).toHaveValue(String(other));
   expect(await calls(page, "settings_save_general")).toEqual([]);
 });
 
@@ -369,33 +369,31 @@ test("General shows the stored values and applies them in one command", async ({
   await tab(page, "general").click();
   const g = settings.general;
 
-  await expect(page.locator("#general-interval")).toHaveValue(String(g.refreshInterval.value));
   await expect(page.locator("#general-core-rows")).toHaveValue(String(g.coreRowSpan.value));
   // The fixture's row gap is off the shipped 0 on purpose, so this asserts the
   // field paints the STORED value rather than a constant that agrees with the
   // default.
   await expect(page.locator("#general-row-gap")).toHaveValue(String(g.rowGapPx.value));
   expect(g.rowGapPx.value, "the fixture must carry a non-default gap").not.toBe(0);
-  // The picker offers exactly what Rust offers -- an option invented here
-  // would be a cadence the store launders straight back to the default.
-  await expect(page.locator("#general-interval option")).toHaveText(
-    g.refreshInterval.options.map((o) => o.label)
-  );
+  // The shared Refresh Interval left this tab (#615): no picker, and a note
+  // from Rust saying where the cadences went.
+  await expect(page.locator("#general-interval")).toHaveCount(0);
+  expect(g.refreshInterval).toBeUndefined();
+  await expect(page.getByText(g.cadenceNote)).toBeVisible();
   // The host-overflow picker left this tab: it is per breakpoint now.
   await expect(page.locator("#general-overflow")).toHaveCount(0);
 
-  await page.locator("#general-interval").selectOption("300");
   await page.locator("#general-core-rows").fill("4");
   await page.locator("#general-row-gap").fill("0");
   await page.locator(".btn.apply").click();
 
-  // One command for all three, and `0` travels in it. A field that dropped a
+  // One command for both, and `0` travels in it. A field that dropped a
   // zero — the shape `Number(raw) || fallback` produces — would look like the
   // operator never touched the row spacing.
   expect(await calls(page, "settings_save_general")).toEqual([
     {
       command: "settings_save_general",
-      args: { refreshIntervalSecs: 300, coreRowSpan: 4, rowGapPx: 0 },
+      args: { coreRowSpan: 4, rowGapPx: 0 },
     },
   ]);
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");

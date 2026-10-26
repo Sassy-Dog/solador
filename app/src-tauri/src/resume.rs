@@ -1,7 +1,7 @@
 //! Noticing that the machine woke up.
 //!
 //! Every poll task is suspended while a laptop sleeps, so the four slow loops —
-//! GitHub (the store's refresh interval), usage (1h), Azure (4h) and OpenClaw —
+//! GitHub (its own cadence), usage (1h), Azure (4h) and OpenClaw —
 //! come back on their own schedule. On 2026-08-07 that meant opening the lid to
 //! a cockpit painting the previous night's runner list: all twelve runners were
 //! online, the panel said ten, and the availability chip read a red
@@ -47,8 +47,8 @@ pub const RESUME_GAP: Duration = Duration::from_secs(20);
 ///
 /// Two seconds, so a lid-open is noticed about as fast as a human can focus on
 /// the screen. Deliberately not sixty: the cadence table in `main.rs` forbids a
-/// fixed cadence equal to the default refresh interval, precisely so the two
-/// can never be confused for one another.
+/// fixed cadence equal to the 60s default of the GitHub, Services and Claude
+/// rollup cadences, precisely so they can never be confused for one another.
 pub const TICK: Duration = Duration::from_secs(2);
 
 /// Whether the process was suspended between two samples.
@@ -158,15 +158,18 @@ mod tests {
         assert!(monotonic < RESUME_GAP && wall < RESUME_GAP);
     }
 
-    /// `TICK` must stay clear of the default refresh interval — `main.rs`'s
-    /// cadence table forbids a fixed cadence of 60s so the two can never be
-    /// read as the same number.
+    /// `TICK` must stay clear of the default of the GitHub, Services and Claude
+    /// rollup cadences — `main.rs`'s cadence table forbids a fixed cadence of
+    /// 60s so the two can never be read as the same number.
     #[test]
-    fn the_tick_is_not_confusable_with_the_default_refresh_interval() {
-        assert_ne!(
-            TICK.as_secs(),
-            u64::from(store::settings::DEFAULT_REFRESH_INTERVAL_SECS)
-        );
+    fn the_tick_is_not_confusable_with_the_default_source_cadences() {
+        for panel in [
+            store::settings::PanelInterval::GitHub,
+            store::settings::PanelInterval::Services,
+            store::settings::PanelInterval::ClaudeRollups,
+        ] {
+            assert_ne!(TICK.as_secs(), u64::from(panel.spec().default_secs));
+        }
         assert!(
             TICK < RESUME_GAP,
             "a tick longer than the gap could miss one"
