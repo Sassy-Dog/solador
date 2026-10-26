@@ -596,6 +596,11 @@ jobs:
     # that run with no trust prompt in parent-trusted, `claude -p` and cloud
     # sessions, and .gitignore cannot stop `git add -f`. It reads only git's
     # index, so it sits with the other credential-free checks.
+    #
+    # The agent-guide size pair (#638) fails when any chain of tracked AGENTS.md
+    # files exceeds 32,768 bytes, Codex's default `project_doc_max_bytes`; it
+    # reads only the index too. A docs-only PR is exactly where the guide grows,
+    # and this job always runs.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -631,6 +636,12 @@ jobs:
 
       - name: The .claude guard refuses what it claims to refuse
         run: scripts/claude-dir-guard-test.sh
+
+      - name: Every AGENTS.md chain is within the 32 KiB guidance budget
+        run: scripts/agent-guide-size-guard.sh
+
+      - name: The size guard refuses what it claims to refuse
+        run: scripts/agent-guide-size-guard-test.sh
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
