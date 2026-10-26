@@ -58,7 +58,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.1
         if: ${{ needs.changes.outputs.agent_rust == 'true' }}
 
       # `-p solador-agent` is load-bearing, not tidiness. The agent joined the
@@ -226,7 +226,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.1
         if: ${{ needs.changes.outputs.rust_scope != 'none' || needs.changes.outputs.frontend == 'true' }}
         with:
           workspaces: .
@@ -425,7 +425,7 @@ jobs:
 
       # Also caches ~/.cargo/bin, which is where scripts/build.sh installs the
       # pinned cargo-tauri — so the CLI compiles once and is restored after.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.1
         with:
           workspaces: .
 
@@ -523,7 +523,7 @@ jobs:
       # unlike the self-hosted pool above), so caching matters more here, not
       # less — same action as the other two Rust jobs in this file, just
       # pointed at this job's own cache key via runner.os.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.1
         if: ${{ needs.changes.outputs.rust_scope != 'none' }}
         with:
           workspaces: .
