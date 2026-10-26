@@ -1318,6 +1318,34 @@ mod tests {
         );
     }
 
+    /// The seed is independent of the migration chain: a version-2 store with
+    /// no GitHub token cannot finish v2 -> v3 (it stays stamped 2), and must
+    /// still keep polling at the cadence it chose.
+    #[test]
+    fn a_stuck_version_two_store_is_still_seeded() {
+        use settings::PanelInterval;
+        let dir = temp_dir();
+        write_store_with_refresh_interval(&dir, 300);
+        let path = dir.path().join(STORE_FILE_NAME);
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        json["version"] = serde_json::json!(2);
+        fs::write(&path, serde_json::to_string_pretty(&json).expect("render")).expect("write");
+        let store = Store::open_in(dir.path(), false).expect("open");
+        assert_eq!(store.data().version, 2, "v2 -> v3 must not have run");
+        for panel in [
+            PanelInterval::GitHub,
+            PanelInterval::Services,
+            PanelInterval::ClaudeRollups,
+        ] {
+            assert_eq!(
+                store.settings().panel_interval_secs(panel),
+                300,
+                "{panel:?}"
+            );
+        }
+    }
+
     #[test]
     fn settings_hosts_and_repos_round_trip_through_the_file() {
         let dir = temp_dir();

@@ -79,7 +79,7 @@ detailed than this file.
   that raises attention, and a group holding one leads with it (value
   `1 missing`, red) rather than a load figure, which moves to the line under
   it. Individual rows keep their state colours.
-- **Usage** — Claude token rollups (same interval); the Claude and Codex
+- **Usage** — Claude token rollups (their own `PanelInterval::ClaudeRollups`, #615); the Claude and Codex
   **plans' own limit windows** (`CLAUDE PLAN (5H)`, `(WEEK)`, a per-model
   weekly such as `(WEEK · FABLE)`, each with its reset countdown and a bar
   coloured like the CPU/RAM meters, 70/90%), **opt-in per provider and off in

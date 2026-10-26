@@ -1114,8 +1114,10 @@ permanent red forever.
 does not take a `RunnerSummary`; it takes a `Fleet`, which is either `Known(&…)`
 or `Unknown`, and `Unknown` makes **Fleet Down** unreachable by construction.
 The app hands over `Known` only when `runners_last_updated` — which advances on
-a successful fetch, never on an attempt — is within **`RUNNERS_STALE_AFTER_SECS`
-(150s)**, the same window the Runners panel's own footer uses to call its list
+a successful fetch, never on an attempt — is within the cadence-derived window
+(`GitHubState::stale_after_secs`: 2.5 GitHub cycles, never under 150s, so 750s
+at a 5-minute cadence; `RUNNERS_STALE_AFTER_SECS` is its 150s floor), the same
+window the Runners panel's own footer uses to call its list
 stale. That coupling is the point: the moment the panel admits its roster is out
 of date, the chip stops blaming the fleet for it, and two readings of one fact
 cannot disagree on screen. A stale fleet still reports GitHub's *own* severity —
@@ -1147,7 +1149,7 @@ it — and those clocks are folded forward **only by a successful fetch of that
 org**, so an hour of GitHub being unreachable ages nothing, and one org's
 successful fetch never marks another org's runners absent. Each watched org is
 polled with its owning account's token; a failing org keeps its last-good rows
-with the reason in the `footer` field (`staleAfter: 150s`), which the frontend
+with the reason in the `footer` field (`staleAfter` 2.5 GitHub cycles, never under 150s), which the frontend
 paints **beside the panel title, not under its body** — see "Where a warning
 goes" below. Rows name their org only when more than one is watched. Roster
 records also retain optional `architecture` and `labels` for the overview's
@@ -1353,7 +1355,7 @@ await window.__TAURI__.core.invoke("azure_cost");
   "plansMessage": null, // or {"text": "Claude and Codex plan limits are off —
                         //    turn on in Settings", "color": …}: ONE muted line
                         //    naming every plan that is off
-  "footer": null,   // ONE line for the panel: Claude's own (staleAfter 150s)
+  "footer": null,   // ONE line for the panel: Claude's own (staleAfter 2.5 rollup cycles, never under 150s)
                     // plus each plan's and each metered section's, attributed and joined by
                     // `merged_footer` — "⚠ neon: stale · updated 23h ago
                     // ⚠ sentry: stale · updated 23h ago"
@@ -2058,7 +2060,7 @@ a portfolio fetch on a credential it has no use for.
 |---|---|
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
-| the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
+| the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives those two vendors from them |
 | a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |

@@ -1202,6 +1202,29 @@ mod tests {
 
     // MARK: Claude states
 
+    /// The Claude footer's staleness window follows the rollup cadence the loop
+    /// last told the state (#615): 150s with none set and at 60s, 750s at 300s.
+    #[test]
+    fn the_claude_stale_window_follows_the_rollup_cadence() {
+        let footer = |cadence: Option<u64>, age: u64| {
+            let mut state = measured_with_claude_at(NOW - age);
+            if let Some(secs) = cadence {
+                state.set_claude_cadence_secs(secs);
+            }
+            view(&state, QUOTA, RATES, CADENCE, NOW)["footer"].clone()
+        };
+        for cadence in [None, Some(60)] {
+            assert!(footer(cadence, 150).is_null(), "{cadence:?} at the edge");
+            assert!(!footer(cadence, 151).is_null(), "{cadence:?} past it");
+        }
+        assert!(footer(Some(300), 151).is_null(), "a healthy 5-minute gap");
+        assert!(footer(Some(300), 750).is_null(), "2.5 cycles is the edge");
+        assert!(
+            !footer(Some(300), 751).is_null(),
+            "past it the walk looks stuck"
+        );
+    }
+
     #[test]
     fn before_the_first_walk_the_panel_says_it_is_reading() {
         let payload = view(&UsageState::new(), 0, NeonRates::default(), CADENCE, NOW);

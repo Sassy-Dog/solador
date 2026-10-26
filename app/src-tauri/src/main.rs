@@ -4422,6 +4422,9 @@ fn settings_save_azure(
     // so without this an operator who has just fixed a typo waits until
     // teatime to find out whether it worked.
     state.azure_wake.notify_one();
+    // And Services: an Azure export being configured is what makes Azure a
+    // watched vendor (`services::active_vendors`).
+    wake_services(&state);
     settings_response(&state, status)
 }
 
@@ -5525,7 +5528,12 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 /// loop to wake — its caller reconciles poll *tasks* instead.
 fn wake_for(app: &App, field: SecretField) {
     match field {
-        SecretField::Neon | SecretField::Vercel => wake_usage(app, true),
+        // Also the Services loop: `active_vendors` derives the Neon and Vercel
+        // status pages from exactly these credentials.
+        SecretField::Neon | SecretField::Vercel => {
+            wake_usage(app, true);
+            wake_services(app);
+        }
         // One credential, two panels: the Usage panel's Sentry section and the
         // Sentry Crons panel are separate loops, so a save has to reach both or
         // one of them keeps describing the previous token for up to an hour.
