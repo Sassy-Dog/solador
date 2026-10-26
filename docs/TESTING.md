@@ -112,7 +112,19 @@ failed attempt detaches whatever now stands on that image path before the next
 one (never a device that stood there before the attach: the release image's
 path repeats across builds and an earlier one may still be mounted), which is
 what makes retrying safe. The last failure waits 2 s and sweeps once more; a
-device that appears later than that is not covered. A re-run of the SAME
+device that appears later than that is not covered. **Every failed attempt
+records what it found (#642)**, before the sweep: one `dmg attach:` line on
+stderr with the attempt number, how long `hdiutil attach` took, its exit status,
+the (device, image) pairs standing on this image path (any that stood there
+before the attach marked `pre-existing`), whether the mountpoint is mounted,
+and the *count* of images attached in total (never another image's path). One
+more such line follows the final sweep. It exists to answer what macOS 27.0.1's
+EAGAIN means: whether `hdiutil attach` reports it for an attach that succeeded,
+and whether a device appears after the last failure. The lines are read-only
+(they never detach), a read that fails prints `unknown` in its fields and
+changes no outcome, and a first-try success prints none; search a log for
+`dmg attach:`. The success test and the retry set are unchanged, so nothing
+here is a fix. A re-run of the SAME
 version names it (it is kept, never detached) on its next attach, successful or
 not; once the CalVer moves the image path (`<product>-<version>.dmg`) changes
 and nothing revisits the old one, so `hdiutil info` is how to see it. Detach is by the whole-disk device node
