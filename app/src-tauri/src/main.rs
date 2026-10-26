@@ -6035,7 +6035,7 @@ fn dump_github_showcase(runners: bool) -> Value {
 }
 
 /// The cadence the offline container fixtures are judged against: the default.
-const DUMP_CONTAINERS_CADENCE_SECS: u64 = 10;
+const DUMP_CONTAINERS_CADENCE_SECS: u64 = PanelInterval::Containers.spec().default_secs as u64;
 
 fn dump_containers_showcase() -> Value {
     const NOW: u64 = 1_700_000_000;
