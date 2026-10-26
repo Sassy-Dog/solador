@@ -30,8 +30,9 @@ resources; omitted problems are named in that count. Each tile's footer ends in
 a **View** button, which opens a small menu of the views Rust names for that tile
 (`views` in the tile's JSON: **Detail**, **Full view**). The frontend paints only
 the ids it can open, the menu survives the 1s repaint, ArrowDown/ArrowUp move
-(wrapping), **Escape** closes it with focus back on **View**, and Tab, a click
-outside or choosing an item closes it. A resource scope that
+(wrapping), **Escape** closes it with focus back on **View**, Tab closes it and
+moves on past **View** exactly as Tab from **View** would, and a click outside or
+choosing an item closes it. A resource scope that
 disappears stays empty.
 
 **Summary** keeps the tile compact with status and its key readings. **Detail**

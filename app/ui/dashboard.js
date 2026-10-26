@@ -2319,9 +2319,10 @@
       e.preventDefault();
       closeViewMenu(true);
     } else if (e.key === "Tab") {
-      // Focus goes to View first, so Tab moves on from it, not from <body>.
-      footer.querySelector(".db-view-button")?.focus({ preventScroll: true });
-      closeViewMenu();
+      // Close first, then focus the View button the repaint attached, so the
+      // browser's Tab moves on from View rather than from <body>. Focusing View
+      // before closing would focus a button the repaint then detaches.
+      closeViewMenu(true);
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
       e.preventDefault();
       const step = e.key === "ArrowDown" ? 1 : -1;

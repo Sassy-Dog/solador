@@ -2793,6 +2793,29 @@ test("the View menu is keyboard operable: arrows wrap, Escape returns to View, T
   await expect(items).toHaveCount(0);
 });
 
+test("Tab from an open View menu closes it and moves past that tile's View, as Tab from View does", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  const button = viewButton(page, "ghWorkflows");
+  const items = viewItems(page, "ghWorkflows");
+  // Described rather than held: a 1s repaint replaces the element itself.
+  const focused = () =>
+    page.evaluate(() => {
+      const el = document.activeElement;
+      return { tag: el?.tagName, action: el?.dataset?.action ?? null, id: el?.dataset?.id ?? null, text: el?.textContent ?? null };
+    });
+  await button.focus();
+  await page.keyboard.press("Tab");
+  const next = await focused();
+  expect(next).not.toEqual({ tag: "BUTTON", action: "views", id: "overview-ghWorkflows", text: "View" });
+  expect(next.tag).not.toBe("BODY");
+  await button.click();
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(items).toHaveCount(0);
+  await expect(button).not.toBeFocused();
+  expect(await focused()).toEqual(next);
+});
+
 test("Escape closes the View menu and returns focus to View", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, healthyRepos);
   await viewButton(page, "hosts").click();
