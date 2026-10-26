@@ -4398,10 +4398,10 @@ fn claude_presence_wakes_services(was_present: bool, is_present: bool) -> bool {
 /// Services) the cadence the store holds *now*.
 ///
 /// Every other cadence-following footer reads its cadence at render time and
-/// needs no sync: Containers (`containers_view_in`, #633), Azure Cost and the
-/// plan limits (twice the cadence). Sentry Crons (`crons`) and the metered Usage
-/// providers (`usage`) read it at render time for `freshness` only; their
-/// warning window is still a fixed 90 minutes, a known gap tracked in #635.
+/// needs no sync: Containers (`containers_view_in`, #633), Azure Cost
+/// (cadence + 1h), the plan limits (twice the cadence), and, since #635, Sentry
+/// Crons (`crons_unscoped`) and the metered Usage providers (`usage_unscoped`),
+/// whose window is 1.5 cycles of each panel's own cadence.
 ///
 /// The loops call it at the top of each pass, and `panel_interval_save` /
 /// `_clear` call it before they re-render, so a shortened cadence does not
@@ -7827,6 +7827,43 @@ mod tests {
             app.usage.lock().unwrap().claude_stale_after_secs(),
             app.services.lock().unwrap().stale_after_secs(),
         )
+    }
+
+    /// #635: the Crons and metered-provider footer windows follow their own
+    /// cadence at render time, so a save or clear moves them in the same
+    /// response, and one panel's cadence never moves the other's.
+    #[test]
+    fn crons_and_provider_footer_windows_follow_their_own_cadence() {
+        // 7000s old: past the 5400s window of the 1h default, inside the 10800s
+        // window of a 2h cadence.
+        let stale = |v: &Value| !v["footer"].is_null();
+        let (_dir, _rt, app) = test_app();
+        let now = panel::now_unix();
+        *app.crons.lock().unwrap() =
+            crons::fixture_state(crons::Fixture::Alerting, now - 7_000, chrono::Utc::now());
+        *app.usage.lock().unwrap() =
+            usage::fixture_state(usage::Fixture::Measured, now, now - 7_000);
+        assert!(stale(&crons_unscoped(&app)) && stale(&usage_unscoped(&app)));
+
+        panel_interval_save_in(&app, "crons", 7_200).unwrap();
+        assert!(!stale(&crons_unscoped(&app)), "crons save moves its window");
+        assert!(stale(&usage_unscoped(&app)), "providers window untouched");
+
+        panel_interval_clear_in(&app, "crons").unwrap();
+        assert!(stale(&crons_unscoped(&app)), "crons clear moves it back");
+
+        panel_interval_save_in(&app, "usage_providers", 7_200).unwrap();
+        assert!(
+            !stale(&usage_unscoped(&app)),
+            "providers save moves its window"
+        );
+        assert!(stale(&crons_unscoped(&app)), "crons window untouched");
+
+        panel_interval_clear_in(&app, "usage_providers").unwrap();
+        assert!(
+            stale(&usage_unscoped(&app)),
+            "providers clear moves it back"
+        );
     }
 
     /// The usage pass seam (#627): Services wakes exactly when presence flips,

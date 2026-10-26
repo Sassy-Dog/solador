@@ -47,11 +47,16 @@ use viewmodel::freshness::Freshness;
 
 use crate::panel::{freshness_payload, status_footer, Configured};
 
-/// The staleness window. Reuses the Neon/Sentry figure rather than restating it:
-/// the window sits above the *default* hourly cadence. It does not follow the
-/// operator's cadence (#301 made it theirs), so a cadence over 90 minutes goes
-/// stale between healthy polls: a known gap, tracked in #635.
-pub const STALE_AFTER_SECS: u64 = crate::usage::PROVIDER_STALE_AFTER_SECS;
+/// The footer's staleness window for the operator's [`PanelInterval::Crons`]
+/// cadence: one and a half cycles (#635), the 90 minutes this footer has always
+/// had at the default hour. This panel reads **its own** cadence; it shares a
+/// rule with the metered providers, not a cadence or a constant.
+///
+/// [`PanelInterval::Crons`]: store::settings::PanelInterval::Crons
+#[must_use]
+pub fn stale_after_secs(cadence_secs: u64) -> u64 {
+    crate::panel::stale_after_for_slow_cadence(cadence_secs)
+}
 
 /// The panel's zero-setup state. An instruction, not a failure — and the only
 /// message [`Configured::Absent`] may paint.
@@ -344,7 +349,7 @@ pub fn view(state: &CronsState, cadence_secs: u64, now: u64) -> Value {
         state.last_updated,
         state.last_error.as_deref(),
         now,
-        STALE_AFTER_SECS,
+        stale_after_secs(cadence_secs),
     );
     payload
 }
@@ -882,32 +887,68 @@ mod tests {
     #[test]
     fn a_fresh_read_renders_no_footer_and_a_stale_one_says_so() {
         assert!(payload(Fixture::Alerting)["footer"].is_null());
-        let state = fixture_state(Fixture::Alerting, NOW - STALE_AFTER_SECS - 1, fixture_now());
+        let state = fixture_state(
+            Fixture::Alerting,
+            NOW - stale_after_secs(CADENCE) - 1,
+            fixture_now(),
+        );
         assert_eq!(
             view(&state, CADENCE, NOW)["footer"]["text"],
             "⚠ stale · updated 1h ago"
         );
     }
 
-    /// The window sits above the hourly cadence behind it, or the panel would be
-    /// permanently stale. One definition, shared with the other Sentry read —
-    /// so the pair cannot drift apart.
-    ///
-    /// "The hourly cadence" is the *default* since #301: an operator who sets
-    /// this panel's interval past 90 minutes gets a footer between every pair
-    /// of polls. That reading is truthful — it really is two hours old — but it
-    /// is noise rather than a warning, and closing it means deriving the window
-    /// from the configured cadence, which is the shape #302 is working out on
-    /// the Azure panel.
+    /// The window follows the cadence the panel is rendered with (#635): one and
+    /// a half cycles, 90 minutes at the default hour. Exactly at the window is
+    /// fresh, one second past it is a footer.
     #[test]
-    fn the_staleness_window_sits_above_the_hourly_cadence() {
-        assert_eq!(STALE_AFTER_SECS, 90 * 60);
-        assert_eq!(STALE_AFTER_SECS, crate::usage::PROVIDER_STALE_AFTER_SECS);
-        assert_eq!(crate::usage::PROVIDER_POLL_INTERVAL_SECS, 60 * 60);
-        // …and the constant is live rather than merely declared: exactly at the
-        // window is still fresh, one second past it is a footer.
-        let fresh = fixture_state(Fixture::Alerting, NOW - STALE_AFTER_SECS, fixture_now());
-        assert_eq!(view(&fresh, CADENCE, NOW)["footer"], Value::Null);
+    fn the_staleness_window_is_one_and_a_half_cycles_of_its_own_cadence() {
+        assert_eq!(stale_after_secs(CADENCE), 90 * 60, "no regression at 1h");
+        assert_eq!(stale_after_secs(300), 450);
+        assert_eq!(stale_after_secs(2 * 3_600), 3 * 3_600);
+        for cadence in [300, CADENCE, 2 * 3_600, 6 * 3_600] {
+            let window = stale_after_secs(cadence);
+            let at = |age: u64| fixture_state(Fixture::Alerting, NOW - age, fixture_now());
+            assert_eq!(view(&at(window), cadence, NOW)["footer"], Value::Null);
+            assert!(
+                view(&at(window + 1), cadence, NOW)["footer"]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("⚠ stale")),
+                "cadence {cadence}"
+            );
+        }
+    }
+
+    /// A healthy loop never warns: the oldest a reading gets between two polls
+    /// is one cycle, at the floor, the default and long cadences.
+    #[test]
+    fn a_healthy_loop_never_shows_a_stale_footer() {
+        for cadence in [300, CADENCE, 2 * 3_600, 6 * 3_600] {
+            let state = fixture_state(Fixture::Alerting, NOW - cadence, fixture_now());
+            assert_eq!(
+                view(&state, cadence, NOW)["footer"],
+                Value::Null,
+                "cadence {cadence}"
+            );
+        }
+    }
+
+    /// At the 300s floor a stuck poller is flagged inside two cycles (1.5), not
+    /// the 18 a fixed 90 minutes took.
+    #[test]
+    fn at_the_floor_a_stuck_poller_is_flagged_within_two_cycles() {
+        let state = fixture_state(Fixture::Alerting, NOW - 2 * 300, fixture_now());
+        assert!(view(&state, 300, NOW)["footer"]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("⚠ stale")));
+    }
+
+    /// Before the first pass there is no reading to date: no footer, and the
+    /// loading line instead.
+    #[test]
+    fn before_the_first_pass_there_is_no_footer_and_no_age() {
+        let payload = view(&CronsState::new(), CADENCE, NOW);
+        assert_eq!(payload["footer"], Value::Null);
     }
 
     /// An unreadable credential store keeps a live panel's rows and adds the

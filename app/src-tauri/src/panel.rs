@@ -101,6 +101,22 @@ pub fn stale_after_for_cadence(cadence_secs: u64) -> u64 {
         .max(MIN_STALE_AFTER_SECS)
 }
 
+/// The staleness window for a panel on a slow, operator-set cadence: one and a
+/// half cycles (#635), so a reading is stale only once a whole cycle has been
+/// missed by half again.
+///
+/// Used by Sentry Crons and the metered Usage providers (Neon, Sentry, Vercel),
+/// each passing **its own** cadence. At the 1h default it is exactly the 90
+/// minutes those footers have always had. A healthy loop's reading is never
+/// older than one cycle (plus the pass's own duration, seconds against the
+/// half-cycle of grace, which is at least 150s at the 300s floor), so it is
+/// never stale between two healthy polls at any legal cadence; a stuck poller
+/// is flagged after 1.5 cycles rather than a fixed 18 at the floor.
+#[must_use]
+pub fn stale_after_for_slow_cadence(cadence_secs: u64) -> u64 {
+    cadence_secs.saturating_mul(3).div_ceil(2)
+}
+
 /// The footer line for one panel, or `Null` when it is healthy and fresh.
 ///
 /// Ladder, in order: an error wins over staleness and carries how long ago the
@@ -459,7 +475,7 @@ mod tests {
     /// late against.
     #[test]
     fn every_panels_staleness_window_matches_its_original_panel() {
-        let windows: [(&str, u64, u64); 5] = [
+        let windows: [(&str, u64, u64); 6] = [
             (
                 "containers",
                 crate::containers::stale_after_for_cadence(crate::containers::POLL_INTERVAL_SECS),
@@ -467,9 +483,16 @@ mod tests {
             ),
             ("runners", crate::github::RUNNERS_STALE_AFTER_SECS, 150),
             ("claude usage", crate::usage::CLAUDE_STALE_AFTER_SECS, 150),
+            // Derived from the operator's cadence (#635); what is pinned here
+            // is that the default hour still produces the 90 minutes.
             (
                 "neon + sentry",
-                crate::usage::PROVIDER_STALE_AFTER_SECS,
+                crate::usage::provider_stale_after_secs(crate::usage::PROVIDER_POLL_INTERVAL_SECS),
+                90 * 60,
+            ),
+            (
+                "sentry crons",
+                crate::crons::stale_after_secs(crate::usage::PROVIDER_POLL_INTERVAL_SECS),
                 90 * 60,
             ),
             // Azure Cost's window is derived from the operator's cadence
