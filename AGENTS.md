@@ -1261,7 +1261,12 @@ the bundle's floor.
   hosts configured` still counts the configured hosts, not the kept cards),
   titled with the tile's name, with Rust's `fullNote` under the header row when
   the scope filters (`Scope: …`, plus the totals clause on every source but
-  Machines, which has no totals). It keeps the selected group, and Full's
+  Machines, which has no totals). Until the tile's own first reading lands the
+  body is hidden under Rust's `fullLoading` line, and a reading that returns
+  after Escape or a switch to another tile is dropped in `callRust`
+  (`app.js`), once for every renderer; a scope that keeps nothing shows the
+  tile's own `empty` sentence, carried as `tileEmpty` (`scoped_empty`, #640).
+  It keeps the selected group, and Full's
   All runners clears that filter. Escape or the toolbar toggle returns to the
   overview, focused on that tile's View button; a tile hidden or removed meanwhile sends the
   overview back with `tileGone` and closes the Detail opened from it. The

@@ -70,7 +70,14 @@ freshness lines still describe the whole source. Machines has no totals, so its
 note is the scope alone (`Scope: This machine.`), and a scope that keeps no remote
 machine never shows `No hosts configured`: that line counts the hosts configured,
 not the cards kept. A tile scoped to everything gets the source's panel
-unchanged, with no note. A runner group selected in Detail
+unchanged, with no note. Until the tile's own first reading arrives the body
+is hidden and Rust's `fullLoading` line stands in for it, so the rows the panel
+last held (Solador's Full view, another tile) never show under this tile's name;
+a reading that lands after Escape, or after another tile opened, is dropped
+(`callRust` in `app.js` compares a view counter, so no renderer does). A scope
+that keeps nothing says why with the tile's own overview sentence, carried on
+the reading as `tileEmpty` (`dashboard::scoped_empty`, the same `empty_state`
+as the tile's `empty`). A runner group selected in Detail
 carries in as the panel's filter. **Escape**, or the toolbar's **Full view**
 toggle, returns to the overview with focus on that tile's **View** button, and the
 panel gets its own title back. A tile hidden or removed while its Full view is

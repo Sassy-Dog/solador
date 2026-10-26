@@ -3048,10 +3048,13 @@ fn cockpit(
 fn cockpit_for_tile(width: f64, app: &App, id: &str) -> Result<Value, String> {
     let tile = tile_from_store(app, id, "hosts")?;
     let payload = cockpit_with(width, app, None);
-    Ok(match kept_hosts(&tile, &payload) {
+    let empty = dashboard::scoped_empty(&tile, &payload);
+    let mut scoped = match kept_hosts(&tile, &payload) {
         Some(keep) => cockpit_with(width, app, Some(&keep)),
         None => payload,
-    })
+    };
+    tile_scope::stamp_empty(&mut scoped, empty);
+    Ok(scoped)
 }
 
 /// The card ids a Machines tile keeps, read from the payload `cockpit_with`

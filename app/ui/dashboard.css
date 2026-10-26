@@ -1009,6 +1009,13 @@
 #cockpitView[data-detail-source] .panel-title { font-size:14px; }
 /* A tile's Full view: Rust's note under the header row, muted like the
    panel's trailing and freshness lines. */
+#cockpitView .db-full-state { font-size:12px; color:var(--muted); margin:4px 0 8px; }
+/* Until a tile's own first reading lands, the panel holds only the rows it last
+   painted: hide them, keeping the header (the tile's name) and the notes. */
+#cockpitView[data-tile-loading] .panel[data-detail-active] > :not(.panel-hdr, .db-full-note, .db-full-state),
+#cockpitView[data-tile-loading][data-detail-source="hosts"] :is(#cockpit, #emptyMsg) {
+  display: none !important;
+}
 #cockpitView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }
 #cockpitView .panel-hdr { gap:8px; }
 #runnersPanel { container-type:inline-size; }
