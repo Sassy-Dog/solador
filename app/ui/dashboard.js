@@ -48,7 +48,7 @@
     dragged = null,
     initialized = false;
   let pointerDrag = null;
-  let loadFailed = false;
+  let loadFailed = false, viewFailureLogged = false;
   let previewTimer = null, previewVersion = 0;
   let acknowledgementVersion = 0;
   let appChrome = null, feedback = null, feedbackNotice = null;
@@ -715,6 +715,7 @@
         model && JSON.stringify(next.layout) !== JSON.stringify(model.layout);
       if (configChanged && !force) history = [];
       model = next;
+      viewFailureLogged = false;
       // The operator's spacing, from the first model on: a tile's Full view
       // has its row gap whether or not `cockpit` has answered.
       applySpacing(Number(next.spacing), next.rowGapPx);
@@ -727,6 +728,11 @@
       if (error) error.remove();
       paintCockpitFailure();
     } catch (error) {
+      // Once per transition into failure, as `cockpit`'s is (app.js).
+      if (!viewFailureLogged) {
+        viewFailureLogged = true;
+        console.error("dashboard_view failed:", String(error?.message ?? error));
+      }
       if (busy || version !== acknowledgementVersion) return;
       if (initialized) {
         loadFailed = true;
@@ -2603,6 +2609,15 @@
     tileHeading: fullTileTitle,
     fullGeneration: () => fullGeneration,
     tileResponse,
+    hasModel: () => Boolean(model),
+    // Whether tile `id` has left the overview, asked after a read for it was
+    // refused: a fresh model decides, so a refusal for a tile that is still
+    // here stays a failure and one for a tile that is gone is the dashboard's
+    // own tile-gone path (`render`), not a `cockpit` failure.
+    async tileGone(id) {
+      await refresh(true);
+      return Boolean(model) && !model.tiles.some((t) => t.id === id);
+    },
   };
   registerPanelRefresh(() => refresh(true));
   refresh(true);

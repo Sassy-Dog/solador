@@ -1,11 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { stubTileIpc, openTileFull, tileIdFor, lastArgs } from "./tile-full.js";
+import { stubTileIpc, openTileFull, tileIdFor, lastArgs, advance } from "./tile-full.js";
 
 /**
  * The overview and a tile's Full view stand on their own (#646): neither leans
- * on Solador's Full view's DOM (`#fullView` carries the panels; the old
- * `#cockpitView` wrapper no longer exists), on its icon (`allPanels`), or on the
- * `cockpit` poll for anything that is not a host card.
+ * on its icon (`allPanels`), or on the `cockpit` payload for the Settings label
+ * and the spacing, or on a `cockpit` poll for anything that is not a host card.
  *
  * Each test names the line it guards; the PR lists the negative controls.
  */
@@ -27,20 +26,21 @@ const READS = [
 const PANEL_COMMANDS = READS.map(([, command]) => command).filter((command) => command !== "cockpit");
 const gear = '.db-chrome [data-action="settings"]';
 
-test("the overview, Settings and a tile's Full view work without #cockpitView or the allPanels icon", async ({ page, baseURL }) => {
+test("Settings and a tile's Full view work without the allPanels icon, or a Settings label or spacing from cockpit", async ({ page, baseURL }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const dashboard = await fixture(baseURL, "sample-dashboard.json");
+  // The cockpit payload with everything the overview reads from it taken out:
+  // the Settings label and the spacing can then only come from `dashboard_view`.
+  const { settingsLabel, spacing, rowGapPx, ...cockpit } = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
   await stubTileIpc(page, baseURL, {
     sources: ["hosts", "ghRunners", "sentryCrons"], cockpit, answers: { settings_view: settings },
+    dashboardKeys: { rowGapPx: 9, spacing: 11 },
   });
-  // Nothing may need the wrapper Solador's Full view used to have.
-  await page.addInitScript(() =>
-    document.addEventListener("DOMContentLoaded", () => document.getElementById("cockpitView")?.remove()));
   await page.goto("/index.html");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
-  expect(await page.locator("#cockpitView").count()).toBe(0);
+  await expect(page.locator(gear)).toHaveAttribute("aria-label", dashboard.labels.settings);
   // ...nor the toolbar's Full view icon.
   await page.locator('[data-action="allPanels"]').evaluate((icon) => icon.remove());
 
@@ -55,6 +55,16 @@ test("the overview, Settings and a tile's Full view work without #cockpitView or
     await openTileFull(page, source);
     // Focus moves into the view that opened, not to an icon that may not exist.
     await expect(page.locator("#fullView")).toBeFocused();
+    // The Machines view has read `cockpit` by now, whose payload names no
+    // Settings label: the button keeps the overview's.
+    if (source === "hosts") await expect.poll(() => lastArgs(page, "cockpit")).toMatchObject({ tile: tileIdFor(source) });
+    await expect(page.locator(gear)).toBeVisible();
+    await expect(page.locator(gear)).toHaveAttribute("aria-label", dashboard.labels.settings);
+    // The gaps are the overview's, since the cockpit payload carries none.
+    expect(await page.evaluate(() => [
+      document.documentElement.style.getPropertyValue("--row-gap"),
+      document.documentElement.style.getPropertyValue("--cockpit-gap"),
+    ])).toEqual(["9px", "11px"]);
 
     // Settings over a tile's Full view puts that same view back.
     await page.locator(gear).click();
@@ -104,8 +114,50 @@ test("an overview that cannot load says so in the sentence the cockpit payload c
   await expect(notice).not.toContainText(/below|full view|panel/i);
 });
 
+test("a failed boot cockpit read shows Rust's line, and it clears on its own once cockpit answers", async ({ page, baseURL }) => {
+  const dashboard = await fixture(baseURL, "sample-dashboard.json");
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  await stubTileIpc(page, baseURL, {
+    source: "ghRunners", cockpit: { __frames: [{ __throw: "cockpit is down" }, cockpit] }, answers: {},
+  });
+  await page.goto("/index.html");
+  const line = page.locator("#dashboardOverview .db-action-error");
+  await expect(line).toHaveText(dashboard.labels.cockpitFailed);
+  await advance(page, "cockpit");
+  // Still the overview: nothing sent the operator anywhere to clear it.
+  await expect(line).toHaveCount(0);
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+});
+
+test("a Machines tile removed while its Full view is open shows the tile-gone message, never the cockpit line", async ({ page, baseURL }) => {
+  const dashboard = await fixture(baseURL, "sample-dashboard.json");
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  await stubTileIpc(page, baseURL, { source: "hosts", cockpit, answers: {} });
+  // Records the cockpit line if it is ever on the page, however briefly.
+  await page.addInitScript((words) => {
+    window.__SAW_COCKPIT_LINE__ = false;
+    new MutationObserver(() => {
+      if (document.body?.textContent.includes(words)) window.__SAW_COCKPIT_LINE__ = true;
+    }).observe(document, { childList: true, subtree: true, characterData: true });
+  }, dashboard.labels.cockpitFailed);
+  await page.goto("/index.html");
+  await openTileFull(page, "hosts");
+  // The tile leaves the overview, and Rust refuses its read as it would.
+  await page.evaluate(() => {
+    const view = structuredClone(window.__ANSWERS__.dashboard_view);
+    view.tiles = []; view.layout.tiles = [];
+    window.__ANSWERS__.dashboard_view = view;
+    window.__ANSWERS__.cockpit = { __throw: "That tile is no longer on the overview." };
+  });
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await expect(page.locator("#dashboardOverview .db-action-error")).toHaveText(dashboard.labels.tileGone);
+  await page.waitForTimeout(1500);
+  expect(await page.evaluate(() => window.__SAW_COCKPIT_LINE__)).toBe(false);
+  await expect(page.locator("#dashboardOverview .db-action-error")).toHaveText(dashboard.labels.tileGone);
+});
+
 for (const [source, command] of READS) {
-  test(`a ${source} tile's Full view reads ${command} and no other panel`, async ({ page, baseURL }) => {
+  test(`opening a ${source} tile's Full view reads ${command}${command === "cockpit" ? " with its tile" : " and no other panel, cockpit included"}`, async ({ page, baseURL }) => {
     const cockpit = await fixture(baseURL, "sample-cockpit.json");
     await stubTileIpc(page, baseURL, { sources: READS.map(([s]) => s), cockpit, answers: {} });
     await page.goto("/index.html");
@@ -113,11 +165,13 @@ for (const [source, command] of READS) {
     // Past the boot reads, which every panel makes once before the overview is up.
     await page.evaluate(() => { window.__CALLS__.length = 0; });
     await openTileFull(page, source);
-    // Long enough for the 1s polls (the overview's and the cockpit's) to fire.
-    if (command !== "cockpit") await expect.poll(() => lastArgs(page, command)).toEqual({ tile: tileIdFor(source) });
+    // The reads the view makes on opening and over the next 1s polls; slower
+    // panel timers (10s and up) are not waited for.
+    await expect.poll(() => lastArgs(page, command)).toMatchObject({ tile: tileIdFor(source) });
     await page.waitForTimeout(1500);
     const sent = await page.evaluate(() => window.__CALLS__.map((c) => c.command));
-    const others = PANEL_COMMANDS.filter((other) => other !== command && sent.includes(other));
+    // Every other panel command, and `cockpit` unless this is the Machines tile.
+    const others = [...PANEL_COMMANDS, "cockpit"].filter((other) => other !== command && sent.includes(other));
     expect(others, `commands sent: ${[...new Set(sent)]}`).toEqual([]);
   });
 }

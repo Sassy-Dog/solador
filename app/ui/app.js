@@ -69,9 +69,13 @@ const panelWanted = (source) => {
 // in Rust's words. A global plus an event, because the first call can answer
 // before dashboard.js has loaded: it reads the flag once and listens after.
 let cockpitFailed = false;
-const setCockpitFailed = (failed) => {
+const setCockpitFailed = (failed, error) => {
   if (failed === cockpitFailed) return;
   cockpitFailed = failed;
+  // Once per transition into failure, so a poll that keeps failing does not
+  // write a line a second. The rejection is Rust's `Err(String)` or the
+  // transport's; neither carries a credential.
+  if (failed) console.error("cockpit failed:", String(error?.message ?? error));
   document.dispatchEvent(new CustomEvent("solador:cockpit", { detail: failed }));
 };
 // What the overview says when it cannot load: Rust's sentence, carried by the
@@ -614,11 +618,13 @@ function renderCockpit(p) {
   // `dashboard_view`'s labels (dashboard.js); this is the same word for the
   // page that has no overview model, and is gone with Solador's Full view.
   const toggle = $("settingsToggle");
-  if (toggle.querySelector(".db-tooltip")) {
-    toggle.setAttribute("aria-label", p.settingsLabel || "");
-    toggle.querySelector(".db-tooltip").textContent = p.settingsLabel || "";
-  } else toggle.textContent = p.settingsLabel || "";
-  toggle.hidden = !p.settingsLabel;
+  if (!window.soladorDashboard?.hasModel?.()) {
+    if (toggle.querySelector(".db-tooltip")) {
+      toggle.setAttribute("aria-label", p.settingsLabel || "");
+      toggle.querySelector(".db-tooltip").textContent = p.settingsLabel || "";
+    } else toggle.textContent = p.settingsLabel || "";
+    toggle.hidden = !p.settingsLabel;
+  }
 
   const emptyEl = $("emptyMsg");
   emptyEl.textContent = p.empty ? p.empty.message : "";
@@ -677,8 +683,8 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
 
   // A reading dropped because its view has gone arrives as null (`callRust`):
   // not a failure, and nothing to paint.
-  const poll = async () => {
-    const payload = await callRust("cockpit", { width: gridWidth(), ...(window.soladorDashboard?.tileArgs?.("hosts") ?? {}) }, "sample.json");
+  const poll = async (args) => {
+    const payload = await callRust("cockpit", args, "sample.json");
     if (payload) renderCockpit(payload);
     return Boolean(payload);
   };
@@ -686,14 +692,25 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
   // A failed `cockpit` call is told to the overview, which says what failed in
   // Rust's words and stays on screen. It used to replace the whole page.
   const pollReporting = async () => {
+    const args = { width: gridWidth(), ...(window.soladorDashboard?.tileArgs?.("hosts") ?? {}) };
     try {
-      if (await poll()) setCockpitFailed(false);
-    } catch {
-      setCockpitFailed(true);
+      if (await poll(args)) setCockpitFailed(false);
+    } catch (error) {
+      // A read for a tile that has left the overview is refused by Rust and is
+      // not a `cockpit` failure: the dashboard says the tile is gone. Whether
+      // it has is the dashboard's state, never the refusal's wording.
+      if (args.tile !== undefined && await window.soladorDashboard?.tileGone?.(args.tile)) return;
+      setCockpitFailed(true, error);
     }
   };
 
-  refreshCockpit = async () => { if (overviewOpen) return; await pollReporting(); };
+  // The cards are read where they are shown (Solador's Full view, a Machines
+  // tile's Full view), and while the last read failed, so that the overview's
+  // sentence clears on its own once `cockpit` answers again.
+  refreshCockpit = async () => {
+    if (!panelWanted("hosts") && !cockpitFailed) return;
+    await pollReporting();
+  };
 
   await pollReporting();
   if (window.__TAURI__) {

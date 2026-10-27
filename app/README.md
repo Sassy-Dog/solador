@@ -106,18 +106,48 @@ panel under the tile's name. **Full view** pressed in the Detail of a tile that
 has since left the overview answers with the same sentence and stays on the
 overview.
 
-**The overview and a tile's Full view stand on their own (#646).** They read
-nothing from Solador's Full view, so deleting it (#639) takes nothing with it.
-The panels live in `#fullView` (a tile's Full view shows one, Solador's Full view
-all of them, and the overview's toolbar is moved into it while either is shown).
-Nothing about the overview, Settings or the page's boot needs it to have a
-particular id or content: the old `#cockpitView` wrapper is gone, and the specs
-in `overview-standalone.spec.js` run those paths without the `allPanels` icon.
+**The overview and a tile's Full view no longer lean on Solador's Full view's
+behaviour (#646), but they still stand on its markup.** `#cockpitView` was
+*renamed* `#fullView`, not removed. It is the one host of every panel: a tile's
+Full view shows one section, Solador's Full view all of them, and the toolbar
+is moved into it while either is on screen. What the #647 cutover still has to
+cut or re-home, by id (built from `getElementById` and `$()` in `app.js`,
+`dashboard.js` and `settings.js`):
+
+- `#fullView` itself: `dashboard.js` reads it once at load and then uses it
+  unguarded (visibility, `data-detail-source`, `data-tile-loading`, focus, the
+  load-failure notice). A tile's Full view *is* this element with one panel
+  showing, so the cutover renames or re-purposes it rather than deleting it.
+- `#settingsToggle`, inside `#fullView > .topbar`: the Settings gear.
+  `settings.js` binds `openSettings` to it at load, and `dashboard.js` moves that
+  same node into the toolbar. The overview's label and visibility come from
+  `labels.settings`; the top-bar copy is labelled by `cockpit`'s `settingsLabel`
+  only while there is no overview model. The cutover must create the button
+  where the toolbar is built and bind `openSettings` there.
+- `#cockpit`, `#hostsTitle`, `#hostTabs`, `#emptyMsg`, `#panelRows` and the
+  `#cardTpl` template: `renderCockpit` (the Machines Full view and Solador's
+  Full view) and `gridWidth` need them. `#panelRows` and the `panelRows` payload
+  are Solador's Full view's arrangement and go with it.
+- Each panel's section and title ids (`containersPanel`/`containersTitle`,
+  `reposPanel`, `runnersPanel`, `usagePanel`, `azurePanel`, `servicesPanel`,
+  `cronsPanel`, `openclawPanel`, and their `…Title`): `sourcePanels` and
+  `sourceTitles` in `dashboard.js` map tiles to them, and each renderer writes to
+  fixed ids inside.
+- `#settings` and its children (`settingsBody`, `settingsClose`, `settingsTabs`,
+  `settingsTitle`, `settingsStatus`, `settingsConfirm`): Settings' own surface.
+  They do not depend on the host; Settings no longer touches it.
+- The `allPanels` icon, the `full` action, `mode === "details"` without a tile
+  and `?view=details`: Solador's Full view's own entry points, still wired.
+
+`overview-standalone.spec.js` runs the overview, Settings and a tile's Full view
+without the `allPanels` icon and without the Settings label or the spacing from
+`cockpit`; it does not (and cannot) run them without `#fullView`.
 
 - **Settings** button: visible and labelled from `dashboard_view`
   (`labels.settings`, `settings::OPEN_LABEL`), and moved into the toolbar by
-  `dashboard.js`. The `cockpit` payload's `settingsLabel` still labels the one
-  copy in `#fullView`'s top bar, which is all a page with no overview model has.
+  `dashboard.js`. The `cockpit` payload's `settingsLabel` labels the one copy in
+  `#fullView`'s top bar only while there is no overview model (`renderCockpit`
+  skips it once there is one).
   Opening and closing Settings fires `solador:settings`, and `dashboard.js` hides
   whichever of the overview and `#fullView` is on screen, then puts it back (a
   tile's Full view gets focus back, so its Escape still works).
@@ -125,7 +155,14 @@ in `overview-standalone.spec.js` run those paths without the `allPanels` icon.
   `labels.cockpitFailed` (`dashboard::COCKPIT_LOAD_FAILED`) beside the attention
   bar. The call feeds only the Machines Full view's host cards; the overview
   reads its own rows. It used to replace the whole page with
-  `failed to load cockpit`. The next successful call clears the sentence.
+  `failed to load cockpit`. While the last read failed, `cockpit` keeps being
+  retried even with the overview up, and the first success clears the
+  sentence. A read for a tile that has since left the overview is refused by
+  Rust and is not a `cockpit` failure: the frontend asks the dashboard whether
+  the tile is gone (a fresh `dashboard_view`, never the refusal's wording), and
+  the dashboard's own `That tile is no longer on the overview.` stands. Each
+  failure is logged once with `console.error` (`cockpit`, `dashboard_view`)
+  when it begins.
 - **`dashboard_view` fails** before the first model: a failed call has no words
   of its own, so the notice is the `cockpit` payload's `overviewLoadFailed`
   (`dashboard::OVERVIEW_LOAD_FAILED`), and the failure's own text only when
@@ -138,7 +175,10 @@ in `overview-standalone.spec.js` run those paths without the `allPanels` icon.
 - **Polling:** each panel renderer asks `panelWanted(source)` (`app.js`) before
   it reads. Nothing reads while the overview is up; in a tile's Full view only
   that tile's source does (`soladorDashboard.fullSource`); Solador's Full view
-  reads all of them. `cockpit` keeps polling for the Machines Full view's cards.
+  reads all of them. `cockpit` is read the same way (`panelWanted("hosts")`):
+  by a Machines tile's Full view (with its `tile`) and by Solador's Full view,
+  not by the overview or another source's Full view, apart from retrying a
+  failed read.
 - **Width:** `gridWidth` is `#cockpit`'s width, or the window's while the grid
   is not laid out.
 - **Focus:** opening a tile's Full view focuses `#fullView`; leaving it focuses
@@ -3100,8 +3140,11 @@ cannot see.
 - [ ] **Screen** — open any tile's **View** → **Full view**, then click **Settings**
       and **Done**: you are back in that same Full view (not the overview), and
       **Escape** returns to the overview with focus on that tile's **View**
-      button. There is no red `failed to load cockpit` line and no
-      `Could not load …` sentence on the overview (#646).
+      button. On a **Machines** tile's Full view the host cards are painted
+      (this machine's, and the seeded host's), the toolbar's **Settings** button
+      is there, and the overview shows nothing under the attention bar:
+      `Could not load the machine cards for the Full view.` or `Could not load the
+      overview.` there is the fail (#646).
 - [ ] **Screen** — make the window taller than its tiles and click **Fit window
       to tiles**: the height snaps to the tiles and the width does not change. In
       fullscreen the click instead shows `Couldn't fit the window: exit full
@@ -3495,7 +3538,9 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 
 | Symptom                                                                                       | Reading                                                                                                                                                              |
 |-----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| A line under the attention bar reads `Could not load the machine cards for the Full view.`, or the page reads `Could not load the overview.` | The `cockpit` call (first sentence) or `dashboard_view` (second) rejected, and the page says so instead of blanking. It used to be a red `failed to load cockpit: …` line replacing the whole body (#646). This is the expected shape of an ACL or registration break. |
+| The overview paints, and a line under the attention bar reads `Could not load the machine cards for the Full view.` | **Only** `cockpit` rejected (an unregistered or denied `cockpit`), and the `cockpit: first frontend request` terminal line is missing. The overview reads its own rows, so it stays up; the line clears by itself if `cockpit` starts answering. It used to replace the whole page (#646). |
+| The page reads `Could not load the overview.` and no tiles paint | **Only** `dashboard_view` rejected. The sentence is `OVERVIEW_LOAD_FAILED`, carried by the `cockpit` payload because the failed call has no words of its own, so `cockpit` answered. |
+| The page shows a raw error text (the IPC's own) in the same place, no tiles, and the `cockpit: first frontend request` terminal line is missing | **Both** rejected: a broken capability set or registration, not one command. `#dashboardLoadError` falls back to the rejection's text because neither payload could carry Rust's sentence. The webview console has a `cockpit failed:` and a `dashboard_view failed:` line. |
 | The card's structure is there but every field is blank.                                       | `app.js` never ran at all — a CSP violation or a script error, so nothing ever reached the IPC boundary. Check the console before suspecting the ACL.                    |
 | A card renders with plausible numbers that never change, and the host name is `ubu-01` rather than the one you passed. | You skipped step 1. That is the fixture, not the boundary. Delete `app/ui/sample*.json` and re-run.                                                                     |
 | `No hosts configured. Add one in Settings.` and no card at all.                                | A malformed `SOLADOR_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
