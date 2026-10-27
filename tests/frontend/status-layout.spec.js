@@ -204,13 +204,15 @@ for (const [source, command, file] of panelTiles) {
   });
 }
 
-test('a disconnected detailed host hides old readings without moving the next panel', async ({ page, baseURL }) => {
+test('a disconnected detailed host hides old readings without moving its card or the grid\'s bottom edge', async ({ page, baseURL }) => {
   await open(page, baseURL, ['hosts']);
   await openTileFull(page, 'hosts');
   const live = await (await fetch(`${baseURL}/sample.json`)).json();
   const down = await (await fetch(`${baseURL}/sample-unreachable.json`)).json();
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, live);
   await expect.poll(() => page.locator('.card').first().evaluate(el => parseFloat(el.style.minHeight) === el.getBoundingClientRect().height)).toBe(true);
+  // The Machines Full view hides every panel row, so `#panelRows` is empty
+  // here: its box is the grid's bottom edge, which moves if any card's height does.
   const before = await bounds(page, '.card, #panelRows');
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, down);
   await expect(page.locator('.card-down')).toBeVisible();
@@ -220,7 +222,7 @@ test('a disconnected detailed host hides old readings without moving the next pa
   expect(await bounds(page, '.card, #panelRows')).toEqual(before);
 });
 
-test('a host first connecting after a cold failure keeps the surrounding layout anchored', async ({ page, baseURL }) => {
+test('a host first connecting after a cold failure keeps its card and the grid\'s bottom edge anchored', async ({ page, baseURL }) => {
   await open(page, baseURL, ['hosts']);
   await openTileFull(page, 'hosts');
   const live = await (await fetch(`${baseURL}/sample.json`)).json();
@@ -233,6 +235,8 @@ test('a host first connecting after a cold failure keeps the surrounding layout 
     await refreshCockpit();
   }, down);
   await expect.poll(() => page.locator('.card').first().evaluate(el => parseFloat(el.style.minHeight) === el.getBoundingClientRect().height)).toBe(true);
+  // The Machines Full view hides every panel row, so `#panelRows` is empty
+  // here: its box is the grid's bottom edge, which moves if any card's height does.
   const before = await bounds(page, '.card, #panelRows');
   await page.evaluate(async live => { window.framesForTest.cockpit = live; await refreshCockpit(); }, live);
   expect(await bounds(page, '.card, #panelRows')).toEqual(before);

@@ -8963,7 +8963,8 @@ mod tests {
     /// with its own `*_unscoped` builder (`cockpit` with its own `Some(id)` arm).
     /// A command that names a neighbour's source, drops its tile or borrows a
     /// neighbour's builder, which the frontend's double and `scope_to_tile`'s
-    /// own tests would all accept, fails here.
+    /// own tests would all accept, fails here. So does a tenth command that
+    /// scopes a tile without a row in the table.
     #[test]
     fn each_panel_command_scopes_its_tile_to_its_own_source() {
         // Command, the function whose body makes the call, and the call's text.
@@ -9027,8 +9028,32 @@ mod tests {
                 && cockpit.contains("Some(id) => cockpit_for_tile("),
             "the cockpit command scopes a Machines tile with its own tile"
         );
-        // The nine are all of them: a tenth command that takes a tile is a new
-        // row here, not a command nothing pins.
+        // The nine are all of them. Every function that calls into the scoping
+        // is a row above, `cockpit`, or the scoping itself, whatever it calls its
+        // tile: a tenth command that scopes one is a new row here.
+        let mut callers = std::collections::BTreeSet::new();
+        let mut current = "";
+        for line in source.lines() {
+            let decl = line.trim_start();
+            let decl = decl.strip_prefix("pub(crate) ").unwrap_or(decl);
+            let decl = decl.strip_prefix("pub ").unwrap_or(decl);
+            let decl = decl.strip_prefix("async ").unwrap_or(decl);
+            if let Some(rest) = decl.strip_prefix("fn ") {
+                current = &rest[..rest.find(['(', '<']).expect("fn name ends")];
+            } else if ["scope_to_tile(", "tile_from_store(", "cockpit_for_tile("]
+                .iter()
+                .any(|call| line.contains(call))
+            {
+                callers.insert(current);
+            }
+        }
+        let mut want: std::collections::BTreeSet<&str> =
+            table.iter().map(|(_, function, _)| *function).collect();
+        want.extend(["cockpit", "scope_to_tile"]);
+        assert_eq!(callers, want, "only the table's commands scope a tile");
+        // And the other way in, which the callers check cannot see: a command
+        // that takes `tile: Option<String>`, the argument the frontend's `{tile}`
+        // binds to, and never scopes it. This counts that one spelling only.
         assert_eq!(
             source.matches("tile: Option<String>").count(),
             table.len(),

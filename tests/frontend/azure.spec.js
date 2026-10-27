@@ -77,11 +77,15 @@ const contentRight = (page, selector) =>
     );
   });
 
-test("the panel paints Rust's headline, caption, trailing label and stat rows", async ({ page, baseURL }) => {
-  const azure = await gotoWithAzure(page, baseURL);
+test("the Azure Cost panel is headed by its tile's name and paints Rust's headline, caption, trailing label and stat rows", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const azure = { ...(await fixture(baseURL, "sample-azure.json")), title: "Rust's own title" };
+  await gotoPanel(page, baseURL, { cockpit, azure });
   await expect(page.locator("#azurePanel")).toBeVisible();
 
-  await expect(page.locator("#azureTitle")).toHaveText(azure.title);
+  // Headed by the tile's own name (#640), not the payload's `title`. The
+  // fixture's title is the tile's name too, so it is changed here.
+  await expect(page.locator("#azureTitle")).toHaveText("Azure Cost");
   await expect(page.locator("#azureTrailing")).toHaveText(azure.trailing);
 
   await expect(page.locator("#azureBody .az-headline .value")).toHaveText(azure.headline.value);

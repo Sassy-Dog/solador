@@ -48,11 +48,15 @@ const rgb = (hex) => {
 const runtime = (page) => page.locator("#openclawBody .oc-runtime");
 const section = (page, id) => page.locator(`#openclawBody .oc-section[data-section="${id}"]`);
 
-test("the panel paints Rust's title, trailing label and agent rows", async ({ page, baseURL }) => {
-  const vm = await gotoWith(page, baseURL);
+test("the OpenClaw panel is headed by its tile's name and paints Rust's trailing label and agent rows", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const vm = { ...(await fixture(baseURL, "sample-openclaw.json")), title: "Rust's own title" };
+  await gotoPanel(page, baseURL, { cockpit, openclaw: vm });
   await expect(page.locator("#openclawPanel")).toBeVisible();
 
-  await expect(page.locator("#openclawTitle")).toHaveText(vm.title);
+  // Headed by the tile's own name (#640), not the payload's `title`. The
+  // fixture's title is the tile's name too, so it is changed here.
+  await expect(page.locator("#openclawTitle")).toHaveText("OpenClaw");
   await expect(page.locator("#openclawTrailing")).toHaveText(vm.trailing);
 
   const agents = vm.runtimes[0].agents;

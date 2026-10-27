@@ -101,11 +101,15 @@ const contentRight = (page, selector) =>
     );
   });
 
-test("the panel paints Rust's title, trailing label and window rows", async ({ page, baseURL }) => {
-  const usage = await gotoWithUsage(page, baseURL);
+test("the Usage panel is headed by its tile's name and paints Rust's trailing label and window rows", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const usage = { ...(await fixture(baseURL, "sample-usage.json")), title: "Rust's own title" };
+  await gotoUsagePanel(page, baseURL, { cockpit, usage });
   await expect(page.locator("#usagePanel")).toBeVisible();
 
-  await expect(page.locator("#usageTitle")).toHaveText(usage.title);
+  // Headed by the tile's own name (#640), not the payload's `title`. The
+  // fixture's title is the tile's name too, so it is changed here.
+  await expect(page.locator("#usageTitle")).toHaveText("Usage");
   await expect(page.locator("#usageTrailing")).toHaveText(usage.trailing);
 
   await expect(windowRows(page)).toHaveCount(usage.windows.length);
@@ -360,7 +364,8 @@ test("a pathologically long warning stays inside the tile and starves nothing be
   expect((await fit(page, "#usageTrailing")).ellipsised).toBe(false);
   await expect(page.locator("#usageTrailing")).toHaveText(healthy.trailing);
   expect((await fit(page, "#usageTitle")).ellipsised).toBe(false);
-  await expect(page.locator("#usageTitle")).toHaveText(healthy.title);
+  // The tile's own name heads its Full view (#640), not the payload's title.
+  await expect(page.locator("#usageTitle")).toHaveText("Usage");
 });
 
 test("a section with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {

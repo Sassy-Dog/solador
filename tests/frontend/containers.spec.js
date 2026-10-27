@@ -47,12 +47,12 @@ const rgb = (hex) => {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
 
-test("the panel paints Rust's title, trailing counts and section order", async ({ page, baseURL }) => {
-  await gotoApp(page, baseURL);
-  const payload = await fixture(baseURL, "sample-containers.json");
+test("the Containers panel is headed by its tile's name and paints Rust's trailing counts and section order", async ({ page, baseURL }) => {
+  const payload = { ...(await fixture(baseURL, "sample-containers.json")), title: "Rust's own title" };
+  await gotoApp(page, baseURL, { containers: payload });
 
-  // A tile's Full view is headed by the tile's own name (#640), not the
-  // payload's `title`; this tile is named for its source.
+  // Headed by the tile's own name (#640), not the payload's `title`. The
+  // fixture's title is the tile's name too, so it is changed here.
   await expect(page.locator("#containersTitle")).toHaveText("Containers / VMs");
   // The rollup counts every container, including the ones rules collapsed —
   // asserted against Rust's own string so a re-derivation in JS would fail here.
