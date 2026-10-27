@@ -436,7 +436,6 @@ let panelRowShape = "";
  */
 function applyPanelRows(rows) {
   if (!Array.isArray(rows) || !rows.length) return;
-  applyPanelColumns(rows);
   const shape = JSON.stringify(
     rows.map((row) => (row || []).map((p) => p && [p.id, p.weight]))
   );
@@ -487,18 +486,16 @@ function applyPanelRows(rows) {
  * whose columns each carry their own header) also gets an event, so it
  * re-renders now rather than at the far end of its own 10s poll.
  */
-function applyPanelColumns(rows) {
-  for (const row of rows) {
-    for (const panel of row || []) {
-      const section = panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null;
-      if (!section) continue;
-      const cols = Math.max(1, Number(panel.columns) | 0);
-      if (Number(section.dataset.cols) === cols) continue;
-      section.dataset.cols = String(cols);
-      // CSSOM, never a `style=""` attribute -- `style-src 'self'`.
-      section.style.setProperty("--panel-cols", String(cols));
-      section.dispatchEvent(new CustomEvent("panelcolumns", { detail: { columns: cols } }));
-    }
+function applyPanelColumns(columns) {
+  for (const [id, count] of Object.entries(columns || {})) {
+    const section = PANEL_SECTIONS[id] ? $(PANEL_SECTIONS[id]) : null;
+    if (!section) continue;
+    const cols = Math.max(1, Number(count) | 0);
+    if (Number(section.dataset.cols) === cols) continue;
+    section.dataset.cols = String(cols);
+    // CSSOM, never a `style=""` attribute -- `style-src 'self'`.
+    section.style.setProperty("--panel-cols", String(cols));
+    section.dispatchEvent(new CustomEvent("panelcolumns", { detail: { columns: cols } }));
   }
 }
 
@@ -613,7 +610,6 @@ function renderCockpit(p) {
     overviewLoadFailed = words;
     document.dispatchEvent(new CustomEvent("solador:cockpit", { detail: cockpitFailed }));
   }
-  applySpacing(Number(p.spacing), p.rowGapPx);
   const cols = Math.max(1, Number(p.hostColumns) | 0);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
 
@@ -636,7 +632,7 @@ function renderCockpit(p) {
   emptyEl.textContent = p.empty ? p.empty.message : "";
   emptyEl.hidden = !p.empty;
 
-  applyPanelRows(p.panelRows);
+  applyPanelColumns(p.panelColumns);
 
   installCoreLadders(p.hosts);
 

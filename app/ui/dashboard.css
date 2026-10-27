@@ -1079,3 +1079,10 @@
   background: var(--db-panel);
   border-color: var(--db-line);
 }
+
+/* A tile Configure: settings for every view above, one page per view below. */
+#dashboardOverview .db-every-view-group { margin-bottom:14px; }
+#dashboardOverview .db-config-pagesbox { margin-bottom:14px; }
+#dashboardOverview .db-config-switch { width:fit-content; margin:4px 0 6px; }
+#dashboardOverview .db-config-page[hidden] { display:none; }
+#dashboardOverview .db-field > .db-sub { margin:2px 0 0; }

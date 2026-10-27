@@ -501,9 +501,7 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
  */
 async function gotoWithColumns(page, baseURL, columns, mutate) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  for (const panel of cockpit.panelRows.flat()) {
-    if (panel.id === "claudeUsage") panel.columns = columns;
-  }
+  cockpit.panelColumns.claudeUsage = columns;
   const usage = await fixture(baseURL, "sample-usage.json");
   if (mutate) mutate(usage);
   await gotoUsagePanel(page, baseURL, { cockpit, usage });
@@ -539,10 +537,7 @@ test("on a full-width card the providers sit beside the rollups, not under them"
 
 test("a narrow card stacks the providers under the rollups, dividers and all", async ({ page, baseURL }) => {
   // Same panel, same DOM — only the column count Rust derived differs.
-  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
-  expect(narrow.panelRows.flat().find((p) => p.id === "claudeUsage").columns).toBe(1);
-  const usage = await fixture(baseURL, "sample-usage.json");
-  await gotoUsagePanel(page, baseURL, { cockpit: narrow, usage });
+  const usage = await gotoWithColumns(page, baseURL, 1);
 
   const claude = await page.locator("#usageBody .usage-main").boundingBox();
   const providers = await page.locator("#usageBody .usage-providers").boundingBox();

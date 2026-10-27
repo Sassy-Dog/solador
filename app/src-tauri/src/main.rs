@@ -692,6 +692,13 @@ fn cockpit_payload(input: CockpitInput) -> Value {
         // here beside `hostColumns` rather than inside a card that can only see
         // itself.
         "volumeSlots": volume_slots(&cards, columns),
+        // The content columns each panel affords at this width. A panel's Full
+        // view fills the window, so this is `panel_columns` over the window's
+        // width; it travels as data for the reason `hostColumns` does.
+        "panelColumns": viewmodel::cockpit::PanelKind::ALL
+            .iter()
+            .map(|kind| (kind.id().to_owned(), json!(viewmodel::cockpit::panel_columns(*kind, available, SPACING))))
+            .collect::<serde_json::Map<String, Value>>(),
         "empty": empty,
         // The Settings surface is opened from the page's top bar while no
         // overview model has arrived, so its button's label has to arrive
@@ -8908,6 +8915,24 @@ mod tests {
         assert_eq!(block(&plain), json!(220.0), "the default is two rows");
         assert_eq!(block(&tall), json!(440.0), "four rows of the core unit");
         assert_eq!(block(&tabs), block(&plain));
+    }
+
+    /// A panel's Full view fills the window, so the columns it affords come from
+    /// `panel_columns` over the window's width and ride the payload as data:
+    /// narrow is one column, wide is the panel's maximum.
+    #[test]
+    fn the_cockpit_payload_carries_each_panels_columns_for_the_window() {
+        let (_dir, _rt, app) = app_with_remotes(0);
+        let narrow = cockpit_with(400.0, &app, None);
+        let wide = cockpit_with(3000.0, &app, None);
+        for kind in viewmodel::cockpit::PanelKind::ALL {
+            assert_eq!(narrow["panelColumns"][kind.id()], json!(1), "{kind:?}");
+            assert_eq!(
+                wide["panelColumns"][kind.id()],
+                json!(viewmodel::cockpit::PANEL_MAX_COLUMNS),
+                "{kind:?}"
+            );
+        }
     }
 
     /// Every sentence the page shows when one of its two reads fails is Rust's:

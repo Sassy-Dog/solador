@@ -167,12 +167,7 @@ test("on a half-width card the breakdowns sit beside the costs, not under them",
   // itself is CSS over `--panel-cols`, so this is about the frontend applying
   // Rust's count rather than deciding one. The fixture is dumped at 2732pt.
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  const azurePanel = cockpit.panelRows.flat().find((p) => p.id === "azureCost");
-  expect(
-    azurePanel.span,
-    "a half is what still buys the breakdowns their own column"
-  ).toBe("half");
-  expect(azurePanel.columns, "wide enough for the two-column body").toBe(2);
+  expect(cockpit.panelColumns.azureCost, "wide enough for the two-column body").toBe(2);
 
   await gotoWithAzure(page, baseURL);
   const box = async (selector) => await page.locator(selector).boundingBox();
@@ -192,7 +187,7 @@ test("on a half-width card the breakdowns sit beside the costs, not under them",
 test("a narrow card stacks the breakdowns under the costs, divider and all", async ({ page, baseURL }) => {
   // Same panel, same DOM — only the column count Rust derived differs.
   const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
-  expect(narrow.panelRows.flat().find((p) => p.id === "azureCost").columns).toBe(1);
+  expect(narrow.panelColumns.azureCost).toBe(1);
   const azure = await fixture(baseURL, "sample-azure.json");
   await gotoPanel(page, baseURL, { cockpit: narrow, azure });
 

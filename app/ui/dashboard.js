@@ -168,6 +168,10 @@
     fullView.removeAttribute("data-tile-loading");
     paintTileHeading();
   }
+  // The tile whose row gap is on the page: the open Full view's, if any.
+  function spacingTile(m) {
+    return fullTile ? m.tiles.find((t) => t.id === fullTile.id) : undefined;
+  }
   function leaveTile() {
     if (coveredTitle) text(coveredTitle.el, coveredTitle.text);
     coveredTitle = null;
@@ -728,7 +732,7 @@
       viewFailureLogged = false;
       // The operator's spacing, from the first model on: a tile's Full view
       // has its row gap whether or not `cockpit` has answered.
-      applySpacing(Number(next.spacing), next.rowGapPx);
+      applySpacing(Number(next.spacing), spacingTile(next)?.rowGapPx);
       render(force || configChanged);
       if (loadFailed) {
         status("");
@@ -780,6 +784,29 @@
       input.append(option);
     }
     wrap.append(lab, input);
+    return wrap;
+  }
+  // A view setting from `configure.<field>`: a select when Rust gives options,
+  // a number within Rust's range otherwise. Rust's help sits under it.
+  function configField(name, def, t) {
+    let wrap;
+    if (def.options) {
+      wrap = selectField(name, def.label, def.options.map((o) => ({ value: o.id, label: o.label })), String(t[name]));
+    } else {
+      wrap = node("div", "db-field");
+      const lab = node("label", "", def.label), input = node("input");
+      wrap.dataset.field = name;
+      input.name = name;
+      input.id = `dashboard-${name}`;
+      input.type = "number";
+      input.min = def.min;
+      input.max = def.max;
+      input.step = 1;
+      input.value = t[name] ?? "";
+      lab.htmlFor = input.id;
+      wrap.append(lab, input);
+    }
+    wrap.append(node("p", "db-sub", def.help));
     return wrap;
   }
   function fillRepoChoices(choices, s, selected = []) {
@@ -1276,7 +1303,7 @@
       text(copy.children[1], s.hint);
       const form = node("form");
       form.id = "dashboardForm";
-      const fields = node("div", "db-fields");
+      const fields = node("div", "db-fields db-every-view");
       const name = node("div", "db-field"),
         label = node("label", "", L("name")),
         input = node("input");
@@ -1293,29 +1320,14 @@
       const scopes = s.scopes.slice();
       if (!scopes.some((c) => c.value === t.scope))
         scopes.push({ value: t.scope, label: L("missingScope") });
-      fields.append(
-        selectField("scope", L("scope"), scopes, t.scope),
-        selectField(
-          "presentation",
-          L("presentation"),
-          ["summary", "detailed"].map((v) => ({ value: v, label: L(v) })),
-          t.presentation,
-        ),
-        selectField(
-          "width",
-          L("width"),
-          ["small", "medium", "wide"].map((v) => ({ value: v, label: L(v) })),
-          t.width,
-        ),
-      );
-      const placement = selectField("position", L("position"), [], "");
-      placement.classList.add("db-position-field");
-      fields.append(placement);
-      if (["ghWorkflows", "ghRunners"].includes(t.source)) {
-        fields.append(selectField("rowLimit", L("rowLimit"), ["auto", "5", "10", "20", "50", "all"].map(value => ({value, label:L(value) || value})), t.rowLimit || "auto"));
-      }
-      if (t.source === "hosts") {
-        fields.append(selectField("showDisk", L("showDisk"), [{value:"true", label:L("diskShown")}, {value:"false", label:L("diskHidden")}], String(t.showDisk !== false)));
+      fields.append(selectField("scope", L("scope"), scopes, t.scope));
+      if (t.source === "ghWorkflows") {
+        const repos = node("fieldset", "db-repo-selection");
+        repos.append(node("legend", "", L("selectedRepos")), node("p", "db-sub", L("reposHint")));
+        const choices = node("div", "db-repo-choices");
+        fillRepoChoices(choices, s, t.selectedRepos);
+        repos.append(choices);
+        fields.append(repos);
       }
       if (t.source === "hosts") {
         const alerts = node("fieldset", "db-machine-alerts");
@@ -1324,7 +1336,6 @@
         fields.append(alerts);
       }
       if (t.source === "ghRunners") {
-        fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
         const groupLabels = node("fieldset", "db-group-labels");
         groupLabels.dataset.groupLabels = "";
         fillGroupLabels(groupLabels, s);
@@ -1342,14 +1353,50 @@
         fillContainerRules(rules, s);
         fields.append(rules);
       }
-      if (t.source === "ghWorkflows") {
-        const repos = node("fieldset", "db-repo-selection");
-        repos.append(node("legend", "", L("selectedRepos")), node("p", "db-sub", L("reposHint")));
-        const choices = node("div", "db-repo-choices");
-        fillRepoChoices(choices, s, t.selectedRepos);
-        repos.append(choices);
-        fields.append(repos);
+      // One page per view, named and ordered by Rust (`configure.pages`, the
+      // View menu's list behind "This tile"). Every page is in the form, so
+      // Apply saves the tile's own settings whichever page is showing.
+      const cfg = model.configure || { pages: [], pageFields: {} };
+      const pageId = cfg.pages.some((p) => p.id === next.page) ? next.page : cfg.pages[0]?.id;
+      const switcher = node("div", "db-view-switch db-config-switch");
+      switcher.setAttribute("role", "group");
+      switcher.setAttribute("aria-label", cfg.switchLabel);
+      for (const page of cfg.pages) {
+        const choose = button(page.label, "configure-page", page.id);
+        choose.setAttribute("aria-pressed", String(page.id === pageId));
+        switcher.append(choose);
       }
+      const pages = node("div", "db-config-pages");
+      for (const page of cfg.pages) {
+        const body = node("div", "db-fields db-config-page");
+        body.dataset.page = page.id;
+        body.hidden = page.id !== pageId;
+        if (page.id === cfg.pages[0].id) {
+          body.append(
+            selectField("presentation", L("presentation"), ["summary", "detailed"].map((v) => ({ value: v, label: L(v) })), t.presentation),
+            selectField("width", L("width"), ["small", "medium", "wide"].map((v) => ({ value: v, label: L(v) })), t.width),
+          );
+          const placement = selectField("position", L("position"), [], "");
+          placement.classList.add("db-position-field");
+          body.append(placement);
+          if (["ghWorkflows", "ghRunners"].includes(t.source))
+            body.append(selectField("rowLimit", L("rowLimit"), ["auto", "5", "10", "20", "50", "all"].map(value => ({value, label:L(value) || value})), t.rowLimit || "auto"));
+          if (t.source === "hosts")
+            body.append(selectField("showDisk", L("showDisk"), [{value:"true", label:L("diskShown")}, {value:"false", label:L("diskHidden")}], String(t.showDisk !== false)));
+          if (t.source === "ghRunners")
+            body.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
+        } else {
+          for (const f of cfg.pageFields[page.id] || []) {
+            if (f.sources && !f.sources.includes(t.source)) continue;
+            body.append(configField(f.field, cfg[f.field], t));
+          }
+        }
+        pages.append(body);
+      }
+      const every = node("div", "db-every-view-group");
+      every.append(node("p", "db-sub", cfg.everyViewHeading), fields);
+      const pagesBox = node("div", "db-config-pagesbox");
+      pagesBox.append(switcher, node("p", "db-sub", cfg.applyNote), pages);
       const actions = node("div", "db-form-actions");
       actions.append(
         button(L(next.draft ? "add" : "apply"), "apply", null, "db-primary"),
@@ -1357,7 +1404,7 @@
         node("span", "db-muted", L("scopeNote")),
       );
       if (!next.draft) actions.insertBefore(button(L("duplicate"), "duplicate", t.id), actions.children[1]);
-      form.append(fields, actions);
+      form.append(every, pagesBox, actions);
       box.querySelector(".db-inspector-body").append(form);
       updatePlacementChoices(next.position || (next.draft ? "end" : "current"));
       const placementPreview = node("section", "db-placement-preview");
@@ -1499,6 +1546,20 @@
     card.append(node("footer", "db-tile-footer", t.footer));
     return card;
   }
+  // The per-tile view settings the form holds. A setting that does not apply to
+  // this source has no field, so the tile keeps its own value.
+  function viewSettings(fields) {
+    const out = {};
+    for (const name of ["coreRowSpan", "rowGapPx"]) {
+      const value = fields.get(name);
+      if (value !== null && value !== "") out[name] = Number(value);
+    }
+    for (const name of ["hostOverflow", "detailView", "runnerFullView"]) {
+      const value = fields.get(name);
+      if (value !== null) out[name] = value;
+    }
+    return out;
+  }
   function formTile() {
     const form = q("#dashboardForm");
     if (!form || active?.kind !== "configure") return null;
@@ -1509,6 +1570,7 @@
       rowLimit: fields.get("rowLimit") || original.rowLimit || "auto",
       runnerView: fields.get("runnerView") || original.runnerView,
       showDisk: original.source === "hosts" ? fields.get("showDisk") !== "false" : true,
+      ...viewSettings(fields),
       selectedRepos: original.source === "ghWorkflows" ? fields.getAll("selectedRepos") : (original.selectedRepos || []),
     };
   }
@@ -1609,12 +1671,21 @@
         r.scopes.includes(t.scope),
     );
   }
+  // The Detail's own Table/List: its tile's `detailView`. A Detail with no tile
+  // behind it (a source in trouble, shown by the trouble panel) shows a table.
+  function detailOwner(inspector) {
+    return inspector.tile ?? inspector.fromTile ?? null;
+  }
+  function detailViewOf(inspector) {
+    const owner = detailOwner(inspector);
+    return (owner && tile(owner)?.detailView) || "table";
+  }
   function fillDetails() {
     const box = q(".db-inspector"),
       s = source(active.source);
     if (!s) return;
     const rows = selectedRows(s);
-    const view = model.layout.detailViews?.[s.id] || "table";
+    const view = detailViewOf(active);
     box.dataset.detailView = view;
     for (const control of box.querySelectorAll('[data-action="detail-view"]')) {
       control.setAttribute("aria-pressed", String(control.dataset.id === view));
@@ -2323,11 +2394,11 @@
     }
     if (action === "detail-view") {
       if (active?.kind !== "details" || !["table", "list"].includes(id)) return;
-      if ((model.layout.detailViews?.[active.source] || "table") === id) return;
+      const owner = detailOwner(active);
+      if (!owner || detailViewOf(active) === id) return;
       const inspector = active, restoreFocus = document.activeElement === b;
       const next = copyLayout();
-      next.detailViews ||= {};
-      next.detailViews[active.source] = id;
+      next.tiles.find((t) => t.id === owner).detailView = id;
       if (window.__TAURI__) await save(next, null, false, true);
       else { model.layout = next; fillDetails(); }
       // Disabling a focused control during persistence sends focus to body.
@@ -2348,7 +2419,18 @@
       return;
     }
     if (action === "edit") {
-      if (mode === "details") { await showOverview(); editing = true; }
+      if (mode === "details") {
+        // Edit in a tile's Full view opens that tile's Configure on its Full
+        // view page; the tile and its Configure live on the overview.
+        const opened = fullTile?.id;
+        await showOverview();
+        editing = true;
+        if (opened && tile(opened)) {
+          render(true);
+          openInspector({ kind: "configure", id: opened, page: "full" });
+          return;
+        }
+      }
       else editing = !editing;
       closeInspector();
       render(true);
@@ -2374,6 +2456,14 @@
         const draft = { ...preset.tile, id: crypto.randomUUID() };
         openInspector({ kind: "configure", id: draft.id, draft, position: "end" });
       }
+      return;
+    }
+    if (action === "configure-page") {
+      if (active?.kind !== "configure") return;
+      active.page = id;
+      for (const choose of b.parentElement.children)
+        choose.setAttribute("aria-pressed", String(choose === b));
+      for (const page of q(".db-config-pages").children) page.hidden = page.dataset.page !== id;
       return;
     }
     if (action === "configure") {
@@ -2601,12 +2691,15 @@
     }
   });
   window.soladorDashboard = {
-    detailView: sourceId => model?.layout.detailViews?.[sourceId] || "table",
-    async setDetailView(sourceId, view) {
-      if (!model || busy || !["table", "list"].includes(view)) return false;
+    // The open Runners tile's Full view Table/List, and the shortcut that
+    // writes the same per-tile value Configure's Full view page does.
+    runnerFullView: () => (fullTile && tile(fullTile.id)?.runnerFullView) || "table",
+    async setRunnerFullView(view) {
+      if (!model || busy || !fullTile || !["table", "list"].includes(view)) return false;
       const next = copyLayout();
-      next.detailViews ||= {};
-      next.detailViews[sourceId] = view;
+      const target = next.tiles.find((t) => t.id === fullTile.id);
+      if (!target) return false;
+      target.runnerFullView = view;
       if (window.__TAURI__) return save(next, null, false, true);
       model.layout = next;
       return true;

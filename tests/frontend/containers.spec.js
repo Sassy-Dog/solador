@@ -215,7 +215,7 @@ test("host groups sit side by side once Rust says the panel is wide enough", asy
   const wide = await fixture(baseURL, "sample-cockpit.json");
   const containers = await fixture(baseURL, "sample-containers.json");
   expect(
-    wide.panelRows.flat().find((p) => p.id === "containers").columns,
+    wide.panelColumns.containers,
     "fixture must be wide enough for 2"
   ).toBe(2);
 
@@ -236,7 +236,7 @@ test("host groups sit side by side once Rust says the panel is wide enough", asy
 test("a narrow panel keeps the host groups stacked", async ({ page, baseURL }) => {
   const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
   const containers = await fixture(baseURL, "sample-containers.json");
-  expect(narrow.panelRows.flat().find((p) => p.id === "containers").columns).toBe(1);
+  expect(narrow.panelColumns.containers).toBe(1);
 
   await gotoApp(page, baseURL, { cockpit: narrow, containers });
 
