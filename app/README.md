@@ -1445,7 +1445,7 @@ await window.__TAURI__.core.invoke("azure_cost");
 **Four sources, and Vercel is the odd one.** Claude Code's token rollups are
 a walk of `~/.claude/projects` on `PanelInterval::ClaudeRollups`
 (`staleAfter` 2.5 cycles, 150s at the default 60s). Neon consumption and Sentry event stats are API reads
-inside the same loop, hourly by default (`staleAfter` 1.5 cycles of the providers' own cadence, 90m at the default, [#635](https://github.com/Sassy-Dog/solador/issues/635)). The Claude and Codex plan
+inside the same loop on `PanelInterval::UsageProviders`, hourly by default (`staleAfter` 1.5 cycles of the providers' own cadence, 90m at the default, [#635](https://github.com/Sassy-Dog/solador/issues/635)). The loop runs each half only when its own cadence is due and sleeps until the next one is, so neither cadence is rounded to the other's and the log walk never runs more often than its own setting. The Claude and Codex plan
 limits are a fifth, on a loop of their own (`plan_usage_loop`, every 15 minutes
 by default, `staleAfter` twice that) and only once the operator has opted in;
 see [the plans' own limits](#the-plans-own-limits). Azure cost is its own loop
@@ -2134,7 +2134,10 @@ a mutation. Closing a laptop suspends every poll task, so the slow loops —
 GitHub, usage (1h), Azure (4h), containers, OpenClaw, the plan limits — otherwise resume on their
 own schedule and the cockpit paints last night's data for up to a full interval
 after the lid opens. The plan loop's wake reads only a provider that is on and
-due by the wall clock, so a short nap spends no request. Containers is in that list as of
+due by the wall clock, so a short nap spends no request. The usage wake forces
+both of its halves, the Claude log walk and the metered providers: each
+otherwise runs only when its own cadence has elapsed by `Instant`, which may not
+count the sleep ([#635](https://github.com/Sassy-Dog/solador/issues/635)). Containers is in that list as of
 [#301](https://github.com/Sassy-Dog/solador/issues/301): a 10s tick was too
 short to be worth waking, but its cadence is a setting now, and one stretched to
 ten minutes has exactly this problem. The rule above holds for *edits* because an edit changes

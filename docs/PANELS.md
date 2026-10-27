@@ -115,9 +115,12 @@
   `UsageProviders`): the window is 1.5 cycles
   (`panel::stale_after_for_slow_cadence`; 90 minutes at the 1h default, 7.5
   minutes at the 300s floor), so a healthy loop is not stale between polls
-  (the usage loop sleeps `min(rollups cadence, time until the providers are
-  due)` and stamps each provider as its read completes) and a stuck one is
-  flagged within two cycles (#635).
+  and a stuck one is flagged within two cycles (#635). The usage loop runs
+  its two halves on their own cadences: each turn runs only the half that is
+  due (the Claude rollups never ride the providers' turn, so a slow rollups
+  cadence is honoured), then sleeps until the next half is, and each provider
+  is stamped as its read completes. A saved provider credential forces the
+  providers onto the next turn; a resume from sleep forces both.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness signal of
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,

@@ -27,9 +27,11 @@
 //! layout shift. The em dash is for "configured, and we could not find out".
 //!
 //! **Three clocks, one warning line.** Claude reads local files on its own
-//! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon and Sentry are hourly API reads
-//! whose staleness window is 1.5 cycles of their own cadence (90m at the default), so a warning means
-//! a stuck poller rather than the normal gap between polls. Each section decides
+//! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon,
+//! Sentry and Vercel are API reads on the providers' cadence (hourly by
+//! default) whose staleness window is 1.5 cycles of that cadence (90m at the
+//! default), so a warning means a stuck poller rather than the normal gap
+//! between polls. Each section decides
 //! its own warning because each can fail on its own — and every one of them is
 //! then folded into the panel's **single header line** by
 //! [`merged_footer`](crate::panel::merged_footer), naming the section it came
@@ -47,9 +49,10 @@
 //! **And each metered section carries a second clock** (#338, the Azure Cost
 //! panel's arrangement one panel over). `freshness` is [`Freshness`] over the
 //! age of the last **success** and answers *"how old is the figure on screen"*;
-//! the warning answers *"did the last attempt fail, or is the poller late"*. On
-//! an hourly read the first speaks a full 30 minutes before the second does, and
-//! a nearly-hour-old dollar figure rendering identically to one measured a
+//! the warning answers *"did the last attempt fail, or is the poller late"*. The
+//! first speaks after one cycle and the second after one and a half, so half a
+//! cycle apart (30 minutes at the hourly default), and a nearly-hour-old dollar
+//! figure rendering identically to one measured a
 //! second ago is the same class of bug as unknown-rendered-as-zero. They are two
 //! fields for that reason and **must not be folded into one string**.
 //!

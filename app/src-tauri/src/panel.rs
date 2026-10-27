@@ -110,11 +110,12 @@ pub fn stale_after_for_cadence(cadence_secs: u64) -> u64 {
 /// minutes those footers have always had. It is never stale between two healthy
 /// polls provided each loop really polls on its own cadence and stamps its
 /// reading when the read completes: Crons' loop sleeps its cadence, and the
-/// usage loop sleeps `min(rollups cadence, time until the providers are due)`
-/// (`usage_loop_sleep`), with the providers stamped as each read finishes. What
-/// is left over is the pass's own duration, seconds against a half-cycle of
-/// grace that is 150s at the 300s floor. A stuck poller is flagged after 1.5
-/// cycles rather than a fixed 18 at the floor.
+/// usage loop sleeps until whichever of its two halves is due next
+/// (`UsageClocks` in `main.rs`), with each provider stamped as its read
+/// finishes. What is left over is the passes' own duration (a Claude walk that
+/// fell due first, then the provider requests, at most 30s each), against a
+/// half-cycle of grace that is 150s at the 300s floor. A stuck poller is
+/// flagged after 1.5 cycles rather than a fixed 18 at the floor.
 #[must_use]
 pub fn stale_after_for_slow_cadence(cadence_secs: u64) -> u64 {
     cadence_secs.saturating_mul(3).div_ceil(2)
