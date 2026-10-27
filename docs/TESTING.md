@@ -210,5 +210,5 @@ name (#640), not the payload's `title`, and shows only its own panel, so a spec
 about two panels (`github.spec.js`) leaves and enters each tile. Each spec
 asserts its renderer sends `{tile: <id>}`; `{ __frames: [a, b] }` plus
 `advance(page, command)` holds a multi-frame panel answer the way
-`stubCockpit` does. `layout.spec.js` and `settings.spec.js` still boot
-`?view=details`; the cutover of #639 removes that path.
+`stubCockpit` does. `layout.spec.js`, `settings.spec.js` and `screenshots.spec.js`
+(`cockpit.png`, `cockpit-narrow.png`) still boot `?view=details`; the cutover of #639 removes that path.

@@ -188,6 +188,8 @@ for (const [source, command, file] of panelTiles) {
     await page.evaluate(() => refreshPanels());
     await layoutSettled(page);
     const before = await bounds(page, '.panel');
+    // The open tile's panel is laid out; a hidden one would hold still trivially.
+    expect(before.some(b => b.width > 0 && b.height > 0), "the tile's own panel is measured").toBe(true);
     const variants = { empty:['containers','repos','runners','services','crons','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','usage','azure'] };
     for (const suffix of ['empty', 'error', 'stale']) {
       const changed = structuredClone(frames);

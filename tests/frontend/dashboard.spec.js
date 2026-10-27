@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { lastArgs } from "./tile-full.js";
 
 // Real UI and Rust-dumped readings under Tauri's CSP. The IPC double projects
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
@@ -2308,11 +2309,9 @@ function healthyRepos(view) {
 }
 const detailFull = (page) =>
   page.locator("#dashboardInspector").getByRole("button", { name: "Full view", exact: true });
-const lastArgs = (page, command) =>
-  page.evaluate((command) => window.__CALLS__.filter((c) => c.command === command).at(-1)?.args, command);
 const callCount = (page, command) =>
   page.evaluate((command) => window.__CALLS__.filter((c) => c.command === command).length, command);
-async function openTileFull(page, tileId) {
+async function openTileFullViaDetail(page, tileId) {
   await page.locator(`[data-tile="${tileId}"]`).getByRole("button", { name: "View", exact: true }).click();
   await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
   await detailFull(page).click();
@@ -2347,7 +2346,7 @@ test("Escape returns to the overview and restores the panel", async ({ page, bas
   await openDashboard(page, baseURL, false, healthyRepos);
   const back = viewButton(page, "ghWorkflows");
   for (const blur of [false, true]) {
-    await openTileFull(page, "overview-ghWorkflows");
+    await openTileFullViaDetail(page, "overview-ghWorkflows");
     await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
     // From a control in the view, and from nothing focused at all.
     if (blur) await page.evaluate(() => document.activeElement.blur());
@@ -2383,7 +2382,7 @@ test("a tile's Full view shows a loading line, never the rows the panel last hel
   await page.locator('.db-chrome [data-action="allPanels"]').click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await page.evaluate(() => { window.__HOLD_TILE__ = "repos"; });
-  await openTileFull(page, "overview-ghWorkflows");
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
   // Rust's line, under the note, in place of the body.
   await expect(page.locator("#reposPanel .db-full-state")).toHaveText(/first reading/);
@@ -2404,14 +2403,14 @@ test("a tile's reading that lands after Escape, or after another tile opens, pai
   const painted = () => page.evaluate(() => document.getElementById("reposBody").textContent);
   for (const next of ["escape", "other tile"]) {
     await holdRepos(page);
-    await openTileFull(page, "overview-ghWorkflows");
+    await openTileFullViaDetail(page, "overview-ghWorkflows");
     // The reading is still out, so focus never reached the view: Escape from
     // nothing focused, as the view's own test does.
     await page.evaluate(() => document.activeElement.blur());
     await page.keyboard.press("Escape");
     await expect(page.locator("#dashboardOverview")).toBeVisible();
     if (next === "other tile") {
-      await openTileFull(page, "repos-attention");
+      await openTileFullViaDetail(page, "repos-attention");
       await expect(page.locator("#reposBody")).toBeVisible();
     }
     await page.evaluate(() => window.__RELEASE_TILE__());
@@ -2426,13 +2425,13 @@ test("a scope that keeps nothing shows the tile's own sentence in its Full view 
   // Rust writes this (`dashboard::scoped_empty`); the double only carries it.
   const sentence = "No attention items in available readings.";
   await page.evaluate((sentence) => { window.__TILE_EMPTY__ = sentence; }, sentence);
-  await openTileFull(page, "overview-ghWorkflows");
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposPanel > .panel-hdr + .db-full-note + .db-full-state")).toHaveText(sentence);
   await expect(page.locator("#reposBody")).toBeEmpty();
   // A scope that keeps rows has no sentence.
   await page.keyboard.press("Escape");
   await page.evaluate(() => { window.__TILE_EMPTY__ = null; });
-  await openTileFull(page, "overview-ghWorkflows");
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposBody")).not.toBeEmpty();
   await expect(page.locator(".db-full-state")).toHaveCount(0);
 });
@@ -2626,7 +2625,7 @@ test("a tile that disappears while its Full view is open returns to the overview
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const view = await openDashboard(page, baseURL, false, healthyRepos);
-  await openTileFull(page, "overview-ghWorkflows");
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
   // Hidden elsewhere: the next overview read no longer has the tile. Hold that
   // read, so the panel's own poll lands first and is refused.
@@ -2693,7 +2692,7 @@ test("Detail's Full view refuses a tile that left the overview while Detail was 
 
 test("the overview's read leaves a tile's Full view in place", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, true);
-  await openTileFull(page, "overview-ghRunners");
+  await openTileFullViaDetail(page, "overview-ghRunners");
   const first = page.locator("#runnersBody .gh-runner-name").first();
   await expect(first).toBeVisible();
   await page.evaluate(() => { window.__RUNNER_NODE__ = document.querySelector("#runnersBody .gh-runner-name"); });
@@ -2715,11 +2714,11 @@ test("two tiles of one source each open their own scope", async ({ page, baseURL
     tiles.find((t) => t.source === "services").hidden = true;
     tiles.push({ ...repos, id: "repos-attention", title: "Repos Needing Attention", scope: "attention" });
   });
-  await openTileFull(page, "overview-ghWorkflows");
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
   await page.keyboard.press("Escape");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
-  await openTileFull(page, "repos-attention");
+  await openTileFullViaDetail(page, "repos-attention");
   await expect(page.locator("#reposTitle")).toHaveText("Repos Needing Attention");
   await expect(page.locator(".db-full-note")).toHaveText("Scope: Needs Attention. Totals still cover all of GitHub Repos.");
   await page.evaluate(() => refreshPanels());

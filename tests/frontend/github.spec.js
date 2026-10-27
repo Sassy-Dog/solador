@@ -504,7 +504,9 @@ test("the OS column holds one position across every runner state", async ({ page
 });
 
 test("the widest presence label fits its table cell without truncating", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL, {}, "repos");
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
+  // A hidden panel measures 0 <= 0 for any label, so it must be laid out first.
+  await expect(page.locator("#runnersPanel")).toBeVisible();
   await page.locator("#runnersPanel").evaluate((el) => {
     el.style.width = "400px";
   });
@@ -514,6 +516,7 @@ test("the widest presence label fits its table cell without truncating", async (
     const status = rows.nth(index).locator(".gh-runner-status");
     await expect(status).toHaveText(expected.status);
     const [scroll, client] = await status.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect(client, `"${expected.status}" has a laid-out cell`).toBeGreaterThan(0);
     expect(scroll, `"${expected.status}" is clipped by its reserved slot`).toBeLessThanOrEqual(client);
   }
 });
