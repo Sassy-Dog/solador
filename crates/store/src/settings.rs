@@ -495,25 +495,35 @@ pub struct Settings {
         deserialize_with = "de_legacy_refresh_interval_secs"
     )]
     pub legacy_refresh_interval_secs: Option<u32>,
-    /// How many grid rows the per-host CPU core chart spans. Always within
-    /// [`CORE_ROW_SPAN_RANGE`]; an out-of-range value read from disk is clamped
-    /// into it rather than dropped, since the intent still survives.
-    #[serde(deserialize_with = "de_core_row_span")]
-    pub core_row_span: u8,
-    /// Points between two rows of the same in-panel list, painted as
-    /// `--row-gap`. Always within [`ROW_GAP_PX_RANGE`]; an out-of-range value
-    /// read from disk is clamped into it rather than dropped, since the intent
-    /// still survives.
+    /// **Retired (#647): the global CPU core rows, read once and never written.**
     ///
-    /// `0` is a chosen value here — see [`DEFAULT_ROW_GAP_PX`] — not the absence
-    /// of one. It spaces the *rows of one list*; the gap between panels is
-    /// `viewmodel::cockpit::SPACING`, and the grids that separate a panel's
-    /// sections from each other are a third axis again. Widening this one does
-    /// not move either.
-    #[serde(deserialize_with = "de_row_gap_px")]
-    pub row_gap_px: u8,
-    /// Host-card behaviour below the side-by-side breakpoint.
-    pub host_overflow_mode: HostOverflowMode,
+    /// The value now lives on each Machines tile ([`crate::DashboardTile::core_row_span`]).
+    /// [`crate::Store::open_in`] copies this onto every Machines tile and takes it;
+    /// `skip_serializing` is what makes that one-shot, as for
+    /// [`Settings::legacy_refresh_interval_secs`]. Clamped into
+    /// [`CORE_ROW_SPAN_RANGE`], not dropped, since the intent survives.
+    #[serde(
+        default,
+        rename = "core_row_span",
+        skip_serializing,
+        deserialize_with = "de_legacy_core_row_span"
+    )]
+    pub legacy_core_row_span: Option<u8>,
+    /// **Retired (#647): the global row spacing, read once and never written.**
+    /// Copied onto every tile ([`crate::DashboardTile::row_gap_px`]) the first
+    /// time the store loads, then emptied. Clamped into [`ROW_GAP_PX_RANGE`].
+    #[serde(
+        default,
+        rename = "row_gap_px",
+        skip_serializing,
+        deserialize_with = "de_legacy_row_gap_px"
+    )]
+    pub legacy_row_gap_px: Option<u8>,
+    /// **Retired (#647): the global host-card overflow mode, read once and never
+    /// written.** The fallback for [`crate::Store::open_in`]'s copy onto every
+    /// Machines tile when the store holds no stored layout to take it from.
+    #[serde(default, rename = "host_overflow_mode", skip_serializing)]
+    pub legacy_host_overflow_mode: Option<HostOverflowMode>,
     /// Monthly Azure budget in USD. `0` means "no budget set" and hides the bar.
     pub azure_monthly_budget_usd: f64,
     /// Storage account holding the Azure cost export (non-secret — the SAS is
@@ -740,10 +750,9 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             legacy_refresh_interval_secs: None,
-            core_row_span: DEFAULT_CORE_ROW_SPAN,
-            // Zero on purpose, and the field says why.
-            row_gap_px: DEFAULT_ROW_GAP_PX,
-            host_overflow_mode: HostOverflowMode::default(),
+            legacy_core_row_span: None,
+            legacy_row_gap_px: None,
+            legacy_host_overflow_mode: None,
             azure_monthly_budget_usd: 0.0,
             azure_storage_account: String::new(),
             azure_cost_container: String::new(),
@@ -783,22 +792,23 @@ fn de_legacy_refresh_interval_secs<'de, D: Deserializer<'de>>(
 
 /// Clamped, not defaulted: a stored `9` means "as many rows as possible", and
 /// the top of the range is a truer reading of that than the default is.
-fn de_core_row_span<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    let raw = Option::<u8>::deserialize(d)?;
-    Ok(raw.map_or(DEFAULT_CORE_ROW_SPAN, |span| {
-        span.clamp(*CORE_ROW_SPAN_RANGE.start(), *CORE_ROW_SPAN_RANGE.end())
-    }))
+pub(crate) fn clamp_core_row_span(span: u8) -> u8 {
+    span.clamp(*CORE_ROW_SPAN_RANGE.start(), *CORE_ROW_SPAN_RANGE.end())
 }
 
-/// Clamped, not defaulted, for [`de_core_row_span`]'s reason: a hand-edited `40`
-/// means "as much air as this will give me", and the top of the range is a truer
-/// reading of that than snapping back to a default of zero — which would look
-/// like the edit was ignored.
-fn de_row_gap_px<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    let raw = Option::<u8>::deserialize(d)?;
-    Ok(raw.map_or(DEFAULT_ROW_GAP_PX, |px| {
-        px.clamp(*ROW_GAP_PX_RANGE.start(), *ROW_GAP_PX_RANGE.end())
-    }))
+/// Clamped, not defaulted, for [`clamp_core_row_span`]'s reason: a hand-edited
+/// `40` means "as much air as this will give me", and snapping back to zero
+/// would look like the edit was ignored.
+pub(crate) fn clamp_row_gap_px(px: u8) -> u8 {
+    px.clamp(*ROW_GAP_PX_RANGE.start(), *ROW_GAP_PX_RANGE.end())
+}
+
+fn de_legacy_core_row_span<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    Ok(Option::<u8>::deserialize(d)?.map(clamp_core_row_span))
+}
+
+fn de_legacy_row_gap_px<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    Ok(Option::<u8>::deserialize(d)?.map(clamp_row_gap_px))
 }
 
 #[cfg(test)]
@@ -809,12 +819,9 @@ mod tests {
     fn defaults_match_the_original_app() {
         let s = Settings::default();
         assert_eq!(s.legacy_refresh_interval_secs, None);
-        assert_eq!(s.core_row_span, 2);
-        assert_eq!(
-            s.row_gap_px, 0,
-            "rows of one list sit flush until someone asks otherwise"
-        );
-        assert_eq!(s.host_overflow_mode, HostOverflowMode::Stack);
+        assert_eq!(s.legacy_core_row_span, None);
+        assert_eq!(s.legacy_row_gap_px, None);
+        assert_eq!(s.legacy_host_overflow_mode, None);
         assert_eq!(s.azure_monthly_budget_usd, 0.0);
         assert_eq!(s.sentry_monthly_event_quota, 0);
         assert!(
@@ -846,7 +853,7 @@ mod tests {
     fn a_store_file_without_the_crash_key_stays_opted_out() {
         for stored in [
             r#"{}"#,
-            r#"{"core_row_span":3}"#,
+            r#"{"github_org":"acme"}"#,
             // The shape of a real pre-feature store: several keys, none of them
             // this one.
             r#"{"refresh_interval_secs":300,"github_org":"acme","notify_on_service_change":false}"#,
@@ -895,7 +902,7 @@ mod tests {
     /// can turn back on from the app if an upgrade turns it off.
     #[test]
     fn a_store_file_without_the_notify_keys_still_opts_in() {
-        let s: Settings = serde_json::from_str(r#"{"core_row_span":3}"#).expect("deserialize");
+        let s: Settings = serde_json::from_str(r#"{"github_org":"acme"}"#).expect("deserialize");
         assert!(s.notify_on_approval_needed);
         assert!(s.notify_on_service_change);
 
@@ -917,11 +924,9 @@ mod tests {
     fn round_trips_through_json() {
         let s = Settings {
             legacy_refresh_interval_secs: None,
-            core_row_span: 4,
-            // Off the default so the round trip proves the field persists
-            // rather than reappearing from `Default`.
-            row_gap_px: 12,
-            host_overflow_mode: HostOverflowMode::Tabs,
+            legacy_core_row_span: None,
+            legacy_row_gap_px: None,
+            legacy_host_overflow_mode: None,
             azure_monthly_budget_usd: 125.5,
             azure_storage_account: "acmestorage".into(),
             azure_cost_container: "cost-exports".into(),
@@ -966,7 +971,7 @@ mod tests {
     fn unknown_host_overflow_mode_reads_as_stack() {
         let s: Settings =
             serde_json::from_str(r#"{"host_overflow_mode":"carousel"}"#).expect("deserialize");
-        assert_eq!(s.host_overflow_mode, HostOverflowMode::Stack);
+        assert_eq!(s.legacy_host_overflow_mode, Some(HostOverflowMode::Stack));
     }
 
     #[test]
@@ -986,10 +991,10 @@ mod tests {
     #[test]
     fn unknown_fields_are_tolerated() {
         let s: Settings = serde_json::from_str(
-            r#"{"core_row_span":3,"a_field_from_a_newer_build":{"nested":true}}"#,
+            r#"{"github_org":"acme","a_field_from_a_newer_build":{"nested":true}}"#,
         )
         .expect("deserialize");
-        assert_eq!(s.core_row_span, 3);
+        assert_eq!(s.github_org, "acme");
     }
 
     #[test]
@@ -1093,47 +1098,50 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_core_row_span_is_clamped() {
-        let cases = [("0", 1), ("9", 4), ("null", 2), ("1", 1), ("4", 4)];
+    fn out_of_range_legacy_core_row_span_is_clamped() {
+        let cases = [
+            ("0", Some(1)),
+            ("9", Some(4)),
+            ("null", None),
+            ("1", Some(1)),
+        ];
         for (raw, want) in cases {
             let json = format!(r#"{{"core_row_span":{raw}}}"#);
             let s: Settings = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(s.core_row_span, want, "raw {raw}");
+            assert_eq!(s.legacy_core_row_span, want, "raw {raw}");
         }
     }
 
     #[test]
-    fn out_of_range_row_gap_is_clamped() {
-        let cases = [("40", 16), ("16", 16), ("0", 0), ("7", 7), ("null", 0)];
+    fn out_of_range_legacy_row_gap_is_clamped() {
+        let cases = [
+            ("40", Some(16)),
+            ("0", Some(0)),
+            ("7", Some(7)),
+            ("null", None),
+        ];
         for (raw, want) in cases {
             let json = format!(r#"{{"row_gap_px":{raw}}}"#);
             let s: Settings = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(s.row_gap_px, want, "raw {raw}");
+            assert_eq!(s.legacy_row_gap_px, want, "raw {raw}");
         }
     }
 
-    /// Zero is the *chosen* row gap, so a store file that predates the key must
-    /// read as zero for the same reason it reads as anything at all — not
-    /// because `u8::default()` agrees with the decision today.
-    ///
-    /// The neighbouring assertion is what gives this one its teeth: an explicit
-    /// `0` and an absent key land on the same number, and they must, because the
-    /// operator who typed 0 and the operator who upgraded want the same cockpit.
+    /// The three retired view keys are read and never written back.
     #[test]
-    fn a_store_file_without_the_row_gap_key_reads_as_flush() {
-        for stored in [
-            r#"{}"#,
-            r#"{"core_row_span":3}"#,
-            r#"{"refresh_interval_secs":300,"github_org":"acme"}"#,
-        ] {
-            let s: Settings = serde_json::from_str(stored).expect("deserialize");
-            assert_eq!(s.row_gap_px, DEFAULT_ROW_GAP_PX, "stored {stored}");
+    fn the_retired_view_keys_are_never_serialised() {
+        let s: Settings = serde_json::from_str(
+            r#"{"core_row_span":3,"row_gap_px":5,"host_overflow_mode":"tabs"}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(s.legacy_core_row_span, Some(3));
+        let json = serde_json::to_string(&s).expect("serialize");
+        for key in ["core_row_span", "row_gap_px", "host_overflow_mode"] {
+            assert!(
+                !json.contains(key),
+                "{key} must not be written back: {json}"
+            );
         }
-        let widened: Settings = serde_json::from_str(r#"{"row_gap_px":10}"#).expect("deserialize");
-        assert_eq!(
-            widened.row_gap_px, 10,
-            "an explicit gap survives the round trip"
-        );
     }
 
     #[test]
@@ -1200,7 +1208,7 @@ mod tests {
     #[test]
     fn a_store_written_before_panel_intervals_existed_loads_as_defaults() {
         let s: Settings = serde_json::from_str(
-            r#"{"refresh_interval_secs":30,"core_row_span":3,"neon_org_id":"org-abc"}"#,
+            r#"{"refresh_interval_secs":30,"github_org":"acme","neon_org_id":"org-abc"}"#,
         )
         .expect("a store.json with no panel_intervals key must still load");
         assert!(s.panel_intervals.is_empty());
@@ -1213,7 +1221,7 @@ mod tests {
         }
         // The rest of the file still parsed.
         assert_eq!(s.legacy_refresh_interval_secs, Some(30));
-        assert_eq!(s.core_row_span, 3);
+        assert_eq!(s.github_org, "acme");
     }
 
     /// The floor holds on *read*, so hand-editing the file cannot buy a cadence

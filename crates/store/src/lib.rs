@@ -36,7 +36,6 @@ pub mod accounts;
 pub mod containers;
 pub mod dashboard;
 pub mod hosts;
-pub mod layout;
 pub mod machine_alerts;
 pub mod repos;
 pub mod runners;
@@ -44,14 +43,16 @@ pub mod secrets;
 pub mod settings;
 pub mod statusvendors;
 
+#[cfg(test)]
+mod upgrade_tests;
+
 pub use accounts::{VendorAccount, VendorKind};
 pub use containers::{
     matches_glob, presence_key, records_for_host, seeded_rules, ContainerGroupRule,
     ContainerPresenceRecord, ContainerRuleAction, DEFAULT_GRACE_SECS, LOCAL_HOST_SCOPE,
 };
-pub use dashboard::{DashboardLayout, DashboardTile};
+pub use dashboard::{DashboardLayout, DashboardTile, SHIPPED_TILES};
 pub use hosts::{Host, DEFAULT_AGENT_PORT};
-pub use layout::{LayoutProfile, LayoutSlot};
 pub use repos::{seeded_repos, TrackedRepo};
 pub use runners::RunnerRosterRecord;
 pub use secrets::{CredentialStore, KeyringStore, MemoryCredentialStore, SecretError, SecretKey};
@@ -222,22 +223,18 @@ pub struct StoreData {
     /// runners by a rule they never wrote.
     #[serde(default)]
     pub runner_group_labels: Vec<String>,
-    /// The user's cockpit arrangement: one [`LayoutProfile`] per width band,
-    /// each an ordered list of panel/span slots plus its host-overflow mode.
-    ///
-    /// `None` is "never configured" and yields the shipped default layout —
-    /// same distinction [`StoreData::container_rules`] draws, and for the same
-    /// reason. Unlike the rules there is no *deliberately empty* case to
-    /// preserve: a cockpit with no panels is not something an editor can ask
-    /// for, so the app fills a short list back out to every panel rather than
-    /// rendering a blank page.
-    ///
-    /// A file predating breakpoints held a bare slot array; it loads as one
-    /// profile at width 0 (see [`layout::lenient_layout`]).
-    #[serde(default, deserialize_with = "layout::lenient_layout")]
-    pub layout: Option<Vec<LayoutProfile>>,
-    /// Overview composition. The detailed layout above remains independently
-    /// available; introducing the overview never rewrites an existing board.
+    /// **Retired (#647): Solador's Full view arrangement, read once and never
+    /// written.** Only the first breakpoint's host-overflow mode survives, as the
+    /// source of [`Store::open_in`]'s copy onto every Machines tile; the rest of
+    /// the arrangement has nothing left to arrange. See [`lenient_layout_overflow`].
+    #[serde(
+        default,
+        rename = "layout",
+        skip_serializing,
+        deserialize_with = "lenient_layout_overflow"
+    )]
+    pub legacy_layout_overflow: Option<HostOverflowMode>,
+    /// Overview composition.
     #[serde(default)]
     pub dashboard: Option<DashboardLayout>,
 }
@@ -259,10 +256,112 @@ impl Default for StoreData {
             container_presence: BTreeMap::new(),
             runner_roster: Vec::new(),
             runner_group_labels: Vec::new(),
-            layout: None,
+            legacy_layout_overflow: None,
             dashboard: None,
         }
     }
+}
+
+impl StoreData {
+    /// The one-time upgrade copy of #647: the view settings that were global
+    /// move onto the tiles they applied to, then the globals are taken so the
+    /// next save drops them. Returns whether anything was carried.
+    ///
+    /// * `core_row_span` -> every Machines tile;
+    /// * `row_gap_px` -> every tile;
+    /// * the first breakpoint's host overflow (else `host_overflow_mode`) ->
+    ///   every Machines tile;
+    /// * each source's `detailViews` entry -> every tile of that source, and for
+    ///   Runners also the tile's own Full view field.
+    ///
+    /// Idempotent: every legacy field is emptied by the first pass, so a second
+    /// load of a store that was not saved in between carries the same values and
+    /// a store that was saved carries nothing. When no overview was ever
+    /// configured and a value to carry is not the default, the shipped overview
+    /// is materialised first, since a value with no tile to land on would be
+    /// dropped silently.
+    pub fn carry_view_settings_onto_tiles(&mut self) -> bool {
+        let settings = &mut self.settings;
+        let core_row_span = settings.legacy_core_row_span.take();
+        let row_gap_px = settings.legacy_row_gap_px.take();
+        let settings_overflow = settings.legacy_host_overflow_mode.take();
+        let overflow = self.legacy_layout_overflow.take().or(settings_overflow);
+        let detail_views = self
+            .dashboard
+            .as_mut()
+            .map(|dashboard| std::mem::take(&mut dashboard.legacy_detail_views))
+            .unwrap_or_default();
+
+        let carries_non_default = core_row_span
+            .is_some_and(|v| v != settings::DEFAULT_CORE_ROW_SPAN)
+            || row_gap_px.is_some_and(|v| v != settings::DEFAULT_ROW_GAP_PX)
+            || overflow.is_some_and(|v| v != HostOverflowMode::default());
+        if self.dashboard.is_none() && carries_non_default {
+            self.dashboard = Some(DashboardLayout::shipped());
+        }
+        let Some(dashboard) = self.dashboard.as_mut() else {
+            return false;
+        };
+        let mut carried = false;
+        for tile in &mut dashboard.tiles {
+            if tile.source == "hosts" {
+                if let Some(span) = core_row_span {
+                    tile.core_row_span = span;
+                    carried = true;
+                }
+                if let Some(mode) = overflow {
+                    tile.host_overflow = mode;
+                    carried = true;
+                }
+            }
+            if let Some(px) = row_gap_px {
+                tile.row_gap_px = px;
+                carried = true;
+            }
+            if let Some(view) = detail_views.get(&tile.source) {
+                tile.detail_view.clone_from(view);
+                if tile.source == "ghRunners" {
+                    tile.runner_full_view.clone_from(view);
+                }
+                carried = true;
+            }
+        }
+        carried
+    }
+}
+
+/// Reads the retired `layout` key for the one thing that survives it: the first
+/// breakpoint's host-overflow mode, the one with the smallest `min_width`.
+///
+/// Tolerant by the rule the old reader followed: a value this build cannot read,
+/// a bare slot array from before breakpoints existed, or an empty or missing mode
+/// is "no such answer" (`None`), and the caller falls back to
+/// `host_overflow_mode`. A malformed layout must not take the whole store down.
+fn lenient_layout_overflow<'de, D>(d: D) -> Result<Option<HostOverflowMode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    let Some(profiles) = value.as_ref().and_then(serde_json::Value::as_array) else {
+        return Ok(None);
+    };
+    let first = profiles
+        .iter()
+        .filter(|profile| profile.get("slots").is_some())
+        .min_by(|a, b| {
+            let width = |p: &serde_json::Value| {
+                p.get("min_width")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|w| w.is_finite())
+                    .unwrap_or(0.0)
+            };
+            width(a).total_cmp(&width(b))
+        });
+    Ok(first
+        .and_then(|profile| profile.get("host_overflow"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|mode| !mode.is_empty())
+        .map(|mode| HostOverflowMode::from(mode.to_owned())))
 }
 
 /// A store bound to one file, held in memory and written back by [`Store::save`].
@@ -435,6 +534,9 @@ impl Store {
                 // not a version stamp. See
                 // `Settings::seed_cadences_from_legacy_refresh_interval`.
                 data.settings.seed_cadences_from_legacy_refresh_interval();
+                // Same independence, same one-shot: the view settings moved onto
+                // the tiles (#647) and are taken here so a save drops them.
+                data.carry_view_settings_onto_tiles();
                 Ok(Store { path, data })
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -692,19 +794,6 @@ impl Store {
         self.data.container_rules = Some(rules);
     }
 
-    /// The user's cockpit arrangement — one profile per width band — or `None`
-    /// when this store has never carried one, in which case the caller renders
-    /// the shipped default.
-    ///
-    /// No fallback is baked in here, unlike [`Store::container_rules`]: the
-    /// default arrangement is `viewmodel::cockpit`'s, and this crate does not
-    /// depend on it. Handing back `None` is what keeps the vocabulary in one
-    /// place instead of seeding panel ids from two.
-    #[must_use]
-    pub fn layout(&self) -> Option<&[LayoutProfile]> {
-        self.data.layout.as_deref()
-    }
-
     pub fn dashboard(&self) -> Option<&DashboardLayout> {
         self.data.dashboard.as_ref()
     }
@@ -718,18 +807,6 @@ impl Store {
             return Err(error);
         }
         Ok(())
-    }
-
-    /// Replaces every profile. Call [`Store::save`] to persist.
-    pub fn set_layout(&mut self, profiles: Vec<LayoutProfile>) {
-        self.data.layout = Some(profiles);
-    }
-
-    /// Forgets the arrangement, so the next read is the shipped default again.
-    /// This is *Reset to default*, and it is distinct from storing an empty
-    /// list: a stored empty list would be a layout with no panels in it.
-    pub fn clear_layout(&mut self) {
-        self.data.layout = None;
     }
 
     /// Presence memory for expected containers, keyed `"<host>|<name>"`.
@@ -1127,81 +1204,6 @@ mod tests {
         assert_eq!(entries(dir.path()), vec![STORE_FILE_NAME.to_owned()]);
     }
 
-    /// Every profile survives a save/open cycle, and **Reset to default**
-    /// clears the key rather than writing today's default into it — the
-    /// distinction that decides whether a future change to the shipped
-    /// arrangement reaches this user.
-    #[test]
-    fn the_layout_round_trips_and_reset_clears_it() {
-        let dir = temp_dir();
-        let profiles = vec![
-            LayoutProfile::new(
-                0.0,
-                "tabs",
-                vec![
-                    LayoutSlot::new("hosts", "full"),
-                    LayoutSlot::new("azureCost", "full"),
-                ],
-            ),
-            LayoutProfile::new(
-                1400.0,
-                "stack",
-                vec![
-                    LayoutSlot::new("azureCost", "half"),
-                    LayoutSlot::new("hosts", "half"),
-                ],
-            ),
-        ];
-
-        let mut store = Store::open_in(dir.path(), false).expect("open");
-        assert_eq!(store.layout(), None, "a fresh store carries no layout");
-        store.set_layout(profiles.clone());
-        store.save().expect("save");
-
-        let mut reopened = Store::open_in(dir.path(), false).expect("reopen");
-        assert_eq!(reopened.layout(), Some(profiles.as_slice()));
-
-        reopened.clear_layout();
-        reopened.save().expect("save");
-        assert_eq!(
-            Store::open_in(dir.path(), false).expect("reopen").layout(),
-            None,
-            "reset must forget the arrangement, not pin the current default"
-        );
-    }
-
-    /// A store written before breakpoints existed still opens, and its one
-    /// arrangement becomes the profile that covers every width. Written as raw
-    /// JSON on purpose: this crate can no longer *produce* the old shape, and a
-    /// migration tested only against a value the current code emits is a
-    /// migration tested against nothing.
-    #[test]
-    fn a_store_from_before_breakpoints_loads_as_one_profile() {
-        let dir = temp_dir();
-        fs::write(
-            dir.path().join(STORE_FILE_NAME),
-            r#"{"version":1,"layout":[{"panel":"hosts","span":"full"},
-                                      {"panel":"containers","span":"half"}]}"#,
-        )
-        .expect("write legacy store");
-
-        let store = Store::open_in(dir.path(), false).expect("open");
-        let profiles = store.layout().expect("a migrated layout");
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].min_width, 0.0, "it applied at every width");
-        assert_eq!(
-            profiles[0].host_overflow, "",
-            "the overflow mode lived in General back then; only the app can read it"
-        );
-        assert_eq!(
-            profiles[0].slots,
-            vec![
-                LayoutSlot::new("hosts", "full"),
-                LayoutSlot::new("containers", "half")
-            ]
-        );
-    }
-
     /// The seed is empty, so this can no longer be tested by deleting seeded
     /// rows. What it guards is the contract rather than the contents: a store
     /// that exists is never re-seeded, which is what would stop a later build
@@ -1353,9 +1355,9 @@ mod tests {
 
         store.set_settings(Settings {
             legacy_refresh_interval_secs: None,
-            core_row_span: 3,
-            row_gap_px: 10,
-            host_overflow_mode: HostOverflowMode::Tabs,
+            legacy_core_row_span: None,
+            legacy_row_gap_px: None,
+            legacy_host_overflow_mode: None,
             azure_monthly_budget_usd: 250.0,
             azure_storage_account: "acmestorage".into(),
             azure_cost_container: "cost-exports".into(),
@@ -1407,8 +1409,6 @@ mod tests {
 
         let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.data(), store.data());
-        assert_eq!(reopened.settings().core_row_span, 3);
-        assert_eq!(reopened.settings().row_gap_px, 10);
         assert!(!reopened.settings().notify_on_approval_needed);
         assert_eq!(reopened.hosts().len(), 2);
         assert_eq!(
