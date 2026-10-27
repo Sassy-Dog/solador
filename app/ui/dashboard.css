@@ -605,12 +605,12 @@
    Rust orders the chips match → custom → standard, so what a narrow cell gives
    up is what its OS and Architecture columns already say, and the cell's title
    names every label. */
-:is(#dashboardOverview, #cockpitView) .db-label-chips { display: flex; flex-wrap: wrap; gap: 2px 4px; min-width: 0; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table td .db-label-chips { flex-wrap: nowrap; overflow: hidden; mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
-:is(#dashboardOverview, #cockpitView) .db-label-chip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; white-space: nowrap; }
-:is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="match"] { color: var(--db-blue); border-color: var(--db-blue); }
-:is(#dashboardOverview, #cockpitView) .db-label-chip[data-kind="standard"] { color: var(--db-muted); border-style: dashed; }
-:is(#dashboardOverview, #cockpitView) .db-label-none { color: var(--db-muted); }
+:is(#dashboardOverview, #fullView) .db-label-chips { display: flex; flex-wrap: wrap; gap: 2px 4px; min-width: 0; }
+:is(#dashboardOverview, #fullView) .db-detail-table td .db-label-chips { flex-wrap: nowrap; overflow: hidden; mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+:is(#dashboardOverview, #fullView) .db-label-chip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--db-line); border-radius: 999px; color: var(--db-text); background: none; white-space: nowrap; }
+:is(#dashboardOverview, #fullView) .db-label-chip[data-kind="match"] { color: var(--db-blue); border-color: var(--db-blue); }
+:is(#dashboardOverview, #fullView) .db-label-chip[data-kind="standard"] { color: var(--db-muted); border-style: dashed; }
+:is(#dashboardOverview, #fullView) .db-label-none { color: var(--db-muted); }
 #dashboardOverview .db-tile-content { container: tile / inline-size; }
 #dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation] .db-runner-group .db-row-description { height: auto; min-height: 33px; white-space: normal; overflow: visible; }
 #dashboardOverview .db-tools {
@@ -665,9 +665,9 @@
   white-space: nowrap;
 }
 #dashboardOverview .db-inspector-tools { display:flex; align-items:center; gap:10px; flex:none; }
-:is(#dashboardOverview, #cockpitView) .db-view-switch { display:flex; gap:0; border:1px solid var(--db-line); border-radius:5px; overflow:hidden; }
-:is(#dashboardOverview, #cockpitView) .db-view-switch button { border:0; border-radius:0; padding:5px 10px; background:transparent; }
-:is(#dashboardOverview, #cockpitView) .db-view-switch [aria-pressed="true"] { color:var(--db-blue); background:var(--db-panel); }
+:is(#dashboardOverview, #fullView) .db-view-switch { display:flex; gap:0; border:1px solid var(--db-line); border-radius:5px; overflow:hidden; }
+:is(#dashboardOverview, #fullView) .db-view-switch button { border:0; border-radius:0; padding:5px 10px; background:transparent; }
+:is(#dashboardOverview, #fullView) .db-view-switch [aria-pressed="true"] { color:var(--db-blue); background:var(--db-panel); }
 #dashboardOverview .db-inspector h3 {
   font-size: 14px;
   font-weight: 500;
@@ -719,19 +719,19 @@
   display: flex;
   flex-direction: column;
 }
-:is(#dashboardOverview, #cockpitView) .db-table-scroll { overflow-x:auto; max-width:100%; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:12px; line-height:18px; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table th, :is(#dashboardOverview, #cockpitView) .db-detail-table td { padding:5px 10px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--db-line); font-weight:400; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table th:first-child, :is(#dashboardOverview, #cockpitView) .db-detail-table td:first-child { padding-left:0; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table thead th { color:var(--db-muted); font-size:10px; padding-top:3px; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table .db-numeric { text-align:right; font-variant-numeric:tabular-nums; }
-:is(#dashboardOverview, #cockpitView) .db-detail-table button.db-table-toggle { display:flex; align-items:center; gap:6px; padding:0; min-height:0; background:none; border:0; font:inherit; color:var(--db-text); max-width:26ch; }
-:is(#dashboardOverview, #cockpitView) .db-table-name { overflow:hidden; text-overflow:ellipsis; }
-:is(#dashboardOverview, #cockpitView) .db-table-arrow { width:10px; color:var(--db-muted); flex:none; }
-:is(#dashboardOverview, #cockpitView) .db-table-context { display:block; max-width:50ch; overflow:hidden; text-overflow:ellipsis; color:var(--db-muted); }
-:is(#dashboardOverview, #cockpitView) .db-table-extra td { white-space:normal; }
-:is(#dashboardOverview, #cockpitView) .db-table-extra .db-detail-extra { padding:4px 0 6px 24px; }
-:is(#dashboardOverview, #cockpitView) .db-table-extra .db-detail-copy { max-width:100%; }
+:is(#dashboardOverview, #fullView) .db-table-scroll { overflow-x:auto; max-width:100%; }
+:is(#dashboardOverview, #fullView) .db-detail-table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:12px; line-height:18px; }
+:is(#dashboardOverview, #fullView) .db-detail-table th, :is(#dashboardOverview, #fullView) .db-detail-table td { padding:5px 10px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--db-line); font-weight:400; }
+:is(#dashboardOverview, #fullView) .db-detail-table th:first-child, :is(#dashboardOverview, #fullView) .db-detail-table td:first-child { padding-left:0; }
+:is(#dashboardOverview, #fullView) .db-detail-table thead th { color:var(--db-muted); font-size:10px; padding-top:3px; }
+:is(#dashboardOverview, #fullView) .db-detail-table .db-numeric { text-align:right; font-variant-numeric:tabular-nums; }
+:is(#dashboardOverview, #fullView) .db-detail-table button.db-table-toggle { display:flex; align-items:center; gap:6px; padding:0; min-height:0; background:none; border:0; font:inherit; color:var(--db-text); max-width:26ch; }
+:is(#dashboardOverview, #fullView) .db-table-name { overflow:hidden; text-overflow:ellipsis; }
+:is(#dashboardOverview, #fullView) .db-table-arrow { width:10px; color:var(--db-muted); flex:none; }
+:is(#dashboardOverview, #fullView) .db-table-context { display:block; max-width:50ch; overflow:hidden; text-overflow:ellipsis; color:var(--db-muted); }
+:is(#dashboardOverview, #fullView) .db-table-extra td { white-space:normal; }
+:is(#dashboardOverview, #fullView) .db-table-extra .db-detail-extra { padding:4px 0 6px 24px; }
+:is(#dashboardOverview, #fullView) .db-table-extra .db-detail-copy { max-width:100%; }
 #dashboardOverview .db-inspector[data-detail-view="table"] .db-inspector-head { margin-bottom:4px; }
 #dashboardOverview .db-detail-resource { border-bottom:1px solid var(--db-line); }
 #dashboardOverview .db-detail-resource:last-child { border-bottom:0; }
@@ -816,12 +816,12 @@
   padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%);
   white-space:nowrap;
 }
-#dashboardOverview .db-action-error, #cockpitView > .db-action-error {
+#dashboardOverview .db-action-error, #fullView > .db-action-error {
   color:var(--db-red); font-size:11px; margin:10px 0 0; overflow-wrap:anywhere;
 }
-#cockpitView > .db-action-error { margin:-6px 0 16px; }
+#fullView > .db-action-error { margin:-6px 0 16px; }
 #dashboardOverview .db-inspector > .db-action-error { padding:0 16px 16px; }
-#cockpitView > .db-chrome { margin-bottom:16px; }
+#fullView > .db-chrome { margin-bottom:16px; }
 #dashboardOverview .db-empty {
   padding: 35px 0;
   color: var(--db-muted);
@@ -943,18 +943,18 @@
 #dashboardOverview .db-extra-metrics .db-row {
   font-size: 11px;
 }
-#cockpitView[data-detail-source] .panel:not([data-detail-active]) {
+#fullView[data-detail-source] .panel:not([data-detail-active]) {
   display: none !important;
 }
-#cockpitView[data-detail-source] .panel-row:not(:has([data-detail-active])) {
+#fullView[data-detail-source] .panel-row:not(:has([data-detail-active])) {
   display: none;
 }
-#cockpitView[data-detail-source] .panel[data-detail-active] {
+#fullView[data-detail-source] .panel[data-detail-active] {
   grid-column: 1 / -1 !important;
 }
-#cockpitView[data-detail-source]:not([data-detail-source="hosts"]) #cockpit,
-#cockpitView[data-detail-source]:not([data-detail-source="hosts"]) > .topbar,
-#cockpitView[data-detail-source]:not([data-detail-source="hosts"]) #emptyMsg {
+#fullView[data-detail-source]:not([data-detail-source="hosts"]) #cockpit,
+#fullView[data-detail-source]:not([data-detail-source="hosts"]) > .topbar,
+#fullView[data-detail-source]:not([data-detail-source="hosts"]) #emptyMsg {
   display: none !important;
 }
 
@@ -1005,22 +1005,25 @@
 }
 #settings { gap:0; border-radius:12px; overflow:hidden; }
 #settingsTitle { font:500 18px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; }
-#settingsClose, #cockpitView .btn { font-size:13px; font-weight:400; min-height:32px; padding:7px 10px; }
-#cockpitView, #settings { --panel:var(--db-panel); --panelAlt:var(--db-raised); --line:var(--db-line); --ink:var(--db-text); --muted:var(--db-muted); color:var(--db-text); }
-#cockpitView .panel { background:var(--db-raised); border-color:var(--db-line); border-radius:9px; padding:16px; }
-#cockpitView .panel-title { font-weight:500; }
-#cockpitView[data-detail-source] .panel-title { font-size:14px; }
+#settingsClose, #fullView .btn { font-size:13px; font-weight:400; min-height:32px; padding:7px 10px; }
+/* Focus lands on the view itself when a tile's Full view opens; it is a place to
+   be, not a control, so it takes no ring. */
+#fullView:focus { outline:none; }
+#fullView, #settings { --panel:var(--db-panel); --panelAlt:var(--db-raised); --line:var(--db-line); --ink:var(--db-text); --muted:var(--db-muted); color:var(--db-text); }
+#fullView .panel { background:var(--db-raised); border-color:var(--db-line); border-radius:9px; padding:16px; }
+#fullView .panel-title { font-weight:500; }
+#fullView[data-detail-source] .panel-title { font-size:14px; }
 /* A tile's Full view: Rust's note under the header row, muted like the
    panel's trailing and freshness lines. */
-#cockpitView .db-full-state { font-size:12px; color:var(--muted); margin:4px 0 8px; }
+#fullView .db-full-state { font-size:12px; color:var(--muted); margin:4px 0 8px; }
 /* Until a tile's own first reading lands, the panel holds only the rows it last
    painted: hide them, keeping the header (the tile's name) and the notes. */
-#cockpitView[data-tile-loading] .panel[data-detail-active] > :not(.panel-hdr, .db-full-note, .db-full-state),
-#cockpitView[data-tile-loading][data-detail-source="hosts"] :is(#cockpit, #emptyMsg) {
+#fullView[data-tile-loading] .panel[data-detail-active] > :not(.panel-hdr, .db-full-note, .db-full-state),
+#fullView[data-tile-loading][data-detail-source="hosts"] :is(#cockpit, #emptyMsg) {
   display: none !important;
 }
-#cockpitView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }
-#cockpitView .panel-hdr { gap:8px; }
+#fullView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }
+#fullView .panel-hdr { gap:8px; }
 #runnersPanel { container-type:inline-size; }
 #runnersPanel .panel-hdr { flex-wrap:wrap; }
 #runnersPanel .panel-stale { flex:1 1 0; }
@@ -1029,14 +1032,14 @@
   #runnersPanel .panel-hdr::after { content:""; flex-basis:100%; order:1; }
   #runnersPanel .db-view-switch { order:2; }
 }
-#cockpitView[data-detail-source] .panel-body { min-height:0; }
-#cockpitView #runnersBody .gh-row { padding:5px 0; border-bottom:1px solid var(--db-line); }
-#cockpitView .gh-runner-name, #cockpitView .gh-runner-os, #cockpitView .gh-runner-status { font-size:12px; line-height:18px; font-weight:400; }
-#cockpitView .gh-runner-identity { display:flex; align-items:center; gap:8px; }
-#cockpitView .db-detail-table .gh-row { display:table-row; }
-#cockpitView .db-view-switch { margin-left:auto; flex:none; }
-#cockpitView .db-view-status { margin:0; color:var(--db-amber); }
-#cockpitView .db-view-status:empty { display:none; }
+#fullView[data-detail-source] .panel-body { min-height:0; }
+#fullView #runnersBody .gh-row { padding:5px 0; border-bottom:1px solid var(--db-line); }
+#fullView .gh-runner-name, #fullView .gh-runner-os, #fullView .gh-runner-status { font-size:12px; line-height:18px; font-weight:400; }
+#fullView .gh-runner-identity { display:flex; align-items:center; gap:8px; }
+#fullView .db-detail-table .gh-row { display:table-row; }
+#fullView .db-view-switch { margin-left:auto; flex:none; }
+#fullView .db-view-status { margin:0; color:var(--db-amber); }
+#fullView .db-view-status:empty { display:none; }
 #dashboardOverview .db-volume-table { width:auto; min-width: min(100%, 420px); margin:8px 0; }
 #dashboardOverview .db-volume-action { min-height:0 !important; padding:1px 8px !important; font-size:11px; }
 #dashboardOverview .db-volumes > .db-action-error { margin:4px 0 8px; }
@@ -1044,8 +1047,8 @@
 #dashboardOverview .db-hidden-volume { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 #dashboardOverview .db-volume-table th:first-child { max-width:45ch; white-space:normal; overflow-wrap:anywhere; color:var(--db-muted); }
 
-:is(#dashboardOverview, #cockpitView) .db-detail-table > :is(thead,tbody) > tr > :is(th,td) { overflow:hidden; text-overflow:ellipsis; }
-#cockpitView .db-detail-table .gh-runner-status { display:inline-block; max-width:100%; vertical-align:middle; }
+:is(#dashboardOverview, #fullView) .db-detail-table > :is(thead,tbody) > tr > :is(th,td) { overflow:hidden; text-overflow:ellipsis; }
+#fullView .db-detail-table .gh-runner-status { display:inline-block; max-width:100%; vertical-align:middle; }
 #dashboardOverview .db-volume-table { width:565px; }
 #dashboardOverview .db-tile-footer { position: relative; }
 #dashboardOverview .db-view-menu {

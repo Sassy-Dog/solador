@@ -178,7 +178,7 @@ function renderAzure(payload) {
 }
 
 async function refresh() {
-  if (overviewOpen) return false;
+  if (!panelWanted("azureCost")) return false;
   try {
     const payload = await callRust("azure_cost", window.soladorDashboard?.tileArgs?.("azureCost") ?? {}, "sample-azure.json");
     if (payload) renderAzure(payload);

@@ -55,6 +55,28 @@ const callRust = async (command, args, fixture) => {
 let settingsOpen = false;
 // Overview reads the same backend caches; detailed renderers sleep until opened.
 let overviewOpen = false;
+// Whether the panel for dashboard source `source` should be reading now. A
+// renderer asks this before every read: nothing while the overview is up, and
+// in a tile's Full view only that tile's source (Solador's Full view, which
+// names no tile, reads them all). dashboard.js answers `fullSource`; before it
+// has loaded there is no tile, so every panel reads once at boot.
+const panelWanted = (source) => {
+  if (overviewOpen) return false;
+  const only = window.soladorDashboard?.fullSource?.() ?? null;
+  return only === null || only === source;
+};
+// Whether the last `cockpit` call failed. dashboard.js says so on the overview,
+// in Rust's words. A global plus an event, because the first call can answer
+// before dashboard.js has loaded: it reads the flag once and listens after.
+let cockpitFailed = false;
+const setCockpitFailed = (failed) => {
+  if (failed === cockpitFailed) return;
+  cockpitFailed = failed;
+  document.dispatchEvent(new CustomEvent("solador:cockpit", { detail: failed }));
+};
+// What the overview says when it cannot load: Rust's sentence, carried by the
+// `cockpit` payload because a failed `dashboard_view` has no words of its own.
+let overviewLoadFailed = "";
 let refreshCockpit = async () => {};
 
 // Panels poll on their own timers and skip the work while Settings is up, so
@@ -549,6 +571,28 @@ function applyHostTabs(spec, grid) {
 }
 
 /**
+ * The operator's spacing, over the stylesheet's pre-payload values: the gap
+ * between cards (`--cockpit-gap`) and between rows inside one (`--row-gap`).
+ *
+ * Each is guarded because an absent key would set the property to the string
+ * "NaNpx" -- a legal custom-property token, so `var(--row-gap)` resolves to it
+ * and only fails at substitution time, leaving every list at `gap:normal`.
+ * That renders 0 and looks deliberate. Saying nothing leaves app.css's value
+ * standing, which is the honest answer to "we were not told".
+ *
+ * Two payloads call this with the same stored values: `dashboard_view`, which
+ * the overview reads from its first frame whatever `cockpit` is doing (so a
+ * tile's Full view has its row gap before any `cockpit` response), and
+ * `cockpit`, which is all Solador's Full view has while the overview is not
+ * loaded.
+ */
+function applySpacing(spacing, rowGapPx) {
+  const style = document.documentElement.style;
+  if (Number.isFinite(spacing)) style.setProperty("--cockpit-gap", spacing + "px");
+  if (Number.isFinite(rowGapPx)) style.setProperty("--row-gap", rowGapPx + "px");
+}
+
+/**
  * The whole page, from one `cockpit` payload.
  *
  * The grid's column count is applied, never computed: `hostColumns` is
@@ -558,24 +602,17 @@ function applyHostTabs(spec, grid) {
  */
 function renderCockpit(p) {
   const grid = $("cockpit");
-  document.documentElement.style.setProperty("--cockpit-gap", Number(p.spacing) + "px");
-  // The operator's row spacing, over the stylesheet's pre-payload value. Guarded
-  // because an absent key would set the property to the string "NaNpx" — a legal
-  // custom-property token, so `var(--row-gap)` resolves to it and only fails at
-  // substitution time, leaving every list at `gap:normal`. That renders 0 and
-  // looks deliberate. Saying nothing leaves app.css's value standing, which is
-  // the honest answer to "we were not told".
-  if (Number.isFinite(p.rowGapPx)) {
-    document.documentElement.style.setProperty("--row-gap", p.rowGapPx + "px");
-  }
+  overviewLoadFailed = p.overviewLoadFailed || "";
+  applySpacing(Number(p.spacing), p.rowGapPx);
   const cols = Math.max(1, Number(p.hostColumns) | 0);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
 
   const hostsPanel = (p.panels || []).find((panel) => panel.id === "hosts");
   $("hostsTitle").textContent = window.soladorDashboard?.tileHeading?.("hosts") || (hostsPanel ? hostsPanel.title : "");
 
-  // The Settings button's label is Rust's too, and it arrives here because the
-  // button has to exist before anything has asked for the settings payload.
+  // The Settings button's label is Rust's too. The overview paints it from
+  // `dashboard_view`'s labels (dashboard.js); this is the same word for the
+  // page that has no overview model, and is gone with Solador's Full view.
   const toggle = $("settingsToggle");
   if (toggle.querySelector(".db-tooltip")) {
     toggle.setAttribute("aria-label", p.settingsLabel || "");
@@ -633,24 +670,32 @@ function renderCockpit(p) {
 window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size };
 
 (async () => {
-  // The width the host grid actually has. Rust turns it into a column count;
-  // an unmeasured 0 stacks there rather than assuming wide.
-  const gridWidth = () => $("cockpit").clientWidth || $("cockpitView").clientWidth;
+  // The width the host grid actually has, or the window's while the grid is
+  // not laid out. Rust turns it into a column count; an unmeasured 0 stacks
+  // there rather than assuming wide.
+  const gridWidth = () => $("cockpit").clientWidth || document.documentElement.clientWidth;
 
-  const poll = async () =>
-    renderCockpit(await callRust("cockpit", { width: gridWidth(), ...(window.soladorDashboard?.tileArgs?.("hosts") ?? {}) }, "sample.json"));
+  // A reading dropped because its view has gone arrives as null (`callRust`):
+  // not a failure, and nothing to paint.
+  const poll = async () => {
+    const payload = await callRust("cockpit", { width: gridWidth(), ...(window.soladorDashboard?.tileArgs?.("hosts") ?? {}) }, "sample.json");
+    if (payload) renderCockpit(payload);
+    return Boolean(payload);
+  };
 
-  refreshCockpit = async () => { if (overviewOpen) return; try { await poll(); } catch {} };
+  // A failed `cockpit` call is told to the overview, which says what failed in
+  // Rust's words and stays on screen. It used to replace the whole page.
+  const pollReporting = async () => {
+    try {
+      if (await poll()) setCockpitFailed(false);
+    } catch {
+      setCockpitFailed(true);
+    }
+  };
 
-  try { await poll(); } catch (e) {
-    // CSSOM setters, not a `style=""` attribute: this string embeds `esc(e)`
-    // and runs under the same `style-src 'self'` CSP as everywhere else in
-    // this file (see the top-of-file note and `render()`'s volume bars).
-    document.body.innerHTML = `<pre>failed to load cockpit: ${esc(e)}</pre>`;
-    const pre = document.body.querySelector("pre");
-    pre.style.color = "var(--red)";
-    pre.style.padding = "20px";
-  }
+  refreshCockpit = async () => { if (overviewOpen) return; await pollReporting(); };
+
+  await pollReporting();
   if (window.__TAURI__) {
     setInterval(async () => { if (!settingsOpen) await refreshCockpit(); }, 1000);
     // A resize changes the width Rust decides the column count from, so ask

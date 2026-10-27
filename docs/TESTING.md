@@ -220,3 +220,18 @@ tile-full.js specs asserts its renderer sends `{tile: <id>}`;
 answer the way `stubCockpit` does. `layout.spec.js`, `settings.spec.js` and
 `screenshots.spec.js` (`cockpit.png`, `cockpit-narrow.png`) still boot
 `?view=details`; the cutover of #639 removes that path.
+
+**The overview and a tile's Full view are tested without Solador's Full view
+(#646).** `overview-standalone.spec.js` boots the overview through the same
+`tile-full.js` stub and takes away what the cutover will: the `allPanels` icon
+(and any `#cockpitView`, which no longer exists as an id), a successful
+`cockpit` call, and the `cockpit` payload's spacing. It asserts that Settings and
+Escape work from the overview and from Machines, Runners and Scheduled Jobs Full
+views, that a `cockpit` rejection leaves the overview up with `labels.cockpitFailed`,
+that a rejected `dashboard_view` shows the `cockpit` payload's
+`overviewLoadFailed`, that a tile's Full view sends only its own source's command
+(one test per source, `cockpit` excepted), that `--row-gap` and `--cockpit-gap`
+come from `dashboard_view`'s `rowGapPx` and `spacing`, and that `cockpit`'s width
+falls back to the window's when `#cockpit` measures zero. A `{ __throw }` answer
+to `cockpit` is how a spec makes it fail; `stubTileIpc`'s `dashboardKeys` sets
+top-level `dashboard_view` keys the fixture does not.

@@ -3,7 +3,7 @@
 // form. Existing detailed renderers remain the destination for deeper work.
 (function () {
   const root = document.getElementById("dashboardOverview");
-  const legacy = document.getElementById("cockpitView");
+  const fullView = document.getElementById("fullView");
   const sourcePanels = {
     containers: "containersPanel",
     ghWorkflows: "reposPanel",
@@ -165,7 +165,7 @@
     if (fullTile?.id !== tileId) return;
     fullTile.loaded = true;
     fullTile.empty = payload.tileEmpty ?? null;
-    legacy.removeAttribute("data-tile-loading");
+    fullView.removeAttribute("data-tile-loading");
     paintTileHeading();
   }
   function leaveTile() {
@@ -173,7 +173,7 @@
     coveredTitle = null;
     fullNoteEl?.remove();
     fullStateEl?.remove();
-    legacy.removeAttribute("data-tile-loading");
+    fullView.removeAttribute("data-tile-loading");
     fullTile = null;
     fullGeneration++;
   }
@@ -607,10 +607,14 @@
     const focusTile = focused?.closest("[data-tile]")?.dataset.tile;
     const focusData = focused?.dataset.action ? { ...focused.dataset } : null;
     if (!initialized) makeChrome();
-    const view = mode === "overview" ? root : legacy;
+    // The Settings button exists from the first model on: its label is Rust's
+    // (`labels.settings`) and it rides this payload, so it needs neither the
+    // `cockpit` poll nor the Full view's DOM.
+    q('[data-action="settings"]').hidden = !L("settings");
+    const view = mode === "overview" ? root : fullView;
     if (appChrome.parentElement !== view) view.prepend(appChrome);
     root.hidden = settingsOpen || mode !== "overview";
-    legacy.hidden = settingsOpen || mode === "overview";
+    fullView.hidden = settingsOpen || mode === "overview";
     overviewOpen = mode === "overview";
     const attention = q(".db-attention-items");
     attention.replaceChildren();
@@ -632,7 +636,7 @@
     const editLabel = editing && mode === "overview" ? L("done") : L("edit");
     edit.setAttribute("aria-label", editLabel);
     edit.setAttribute("aria-pressed", String(editing && mode === "overview"));
-    q('[data-action="allPanels"]').setAttribute("aria-pressed", String(mode === "details"));
+    q('[data-action="allPanels"]')?.setAttribute("aria-pressed", String(mode === "details"));
     text(edit.querySelector(".db-tooltip"), editLabel);
     q('[data-action="edit"]').disabled = busy || !window.__TAURI__;
     q('[data-action="fitHeight"]').disabled = !window.__TAURI__;
@@ -680,6 +684,19 @@
       replacement?.focus({ preventScroll: true });
     }
   }
+  // A failed `cockpit` call (app.js) costs the Machines Full view its cards,
+  // not the overview, which reads its own rows. The overview stays up and
+  // says so in the sentence Rust wrote (`labels.cockpitFailed`). Painted when
+  // the call fails or recovers, and again after anything that clears the
+  // status line while it still holds.
+  function paintCockpitFailure() {
+    if (!model || !q(".db-live-note")) return;
+    const words = L("cockpitFailed");
+    // Never over another message: the next pass repaints it once that is gone.
+    if (cockpitFailed) { if (!feedback) status(words, true, ".db-attention"); }
+    else if (feedback?.message === words) status("");
+  }
+  document.addEventListener("solador:cockpit", paintCockpitFailure);
   async function refresh(force = false) {
     if (pending || busy || settingsOpen) return;
     pending = true;
@@ -687,7 +704,7 @@
     try {
       const next = await callRust(
         "dashboard_view",
-        { width: root.clientWidth || legacy.clientWidth || innerWidth },
+        { width: root.clientWidth || fullView.clientWidth || innerWidth },
         "sample-dashboard.json",
       );
       if (busy || version !== acknowledgementVersion) return;
@@ -698,6 +715,9 @@
         model && JSON.stringify(next.layout) !== JSON.stringify(model.layout);
       if (configChanged && !force) history = [];
       model = next;
+      // The operator's spacing, from the first model on: a tile's Full view
+      // has its row gap whether or not `cockpit` has answered.
+      applySpacing(Number(next.spacing), next.rowGapPx);
       render(force || configChanged);
       if (loadFailed) {
         status("");
@@ -705,24 +725,25 @@
       }
       const error = document.getElementById("dashboardLoadError");
       if (error) error.remove();
+      paintCockpitFailure();
     } catch (error) {
       if (busy || version !== acknowledgementVersion) return;
       if (initialized) {
         loadFailed = true;
         status(L("loadFailed"), true, ".db-attention");
-      } else if (
-        mode === "overview" &&
-        !document.getElementById("dashboardLoadError")
-      ) {
-        // A transport failure cannot receive its message from the failed IPC.
-        const notice = node(
-          "p",
-          "dashboard-load-error",
-          "Could not load the overview. Detailed readings are available below.",
-        );
-        notice.id = "dashboardLoadError";
-        notice.setAttribute("role", "alert");
-        legacy.prepend(notice);
+      } else if (mode === "overview") {
+        // A transport failure cannot receive its message from the failed IPC,
+        // so the sentence is the one the `cockpit` payload carries (Rust's
+        // `OVERVIEW_LOAD_FAILED`); the failure's own text is the last resort.
+        const words = overviewLoadFailed || String(error?.message ?? error);
+        let notice = document.getElementById("dashboardLoadError");
+        if (!notice) {
+          notice = node("p", "dashboard-load-error");
+          notice.id = "dashboardLoadError";
+          notice.setAttribute("role", "alert");
+          fullView.prepend(notice);
+        }
+        if (notice.textContent !== words) text(notice, words);
       }
     } finally {
       pending = false;
@@ -2064,16 +2085,17 @@
     status("");
     mode = "overview";
     window.soladorGitHub.setRunnerGroup(null);
-    legacy.removeAttribute("data-detail-source");
+    fullView.removeAttribute("data-detail-source");
     overviewOpen = true;
     root.hidden = false;
-    legacy.hidden = true;
+    fullView.hidden = true;
     render(true);
     await refresh(true);
     render(true);
     // Back on the tile that was open, unless it has gone.
     const back = left && root.querySelector(`[data-tile="${CSS.escape(left)}"] .db-tile-footer .db-view-button`);
-    (back || q('[data-action="allPanels"]')).focus({preventScroll:true});
+    (back || q('[data-action="edit"]')).focus({preventScroll:true});
+    paintCockpitFailure();
   }
   async function tileFull(tileId, runnerGroup = null) {
     // Only a tile on the overview has views; a hidden or removed one has none.
@@ -2090,7 +2112,7 @@
     fullTile = { id: t.id, source: t.source, loaded: false, empty: null };
     // The panel still holds the rows it last painted, for Solador's Full view or
     // another tile. They stay hidden until this tile's own reading replaces them.
-    legacy.dataset.tileLoading = "";
+    fullView.dataset.tileLoading = "";
     await fullPanel(t.source, runnerGroup);
   }
   async function fullPanel(sourceId, runnerGroup = null) {
@@ -2098,10 +2120,10 @@
     mode = "details";
     window.soladorGitHub.setRunnerGroup(runnerGroup);
     overviewOpen = false;
-    if (sourceId) legacy.dataset.detailSource = sourceId;
-    else legacy.removeAttribute("data-detail-source");
+    if (sourceId) fullView.dataset.detailSource = sourceId;
+    else fullView.removeAttribute("data-detail-source");
     root.hidden = true;
-    legacy.hidden = false;
+    fullView.hidden = false;
     render(true);
     for (const [source, id] of Object.entries(sourcePanels))
       document
@@ -2109,7 +2131,9 @@
         .toggleAttribute("data-detail-active", source === sourceId);
     await refreshCockpit();
     await refreshPanels();
-    q('[data-action="allPanels"]').focus({ preventScroll: true });
+    // Into the view just opened: a tile's Full view takes focus itself, and
+    // Solador's Full view the icon that opened it.
+    (fullTile ? fullView : q('[data-action="allPanels"]') || fullView).focus({ preventScroll: true });
   }
   async function handleAction(event) {
     const b = event.target.closest("button[data-action]");
@@ -2410,7 +2434,7 @@
     }
   }
   root.addEventListener("click", handleAction);
-  legacy.addEventListener("click", handleAction);
+  fullView.addEventListener("click", handleAction);
   root.addEventListener("submit", (e) => {
     if (e.target.id === "dashboardForm") {
       // WebKit can submit implicitly when Return commits a native picker.
@@ -2425,7 +2449,7 @@
   // focused. A menu with its own Escape (the runners' Forget) sits outside it.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !fullTile || settingsOpen) return;
-    if (e.target === document.body || legacy.contains(e.target)) showOverview();
+    if (e.target === document.body || fullView.contains(e.target)) showOverview();
   });
   // The View menu. Registered ahead of the inspector's Escape so that Escape
   // with a menu open closes the menu and nothing else.
@@ -2525,14 +2549,25 @@
   });
   root.addEventListener("pointercancel", clearDrag);
   root.addEventListener("lostpointercapture", clearDrag);
+  // Settings hides whichever view is on screen and puts it back, without
+  // knowing which that is: the overview, a tile's Full view or Solador's Full
+  // view, with a model or without one.
+  let beforeSettings = null;
   document.addEventListener("solador:settings", (event) => {
-    if (!model) return;
     if (event.detail) {
+      beforeSettings = { root: root.hidden, fullView: fullView.hidden };
       root.hidden = true;
-      legacy.hidden = true;
+      fullView.hidden = true;
     } else {
-      root.hidden = mode !== "overview";
-      legacy.hidden = mode === "overview";
+      if (beforeSettings) {
+        root.hidden = beforeSettings.root;
+        fullView.hidden = beforeSettings.fullView;
+        beforeSettings = null;
+        // The close button that held focus is hidden now: a tile's Full view
+        // takes it back, or its Escape would have nothing to hear.
+        if (fullTile && !fullView.hidden) fullView.focus({ preventScroll: true });
+      }
+      if (!model) return;
       refresh(true).then(() => {
         const draft = formTile();
         if (!draft) return;
@@ -2563,6 +2598,8 @@
     // The panel renderers ask these for the open tile: the command's `tile`
     // argument, and the name their title shows.
     tileArgs,
+    // The source whose Full view is open, which is the only panel to read.
+    fullSource: () => fullTile?.source ?? null,
     tileHeading: fullTileTitle,
     fullGeneration: () => fullGeneration,
     tileResponse,

@@ -520,13 +520,15 @@ function renderRunners(payload) {
 }
 
 async function refresh() {
-  if (overviewOpen) return false;
+  // Two sources share this file's timer: a tile's Full view reads only its own.
+  const wantRepos = panelWanted("ghWorkflows"), wantRunners = panelWanted("ghRunners");
+  if (!wantRepos && !wantRunners) return false;
   // Offline (no Tauri), the dumped-fixture path the cockpit, Settings and the
   // Containers panel all use, so these panels open in a plain browser and in
   // the Playwright suite.
   const [repos, runners] = await Promise.all([
-    callRust("repos", window.soladorDashboard?.tileArgs?.("ghWorkflows") ?? {}, "sample-repos.json").catch(() => null),
-    callRust("runners", window.soladorDashboard?.tileArgs?.("ghRunners") ?? {}, "sample-runners.json").catch(() => null),
+    wantRepos ? callRust("repos", window.soladorDashboard?.tileArgs?.("ghWorkflows") ?? {}, "sample-repos.json").catch(() => null) : null,
+    wantRunners ? callRust("runners", window.soladorDashboard?.tileArgs?.("ghRunners") ?? {}, "sample-runners.json").catch(() => null) : null,
   ]);
   // A failed poll leaves the last good panel on screen rather than blanking
   // it: Rust already retains last-known rows through a bad fetch, and wiping

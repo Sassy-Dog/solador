@@ -197,7 +197,7 @@ test("a failed load leaves no invented panel chrome on screen", async ({ page, b
   });
 
   // The Full view is up, so the page is alive...
-  await expect(page.locator("#cockpitView")).toBeVisible();
+  await expect(page.locator("#fullView")).toBeVisible();
   // ...and the panel stayed hidden rather than showing an empty heading and a
   // blank count, which would read as "nothing is running" instead of "we
   // don't know".

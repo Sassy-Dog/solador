@@ -267,9 +267,9 @@ test("the Settings button, title and every tab come from Rust", async ({ page, b
 
   // The cockpit is out of the way while Settings is up, and comes back on
   // close -- with a fresh poll rather than a stale, zero-width layout.
-  await expect(page.locator("#cockpitView")).toBeHidden();
+  await expect(page.locator("#fullView")).toBeHidden();
   await page.locator("#settingsClose").click();
-  await expect(page.locator("#cockpitView")).toBeVisible();
+  await expect(page.locator("#fullView")).toBeVisible();
   await expect(page.locator("#settings")).toBeHidden();
 });
 
