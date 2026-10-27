@@ -4,8 +4,10 @@
 
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use store::{DashboardLayout, DashboardTile};
+use store::settings::{CORE_ROW_SPAN_RANGE, DEFAULT_CORE_ROW_SPAN, ROW_GAP_PX_RANGE};
+use store::{DashboardLayout, DashboardTile, HostOverflowMode};
 use viewmodel::card;
+use viewmodel::cockpit::SPACING;
 use viewmodel::color;
 
 /// What the page says when `dashboard_view` itself cannot be read. The failed
@@ -49,53 +51,17 @@ fn title_case(title: &str) -> String {
         .collect()
 }
 
+/// The overview a store that never configured one shows. The shape is the
+/// store's (`DashboardLayout::shipped`, which the upgrade copy also needs); the
+/// titles are `SOURCES`', and a test keeps the two equal.
 pub fn default_layout() -> DashboardLayout {
-    DashboardLayout {
-        revision: 0,
-        detail_views: Default::default(),
-        tiles: SOURCES[..5]
-            .iter()
-            .enumerate()
-            .map(|(i, (source, title))| DashboardTile {
-                id: format!("overview-{source}"),
-                source: (*source).into(),
-                title: (*title).into(),
-                scope: if *source == "sentryCrons" {
-                    "active"
-                } else {
-                    "all"
-                }
-                .into(),
-                presentation: "summary".into(),
-                width: if i < 2 { "medium" } else { "small" }.into(),
-                hidden: false,
-                row_limit: "auto".into(),
-                selected_repos: vec![],
-                sort_by: "name".into(),
-                sort_descending: false,
-                // Grouped answers "is this pool healthy?" per OS and
-                // architecture; it is only valid on Runners.
-                runner_view: if *source == "ghRunners" {
-                    "grouped"
-                } else {
-                    "list"
-                }
-                .into(),
-                show_disk: true,
-            })
-            .collect(),
-    }
+    DashboardLayout::shipped()
 }
 
 /// Reject the entire edit rather than silently broadening an invalid scope or
 /// dropping a tile. Unknown resource IDs remain valid, so a disconnected or
 /// removed resource does not turn its tile into an unfiltered one.
 pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
-    if layout.detail_views.iter().any(|(source, mode)| {
-        !SOURCES.iter().any(|(id, _)| id == source) || !["table", "list"].contains(&mode.as_str())
-    }) {
-        return Err("Choose Table or List for a supported detail source.".into());
-    }
     if layout.tiles.len() > 48 {
         return Err("A dashboard can contain up to 48 tiles.".into());
     }
@@ -125,6 +91,7 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
         {
             return Err("Choose one of the supported tile sizes and presentations.".into());
         }
+        validate_view_settings(tile)?;
         let fixed = fixed_scopes(&tile.source)
             .iter()
             .any(|(v, _)| *v == tile.scope);
@@ -148,6 +115,36 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
         if !fixed && !resource {
             return Err("Choose a supported scope for this tile.".into());
         }
+    }
+    Ok(())
+}
+
+/// The per-view options a tile carries (#647). Refused rather than clamped, so
+/// an edit no picker can produce is told so; an out-of-range value in a
+/// hand-edited `store.json` is clamped on read instead (`DashboardTile`).
+fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
+    let hosts = tile.source == "hosts";
+    if !CORE_ROW_SPAN_RANGE.contains(&tile.core_row_span)
+        || (!hosts && tile.core_row_span != DEFAULT_CORE_ROW_SPAN)
+    {
+        return Err("Choose between 1 and 4 CPU core rows, on a Machines tile.".into());
+    }
+    if !hosts && tile.host_overflow != HostOverflowMode::Stack {
+        return Err("Only a Machines tile chooses how host cards overflow.".into());
+    }
+    if !ROW_GAP_PX_RANGE.contains(&tile.row_gap_px) {
+        return Err(format!(
+            "Choose a row spacing between {} and {} px.",
+            ROW_GAP_PX_RANGE.start(),
+            ROW_GAP_PX_RANGE.end()
+        ));
+    }
+    let table_or_list = |value: &str| ["table", "list"].contains(&value);
+    if !table_or_list(&tile.detail_view) || !table_or_list(&tile.runner_full_view) {
+        return Err("Choose Table or List for a view.".into());
+    }
+    if tile.source != "ghRunners" && tile.runner_full_view != "table" {
+        return Err("Only a Runners tile has a Full view of its own to lay out.".into());
     }
     Ok(())
 }
@@ -910,7 +907,8 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     };
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
         "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false,
-        "runnerView":if id=="ghRunners" {"grouped"} else {"list"}}});
+        "runnerView":if id=="ghRunners" {"grouped"} else {"list"},
+        "coreRowSpan":DEFAULT_CORE_ROW_SPAN,"hostOverflow":"stack","rowGapPx":0,"detailView":"table","runnerFullView":"table"}});
     if id == "hosts" {
         // The shared limits editor (#612): shared by every Machines tile, so
         // it rides on the source, never on a tile.
@@ -925,11 +923,11 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     }
     if !payload["cadences"].is_null() {
         // The poll cadences are the source's, shared by every tile of it and
-        // the Full view (#614), so they ride on the source, never on a tile.
+        // each tile's Full view (#614), so they ride on the source, never on a tile.
         source["cadences"] = payload["cadences"].clone();
     }
     if id == "containers" {
-        // The rules decide what every Containers tile and the Full view show.
+        // The rules decide what every Containers tile and its Full view show.
         source["ruleEditor"] = payload["ruleEditor"].clone();
     }
     source
@@ -1020,20 +1018,115 @@ mod detail_table_tests {
     }
 
     #[test]
-    fn detail_preferences_default_to_table_and_validate_without_tiles() {
-        let mut layout: DashboardLayout = serde_json::from_value(json!({"tiles":[]})).unwrap();
-        assert!(layout.detail_views.is_empty());
-        layout
-            .detail_views
-            .insert("ghWorkflows".into(), "list".into());
-        assert!(validate(&layout).is_ok());
-        layout.detail_views.insert("hosts".into(), "table".into());
-        assert!(validate(&layout).is_ok());
-        layout.detail_views.insert("hosts".into(), "cards".into());
+    fn view_settings_default_and_are_validated_per_tile() {
+        let ok = |edit: &dyn Fn(&mut DashboardTile)| {
+            let mut layout = default_layout();
+            let hosts = layout
+                .tiles
+                .iter_mut()
+                .find(|t| t.source == "hosts")
+                .unwrap();
+            edit(hosts);
+            validate(&layout)
+        };
+        let t = default_layout().tiles.remove(0);
+        assert_eq!(
+            (t.core_row_span, t.row_gap_px, t.detail_view.as_str()),
+            (2, 0, "table")
+        );
+        assert_eq!(t.host_overflow, HostOverflowMode::Stack);
+        assert!(ok(&|t| t.core_row_span = 4).is_ok());
+        assert!(ok(&|t| t.core_row_span = 5).is_err());
+        assert!(ok(&|t| t.core_row_span = 0).is_err());
+        assert!(ok(&|t| t.host_overflow = HostOverflowMode::Tabs).is_ok());
+        assert!(ok(&|t| t.row_gap_px = 16).is_ok());
+        assert!(ok(&|t| t.row_gap_px = 17).is_err());
+        assert!(ok(&|t| t.detail_view = "list".into()).is_ok());
+        assert!(ok(&|t| t.detail_view = "cards".into()).is_err());
+        assert!(ok(&|t| t.runner_full_view = "list".into()).is_err());
+
+        // Machines-only and Runners-only options are refused elsewhere.
+        let mut layout = default_layout();
+        let repos = layout
+            .tiles
+            .iter_mut()
+            .find(|t| t.source == "ghWorkflows")
+            .unwrap();
+        repos.core_row_span = 3;
         assert!(validate(&layout).is_err());
-        layout.detail_views.clear();
-        layout.detail_views.insert("missing".into(), "list".into());
+        let mut layout = default_layout();
+        let repos = layout
+            .tiles
+            .iter_mut()
+            .find(|t| t.source == "ghWorkflows")
+            .unwrap();
+        repos.host_overflow = HostOverflowMode::Tabs;
         assert!(validate(&layout).is_err());
+        let mut layout = default_layout();
+        let runners = layout
+            .tiles
+            .iter_mut()
+            .find(|t| t.source == "ghRunners")
+            .unwrap();
+        runners.runner_full_view = "list".into();
+        runners.detail_view = "list".into();
+        assert!(validate(&layout).is_ok());
+    }
+
+    #[test]
+    fn the_shipped_overview_titles_are_the_sources_titles() {
+        for (tile, (source, title)) in default_layout().tiles.iter().zip(SOURCES) {
+            assert_eq!((tile.source.as_str(), tile.title.as_str()), (source, title));
+        }
+        assert_eq!(default_layout().tiles.len(), store::SHIPPED_TILES.len());
+    }
+
+    #[test]
+    fn a_tile_carries_its_view_settings_to_the_page() {
+        let mut layout = default_layout();
+        let runners = layout
+            .tiles
+            .iter_mut()
+            .find(|t| t.source == "ghRunners")
+            .unwrap();
+        runners.row_gap_px = 6;
+        runners.detail_view = "list".into();
+        runners.runner_full_view = "list".into();
+        let view = view(&layout, &[]);
+        let tiles = view["tiles"].as_array().unwrap();
+        let tile = tiles.iter().find(|t| t["source"] == "ghRunners").unwrap();
+        assert_eq!(tile["rowGapPx"], 6);
+        assert_eq!(tile["detailView"], "list");
+        assert_eq!(tile["runnerFullView"], "list");
+        assert_eq!(view["spacing"], SPACING);
+        let tile = tiles.iter().find(|t| t["source"] == "hosts").unwrap();
+        assert_eq!(tile["coreRowSpan"], 2);
+        assert_eq!(tile["hostOverflow"], "stack");
+    }
+
+    /// The Configure switch is the View menu's list behind **This tile**, so a
+    /// view added to `TILE_VIEWS` is in both without touching either control.
+    #[test]
+    fn configure_pages_are_this_tile_then_every_tile_view() {
+        let configure = configure();
+        let ids: Vec<&str> = configure["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        let want: Vec<&str> = std::iter::once("tile")
+            .chain(TILE_VIEWS.iter().map(|(id, _)| *id))
+            .collect();
+        assert_eq!(ids, want);
+        // Every page that holds settings is a page, and names a field with words.
+        for (page, fields) in configure["pageFields"].as_object().unwrap() {
+            assert!(ids.contains(&page.as_str()), "{page}");
+            for field in fields.as_array().unwrap() {
+                let name = field["field"].as_str().unwrap();
+                assert!(!configure[name].is_null(), "{name} has no label");
+            }
+        }
     }
 
     #[test]
@@ -1284,6 +1377,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     let full_note = scope_note(tile, string(source, "title"), &scope_label);
     json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
+        "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
         "sortColumns":if tile.source == "ghWorkflows" { json!([
             {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
@@ -1294,7 +1388,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
 pub fn preview(tile: &DashboardTile, snapshot: &Value) -> Result<Value, String> {
     validate(&DashboardLayout {
         revision: 0,
-        detail_views: Default::default(),
+        legacy_detail_views: Default::default(),
         tiles: vec![tile.clone()],
     })?;
     let source = list(snapshot, "sources")
@@ -1341,7 +1435,11 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
             json!({"source":s["id"],"label":s["attentionLabel"],"color":s["attentionColor"],"target":chip_target(s, &tiles)})
         })
         .collect();
-    json!({"layout":layout,"tiles":tiles,"hiddenTiles":hidden_tiles,"presets":presets(),"sources":sources,"attention":attention,"labels":labels()})
+    json!({"layout":layout,"tiles":tiles,"hiddenTiles":hidden_tiles,"presets":presets(),"sources":sources,"attention":attention,"labels":labels(),"configure":configure(),
+        // The gap between host cards, which a Machines tile's Full view needs
+        // before any `cockpit` answer. (The gap between rows of a list is each
+        // tile's own `rowGapPx`.)
+        "spacing":SPACING})
 }
 
 /// Where an attention chip leads: `{"tile": id}` when exactly one visible tile
@@ -1413,19 +1511,63 @@ fn presets() -> Value {
         {
             "id":"remote-machines",
             "hint":"Keep remote hosts together, with CPU and memory at a glance.",
-            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into(), show_disk:true }
+            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into(), show_disk:true, ..DashboardTile::new("", "", "", "") }
         },
         {
             "id":"repos-attention",
             "hint":"Focus on repositories with issues in their available readings.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into(), show_disk:true }
+            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into(), show_disk:true, ..DashboardTile::new("", "", "", "") }
         },
         {
             "id":"linux-runners",
             "hint":"See Linux runner availability in one compact tile.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"grouped".into(), show_disk:true }
+            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"grouped".into(), show_disk:true, ..DashboardTile::new("", "", "", "") }
         }
     ])
+}
+
+/// The words and structure of a tile's Configure switch (#647): which pages it
+/// has, which view settings each page holds and for which sources, and the
+/// label, range and help of each. The pages are `TILE_VIEWS` behind **This
+/// tile**, so a view added there appears in the View menu and here together;
+/// the frontend lays out what this hands it and composes no sentence.
+fn configure() -> Value {
+    let mut pages = vec![json!({"id":"tile","label":"This tile"})];
+    pages.extend(
+        TILE_VIEWS
+            .iter()
+            .map(|(id, label)| json!({"id":id,"label":label})),
+    );
+    let table_list = json!([{"id":"table","label":"Table"},{"id":"list","label":"List"}]);
+    json!({
+        "switchLabel": "Settings for",
+        "everyViewHeading": "Every view of this tile",
+        "applyNote": "Apply saves this tile\u{2019}s settings from any page. Settings marked shared save when you click them.",
+        "pages": pages,
+        // Which settings each view page holds. `sources` is null for every
+        // source. `This tile` holds the settings the editor already shows.
+        "pageFields": {
+            "detail": [{"field":"detailView","sources":null}],
+            "full": [
+                {"field":"coreRowSpan","sources":["hosts"]},
+                {"field":"hostOverflow","sources":["hosts"]},
+                {"field":"runnerFullView","sources":["ghRunners"]},
+                {"field":"rowGapPx","sources":null},
+            ],
+        },
+        "detailView": {"label":"Detail layout","options":table_list,"help":"Whether this tile\u{2019}s Detail lists its rows as a table or as a list."},
+        "runnerFullView": {"label":"Full view layout","options":table_list,"help":"Whether this tile\u{2019}s Full view lists runners as a table or as a list. Detail has its own choice."},
+        "coreRowSpan": {"label":"CPU core rows","min":CORE_ROW_SPAN_RANGE.start(),"max":CORE_ROW_SPAN_RANGE.end(),"help":"How many rows tall the per-core CPU grid is on every host card in this tile\u{2019}s Full view."},
+        "hostOverflow": {
+            "label":"When host cards don\u{2019}t fit",
+            "options":[
+                {"id":"stack","label":crate::settings::host_overflow_label(HostOverflowMode::Stack)},
+                {"id":"tabs","label":crate::settings::host_overflow_label(HostOverflowMode::Tabs)},
+            ],
+            "help":"What this tile\u{2019}s Full view does when the window is too narrow to show host cards side by side.",
+        },
+        "rowGapPx": {"label":"Row spacing (px)","min":ROW_GAP_PX_RANGE.start(),"max":ROW_GAP_PX_RANGE.end(),"help":"Space between two rows of the same list in this tile\u{2019}s views. 0 sits them flush, which is the default: it decides how many rows fit on screen."},
+    })
 }
 
 fn labels() -> Value {
@@ -1434,7 +1576,6 @@ fn labels() -> Value {
         ("subtitle", "Overview"),
         ("settings", crate::settings::OPEN_LABEL),
         ("cockpitFailed", COCKPIT_LOAD_FAILED),
-        ("allPanels", "Full view"),
         ("fitHeight", "Fit window to tiles"),
         ("edit", "Edit dashboard"),
         ("done", "Done editing"),
@@ -1674,7 +1815,7 @@ mod tests {
             assert_eq!(source["defaultTile"]["runnerView"], want);
             assert!(validate(&DashboardLayout {
                 revision: 0,
-                detail_views: Default::default(),
+                legacy_detail_views: Default::default(),
                 tiles: vec![draft]
             })
             .is_ok());
@@ -1711,7 +1852,7 @@ mod tests {
         ] {
             assert!(validate(&DashboardLayout {
                 revision: 0,
-                detail_views: Default::default(),
+                legacy_detail_views: Default::default(),
                 tiles: vec![configured_tile("ghWorkflows", options)]
             })
             .is_err());
@@ -1738,7 +1879,7 @@ mod tests {
         let tile = configured_tile("hosts", json!({"showDisk":false}));
         assert!(validate(&DashboardLayout {
             revision: 0,
-            detail_views: Default::default(),
+            legacy_detail_views: Default::default(),
             tiles: vec![tile.clone()]
         })
         .is_ok());
@@ -1956,7 +2097,7 @@ mod tests {
         assert_eq!(title_case("équipe machines"), "Équipe Machines");
     }
 
-    use store::{LayoutProfile, LayoutSlot, Store};
+    use store::Store;
 
     #[test]
     fn a_thermal_breach_names_itself_and_a_cpu_ram_breach_stays_connected() {
@@ -2806,15 +2947,10 @@ mod tests {
     }
 
     #[test]
-    fn save_round_trips_without_changing_connections_or_detailed_layout() {
+    fn save_round_trips_without_changing_connections() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open_in(dir.path(), false).unwrap();
         store.upsert_host(store::Host::new("remote", "10.0.0.2"));
-        store.set_layout(vec![LayoutProfile::new(
-            1200.0,
-            "tabs",
-            vec![LayoutSlot::new("hosts", "half")],
-        )]);
         let before = store.data().clone();
         let mut layout = default_layout();
         layout.tiles[1].row_limit = "all".into();
@@ -2822,9 +2958,7 @@ mod tests {
         layout.tiles[1].sort_by = "ready".into();
         layout.tiles[1].sort_descending = true;
         layout.tiles[2].runner_view = "grouped".into();
-        layout
-            .detail_views
-            .insert("ghWorkflows".into(), "list".into());
+        layout.tiles[1].detail_view = "list".into();
         layout.tiles.reverse();
         layout.tiles[0].hidden = true;
         let saved = crate::persist_dashboard(&mut store, layout, 0).unwrap();
@@ -2833,13 +2967,12 @@ mod tests {
         assert_eq!(reopened.dashboard(), Some(&saved));
         assert_eq!(reopened.data().hosts, before.hosts);
         assert_eq!(reopened.data().settings, before.settings);
-        assert_eq!(reopened.data().layout, before.layout);
         let conflict = crate::persist_dashboard(&mut store, default_layout(), 0).unwrap_err();
         assert!(conflict.contains("changed"));
         assert_eq!(store.dashboard(), Some(&saved));
         let empty = DashboardLayout {
             revision: 0,
-            detail_views: Default::default(),
+            legacy_detail_views: Default::default(),
             tiles: vec![],
         };
         crate::persist_dashboard(&mut store, empty, 1).unwrap();
