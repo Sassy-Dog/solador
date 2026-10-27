@@ -24,10 +24,10 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
 /**
  * Enters the Containers tile's Full view (View, then Full view) with the IPC
  * stubbed and every call recorded, so a test can assert *which* command painted
- * the panel and what it sent. `cockpit` has to be answered too: app.js replaces
- * the entire document body with an error line when its first `invoke` rejects,
- * which would take the containers panel down with it and make this suite fail
- * for the wrong reason.
+ * the panel and what it sent. `cockpit` is given an answer too, so this suite never has to think
+ * about it: a rejected `cockpit` no longer takes the page down (the overview says
+ * so and stays up, #646), but it would add a failure line these tests do not
+ * mean to assert on.
  */
 async function gotoApp(page, baseURL, { cockpit, containers } = {}) {
   await gotoTileFull(page, baseURL, {

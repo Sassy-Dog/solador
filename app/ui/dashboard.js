@@ -696,7 +696,17 @@
     if (cockpitFailed) { if (!feedback) status(words, true, ".db-attention"); }
     else if (feedback?.message === words) status("");
   }
-  document.addEventListener("solador:cockpit", paintCockpitFailure);
+  // The same event carries Rust's overview sentence arriving: a notice already
+  // up with the transport's text takes it at once.
+  function repaintLoadError() {
+    const notice = document.getElementById("dashboardLoadError");
+    if (notice && overviewLoadFailed && notice.textContent !== overviewLoadFailed)
+      text(notice, overviewLoadFailed);
+  }
+  document.addEventListener("solador:cockpit", () => {
+    paintCockpitFailure();
+    repaintLoadError();
+  });
   async function refresh(force = false) {
     if (pending || busy || settingsOpen) return;
     pending = true;
@@ -2615,7 +2625,11 @@
     // here stays a failure and one for a tile that is gone is the dashboard's
     // own tile-gone path (`render`), not a `cockpit` failure.
     async tileGone(id) {
-      await refresh(true);
+      // Let a read already in flight settle (it may predate the removal), then
+      // read once more ourselves. Unforced is enough: a removed tile changes
+      // the layout, which forces the render.
+      while (pending) await new Promise((resolve) => setTimeout(resolve, 20));
+      await refresh();
       return Boolean(model) && !model.tiles.some((t) => t.id === id);
     },
   };

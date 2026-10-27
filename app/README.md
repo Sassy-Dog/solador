@@ -139,6 +139,29 @@ cut or re-home, by id (built from `getElementById` and `$()` in `app.js`,
 - The `allPanels` icon, the `full` action, `mode === "details"` without a tile
   and `?view=details`: Solador's Full view's own entry points, still wired.
 
+The cross-file JS seams #647 inherits (all globals or `window` members, since the
+scripts share one scope):
+
+- `panelWanted(source)` (`app.js`): every renderer's read gate, and
+  `refreshCockpit`'s (`"hosts"`). It asks `soladorDashboard.fullSource()`.
+- `applySpacing` (`app.js`), called by `renderCockpit` and by `dashboard.js`'s
+  `refresh`.
+- `cockpitFailed`, `setCockpitFailed` and the `solador:cockpit` event (`app.js`);
+  `dashboard.js` paints `labels.cockpitFailed` from them and, on the same event,
+  repaints `#dashboardLoadError` when `overviewLoadFailed` first arrives.
+- `overviewLoadFailed` (`app.js`, from the `cockpit` payload): the text of
+  `#dashboardLoadError`. **Hidden dependency:** it arrives only because the
+  boot read, `await pollReporting()` at the end of `app.js`, calls `cockpit`
+  unconditionally. Gating that read (on `panelWanted`, say) leaves the notice
+  showing raw IPC text.
+- `soladorDashboard` (`dashboard.js`): `fullSource`, `hasModel` (`renderCockpit`
+  skips the top-bar toggle once true), `tileGone`, `tileArgs`, `tileHeading`,
+  `tileResponse`, `fullGeneration` and `detailView`/`setDetailView`.
+  `callRust`'s `PANEL_READS` filter uses `fullGeneration` and `tileResponse`.
+- `refreshCockpit` and `refreshPanels` (`app.js`), called by `settings.js` on close
+  and by `dashboard.js`'s `fullPanel`; `settingsOpen` and `overviewOpen` are the
+  shared flags.
+
 `overview-standalone.spec.js` runs the overview, Settings and a tile's Full view
 without the `allPanels` icon and without the Settings label or the spacing from
 `cockpit`; it does not (and cannot) run them without `#fullView`.
@@ -159,14 +182,15 @@ without the `allPanels` icon and without the Settings label or the spacing from
   retried even with the overview up, and the first success clears the
   sentence. A read for a tile that has since left the overview is refused by
   Rust and is not a `cockpit` failure: the frontend asks the dashboard whether
-  the tile is gone (a fresh `dashboard_view`, never the refusal's wording), and
+  the tile is gone (once, as the failure begins; it waits out any `dashboard_view` already in flight, then reads one of its own, and never goes by the refusal's wording), and
   the dashboard's own `That tile is no longer on the overview.` stands. Each
   failure is logged once with `console.error` (`cockpit`, `dashboard_view`)
   when it begins.
 - **`dashboard_view` fails** before the first model: a failed call has no words
   of its own, so the notice is the `cockpit` payload's `overviewLoadFailed`
   (`dashboard::OVERVIEW_LOAD_FAILED`), and the failure's own text only when
-  that has not arrived either. It no longer points at Solador's Full view.
+  that has not arrived yet (a notice already up takes the sentence the moment it
+  arrives). It no longer points at Solador's Full view.
 - **Spacing:** `dashboard_view` carries `spacing` and `rowGapPx` (the same stored
   values `cockpit` carries), and `app.js`'s `applySpacing` paints `--cockpit-gap`
   and `--row-gap` from the first model, so a tile's Full view has its row gap
@@ -178,7 +202,8 @@ without the `allPanels` icon and without the Settings label or the spacing from
   reads all of them. `cockpit` is read the same way (`panelWanted("hosts")`):
   by a Machines tile's Full view (with its `tile`) and by Solador's Full view,
   not by the overview or another source's Full view, apart from retrying a
-  failed read.
+  failed read and the one read `app.js` makes at boot, before any view is open
+  (see the hidden dependency above).
 - **Width:** `gridWidth` is `#cockpit`'s width, or the window's while the grid
   is not laid out.
 - **Focus:** opening a tile's Full view focuses `#fullView`; leaving it focuses

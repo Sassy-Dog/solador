@@ -234,8 +234,11 @@ button (Escape from the overview is not tested); the Settings button and the
 gaps come from `dashboard_view` (`labels.settings`, `rowGapPx`, `spacing`); a
 `cockpit` rejection leaves the overview up with `labels.cockpitFailed`, and the
 line clears when `cockpit` answers again; a Machines tile removed while its Full
-view is open shows the tile-gone message and never that line; a rejected
-`dashboard_view` shows the `cockpit` payload's `overviewLoadFailed`; opening a
+view is open shows the tile-gone message and never that line, even when a
+`dashboard_view` that still has the tile is in flight, and a `cockpit` read that
+keeps failing asks whether the tile is gone once; a rejected `dashboard_view`
+shows the `cockpit` payload's `overviewLoadFailed`, taking it the moment it
+arrives if the notice is already up with the transport's text; opening a
 tile's Full view reads its own source's command and no other, `cockpit`
 included (Machines reads `cockpit` with its `tile`), over the reads made on
 opening and the next 1s polls, not the slower panel timers; and `cockpit`'s

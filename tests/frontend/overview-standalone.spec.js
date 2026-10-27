@@ -114,6 +114,95 @@ test("an overview that cannot load says so in the sentence the cockpit payload c
   await expect(notice).not.toContainText(/below|full view|panel/i);
 });
 
+/**
+ * Lets a spec hold a command's answer. The answer is read when the command is
+ * called (so it can be an old one) and handed back only when `release` runs;
+ * `hold` is also callable from the page (`window.__hold(command)`).
+ */
+async function gated(page, holdAtBoot = []) {
+  await page.addInitScript((holdAtBoot) => {
+    const gates = (window.__GATES__ = {});
+    const inner = window.__TAURI__.core.invoke;
+    window.__hold = (command) => {
+      let release;
+      gates[command] = { promise: new Promise((resolve) => (release = resolve)), release };
+    };
+    window.__release = (command) => { gates[command]?.release(); delete gates[command]; };
+    window.__TAURI__.core.invoke = (command, args) => {
+      const answered = inner(command, args).then((value) => ({ value }), (error) => ({ error }));
+      const gate = gates[command];
+      return (gate ? gate.promise.then(() => answered) : answered).then(({ value, error }) => {
+        if (error !== undefined) throw error;
+        return value;
+      });
+    };
+    holdAtBoot.forEach((command) => window.__hold(command));
+  }, holdAtBoot);
+}
+
+test("a notice up with the transport's text takes Rust's sentence the moment it arrives", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  await stubTileIpc(page, baseURL, { source: "ghRunners", cockpit, answers: {} });
+  await page.addInitScript(() => { window.__ANSWERS__.dashboard_view = { __throw: "ipc down" }; });
+  await gated(page, ["cockpit"]);
+  await page.goto("/index.html");
+  const notice = page.locator("#dashboardLoadError");
+  await expect(notice).toHaveText("ipc down");
+  // Nothing may refresh the notice but the sentence arriving: hold the retries.
+  await page.evaluate(() => { window.__hold("dashboard_view"); window.__release("cockpit"); });
+  await expect(notice).toHaveText(cockpit.overviewLoadFailed, { timeout: 500 });
+});
+
+test("a tile removed while an older dashboard_view is in flight is gone, not a cockpit failure", async ({ page, baseURL }) => {
+  const dashboard = await fixture(baseURL, "sample-dashboard.json");
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const logged = [];
+  page.on("console", (message) => { if (message.type() === "error") logged.push(message.text()); });
+  await stubTileIpc(page, baseURL, { source: "hosts", cockpit, answers: {} });
+  await gated(page);
+  await page.goto("/index.html");
+  await openTileFull(page, "hosts");
+  // A dashboard_view that still has the tile is on its way back...
+  await page.evaluate(() => window.__hold("dashboard_view"));
+  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length))
+    .toBeGreaterThan(0);
+  const before = await page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length);
+  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length))
+    .toBeGreaterThan(before);
+  // ...when the tile leaves and Rust refuses its cockpit read.
+  await page.evaluate(() => {
+    const view = structuredClone(window.__ANSWERS__.dashboard_view);
+    view.tiles = []; view.layout.tiles = [];
+    window.__ANSWERS__.dashboard_view = view;
+    window.__ANSWERS__.cockpit = { __throw: "That tile is no longer on the overview." };
+  });
+  const cockpitCalls = () => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "cockpit").length);
+  const seen = await cockpitCalls();
+  await expect.poll(cockpitCalls).toBeGreaterThan(seen);
+  await page.evaluate(() => window.__release("dashboard_view"));
+  await expect(page.locator("#dashboardOverview .db-action-error")).toHaveText(dashboard.labels.tileGone);
+  expect(await page.evaluate(() => cockpitFailed)).toBe(false);
+  expect(logged.filter((line) => line.includes("cockpit failed"))).toEqual([]);
+});
+
+test("a cockpit read that keeps failing in a Machines tile's Full view asks whether the tile is gone once", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  await stubTileIpc(page, baseURL, { source: "hosts", cockpit, answers: {} });
+  await page.goto("/index.html");
+  await openTileFull(page, "hosts");
+  await page.evaluate(() => {
+    window.__ASKED__ = 0;
+    const ask = window.soladorDashboard.tileGone;
+    window.soladorDashboard.tileGone = (id) => { window.__ASKED__++; return ask(id); };
+    window.__ANSWERS__.cockpit = { __throw: "the cockpit broke" };
+  });
+  const cockpitCalls = () => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "cockpit").length);
+  const seen = await cockpitCalls();
+  await expect.poll(cockpitCalls, { timeout: 8000 }).toBeGreaterThan(seen + 2);
+  expect(await page.evaluate(() => cockpitFailed)).toBe(true);
+  expect(await page.evaluate(() => window.__ASKED__)).toBe(1);
+});
+
 test("a failed boot cockpit read shows Rust's line, and it clears on its own once cockpit answers", async ({ page, baseURL }) => {
   const dashboard = await fixture(baseURL, "sample-dashboard.json");
   const cockpit = await fixture(baseURL, "sample-cockpit.json");

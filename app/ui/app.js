@@ -606,7 +606,13 @@ function applySpacing(spacing, rowGapPx) {
  */
 function renderCockpit(p) {
   const grid = $("cockpit");
-  overviewLoadFailed = p.overviewLoadFailed || "";
+  // When the sentence first arrives, a notice already up with the transport's
+  // text is repainted at once (dashboard.js listens), not at its next refresh.
+  const words = p.overviewLoadFailed || "";
+  if (words !== overviewLoadFailed) {
+    overviewLoadFailed = words;
+    document.dispatchEvent(new CustomEvent("solador:cockpit", { detail: cockpitFailed }));
+  }
   applySpacing(Number(p.spacing), p.rowGapPx);
   const cols = Math.max(1, Number(p.hostColumns) | 0);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
@@ -699,7 +705,9 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
       // A read for a tile that has left the overview is refused by Rust and is
       // not a `cockpit` failure: the dashboard says the tile is gone. Whether
       // it has is the dashboard's state, never the refusal's wording.
-      if (args.tile !== undefined && await window.soladorDashboard?.tileGone?.(args.tile)) return;
+      // Asked once, as the failure begins: a tile-scoped read, and not while
+      // already failed, so a read that keeps failing adds no dashboard reads.
+      if (args.tile !== undefined && !cockpitFailed && await window.soladorDashboard?.tileGone?.(args.tile)) return;
       setCockpitFailed(true, error);
     }
   };
