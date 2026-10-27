@@ -1071,6 +1071,11 @@ async fn poll_loop(
 /// cadence is a setting now, and an operator who stretched it to ten minutes
 /// has exactly the problem this loop exists to solve.
 ///
+/// **Sentry Crons joined them in #635.** Its staleness window became 1.5
+/// cycles of its own cadence, so at a short cadence a nap of more than half a
+/// cycle would read stale on a healthy loop until the late poll landed. It
+/// costs one Sentry request per resume, and none while no token is saved.
+///
 /// **This deliberately breaks the rule the wake channels were built for.**
 /// `app/README.md` records that every mutation wakes exactly the loop its data
 /// feeds and no other, because a wake spends a whole poll pass. A resume is not
@@ -1102,17 +1107,24 @@ async fn resume_loop(app: Arc<App>) {
             .expect("host watch poisoned")
             .reset();
 
-        wake_github(&app);
-        wake_services(&app);
-        wake_usage(&app, UsageWake::Everything);
-        app.azure_wake.notify_one();
-        app.containers_wake.notify_one();
-        // Costs nothing unless a read is due: the plan loop's gate compares the
-        // wall clock, which kept running through the sleep, against each
-        // provider's last attempt, and a provider that is off is never read.
-        app.plan_usage_wake.notify_one();
-        wake_openclaw(&app);
+        wake_after_resume(&app);
     }
+}
+
+/// Every slow loop [`resume_loop`] wakes, apart from the loop itself so the
+/// set can be tested without a clock that jumps.
+fn wake_after_resume(app: &App) {
+    wake_github(app);
+    wake_services(app);
+    wake_usage(app, UsageWake::Everything);
+    app.azure_wake.notify_one();
+    app.containers_wake.notify_one();
+    app.crons_wake.notify_one();
+    // Costs nothing unless a read is due: the plan loop's gate compares the
+    // wall clock, which kept running through the sleep, against each
+    // provider's last attempt, and a provider that is off is never read.
+    app.plan_usage_wake.notify_one();
+    wake_openclaw(app);
 }
 
 /// Watches every monitored host's reachability and banners the changes.
@@ -7629,8 +7641,8 @@ fn main() {
     rt.spawn(services_loop(Arc::clone(&app)));
     // This machine, on the host cadence — the card that leads the grid.
     rt.spawn(local::poll_loop(Arc::clone(&app.local), POLL_INTERVAL));
-    // Usage: Claude on its rollup cadence, Neon and Sentry on their own cadence inside the
-    // same loop.
+    // Usage: Claude on its rollup cadence, Neon, Sentry and Vercel on their own cadence
+    // inside the same loop.
     rt.spawn(usage_loop(Arc::clone(&app)));
     rt.spawn(plan_usage_loop(Arc::clone(&app)));
     // Sentry cron monitors, on the same default hourly cadence as the Sentry read
@@ -8012,8 +8024,10 @@ mod tests {
     }
 
     /// #635, end to end over the clocks: drive the loop's own decision through
-    /// many cycles at legal cadence pairs, with passes that take real time
-    /// (the providers' slowest is all four requests at their 30s timeout).
+    /// many cycles at legal cadence pairs, with passes that take real time:
+    /// Claude walks of 5s and 25s, and provider passes up to all four requests
+    /// at their 30s timeout. Which alignments it reaches depends on the
+    /// cadences, so the worst one is pinned separately, below.
     ///
     /// Three properties: neither half starts again sooner than its cadence
     /// after it last finished, and a provider reading, stamped as its read
@@ -8024,71 +8038,112 @@ mod tests {
     #[test]
     fn the_usage_loop_holds_both_cadences_over_many_cycles() {
         use std::time::Duration as D;
-        const WALK: u64 = 5;
-        for rollups in [30, 60, 240, 600, 3_600, 14_400] {
-            for providers in [300, 3_600, 7_200, 21_600] {
-                for provider_pass in [3, 120] {
-                    let horizon = 20 * rollups.max(providers);
-                    let (mut t, mut rollups_last, mut providers_last) = (0u64, None, None);
-                    let (mut walks, mut passes) = (Vec::new(), Vec::new());
-                    let clocks = |t: u64, rl: Option<u64>, pl: Option<u64>| {
-                        usage_clocks(rollups, rl.map(|l| t - l), providers, pl.map(|l| t - l))
-                    };
-                    while t < horizon {
-                        let turn = clocks(t, rollups_last, providers_last).turn(false, false);
-                        if turn.rollups {
-                            walks.push((t, t + WALK));
-                            t += WALK;
-                            rollups_last = Some(t);
+        for walk in [5, 25] {
+            for rollups in [30, 60, 240, 600, 3_600, 14_400] {
+                for providers in [300, 3_600, 7_200, 21_600] {
+                    for provider_pass in [3, 120] {
+                        let horizon = 20 * rollups.max(providers);
+                        let (mut t, mut rollups_last, mut providers_last) = (0u64, None, None);
+                        let (mut walks, mut passes) = (Vec::new(), Vec::new());
+                        let clocks = |t: u64, rl: Option<u64>, pl: Option<u64>| {
+                            usage_clocks(rollups, rl.map(|l| t - l), providers, pl.map(|l| t - l))
+                        };
+                        while t < horizon {
+                            let turn = clocks(t, rollups_last, providers_last).turn(false, false);
+                            if turn.rollups {
+                                walks.push((t, t + walk));
+                                t += walk;
+                                rollups_last = Some(t);
+                            }
+                            if turn.providers {
+                                passes.push((t, t + provider_pass));
+                                t += provider_pass;
+                                providers_last = Some(t);
+                            }
+                            let sleep = clocks(t, rollups_last, providers_last).sleep();
+                            assert!(
+                                turn != (UsageTurn {
+                                    rollups: false,
+                                    providers: false
+                                }) || sleep > D::ZERO,
+                                "a turn that ran nothing must sleep"
+                            );
+                            t += sleep.as_secs();
                         }
-                        if turn.providers {
-                            passes.push((t, t + provider_pass));
-                            t += provider_pass;
-                            providers_last = Some(t);
+                        let at = format!(
+                            "walk {walk}s, rollups {rollups}s, providers {providers}s, \
+                             pass {provider_pass}s"
+                        );
+                        for pair in walks.windows(2) {
+                            assert!(
+                                pair[1].0 - pair[0].1 >= rollups,
+                                "walked early ({at}): {pair:?}"
+                            );
                         }
-                        let sleep = clocks(t, rollups_last, providers_last).sleep();
+                        for pair in passes.windows(2) {
+                            assert!(
+                                pair[1].0 - pair[0].1 >= providers,
+                                "polled early ({at}): {pair:?}"
+                            );
+                            let age = pair[1].0 - pair[0].0;
+                            assert!(
+                                age <= usage::provider_stale_after_secs(providers),
+                                "a healthy loop went stale ({at}): {age}s between readings"
+                            );
+                        }
+                        // Neither half stopped: the last run of each ended no
+                        // further from the horizon than one gap of its own.
+                        let (last_walk, last_pass) =
+                            (walks.last().unwrap(), passes.last().unwrap());
                         assert!(
-                            turn != (UsageTurn {
-                                rollups: false,
-                                providers: false
-                            }) || sleep > D::ZERO,
-                            "a turn that ran nothing must sleep"
+                            last_walk.1 + rollups + provider_pass >= horizon,
+                            "walks stopped ({at})"
                         );
-                        t += sleep.as_secs();
-                    }
-                    let at = format!(
-                        "rollups {rollups}s, providers {providers}s, pass {provider_pass}s"
-                    );
-                    for pair in walks.windows(2) {
                         assert!(
-                            pair[1].0 - pair[0].1 >= rollups,
-                            "walked early ({at}): {pair:?}"
-                        );
-                    }
-                    for pair in passes.windows(2) {
-                        assert!(
-                            pair[1].0 - pair[0].1 >= providers,
-                            "polled early ({at}): {pair:?}"
-                        );
-                        let age = pair[1].0 - pair[0].0;
-                        assert!(
-                            age <= usage::provider_stale_after_secs(providers),
-                            "a healthy loop went stale ({at}): {age}s between readings"
+                            last_pass.1 + providers + walk >= horizon,
+                            "polls stopped ({at})"
                         );
                     }
-                    // Neither half stopped: the last run of each ended no
-                    // further from the horizon than one gap of its own.
-                    let (last_walk, last_pass) = (walks.last().unwrap(), passes.last().unwrap());
-                    assert!(
-                        last_walk.1 + rollups + provider_pass >= horizon,
-                        "walks stopped ({at})"
-                    );
-                    assert!(
-                        last_pass.1 + providers + WALK >= horizon,
-                        "polls stopped ({at})"
-                    );
                 }
             }
+        }
+    }
+
+    /// The alignment the many-cycles test reaches only by chance: the walk
+    /// falls due a second before the providers do, runs first, and the
+    /// providers' next pass waits out all of it. At the 300s floor, with all
+    /// four requests at their 30s timeout, a walk of up to 30s still lands
+    /// the next reading inside the window.
+    #[test]
+    fn a_walk_due_just_before_the_providers_still_fits_the_floor_window() {
+        const PASS: u64 = 120;
+        let window = usage::provider_stale_after_secs(300);
+        for walk in [5, 25, 30] {
+            // The last provider pass ran 0..120, so the providers fall due at 420.
+            let walk_starts = PASS + 300 - 1;
+            let first = usage_clocks(60, Some(60), 300, Some(walk_starts - PASS));
+            assert_eq!(
+                first.turn(false, false),
+                UsageTurn {
+                    rollups: true,
+                    providers: false
+                },
+                "walk {walk}s"
+            );
+            let next_pass = walk_starts + walk;
+            let second = usage_clocks(60, Some(0), 300, Some(next_pass - PASS));
+            assert_eq!(
+                second.turn(false, false),
+                UsageTurn {
+                    rollups: false,
+                    providers: true
+                },
+                "walk {walk}s"
+            );
+            assert!(
+                next_pass <= window,
+                "walk {walk}s: {next_pass}s between readings against {window}s"
+            );
         }
     }
 
@@ -8106,6 +8161,31 @@ mod tests {
         wake_usage(&app, UsageWake::Everything);
         assert!(app.usage_providers_due.swap(false, Ordering::SeqCst));
         assert!(app.usage_rollups_due.swap(false, Ordering::SeqCst));
+    }
+
+    /// A resume wakes every slow loop, Sentry Crons included (#635): its
+    /// window is 1.5 cycles now, so a loop left to its own timer after a nap
+    /// would read stale while healthy. Usage is woken with both halves forced.
+    #[test]
+    fn a_resume_wakes_every_slow_loop() {
+        use std::sync::atomic::Ordering;
+        let (_dir, _rt, app) = test_app();
+        wake_after_resume(&app);
+        let loops: [(&str, &tokio::sync::Notify); 8] = [
+            ("github", &app.github_wake),
+            ("services", &app.services_wake),
+            ("usage", &app.usage_wake),
+            ("azure", &app.azure_wake),
+            ("containers", &app.containers_wake),
+            ("crons", &app.crons_wake),
+            ("plan usage", &app.plan_usage_wake),
+            ("openclaw", &app.openclaw_wake),
+        ];
+        for (name, notify) in loops {
+            assert!(woken(notify), "a resume did not wake {name}");
+        }
+        assert!(app.usage_providers_due.load(Ordering::SeqCst));
+        assert!(app.usage_rollups_due.load(Ordering::SeqCst));
     }
 
     /// #635: the Crons and metered-provider footer windows follow their own

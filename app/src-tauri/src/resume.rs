@@ -1,8 +1,8 @@
 //! Noticing that the machine woke up.
 //!
-//! Every poll task is suspended while a laptop sleeps, so the four slow loops —
-//! GitHub (its own cadence), usage (1h), Azure (4h) and OpenClaw —
-//! come back on their own schedule. On 2026-08-07 that meant opening the lid to
+//! Every poll task is suspended while a laptop sleeps, so the slow loops —
+//! GitHub, usage, Sentry Crons, Azure and OpenClaw among them, each on its own
+//! cadence — come back on their own schedule. On 2026-08-07 that meant opening the lid to
 //! a cockpit painting the previous night's runner list: all twelve runners were
 //! online, the panel said ten, and the availability chip read a red
 //! "Fleet Down" off data hours old. Waiting out a poll interval to find that

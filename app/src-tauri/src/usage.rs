@@ -110,7 +110,7 @@ pub fn provider_stale_after_secs(cadence_secs: u64) -> u64 {
     crate::panel::stale_after_for_slow_cadence(cadence_secs)
 }
 
-/// How often the Neon and Sentry reads run by default — hourly, on a cadence of their own, not the
+/// How often the Neon, Sentry and Vercel reads run by default — hourly, on a cadence of their own, not the
 /// Claude rollups' cadence. Consumption and event stats move on the
 /// order of hours; asking every 30 seconds spends rate-limit budget to learn
 /// nothing.
