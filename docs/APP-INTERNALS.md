@@ -580,7 +580,8 @@
   forced render, so the open panel is not rebuilt every second. Detail from an
   attention chip carries its tile like any other, so its Full view is that
   tile's. (The `full` action, Solador's Full view for a whole source, is no
-  longer reachable from a chip; the cutover removes it.)
+  longer reachable from a chip; #639's cutover removes it.) A trouble panel
+  closes when Rust stops reporting its source's trouble.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage, each

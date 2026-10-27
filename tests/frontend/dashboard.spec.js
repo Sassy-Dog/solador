@@ -2488,12 +2488,18 @@ test("a chip for a source with two tiles links to each tile's Detail", async ({ 
   for (const link of trouble.tiles) {
     await expect(inspector(page).getByRole("button", { name: link.label, exact: true })).toBeVisible();
   }
-  await inspector(page).getByRole("button", { name: trouble.tiles[1].label, exact: true }).click();
-  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
-  // That tile's Detail: its Full view button opens that tile.
-  await detailFull(page).click();
-  await expect(page.locator("#cockpitView")).toBeVisible();
-  expect(await lastArgs(page, "cockpit")).toMatchObject({ tile: "hosts-second" });
+  await action(page, "close").click();
+  for (const link of trouble.tiles) {
+    await chip(page, "Machines").click();
+    await inspector(page).getByRole("button", { name: link.label, exact: true }).click();
+    await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+    // That tile's Detail: its Full view button opens that tile.
+    await detailFull(page).click();
+    await expect(page.locator("#cockpitView")).toBeVisible();
+    expect(await lastArgs(page, "cockpit")).toMatchObject({ tile: link.id });
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#dashboardOverview")).toBeVisible();
+  }
 });
 
 test("a chip whose only tile misses an item opens the trouble panel, not that tile's Detail", async ({ page, baseURL }) => {
@@ -2553,6 +2559,35 @@ test("an open trouble panel follows the next reading", async ({ page, baseURL })
   next[at].target.trouble.items[0].label = "vm-renamed";
   await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), next);
   await expect(inspector(page)).toContainText("vm-renamed");
+});
+
+test("an open chip flips between a tile's Detail and the trouble panel with the next reading", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  // Rust's own view of the default layout: the Repos chip there leads to its tile.
+  const covered = await (await fetch(`${baseURL}/sample-dashboard.json`)).json();
+  expect(chipTarget(covered, "ghWorkflows")).toEqual({ tile: "overview-ghWorkflows" });
+  const setAttention = (view) => page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), view.attention);
+  await chip(page, "GitHub Repos").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await setAttention(covered);
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  await expect(chip(page, "GitHub Repos")).toHaveAttribute("aria-expanded", "true");
+  await setAttention(model);
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(inspector(page)).toContainText(chipTarget(model, "ghWorkflows").trouble.intro);
+});
+
+test("an open trouble panel closes when its chip goes, and focus does not fall to the body", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  await chip(page, "Containers").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(action(page, "close")).toBeFocused();
+  const attention = model.attention.filter((a) => a.source !== "containers");
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), attention);
+  await expect(inspector(page)).toBeHidden();
+  await expect(chip(page, "Containers")).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+  await expect(action(page, "edit")).toBeFocused();
 });
 
 test("a tile that disappears while its Full view is open returns to the overview", async ({ page, baseURL }) => {

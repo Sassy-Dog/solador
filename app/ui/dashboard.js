@@ -1181,6 +1181,13 @@
         active.trouble = target.trouble;
         paintTrouble();
       }
+    } else if (active.kind === "trouble") {
+      // Rust no longer reports the trouble, so the panel about it has nothing
+      // left to say (and no words of its own to say so with). A chip that led
+      // to a tile's Detail stays: that is still a valid Detail of the tile.
+      const inside = q(".db-inspector").contains(document.activeElement);
+      closeInspector();
+      if (inside) q('[data-action="edit"]').focus({ preventScroll: true });
     }
   }
   function paintTrouble() {
@@ -1375,8 +1382,9 @@
       views.append(button(L("table"), "detail-view", "table"), button(L("detailList"), "detail-view", "list"));
       tools.append(views, head.lastElementChild);
       head.append(tools);
-      // Detail opened from a tile opens that tile's Full view; from an
-      // attention chip there is no tile, so it opens the whole source.
+      // Detail opens its tile's Full view. Every chip's Detail carries its
+      // tile now, so the `full` fallback (Solador's Full view for the whole
+      // source) is no longer reached from a chip; it stays until #639's cutover.
       const owner = next.tile ?? next.fromTile;
       const actions = node("div", "db-form-actions");
       actions.append(
