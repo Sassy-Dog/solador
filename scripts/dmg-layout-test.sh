@@ -107,7 +107,7 @@ trap 'exit 130' INT TERM
 # mutated revision of one function.
 build_sh="${BUILD_SH:-$SCRIPT_DIR/build.sh}"
 lift() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$1"; }
-helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image warn_kept_dmg_devices"
+helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image warn_kept_dmg_devices dmg_attach_diag"
 {
     for fn in $helpers; do
         lift "$SCRIPT_DIR/build.sh" "$fn"
@@ -251,6 +251,108 @@ else
     fail "any other attach failure is not retried (status, attaches: $result; $(cat "$work/err"))"
 fi
 
+# #642: every failed attempt leaves one `dmg attach:` line on stderr saying what
+# stood on THIS image and at the mountpoint, so a real EAGAIN carries its own
+# evidence. A first-try success prints none.
+diag_count() { { grep -c '^dmg attach: attempt ' "$work/err" || true; } | tr -d ' '; }
+tail_fields='devices on .*: none; .* mounted: no; images attached in total: [0-9][0-9]*'
+result="$(attach_under_flake 2 "$busy")"
+if [[ "$result" == "0 3" && "$(diag_count)" == 2 ]] \
+    && grep -q "^dmg attach: attempt 1/5 failed after [0-9][0-9]*s, hdiutil exit 1: $tail_fields; error: hdiutil: attach failed - $busy\$" "$work/err" \
+    && grep -q "^dmg attach: attempt 2/5 failed after [0-9][0-9]*s, hdiutil exit 1: $tail_fields; error: hdiutil: attach failed - $busy\$" "$work/err" \
+    && ! grep -q 'final sweep' "$work/err"; then
+    pass "two busy attaches leave two dmg attach lines with attempt, exit, devices, mountpoint and error"
+else
+    fail "two busy attaches leave two dmg attach lines (status, attaches: $result; lines: $(diag_count); $(cat "$work/err"))"
+fi
+result="$(attach_under_flake 0 "$busy")"
+if [[ "$result" == "0 1" ]] && ! grep -q '^dmg attach:' "$work/err"; then
+    pass "a successful first attach prints no dmg attach line"
+else
+    fail "a successful first attach prints no dmg attach line (status, attaches: $result; $(cat "$work/err"))"
+fi
+result="$(attach_under_flake 99 "$busy")"
+if [[ "$result" == "1 5" && "$(diag_count)" == 5 ]] \
+    && [[ "$(grep -c "^dmg attach: after the 2 s settle, before the final sweep: $tail_fields\$" "$work/err")" == 1 ]] \
+    && [[ "$(grep -c "^dmg attach: after the final sweep (what remains): $tail_fields\$" "$work/err")" == 1 ]]; then
+    pass "a give-up has one line per attempt plus a pre-sweep and a post-sweep line"
+else
+    fail "a give-up has one line per attempt plus a pre-sweep and a post-sweep line (status, attaches: $result; lines: $(diag_count); $(cat "$work/err"))"
+fi
+# A listing that cannot be read during a diagnostic prints `unknown` and
+# changes no outcome: only `hdiutil info` reads made from inside
+# dmg_attach_diag fail; the reads the attach and the sweep make are the real ones.
+cat > "$work/blind-hdiutil.sh" <<'EOF'
+source "$work/flaky-hdiutil.sh"
+flaky_hdiutil=$(declare -f hdiutil)
+eval "flaky_${flaky_hdiutil#hdiutil}"
+hdiutil() {
+    if [[ "$1" == info && " ${FUNCNAME[*]} " == *" dmg_attach_diag "* ]]; then return 1; fi
+    flaky_ "$@"
+}
+EOF
+blind_run() {
+    local status=0
+    : > "$work/attaches"
+    (
+        export FLAKY_LOG="$work/attaches" FLAKY_FAILS="$1" FLAKY_MESSAGE="$busy"
+        # shellcheck source=/dev/null
+        source "$work/blind-hdiutil.sh"
+        assert_dmg_layout "$work/good.dmg" Solador.app
+    ) 2>"$work/err" || status=$?
+    echo "$status $(wc -l < "$work/attaches" | tr -d ' ')"
+}
+result="$(blind_run 1)"
+if [[ "$result" == "0 2" && "$(diag_count)" == 1 ]] \
+    && grep -q '^dmg attach: attempt 1/5 .*: devices on .*: unknown; .* mounted: no; images attached in total: unknown; error: ' "$work/err"; then
+    pass "an unreadable listing during a diagnostic prints unknown and the attach still succeeds"
+else
+    fail "an unreadable listing during a diagnostic prints unknown (status, attaches: $result; $(cat "$work/err"))"
+fi
+result="$(blind_run 99)"
+if [[ "$result" == "1 5" && "$(diag_count)" == 5 ]] \
+    && [[ "$(grep -c 'devices on .*: unknown; .* images attached in total: unknown' "$work/err")" == 7 ]]; then
+    pass "a give-up with unreadable diagnostics has the same outcome as with readable ones"
+else
+    fail "a give-up with unreadable diagnostics has the same outcome (status, attaches: $result; $(cat "$work/err"))"
+fi
+
+# A fake listing holds two images: ours, already attached before the attach
+# (kept, never detached, marked pre-existing) and an operator's, whose name
+# must never appear. Every attach fails EAGAIN; nothing real is attached.
+cat > "$work/other-hdiutil.sh" <<'EOF'
+hdiutil() {
+    case "$1" in
+        attach) echo "hdiutil: attach failed - Resource temporarily unavailable" >&2; return 1 ;;
+        info)
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array>'
+            printf '<dict><key>image-path</key><string>/elsewhere/mine.dmg</string><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk77</string></dict></array></dict>'
+            printf '<dict><key>image-path</key><string>/elsewhere/OPERATORS-SECRET-IMAGE.sparseimage</string><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk90</string></dict></array></dict>'
+            printf '</array></dict></plist>\n' ;;
+        detach) echo "$*" >> "$FAKE_DETACHES" ;;
+    esac
+}
+sleep() { :; }
+EOF
+other_status=0
+: > "$work/fake-detaches"
+(
+    export FAKE_DETACHES="$work/fake-detaches"
+    # shellcheck source=/dev/null
+    source "$work/other-hdiutil.sh"
+    attach_dmg_readonly "$work" /elsewhere/mine.dmg
+) 2>"$work/err" || other_status=$?
+pre="devices on /elsewhere/mine.dmg: /dev/disk77 (pre-existing); .* mounted: no; images attached in total: 2"
+if [[ "$other_status" == 1 && "$(diag_count)" == 5 && ! -s "$work/fake-detaches" ]] \
+    && [[ "$(grep -c "^dmg attach: attempt [1-5]/5 .*: $pre" "$work/err")" == 5 ]] \
+    && grep -q "^dmg attach: after the 2 s settle, before the final sweep: $pre\$" "$work/err" \
+    && grep -q "^dmg attach: after the final sweep (what remains): $pre\$" "$work/err" \
+    && ! grep -qE 'SECRET|disk90' "$work/err"; then
+    pass "a pre-existing device is marked as such and another image is only counted, never named"
+else
+    fail "a pre-existing device is marked and another image is only counted (status $other_status; detaches: $(cat "$work/fake-detaches"); $(cat "$work/err"))"
+fi
+
 # #629: a failed attach or detach must not leave a device attached. The stub
 # acts on the REAL hdiutil, so a leak is a real attached device, observed with
 # the same `hdiutil info` the operator would use.
@@ -321,6 +423,14 @@ else
     fail "an attach that fails after attaching is detached (status $result; devices standing at each attempt: $(tr '\n' ' ' < "$work/pre"); left: $(leftover); $(cat "$work/err"))"
 fi
 release_dmg_image "$work/good.dmg" || true
+# #642: the line of an attach that attached and then reported EAGAIN names that
+# device, on this image's path, with the mountpoint mounted.
+if [[ "$(diag_count)" == 2 ]] \
+    && [[ "$(grep -c "^dmg attach: attempt [12]/5 failed after [0-9][0-9]*s, hdiutil exit 1: devices on $work/good.dmg: /dev/disk[0-9]*; .* mounted: yes; " "$work/err")" == 2 ]]; then
+    pass "an attach that attached then failed is recorded with its device and a mounted mountpoint"
+else
+    fail "an attach that attached then failed is recorded with its device (lines: $(diag_count); $(cat "$work/err"))"
+fi
 
 result="$(leak_run 0 uneject)"
 if [[ "$result" == "0" && -z "$(leftover)" ]] \
@@ -493,7 +603,7 @@ rm -f "$work/pending-attach.done"
     # shellcheck source=/dev/null
     source "$work/late-hdiutil.sh"
     rc=0
-    attach_dmg_readonly "$STUB_MNT" "$work/good.dmg" 2>/dev/null || rc=$?
+    attach_dmg_readonly "$STUB_MNT" "$work/good.dmg" 2>"$work/late-err" || rc=$?
     late_attach
     exit "$rc"
 ) || late_rc=$?
@@ -506,6 +616,14 @@ else
     fail "a device that attaches after the last failed attempt is swept by the final pause (status $late_rc; left: $late_left)"
 fi
 release_dmg_image "$work/good.dmg" || fail "could not clean up the late-attached device"
+# #642: the sweep detaches silently, so the line read before it is the only
+# trace of a device that appeared during the pause; the one after reads `none`.
+if grep -q "^dmg attach: after the 2 s settle, before the final sweep: devices on $work/good.dmg: /dev/disk[0-9]*; .* mounted: yes; " "$work/late-err" \
+    && grep -q "^dmg attach: after the final sweep (what remains): devices on $work/good.dmg: none; " "$work/late-err"; then
+    pass "a device that appeared during the final pause is named before the sweep and gone after it"
+else
+    fail "a device that appeared during the final pause is named before the sweep ($(cat "$work/late-err"))"
+fi
 
 # make_dmg's shape, on real devices: the image is attached, then replaced at the
 # same path (rm -f, then create -ov), then checked. The earlier device keeps its
