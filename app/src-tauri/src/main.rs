@@ -302,9 +302,9 @@ struct App {
     /// the Usage card.
     crons: Mutex<CronsState>,
     /// Cuts the crons loop's sleep short after the Sentry token or org slug
-    /// changes, and on a resume from sleep. A long cadence is long enough that
-    /// waiting one out is indistinguishable from the credential having been
-    /// rejected.
+    /// changes, after a Crons cadence edit from its Configure, and on a resume
+    /// from sleep. A long cadence is long enough that waiting one out is
+    /// indistinguishable from the credential having been rejected.
     crons_wake: tokio::sync::Notify,
     /// The Azure Cost panel's state, on its own 4h cadence.
     azure: Mutex<AzureState>,
@@ -3688,9 +3688,9 @@ async fn poll_crons(app: &Arc<App>) {
 ///
 /// Same argument as [`AZURE_FIRST_READ_RETRY`]: the hourly rhythm is right for a
 /// watch on a weekly cron and wrong for a first read that failed because the
-/// network was not up yet at login, and `crons_wake` fires only on a Settings
-/// edit or a resume from sleep, neither of which that first read gets — so its
-/// failure would otherwise sit on the cockpit, red, for an hour.
+/// network was not up yet at login, and nothing guarantees a `crons_wake`
+/// before the first read succeeds — so its failure would otherwise sit on the
+/// cockpit, red, for an hour.
 const CRONS_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The Sentry Crons panel's poll loop, on the operator's cadence for this panel
@@ -8112,7 +8112,9 @@ mod tests {
 
     /// The alignment the many-cycles test reaches only by chance: the walk and
     /// the providers fall due in the same turn, `usage_loop` runs the walk
-    /// first, and the providers' pass waits out all of it. At the 300s floor,
+    /// first (an order this test states but cannot observe: it lives in the
+    /// loop, not in `UsageClocks`), and the providers' pass waits out all of
+    /// it. At the 300s floor,
     /// with all four requests at their 30s timeout, a walk of up to 30s still
     /// lands the next reading inside the window (the footer warns only past
     /// it). A walk that falls due a second earlier runs alone, and the
