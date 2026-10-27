@@ -220,7 +220,7 @@ function renderOpenClaw(payload) {
 }
 
 async function refresh() {
-  if (overviewOpen) return false;
+  if (!panelWanted("openclawAgents")) return false;
   try {
     const payload = await callRust("openclaw", window.soladorDashboard?.tileArgs?.("openclawAgents") ?? {}, "sample-openclaw.json");
     if (payload) renderOpenClaw(payload);

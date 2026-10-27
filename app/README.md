@@ -106,6 +106,111 @@ panel under the tile's name. **Full view** pressed in the Detail of a tile that
 has since left the overview answers with the same sentence and stays on the
 overview.
 
+**The overview and a tile's Full view no longer lean on Solador's Full view's
+behaviour (#646), but they still stand on its markup.** `#cockpitView` was
+*renamed* `#fullView`, not removed. It is the one host of every panel: a tile's
+Full view shows one section, Solador's Full view all of them, and the toolbar
+is moved into it while either is on screen. What the #647 cutover still has to
+cut or re-home, by id (built from `getElementById` and `$()` in `app.js`,
+`dashboard.js` and `settings.js`):
+
+- `#fullView` itself: `dashboard.js` reads it once at load and then uses it
+  unguarded (visibility, `data-detail-source`, `data-tile-loading`, focus, the
+  load-failure notice). A tile's Full view *is* this element with one panel
+  showing, so the cutover renames or re-purposes it rather than deleting it.
+- `#settingsToggle`, inside `#fullView > .topbar`: the Settings gear.
+  `settings.js` binds `openSettings` to it at load, and `dashboard.js` moves that
+  same node into the toolbar. The overview's label and visibility come from
+  `labels.settings`; the top-bar copy is labelled by `cockpit`'s `settingsLabel`
+  only while there is no overview model. The cutover must create the button
+  where the toolbar is built and bind `openSettings` there.
+- `#cockpit`, `#hostsTitle`, `#hostTabs`, `#emptyMsg`, `#panelRows` and the
+  `#cardTpl` template: `renderCockpit` (the Machines Full view and Solador's
+  Full view) and `gridWidth` need them. `#panelRows` and the `panelRows` payload
+  are Solador's Full view's arrangement and go with it.
+- Each panel's section and title ids (`containersPanel`/`containersTitle`,
+  `reposPanel`, `runnersPanel`, `usagePanel`, `azurePanel`, `servicesPanel`,
+  `cronsPanel`, `openclawPanel`, and their `…Title`): `sourcePanels` and
+  `sourceTitles` in `dashboard.js` map tiles to them, and each renderer writes to
+  fixed ids inside.
+- `#settings` and its children (`settingsBody`, `settingsClose`, `settingsTabs`,
+  `settingsTitle`, `settingsStatus`, `settingsConfirm`): Settings' own surface.
+  They do not depend on the host; Settings no longer touches it.
+- The `allPanels` icon, the `full` action, `mode === "details"` without a tile
+  and `?view=details`: Solador's Full view's own entry points, still wired.
+
+The cross-file JS seams #647 inherits (all globals or `window` members, since the
+scripts share one scope):
+
+- `panelWanted(source)` (`app.js`): every renderer's read gate, and
+  `refreshCockpit`'s (`"hosts"`). It asks `soladorDashboard.fullSource()`.
+- `applySpacing` (`app.js`), called by `renderCockpit` and by `dashboard.js`'s
+  `refresh`.
+- `cockpitFailed`, `setCockpitFailed` and the `solador:cockpit` event (`app.js`);
+  `dashboard.js` paints `labels.cockpitFailed` from them and, on the same event,
+  repaints `#dashboardLoadError` when `overviewLoadFailed` first arrives.
+- `overviewLoadFailed` (`app.js`, from the `cockpit` payload): the text of
+  `#dashboardLoadError`. **Hidden dependency:** it arrives only because the
+  boot read, `await pollReporting()` at the end of `app.js`, calls `cockpit`
+  unconditionally. Gating that read (on `panelWanted`, say) leaves the notice
+  showing raw IPC text.
+- `soladorDashboard` (`dashboard.js`): `fullSource`, `hasModel` (`renderCockpit`
+  skips the top-bar toggle once true), `tileGone`, `tileArgs`, `tileHeading`,
+  `tileResponse`, `fullGeneration` and `detailView`/`setDetailView`.
+  `callRust`'s `PANEL_READS` filter uses `fullGeneration` and `tileResponse`.
+- `refreshCockpit` and `refreshPanels` (`app.js`), called by `settings.js` on close
+  and by `dashboard.js`'s `fullPanel`; `settingsOpen` and `overviewOpen` are the
+  shared flags.
+
+`overview-standalone.spec.js` runs the overview, Settings and a tile's Full view
+without the `allPanels` icon and without the Settings label or the spacing from
+`cockpit`; it does not (and cannot) run them without `#fullView`.
+
+- **Settings** button: visible and labelled from `dashboard_view`
+  (`labels.settings`, `settings::OPEN_LABEL`), and moved into the toolbar by
+  `dashboard.js`. The `cockpit` payload's `settingsLabel` labels the one copy in
+  `#fullView`'s top bar only while there is no overview model (`renderCockpit`
+  skips it once there is one).
+  Opening and closing Settings fires `solador:settings`, and `dashboard.js` hides
+  whichever of the overview and `#fullView` is on screen, then puts it back (a
+  tile's Full view gets focus back, so its Escape still works).
+- **`cockpit` fails:** the overview stays up and says
+  `labels.cockpitFailed` (`dashboard::COCKPIT_LOAD_FAILED`) beside the attention
+  bar. The call feeds only the Machines Full view's host cards; the overview
+  reads its own rows. It used to replace the whole page with
+  `failed to load cockpit`. While the last read failed, `cockpit` keeps being
+  retried even with the overview up, and the first success clears the
+  sentence. A read for a tile that has since left the overview is refused by
+  Rust and is not a `cockpit` failure: the frontend asks the dashboard whether
+  the tile is gone (once, as the failure begins; it waits out any `dashboard_view` already in flight, then reads one of its own, and never goes by the refusal's wording), and
+  the dashboard's own `That tile is no longer on the overview.` stands. Each
+  failure is logged once with `console.error` (`cockpit`, `dashboard_view`)
+  when it begins.
+- **`dashboard_view` fails** before the first model: a failed call has no words
+  of its own, so the notice is the `cockpit` payload's `overviewLoadFailed`
+  (`dashboard::OVERVIEW_LOAD_FAILED`), and the failure's own text only when
+  that has not arrived yet (a notice already up takes the sentence the moment it
+  arrives). It no longer points at Solador's Full view.
+- **Spacing:** `dashboard_view` carries `spacing` and `rowGapPx` (the same stored
+  values `cockpit` carries), and `app.js`'s `applySpacing` paints `--cockpit-gap`
+  and `--row-gap` from the first model, so a tile's Full view has its row gap
+  whether or not `cockpit` has answered. Solador's Full view still gets them from
+  `cockpit` too.
+- **Polling:** each panel renderer asks `panelWanted(source)` (`app.js`) before
+  it reads. Nothing reads while the overview is up; in a tile's Full view only
+  that tile's source does (`soladorDashboard.fullSource`); Solador's Full view
+  reads all of them. `cockpit` is read the same way (`panelWanted("hosts")`):
+  by a Machines tile's Full view (with its `tile`) and by Solador's Full view,
+  not by the overview or another source's Full view, apart from retrying a
+  failed read and the one read `app.js` makes at boot, before any view is open
+  (see the hidden dependency above).
+- **Width:** `gridWidth` is `#cockpit`'s width, or the window's while the grid
+  is not laid out.
+- **Focus:** opening a tile's Full view focuses `#fullView`; leaving it focuses
+  that tile's **View** button. Nothing on the overview or in a tile's Full view
+  needs the `allPanels` icon, which only Solador's Full view (and its focus on
+  open) still uses.
+
 **Machines** displays colored CPU and RAM utilization bars alongside the exact
 readings, with configurable green/amber/red utilization thresholds. Fractions
 come from the current numeric measurements, never from parsing display text.
@@ -814,7 +919,8 @@ await window.__TAURI__.core.invoke("cockpit", { width: gridWidth });
   "panelRows": [ /* the reflowed layout: who shares a row, in order, and the
                     span/weight/width/columns each one gets */ ],
   "empty": null,           // or {"message": …} when no REMOTE host is configured
-  "settingsLabel": "Settings"  // the button that opens the Settings view
+  "settingsLabel": "Settings",  // the button that opens the Settings view, while no overview model labels it
+  "overviewLoadFailed": "Could not load the overview."  // what the page says when dashboard_view fails
 }
 ```
 
@@ -2345,9 +2451,11 @@ Two things worth knowing about this surface:
   (`the_core_row_span_preference_reaches_the_block`). **Row spacing**
   (`row_gap_px`, 0–16, default **0**) is the third: it is the gap between two
   rows of the *same list inside a panel* — the containers on a host, the repos,
-  the runners — and it rides the **cockpit** payload as `rowGapPx` rather than
-  the settings one, because the settings payload is only fetched while that
-  surface is open and this value has to be on the page from the first frame.
+  the runners — and it rides the **cockpit** and **dashboard_view** payloads as
+  `rowGapPx` rather than the settings one, because the settings payload is only
+  fetched while that surface is open and this value has to be on the page from
+  the first frame (`dashboard_view` is the one a tile's Full view can count on:
+  it needs no `cockpit` answer, #646).
   `app/ui/app.js` paints it as `--row-gap`, over the pre-payload value
   `app/ui/app.css` still declares. It needs no wake: `cockpit_with` re-reads the
   store every frame, so a change lands on the next 1s tick. It moves that one
@@ -3008,7 +3116,7 @@ SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
   cargo run -p solador-app                   #    distinctive name
 ```
 
-Then tick these off. Nine terminal lines, six on-screen reads and one command in
+Then tick these off. Nine terminal lines, seven on-screen reads and one command in
 a second terminal — the terminal half works on a machine whose screen you
 cannot see.
 
@@ -3054,6 +3162,14 @@ cannot see.
       for, and the second is #353 back: an offer to install a release over a
       build that has no bundle for it to replace
       ([#308](https://github.com/Sassy-Dog/solador/issues/308)).
+- [ ] **Screen** — open any tile's **View** → **Full view**, then click **Settings**
+      and **Done**: you are back in that same Full view (not the overview), and
+      **Escape** returns to the overview with focus on that tile's **View**
+      button. On a **Machines** tile's Full view the host cards are painted
+      (this machine's, and the seeded host's), the toolbar's **Settings** button
+      is there, and the overview shows nothing under the attention bar:
+      `Could not load the machine cards for the Full view.` or `Could not load the
+      overview.` there is the fail (#646).
 - [ ] **Screen** — make the window taller than its tiles and click **Fit window
       to tiles**: the height snaps to the tiles and the width does not change. In
       fullscreen the click instead shows `Couldn't fit the window: exit full
@@ -3064,7 +3180,7 @@ cannot see.
       instance over the hand-off socket. Quit the app and the same command
       exits `4`, `Solador isn't running`.
 
-All sixteen ticked ⇒ every registered command round-tripped through the ACL and
+All seventeen ticked ⇒ every registered command round-tripped through the ACL and
 the IPC transport, and the command line reached the app. **A zero, a `false` or
 an empty string is a pass**: those are Rust's own unconfigured sentences, and none of them has a path to the DOM except a
 successful `invoke`. What fails this test is a *missing line* or a blank panel.
@@ -3447,13 +3563,15 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 
 | Symptom                                                                                       | Reading                                                                                                                                                              |
 |-----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| The window is a red `failed to load cockpit: …` line instead of a card.                        | The first `invoke` rejected — `app.js`'s initial `catch` replaces the whole body with the error. This is the expected shape of an ACL or registration break.           |
+| The overview paints, and a line under the attention bar reads `Could not load the machine cards for the Full view.` | **Only** `cockpit` rejected (an unregistered or denied `cockpit`), and the `cockpit: first frontend request` terminal line is missing. The overview reads its own rows, so it stays up; the line clears by itself if `cockpit` starts answering. It used to replace the whole page (#646). |
+| The page reads `Could not load the overview.` and no tiles paint | **Only** `dashboard_view` rejected. The sentence is `OVERVIEW_LOAD_FAILED`, carried by the `cockpit` payload because the failed call has no words of its own, so `cockpit` answered. |
+| The page shows a raw error text (the IPC's own) in the same place, no tiles, and the `cockpit: first frontend request` terminal line is missing | **Both** rejected: a broken capability set or registration, not one command. `#dashboardLoadError` falls back to the rejection's text because neither payload could carry Rust's sentence. The webview console has a `cockpit failed:` and a `dashboard_view failed:` line. |
 | The card's structure is there but every field is blank.                                       | `app.js` never ran at all — a CSP violation or a script error, so nothing ever reached the IPC boundary. Check the console before suspecting the ACL.                    |
 | A card renders with plausible numbers that never change, and the host name is `ubu-01` rather than the one you passed. | You skipped step 1. That is the fixture, not the boundary. Delete `app/ui/sample*.json` and re-run.                                                                     |
 | `No hosts configured. Add one in Settings.` and no card at all.                                | A malformed `SOLADOR_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
 | The window opens and stays up, but the `cockpit: first frontend request …` line never prints.  | The boundary is broken and the window is hiding it. This is the definitive terminal-side failure: `invoke` never reached Rust. Verified as a real discriminator on 2026-07-31 by renaming the command in `app.js` — the app still launched and still held a window, and the line stayed absent. |
 | The cards paint, but clicking **Settings** does nothing and `settings: first frontend request …` never prints. | The cockpit half of the boundary is fine and the settings half is not: an unregistered `settings_view`, or a script error in `settings.js` that stopped it before it wired the button. Check the webview console. |
-| Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or `app.js` painted a cockpit payload with no `settingsLabel`. Regenerate the fixtures and check the payload shape, not the ACL. |
+| Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or the dashboard labels carry no `settings` (and, with no overview model, the cockpit payload no `settingsLabel`). Regenerate the fixtures and check the payload shape, not the ACL. |
 | The cards paint but there is no **Containers / VMs** panel at all, and `containers: first frontend request …` never prints. | The containers half of the boundary is broken: an unregistered `containers` command, or a script error in `containers.js`. The panel stays hidden until a payload arrives — deliberately, so a broken boundary cannot masquerade as an idle machine. Check the webview console. |
 | The panel renders but every section says `no containers` on a machine that is definitely running some. | The boundary is fine; the *discovery* is not. The tools are resolved by absolute path (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) — a docker installed anywhere else is invisible. A failing tool would instead name itself in the footer (`⚠ couldn't read docker`). |
 | The **Repos** or **GitHub Runners** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `repos`/`runners` command, or a script error in `github.js`. Both panels stay hidden until a payload arrives, so this cannot be mistaken for "no token configured" — that state renders a visible panel with one sentence in it. Check the webview console. |

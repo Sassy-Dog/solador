@@ -2046,8 +2046,9 @@ async function openSettings(tab) {
   S.repair = new Set();
   S.unpaired = new Set();
   settingsOpen = true;
+  // dashboard.js hides whichever view is on screen; this file does not know
+  // which that is.
   document.dispatchEvent(new CustomEvent("solador:settings", { detail: true }));
-  $s("cockpitView").hidden = true;
   $s("settings").hidden = false;
   render();
   // The group renders from the payload above; this keeps it current while a
@@ -2064,7 +2065,7 @@ async function finishCloseSettings() {
   $s("settingsBody").replaceChildren();
   $s("settingsConfirm").replaceChildren();
   $s("settingsConfirm").hidden = true;
-  $s("cockpitView").hidden = false;
+  // ...and puts it back.
   document.dispatchEvent(new CustomEvent("solador:settings", { detail: false }));
   // Repaint at the real width now rather than up to a poll interval late: the
   // cockpit measured zero while it was hidden.

@@ -8,6 +8,17 @@ use store::{DashboardLayout, DashboardTile};
 use viewmodel::card;
 use viewmodel::color;
 
+/// What the page says when `dashboard_view` itself cannot be read. The failed
+/// call has no words of its own, so the sentence rides the `cockpit` payload
+/// (`overviewLoadFailed`), which is a different command. It names what failed
+/// and nothing else: no panel is promised as a substitute.
+pub const OVERVIEW_LOAD_FAILED: &str = "Could not load the overview.";
+
+/// What the overview says when the `cockpit` call fails. That call feeds the
+/// Machines Full view's host cards and nothing on the overview, which reads its
+/// own rows; the overview stays up and this is its `labels.cockpitFailed`.
+pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the Full view.";
+
 pub const SOURCES: [(&str, &str); 9] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
@@ -1421,7 +1432,8 @@ fn labels() -> Value {
     let entries = [
         ("title", "Solador"),
         ("subtitle", "Overview"),
-        ("settings", "Settings"),
+        ("settings", crate::settings::OPEN_LABEL),
+        ("cockpitFailed", COCKPIT_LOAD_FAILED),
         ("allPanels", "Full view"),
         ("fitHeight", "Fit window to tiles"),
         ("edit", "Edit dashboard"),

@@ -23,8 +23,9 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
 /**
  * Enters the azureCost tile's Full view (View, then Full view) with the IPC stubbed
  * and every call recorded, so a test can assert *which* command painted the
- * panel and what it sent. `cockpit` has to be answered too: app.js replaces the
- * entire document body with an error line when its first `invoke` rejects.
+ * panel and what it sent. `cockpit` is given an answer too, so this suite never has to think about it:
+ * a rejected `cockpit` no longer takes the page down (the overview says so and
+ * stays up, #646), but it would add a failure line this suite does not assert on.
  */
 async function gotoPanel(page, baseURL, { cockpit, azure }) {
   await gotoTileFull(page, baseURL, { source: "azureCost", cockpit, answers: { azure_cost: azure } });

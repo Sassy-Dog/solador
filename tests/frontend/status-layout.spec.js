@@ -344,9 +344,9 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   await expect(page.locator('.db-tile')).toHaveCount(full.tiles.length);
   for (const { source } of full.tiles) {
     await openTileFull(page, source);
-    await expect(page.locator('#cockpitView')).not.toHaveAttribute('data-tile-loading');
+    await expect(page.locator('#fullView')).not.toHaveAttribute('data-tile-loading');
     // `clipped` skips what has no box, so a body the Full view hid would pass unmeasured.
-    const body = source === 'hosts' ? '#cockpit .card' : '#cockpitView .panel[data-detail-active] .panel-body';
+    const body = source === 'hosts' ? '#cockpit .card' : '#fullView .panel[data-detail-active] .panel-body';
     await expect(page.locator(body).first(), source).toBeVisible();
     await expect.poll(clipped, source).toEqual([]);
     await page.keyboard.press('Escape');

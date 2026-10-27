@@ -122,7 +122,7 @@ function renderCrons(payload) {
 }
 
 async function refresh() {
-  if (overviewOpen) return false;
+  if (!panelWanted("sentryCrons")) return false;
   try {
     // Offline (no Tauri), the dumped-fixture path every other panel uses, so this
     // one opens in a plain browser and in the Playwright suite.

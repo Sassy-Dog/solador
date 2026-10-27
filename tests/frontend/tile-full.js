@@ -43,14 +43,17 @@ export function dashboardWithTiles(dashboard, sources) {
  * until the test calls `advance(page, command)`, then `second`: the frame is
  * moved by the test, never by counting calls (#407; docs/TESTING.md).
  *
- * `cockpit` and `dashboard_view` are always answered: app.js replaces the
- * document with an error line when its first `invoke` rejects.
+ * `cockpit` and `dashboard_view` are always given an answer here, so a spec
+ * about a panel never has to think about them. A spec about a failed
+ * `cockpit` passes `{ __throw }` as `cockpit`; the overview survives it (#646).
  */
-export async function stubTileIpc(page, baseURL, { source, sources = [source], cockpit, answers }) {
-  const dashboard = dashboardWithTiles(
-    await (await fetch(`${baseURL}/sample-dashboard.json`)).json(),
-    sources,
-  );
+export async function stubTileIpc(page, baseURL, { source, sources = [source], cockpit, answers, dashboardKeys = {} }) {
+  // `dashboardKeys` are top-level keys of the `dashboard_view` payload a spec
+  // sets itself (the operator's `rowGapPx`, say), over the fixture's.
+  const dashboard = {
+    ...dashboardWithTiles(await (await fetch(`${baseURL}/sample-dashboard.json`)).json(), sources),
+    ...dashboardKeys,
+  };
   await page.addInitScript(
     ({ answers, cockpit, dashboard }) => {
       window.__CALLS__ = [];
@@ -81,8 +84,8 @@ export async function openTileFull(page, source, tileId = tileIdFor(source)) {
   const tile = page.locator(`[data-tile="${tileId}"]`);
   await tile.getByRole("button", { name: "View", exact: true }).click();
   await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
-  await expect(page.locator("#cockpitView")).toBeVisible();
-  await expect(page.locator("#cockpitView")).toHaveAttribute("data-detail-source", source);
+  await expect(page.locator("#fullView")).toBeVisible();
+  await expect(page.locator("#fullView")).toHaveAttribute("data-detail-source", source);
 }
 
 /**

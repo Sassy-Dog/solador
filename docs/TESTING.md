@@ -220,3 +220,28 @@ tile-full.js specs asserts its renderer sends `{tile: <id>}`;
 answer the way `stubCockpit` does. `layout.spec.js`, `settings.spec.js` and
 `screenshots.spec.js` (`cockpit.png`, `cockpit-narrow.png`) still boot
 `?view=details`; the cutover of #639 removes that path.
+
+**The overview and a tile's Full view are tested without Solador's Full view
+(#646).** `overview-standalone.spec.js` boots the overview through the same
+`tile-full.js` stub and takes away what the cutover will: the `allPanels` icon,
+and the `cockpit` payload's `settingsLabel`, `spacing` and `rowGapPx`. It does not
+remove `#fullView`, the host of every panel, which the cutover re-purposes
+rather than deletes (`app/README.md`, "The overview and a tile's Full view no
+longer lean on…"). What it asserts, each clause one test: Settings opens and
+closes over the overview, and over Machines, Runners and Scheduled Jobs Full
+views, which Escape then leaves for the overview with focus on the tile's View
+button (Escape from the overview is not tested); the Settings button and the
+gaps come from `dashboard_view` (`labels.settings`, `rowGapPx`, `spacing`); a
+`cockpit` rejection leaves the overview up with `labels.cockpitFailed`, and the
+line clears when `cockpit` answers again; a Machines tile removed while its Full
+view is open shows the tile-gone message and never that line, even when a
+`dashboard_view` that still has the tile is in flight, and a `cockpit` read that
+keeps failing asks whether the tile is gone once; a rejected `dashboard_view`
+shows the `cockpit` payload's `overviewLoadFailed`, taking it the moment it
+arrives if the notice is already up with the transport's text; opening a
+tile's Full view reads its own source's command and no other, `cockpit`
+included (Machines reads `cockpit` with its `tile`), over the reads made on
+opening and the next 1s polls, not the slower panel timers; and `cockpit`'s
+width falls back to the window's when `#cockpit` measures zero. A `{ __throw }`
+answer to `cockpit` is how a spec makes it fail; `stubTileIpc`'s `dashboardKeys`
+sets top-level `dashboard_view` keys the fixture does not.

@@ -986,7 +986,7 @@ test("the host tab bar rides the Hosts title line instead of costing a row", asy
   await stubCockpit(page, [tabbed]);
   await gotoApp(page);
 
-  const topbar = page.locator("#cockpitView > .topbar");
+  const topbar = page.locator("#fullView > .topbar");
   const bar = page.locator("#hostTabs");
   await expect(bar).toBeVisible();
 

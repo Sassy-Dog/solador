@@ -28,9 +28,9 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
  * a test about a panel enters that panel's tile. The other panel's command is
  * still answered, because the page asks for both on every pass.
  *
- * `cockpit` has to be answered too: app.js replaces the entire document body
- * with an error line when its first `invoke` rejects, which would take these
- * panels down with it and make the suite fail for the wrong reason.
+ * `cockpit` is given an answer too, so this suite never has to think about it:
+ * a rejected `cockpit` no longer takes the page down (the overview says so and
+ * stays up, #646), but it would add a failure line this suite does not assert on.
  */
 const GITHUB_TILE = { repos: "ghWorkflows", runners: "ghRunners" };
 async function gotoPanel(page, baseURL, { cockpit, repos, runners }, panel) {

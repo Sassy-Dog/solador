@@ -25,8 +25,9 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
 /**
  * Enters the openclawAgents tile's Full view (View, then Full view) with the IPC stubbed
  * and every call recorded, so a test can assert *which* command painted the
- * panel and what it sent. `cockpit` has to be answered too: app.js replaces the
- * entire document body with an error line when its first `invoke` rejects.
+ * panel and what it sent. `cockpit` is given an answer too, so this suite never has to think about it:
+ * a rejected `cockpit` no longer takes the page down (the overview says so and
+ * stays up, #646), but it would add a failure line this suite does not assert on.
  */
 async function gotoPanel(page, baseURL, { cockpit, openclaw }) {
   await gotoTileFull(page, baseURL, { source: "openclawAgents", cockpit, answers: { openclaw: openclaw } });

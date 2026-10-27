@@ -673,6 +673,10 @@ fn cockpit_payload(
         // and in exactly one place -- `settings::OPEN_LABEL` is what the
         // Settings view itself renders too.
         "settingsLabel": settings::OPEN_LABEL,
+        // What the overview says when `dashboard_view` fails. A failed call has no
+        // words of its own, and this is the other command the page is already
+        // polling, so the sentence is made here, in one place, like the label above.
+        "overviewLoadFailed": dashboard::OVERVIEW_LOAD_FAILED,
     })
 }
 
@@ -2956,7 +2960,19 @@ fn dashboard_view_in(width: f64, app: &App) -> Value {
         openclaw_unscoped(app),
     ];
     cadence::attach(&mut payloads, &settings);
-    dashboard::view(&layout, &payloads)
+    let mut view = dashboard::view(&layout, &payloads);
+    stamp_spacing(&mut view, settings.row_gap_px);
+    view
+}
+
+/// The operator's spacing on a dashboard view: the gap between cards and the
+/// one between rows inside a card, the same two numbers `cockpit` carries. The
+/// overview reads this payload from its first frame whatever `cockpit` is doing,
+/// so a tile's Full view has its row gap before any `cockpit` response and
+/// without Solador's Full view being loaded.
+fn stamp_spacing(view: &mut Value, row_gap_px: u8) {
+    view["spacing"] = json!(SPACING);
+    view["rowGapPx"] = json!(row_gap_px);
 }
 
 fn persist_dashboard(
@@ -7063,7 +7079,9 @@ fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
         dump_openclaw(openclaw::Fixture::Connected),
     ];
     cadence::attach(&mut payloads, &cadences);
-    dashboard::view(layout, &payloads)
+    let mut view = dashboard::view(layout, &payloads);
+    stamp_spacing(&mut view, store::settings::DEFAULT_ROW_GAP_PX);
+    view
 }
 
 /// The layout behind `sample-dashboard-chips.json`: one source per way an
@@ -9126,6 +9144,54 @@ mod tests {
             .unwrap();
         let rows = hosts["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "this machine and the remote");
+    }
+
+    /// The overview reads the operator's spacing from `dashboard_view`, so a
+    /// tile's Full view has its row gap before any `cockpit` response (#646).
+    /// Zero travels as a value: the frontend only paints a finite key.
+    #[test]
+    fn dashboard_view_carries_the_operators_spacing() {
+        let (_dir, _rt, app) = app_with_remotes(0);
+        let flush = dashboard_view_in(1400.0, &app);
+        assert_eq!(flush["rowGapPx"], 0);
+        assert_eq!(flush["spacing"], SPACING);
+        app.store.lock().unwrap().settings_mut().row_gap_px = 10;
+        let widened = dashboard_view_in(1400.0, &app);
+        assert_eq!(widened["rowGapPx"], 10);
+        assert_eq!(
+            widened["rowGapPx"],
+            cockpit_with(1400.0, &app, None)["rowGapPx"],
+            "the two payloads paint one number"
+        );
+    }
+
+    /// Every sentence the page shows when one of its two reads fails is Rust's:
+    /// the overview's own failure rides the `cockpit` payload (a failed
+    /// `dashboard_view` has no words of its own), and the `cockpit` failure
+    /// rides the dashboard's labels (#646).
+    #[test]
+    fn each_read_carries_the_sentence_for_the_others_failure() {
+        let (_dir, _rt, app) = app_with_remotes(0);
+        let cockpit = cockpit_with(1400.0, &app, None);
+        assert_eq!(
+            cockpit["overviewLoadFailed"],
+            dashboard::OVERVIEW_LOAD_FAILED
+        );
+        let view = dashboard_view_in(1400.0, &app);
+        assert_eq!(
+            view["labels"]["cockpitFailed"],
+            dashboard::COCKPIT_LOAD_FAILED
+        );
+        assert_eq!(view["labels"]["settings"], settings::OPEN_LABEL);
+        for words in [
+            dashboard::OVERVIEW_LOAD_FAILED,
+            dashboard::COCKPIT_LOAD_FAILED,
+        ] {
+            assert!(
+                !words.to_lowercase().contains("below"),
+                "{words:?} points at a view that is going away"
+            );
+        }
     }
 
     /// The fixture's CPU reading as a card renders it. Derived from the

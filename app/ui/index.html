@@ -14,10 +14,13 @@
 </head>
 <body>
   <section id="dashboardOverview" hidden aria-label="Solador overview"></section>
-  <!-- The Hosts panel. Its title comes from Rust's panel table, like every
-       other string on the page; the grid's column count comes from the same
-       payload's `hostColumns`. -->
-  <div id="cockpitView">
+  <!-- Where the panels live: a tile's Full view shows one of them, Solador's
+       Full view all of them. The overview, Settings and the page's boot read
+       nothing from inside it. The Hosts panel's title comes from Rust's panel
+       table, like every other string on the page; the grid's column count
+       comes from the same payload's `hostColumns`. Focusable so that opening
+       a tile's Full view has somewhere to put keyboard focus. -->
+  <div id="fullView" tabindex="-1">
     <div class="topbar">
       <h2 class="panel-title" id="hostsTitle"></h2>
       <!-- The host tab bar, for the "Show as tabs" overflow mode. It rides the
@@ -36,8 +39,9 @@
       <nav class="tabs host-tabs" id="hostTabs" hidden></nav>
       <span class="grow"></span>
       <!-- dashboard.js moves this same button into the shared icon toolbar,
-           preserving settings.js's listener. It remains a fallback here if
-           the overview cannot load, labeled by the cockpit payload. -->
+           preserving settings.js's listener, and shows it from the overview's
+           own labels. It stays here, labeled by the cockpit payload, only
+           while there is no overview model. -->
       <button class="btn" id="settingsToggle" type="button" hidden></button>
     </div>
     <p class="empty" id="emptyMsg"></p>
