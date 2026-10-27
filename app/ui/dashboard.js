@@ -1161,12 +1161,12 @@
   }
   // Where a chip leads is Rust's call (`dashboard::chip_target`): a tile's
   // Detail, or a trouble panel built for the chip. Nothing here decides which.
-  function openChip(source) {
+  function openChip(source, auto = false) {
     const target = model.attention.find((a) => a.source === source)?.target;
     if (target?.tile)
-      openInspector({ kind: "details", source, tile: target.tile, attention: source });
+      openInspector({ kind: "details", source, tile: target.tile, attention: source }, auto);
     else if (target?.trouble)
-      openInspector({ kind: "trouble", source, trouble: target.trouble, attention: source });
+      openInspector({ kind: "trouble", source, trouble: target.trouble, attention: source }, auto);
   }
   // The panel an open chip shows follows the next reading: the tile that was
   // its target may have been hidden or re-scoped since, and the items move.
@@ -1174,9 +1174,9 @@
     if (!active?.attention) return;
     const target = model.attention.find((a) => a.source === active.attention)?.target;
     if (target?.tile) {
-      if (active.kind !== "details" || active.tile !== target.tile) openChip(active.attention);
+      if (active.kind !== "details" || active.tile !== target.tile) openChip(active.attention, true);
     } else if (target?.trouble) {
-      if (active.kind !== "trouble") openChip(active.attention);
+      if (active.kind !== "trouble") openChip(active.attention, true);
       else {
         active.trouble = target.trouble;
         paintTrouble();
@@ -1186,7 +1186,7 @@
       // left to say (and no words of its own to say so with). A chip that led
       // to a tile's Detail stays: that is still a valid Detail of the tile.
       const inside = q(".db-inspector").contains(document.activeElement);
-      closeInspector();
+      closeInspector(true);
       if (inside) q('[data-action="edit"]').focus({ preventScroll: true });
     }
   }
@@ -1216,8 +1216,11 @@
         .find((b) => b.dataset.action === focused.action && b.dataset.id === focused.id)
         ?.focus({ preventScroll: true });
   }
-  function openInspector(next) {
-    status("");
+  function openInspector(next, auto = false) {
+    // A reading that re-opens a chip (`auto`) is not the user acting: it keeps the
+    // status line, and moves focus only if it was inside the inspector.
+    const refocus = !auto || q(".db-inspector").contains(document.activeElement);
+    if (!auto) status("");
     active = next;
     syncAttention();
     const box = q(".db-inspector");
@@ -1374,7 +1377,7 @@
       (list.querySelector('[aria-pressed="true"]') || box.querySelector('[data-action="close"]')).focus({ preventScroll: true });
     } else if (next.kind === "trouble") {
       paintTrouble();
-      box.querySelector('[data-action="close"]').focus({ preventScroll: true });
+      if (refocus) box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     } else {
       const tools = node("div", "db-inspector-tools"), views = node("div", "db-view-switch");
       views.setAttribute("role", "group");
@@ -1393,7 +1396,7 @@
       );
       box.append(actions);
       fillDetails();
-      box.querySelector('[data-action="close"]').focus({ preventScroll: true });
+      if (refocus) box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     }
     box.setAttribute("aria-label", copy.children[0].textContent);
   }
@@ -1804,11 +1807,11 @@
     wrap.append(table);
     return wrap;
   }
-  function closeInspector() {
+  function closeInspector(auto = false) {
     clearTimeout(previewTimer);
     previewVersion++;
     active = null;
-    status("");
+    if (!auto) status("");
     syncAttention();
     q(".db-inspector").hidden = true;
     q(".db-inspector").replaceChildren();

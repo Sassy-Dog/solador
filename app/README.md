@@ -72,7 +72,9 @@ covering tile it becomes that Detail, and the trouble panel's items refresh. Whe
 Rust stops reporting the source's trouble (its chip leaves the bar), an open
 trouble panel closes, with focus moved to the Edit button if it was inside the
 panel; the panel paints no sentence of its own for this. A chip's tile Detail
-stays open, since it is still that tile's Detail.
+stays open, since it is still that tile's Detail. A change a reading makes this
+way is not the user acting: it leaves the status line (a save error, say) as it
+is and moves focus only when it was inside the panel.
 
 **A tile's Full view.** From the tile's **View** menu, **Full view** opens it
 directly; in Detail opened from a tile (its **View** menu, its

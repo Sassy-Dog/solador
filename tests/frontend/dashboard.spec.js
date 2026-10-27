@@ -2577,6 +2577,38 @@ test("an open chip flips between a tile's Detail and the trouble panel with the 
   await expect(inspector(page)).toContainText(chipTarget(model, "ghWorkflows").trouble.intro);
 });
 
+test("a reading that flips an open chip keeps focus outside the inspector and the status message", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const covered = await (await fetch(`${baseURL}/sample-dashboard.json`)).json();
+  const set = (attention) => page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), attention);
+  await set(covered.attention);
+  await chip(page, "GitHub Repos").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  // A failed save leaves its message up, under the open inspector.
+  await page.evaluate(() => { window.__FAIL_SAVE__ = true; });
+  await inspector(page).getByRole("button", { name: "List", exact: true }).click();
+  const message = page.locator(".db-action-error");
+  await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
+  const grid = viewButton(page, "hosts");
+  await grid.focus();
+  await set(model.attention);
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(grid).toBeFocused();
+  await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
+  await set(covered.attention);
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  await expect(grid).toBeFocused();
+  await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
+  // The same for the way back, and for the panel closing.
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), model.attention);
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(grid).toBeFocused();
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), model.attention.filter((a) => a.source !== "ghWorkflows"));
+  await expect(inspector(page)).toBeHidden();
+  await expect(grid).toBeFocused();
+  await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
+});
+
 test("an open trouble panel closes when its chip goes, and focus does not fall to the body", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL, "chips");
   await chip(page, "Containers").click();
