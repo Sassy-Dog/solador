@@ -459,45 +459,26 @@ fn view_for(s: &HostState) -> Value {
     card
 }
 
-/// The whole cockpit payload: one card per host plus the grid decisions.
+/// One card per host, this machine first: the build every cockpit payload
+/// starts from, and the part of it that reads host state under lock.
 ///
-/// `available` is the width the frontend has for the host grid. The column
-/// count is decided *here* rather than in CSS for the same reason every string
-/// and colour is: `host_columns` is the tested breakpoint math (a card needs
-/// [`HOST_CARD_MIN_WIDTH`]), and a CSS `auto-fit` restating it is a second
-/// implementation free to disagree with the first.
-///
-/// `configured_remotes` is how many remote hosts are configured, which is not
-/// `hosts.len()` once a tile's scope has dropped some: a Machines tile scoped
-/// to this machine keeps no remote, and reading the kept count as the
-/// configured one told the operator to add the hosts they already have.
-#[allow(clippy::too_many_arguments)]
-fn cockpit_view(
-    local: Option<Value>,
-    hosts: &[Arc<Mutex<HostState>>],
-    configured_remotes: usize,
-    available: f64,
-    overflow: HostOverflowMode,
-    core_row_span: usize,
-    row_gap_px: u8,
-    layout: &CockpitLayout,
-) -> Value {
+/// Local first, matching `HostsPanel.hosts` in the original (`[local] + remoteHosts`).
+/// This machine is the one you are looking at; it leads.
+fn cockpit_cards(local: Option<Value>, hosts: &[Arc<Mutex<HostState>>]) -> Vec<Value> {
+    #[cfg(test)]
+    CARD_BUILDS.with(|n| n.set(n.get() + 1));
     let remote: Vec<Value> = hosts
         .iter()
         .map(|host| view_for(&host.lock().expect("host state poisoned")))
         .collect();
-    // Local first, matching `HostsPanel.hosts` in the original (`[local] + remoteHosts`).
-    // This machine is the one you are looking at; it leads.
-    let cards: Vec<Value> = local.into_iter().chain(remote).collect();
-    cockpit_payload(
-        cards,
-        configured_remotes,
-        available,
-        overflow,
-        core_row_span,
-        row_gap_px,
-        layout,
-    )
+    local.into_iter().chain(remote).collect()
+}
+
+// How many times `cockpit_cards` has built the cards on this thread, so a
+// test can prove a scoped Machines tile builds them once per poll (#641).
+#[cfg(test)]
+thread_local! {
+    static CARD_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The name a tab wears, from an already-rendered card.
@@ -636,7 +617,7 @@ fn align_core_ladders(cards: &mut [Value], columns: usize, row_span: usize) {
 }
 
 /// The payload shape, over already-rendered cards. Split from
-/// [`cockpit_view`] so the tests can drive it without locks.
+/// [`cockpit_cards`] so the tests can drive it without locks.
 ///
 /// `remote_count` is deliberately separate from `cards.len()`: the local card is
 /// always there, so "is anything configured" is a question about *monitored*
@@ -1491,12 +1472,9 @@ static FIRST_CONTAINERS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn containers(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "containers",
-        tile.as_deref(),
-        containers_unscoped(&state),
-    )
+    scope_to_tile(&state, "containers", tile.as_deref(), || {
+        containers_unscoped(&state)
+    })
 }
 
 /// [`containers`] without a tile: the whole source, as the dashboard reads it.
@@ -2639,12 +2617,9 @@ static FIRST_REPOS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn repos(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "ghWorkflows",
-        tile.as_deref(),
-        repos_unscoped(&state),
-    )
+    scope_to_tile(&state, "ghWorkflows", tile.as_deref(), || {
+        repos_unscoped(&state)
+    })
 }
 
 /// [`repos`] without a tile: the whole source, as the dashboard reads it.
@@ -2669,12 +2644,9 @@ static FIRST_RUNNERS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn runners(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "ghRunners",
-        tile.as_deref(),
-        runners_unscoped(&state),
-    )
+    scope_to_tile(&state, "ghRunners", tile.as_deref(), || {
+        runners_unscoped(&state)
+    })
 }
 
 /// [`runners`] without a tile: the whole source, as the dashboard reads it.
@@ -2954,41 +2926,34 @@ fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
 
 /// [`dashboard_view`] over the app itself: every source whole, never scoped.
 fn dashboard_view_in(width: f64, app: &App) -> Value {
-    let state = app;
-    let layout = state
+    let layout = app
         .store
         .lock()
         .expect("store poisoned")
         .dashboard()
         .cloned()
         .unwrap_or_else(dashboard::default_layout);
-    let mut hosts = cockpit_with(width, state, None);
+    let mut hosts = cockpit_with(width, app, None);
     hosts["id"] = json!("hosts");
     machine_alerts::attach(
         &mut hosts,
-        &state
-            .store
+        &app.store
             .lock()
             .expect("store poisoned")
             .settings()
             .machine_alerts,
     );
-    let settings = state
-        .store
-        .lock()
-        .expect("store poisoned")
-        .settings()
-        .clone();
+    let settings = app.store.lock().expect("store poisoned").settings().clone();
     let mut payloads = vec![
         hosts,
-        repos_unscoped(state),
-        runners_unscoped(state),
-        containers_unscoped(state),
-        services_unscoped(state),
-        crons_unscoped(state),
-        usage_unscoped(state),
-        azure_cost_unscoped(state),
-        openclaw_unscoped(state),
+        repos_unscoped(app),
+        runners_unscoped(app),
+        containers_unscoped(app),
+        services_unscoped(app),
+        crons_unscoped(app),
+        usage_unscoped(app),
+        azure_cost_unscoped(app),
+        openclaw_unscoped(app),
     ];
     cadence::attach(&mut payloads, &settings);
     dashboard::view(&layout, &payloads)
@@ -3064,12 +3029,19 @@ fn cockpit(
 }
 
 /// The Machines payload narrowed to tile `id`'s scope, or why it has none.
+///
+/// The cards are built once ([`cockpit_frame`]) and laid out twice: whole, to
+/// read which card ids the scope keeps (a scope such as `attention` is decided
+/// by fields the build and `apply_machine_preferences` set), then again over
+/// only those cards. Layout is arithmetic over finished cards; the build is the
+/// part that takes the locks (#641).
 fn cockpit_for_tile(width: f64, app: &App, id: &str) -> Result<Value, String> {
     let tile = tile_from_store(app, id, "hosts")?;
-    let payload = cockpit_with(width, app, None);
+    let frame = cockpit_frame(app);
+    let payload = frame.payload(width, None);
     let empty = dashboard::scoped_empty(&tile, &payload);
     let mut scoped = match kept_hosts(&tile, &payload) {
-        Some(keep) => cockpit_with(width, app, Some(&keep)),
+        Some(keep) => frame.payload(width, Some(&keep)),
         None => payload,
     };
     tile_scope::stamp_empty(&mut scoped, empty);
@@ -3099,43 +3071,78 @@ fn tile_from_store(app: &App, id: &str, source: &str) -> Result<store::Dashboard
         .map_err(str::to_owned)
 }
 
-/// `payload` narrowed to `tile`'s scope, or refused when the tile is gone,
-/// hidden or of another source. No tile means the whole payload.
+/// The payload `build` makes, narrowed to `tile`'s scope, or refused when the
+/// tile is gone, hidden or of another source. No tile means the whole payload.
+///
+/// The tile is checked first and `build` runs only for a tile that is kept, so
+/// a refused request builds nothing and fires none of the panel's `FIRST_*`
+/// notices (#641).
 fn scope_to_tile(
     app: &App,
     source: &str,
     tile: Option<&str>,
-    payload: Value,
+    build: impl FnOnce() -> Value,
 ) -> Result<Value, String> {
     let Some(id) = tile else {
-        return Ok(payload);
+        return Ok(build());
     };
     let tile = tile_from_store(app, id, source)?;
-    Ok(tile_scope::scope_payload(&tile, payload))
+    Ok(tile_scope::scope_payload(&tile, build()))
 }
 
-/// Drops the cards a Machines tile does not keep. `None` keeps every card.
-fn keep_cards(
-    local: Option<Value>,
-    hosts: Vec<Arc<Mutex<HostState>>>,
-    keep: Option<&BTreeSet<String>>,
-) -> (Option<Value>, Vec<Arc<Mutex<HostState>>>) {
-    let Some(keep) = keep else {
-        return (local, hosts);
-    };
-    (
-        local.filter(|_| keep.contains(local::CARD_ID)),
-        hosts
-            .into_iter()
-            .filter(|h| keep.contains(&h.lock().expect("host state poisoned").id))
-            .collect(),
-    )
+/// Everything one cockpit frame reads from the app, before any layout: the
+/// rendered cards and the settings that arrange them. [`cockpit_frame`] builds
+/// it once per poll; [`CockpitFrame::payload`] lays it out as often as asked.
+struct CockpitFrame {
+    cards: Vec<Value>,
+    /// Counted before a scope drops any card: whether hosts are configured is a
+    /// question about the store, never about which cards a tile kept.
+    configured_remotes: usize,
+    bands: Vec<settings::Breakpoint>,
+    core_row_span: usize,
+    row_gap_px: u8,
+    alerts: store::machine_alerts::MachineAlerts,
+    hidden: volumes::Hidden,
 }
 
-/// Today's `cockpit` body. With `keep`, cards outside it are dropped before
-/// layout, so the columns, core ladders, volume slots and tab bar see only the
-/// kept ones.
-fn cockpit_with(width: f64, state: &App, keep: Option<&BTreeSet<String>>) -> Value {
+impl CockpitFrame {
+    /// Today's `cockpit` body. With `keep`, cards outside it are dropped before
+    /// layout, so the columns, core ladders, volume slots and tab bar see only
+    /// the kept ones. `None` keeps every card.
+    ///
+    /// **The width picks the arrangement.** `breakpoint_for` takes the widest
+    /// band the measured cockpit clears, and that band carries both the panel
+    /// order and the host-overflow mode, so resizing the window changes the
+    /// layout on the next 1s frame, with no preference to toggle. Both are
+    /// laundered on the way out as well as on the way in (`breakpoints`), so a
+    /// store hand-edited to name a panel this build does not have still renders
+    /// every panel it does.
+    fn payload(&self, width: f64, keep: Option<&BTreeSet<String>>) -> Value {
+        let cards = self
+            .cards
+            .iter()
+            .filter(|card| {
+                keep.is_none_or(|keep| keep.contains(card["id"].as_str().unwrap_or_default()))
+            })
+            .cloned()
+            .collect();
+        let band = settings::breakpoint_for(&self.bands, width);
+        let mut payload = cockpit_payload(
+            cards,
+            self.configured_remotes,
+            width,
+            band.host_overflow,
+            self.core_row_span,
+            self.row_gap_px,
+            &band.layout(),
+        );
+        apply_machine_preferences(&mut payload, &self.hidden, &self.alerts);
+        payload
+    }
+}
+
+/// Builds the cards and reads the settings for one cockpit frame.
+fn cockpit_frame(state: &App) -> CockpitFrame {
     // Cloned out from under the poll-set lock, which is then released: the
     // per-host locks below are the only ones held while cards are built, so a
     // settings edit landing mid-render waits on nothing.
@@ -3151,44 +3158,31 @@ fn cockpit_with(width: f64, state: &App, keep: Option<&BTreeSet<String>>) -> Val
     // the GitHub loop re-reads its token: that is what makes a Settings edit
     // apply without a relaunch. The store lock is taken after the poll set's is
     // released, matching `poll_containers`'s sequence, and is held for one read.
-    //
-    // **The width picks the arrangement.** `breakpoint_for` takes the widest
-    // band the measured cockpit clears, and that band carries both the panel
-    // order and the host-overflow mode — so resizing the window changes the
-    // layout on the next 1s frame, with no preference to toggle. Both are
-    // laundered on the way out as well as on the way in (`breakpoints`), so a
-    // store hand-edited to name a panel this build does not have still renders
-    // every panel it does.
-    let (overflow, core_row_span, row_gap_px, layout, alerts, hidden) = {
+    let (bands, core_row_span, row_gap_px, alerts, hidden) = {
         let store = state.store.lock().expect("store poisoned");
         let settings = store.settings();
-        let bands = settings::breakpoints(store.layout(), settings.host_overflow_mode);
-        let band = settings::breakpoint_for(&bands, width);
         (
-            band.host_overflow,
+            settings::breakpoints(store.layout(), settings.host_overflow_mode),
             settings.core_row_span as usize,
             settings.row_gap_px,
-            band.layout(),
             settings.machine_alerts.clone(),
             volumes::Hidden::from_store(&store),
         )
     };
-    // Counted before the scope drops any: whether hosts are configured is a
-    // question about the store, never about which cards a tile kept.
-    let configured_remotes = hosts.len();
-    let (local, hosts) = keep_cards(Some(local), hosts, keep);
-    let mut payload = cockpit_view(
-        local,
-        &hosts,
-        configured_remotes,
-        width,
-        overflow,
+    CockpitFrame {
+        cards: cockpit_cards(Some(local), &hosts),
+        configured_remotes: hosts.len(),
+        bands,
         core_row_span,
         row_gap_px,
-        &layout,
-    );
-    apply_machine_preferences(&mut payload, &hidden, &alerts);
-    payload
+        alerts,
+        hidden,
+    }
+}
+
+/// [`CockpitFrame::payload`] over a fresh [`cockpit_frame`].
+fn cockpit_with(width: f64, state: &App, keep: Option<&BTreeSet<String>>) -> Value {
+    cockpit_frame(state).payload(width, keep)
 }
 
 /// The operator's per-machine choices, applied to the cockpit payload before
@@ -3720,12 +3714,9 @@ static FIRST_CRONS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn crons(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "sentryCrons",
-        tile.as_deref(),
-        crons_unscoped(&state),
-    )
+    scope_to_tile(&state, "sentryCrons", tile.as_deref(), || {
+        crons_unscoped(&state)
+    })
 }
 
 /// [`crons`] without a tile: the whole source, as the dashboard reads it.
@@ -3932,12 +3923,9 @@ static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn usage(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "claudeUsage",
-        tile.as_deref(),
-        usage_unscoped(&state),
-    )
+    scope_to_tile(&state, "claudeUsage", tile.as_deref(), || {
+        usage_unscoped(&state)
+    })
 }
 
 /// [`usage`] without a tile: the whole source, as the dashboard reads it.
@@ -3978,12 +3966,9 @@ static FIRST_SERVICES_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn services(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "services",
-        tile.as_deref(),
-        services_unscoped(&state),
-    )
+    scope_to_tile(&state, "services", tile.as_deref(), || {
+        services_unscoped(&state)
+    })
 }
 
 /// [`services`] without a tile: the whole source, as the dashboard reads it.
@@ -4014,12 +3999,9 @@ static FIRST_AZURE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn azure_cost(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "azureCost",
-        tile.as_deref(),
-        azure_cost_unscoped(&state),
-    )
+    scope_to_tile(&state, "azureCost", tile.as_deref(), || {
+        azure_cost_unscoped(&state)
+    })
 }
 
 /// [`azure_cost`] without a tile: the whole source, as the dashboard reads it.
@@ -4206,12 +4188,9 @@ static FIRST_OPENCLAW_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn openclaw(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(
-        &state,
-        "openclawAgents",
-        tile.as_deref(),
-        openclaw_unscoped(&state),
-    )
+    scope_to_tile(&state, "openclawAgents", tile.as_deref(), || {
+        openclaw_unscoped(&state)
+    })
 }
 
 /// [`openclaw`] without a tile: the whole source, as the dashboard reads it.
@@ -4283,7 +4262,7 @@ fn settings_save_general(
         save_status(&store, "Saved.")
     };
     // Neither field needs a wake. They are read out of the store by
-    // `cockpit_view` on every frame, so they paint on the next 1s tick whether
+    // `cockpit_with` on every frame, so they paint on the next 1s tick whether
     // anything is woken or not. (The shared Refresh Interval that used to need
     // waking here is three per-source cadences now, edited in the tiles'
     // Configure, whose save wakes exactly the loop it moved: `wake_panel`.)
@@ -7430,7 +7409,7 @@ fn seed_from_env(
 /// Sorted by name, matching the original coordinator's `SortDescriptor(\.name)`.
 /// The local machine is not in this list and never sorts against it: the original
 /// cockpit puts it first unconditionally (`HostsPanel.hosts` is
-/// `[local] + remoteHosts.hosts`), and so does [`cockpit_view`].
+/// `[local] + remoteHosts.hosts`), and so does [`cockpit_cards`].
 fn display_order(hosts: &[Host]) -> Vec<&Host> {
     let mut enabled: Vec<&Host> = hosts.iter().filter(|h| h.enabled).collect();
     enabled.sort_by(|a, b| a.name.cmp(&b.name));
@@ -8629,7 +8608,7 @@ mod tests {
         );
     }
 
-    /// [`cockpit_view`] / [`cockpit_payload`] / [`dump_cockpit`] with the
+    /// [`cockpit_cards`] / [`cockpit_payload`] / [`dump_cockpit`] with the
     /// **default** (stacking) overflow preference and the **shipped** layout —
     /// what every test that is not about the tab bar or the Layout tab wants.
     /// The tab-bar tests call the real functions with `HostOverflowMode::Tabs`;
@@ -8639,9 +8618,8 @@ mod tests {
         hosts: &[Arc<Mutex<HostState>>],
         available: f64,
     ) -> Value {
-        cockpit_view(
-            local,
-            hosts,
+        cockpit_payload(
+            cockpit_cards(local, hosts),
             hosts.len(),
             available,
             HostOverflowMode::Stack,
@@ -8902,7 +8880,7 @@ mod tests {
         tile_in(&app, "t-services", "services", "all", true);
         tile_in(&app, "t-hosts", "hosts", "all", true);
         assert_eq!(
-            scope_to_tile(&app, "services", Some("t-services"), json!({"rows": []})),
+            scope_to_tile(&app, "services", Some("t-services"), || json!({"rows": []})),
             Err(tile_scope::TILE_HIDDEN.to_owned())
         );
         assert_eq!(
@@ -8910,13 +8888,69 @@ mod tests {
             tile_scope::TILE_HIDDEN
         );
         assert_eq!(
-            scope_to_tile(&app, "services", Some("nope"), json!({})),
+            scope_to_tile(&app, "services", Some("nope"), || json!({})),
             Err(tile_scope::TILE_GONE.to_owned())
         );
         assert_eq!(
-            scope_to_tile(&app, "services", None, json!({"rows": [1]})),
+            scope_to_tile(&app, "services", None, || json!({"rows": [1]})),
             Ok(json!({"rows": [1]}))
         );
+    }
+
+    /// A refused tile builds nothing (#641). Every panel command passes its
+    /// `X_unscoped(&state)` as the builder, and that function is what prints the
+    /// panel's `FIRST_*_REQUEST` line, so a builder that never runs is a notice
+    /// that never fires for a tile the command refuses.
+    #[test]
+    fn a_refused_tile_never_builds_its_payload() {
+        let (_dir, _rt, app) = test_app();
+        tile_in(&app, "t-hidden", "services", "all", true);
+        tile_in(&app, "t-hosts", "hosts", "all", false);
+        tile_in(&app, "t-services", "services", "all", false);
+        let built = std::cell::Cell::new(0);
+        let build = || {
+            built.set(built.get() + 1);
+            json!({"rows": []})
+        };
+        for (id, refusal) in [
+            ("nope", tile_scope::TILE_GONE),
+            ("t-hidden", tile_scope::TILE_HIDDEN),
+            // Foreign: a Machines tile asked for as Services.
+            ("t-hosts", tile_scope::TILE_WRONG_SOURCE),
+        ] {
+            assert_eq!(
+                scope_to_tile(&app, "services", Some(id), build),
+                Err(refusal.to_owned()),
+                "{id}"
+            );
+            assert_eq!(built.get(), 0, "{id} was refused, so nothing was built");
+        }
+        // Controls: a kept tile, and no tile at all, do build.
+        assert!(scope_to_tile(&app, "services", Some("t-services"), build).is_ok());
+        assert_eq!(built.get(), 1, "a kept tile builds once");
+        assert!(scope_to_tile(&app, "services", None, build).is_ok());
+        assert_eq!(built.get(), 2, "no tile builds once");
+    }
+
+    /// One poll of a scoped Machines tile builds the cards once, although it
+    /// lays them out twice (#641). The build is what [`cockpit_cards`] counts.
+    #[test]
+    fn a_scoped_machines_tile_builds_the_cards_once_per_poll() {
+        let (_dir, _rt, app) = app_with_remotes(2);
+        tile_in(&app, "t-local", "hosts", "local", false);
+        tile_in(&app, "t-all", "hosts", "all", false);
+        for id in ["t-local", "t-all"] {
+            let before = CARD_BUILDS.with(std::cell::Cell::get);
+            let scoped = cockpit_for_tile(1400.0, &app, id).unwrap();
+            assert_eq!(
+                CARD_BUILDS.with(std::cell::Cell::get) - before,
+                1,
+                "{id}: one build"
+            );
+            if id == "t-local" {
+                assert_eq!(card_ids(&scoped), ["local"], "control: the scope applied");
+            }
+        }
     }
 
     #[test]

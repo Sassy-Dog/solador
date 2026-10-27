@@ -2989,6 +2989,53 @@ test("Escape closes the View menu and returns focus to View", async ({ page, bas
   await expect(viewButton(page, "hosts")).toBeFocused();
 });
 
+test("the View menu follows the menu button pattern: controls, labelledby, roving tabindex, Home and End", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  const button = viewButton(page, "ghWorkflows");
+  const items = viewItems(page, "ghWorkflows");
+  const menu = tile(page, "ghWorkflows").getByRole("menu");
+  // Closed: nothing to control, and no dangling reference to a menu that is not there.
+  await expect(button).not.toHaveAttribute("aria-controls", /.*/);
+  await button.click();
+  await expect(items).toHaveCount(2);
+  const controls = await button.getAttribute("aria-controls");
+  expect(controls).toBeTruthy();
+  await expect(menu).toHaveAttribute("id", controls);
+  const buttonId = await button.getAttribute("id");
+  expect(buttonId).toBeTruthy();
+  await expect(menu).toHaveAttribute("aria-labelledby", buttonId);
+  await expect(menu).toHaveAccessibleName("View");
+  // Arrow keys move through the items; Tab does not, so none is a tab stop.
+  await expect(items.nth(0)).toHaveAttribute("tabindex", "-1");
+  await expect(items.nth(1)).toHaveAttribute("tabindex", "-1");
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(items.first()).toBeFocused();
+  await expect(menu).toBeVisible();
+});
+
+test("a tile removed while its View menu is open leaves no open menu behind", async ({ page, baseURL }) => {
+  const view = await openDashboard(page, baseURL, false, healthyRepos);
+  await viewButton(page, "ghWorkflows").click();
+  await expect(viewItems(page, "ghWorkflows")).toHaveCount(2);
+  await page.evaluate((layout) => {
+    window.__SET_LAYOUT__({ ...layout, tiles: layout.tiles.filter((t) => t.id !== "overview-ghWorkflows") });
+  }, view.layout);
+  await expect(tile(page, "ghWorkflows")).toHaveCount(0);
+  // The same id coming back must not find a menu still marked open for it.
+  await page.evaluate((layout) => window.__SET_LAYOUT__(layout), view.layout);
+  await expect(tile(page, "ghWorkflows")).toHaveCount(1);
+  await page.waitForTimeout(1200);
+  await expect(viewButton(page, "ghWorkflows")).toHaveAttribute("aria-expanded", "false");
+  await expect(viewItems(page, "ghWorkflows")).toHaveCount(0);
+});
+
 test("a view the frontend cannot open is not painted", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, (view) => {
     for (const t of view.tiles) t.views = [...t.views, { id: "chart", label: "Chart" }];

@@ -1100,6 +1100,17 @@ pub(crate) fn scoped_row_ids(tile: &DashboardTile, payload: &Value) -> Option<BT
     )
 }
 
+/// Every row id `source_rows` gives `source`'s payload, in row order. Only
+/// `tile_scope`'s drift test reads it: that module rebuilds each of these ids
+/// from the same payload, and nothing else notices when the two stop agreeing.
+#[cfg(test)]
+pub(crate) fn all_row_ids(source: &str, payload: &Value) -> Vec<String> {
+    source_rows(source, payload)
+        .iter()
+        .map(|r| string(r, "id").to_owned())
+        .collect()
+}
+
 /// The sentence a tile's Full view shows when its scope keeps nothing: the same
 /// one its overview tile shows (`tile_view`'s `empty`). `None` when the tile
 /// keeps a row, or filters nothing.
