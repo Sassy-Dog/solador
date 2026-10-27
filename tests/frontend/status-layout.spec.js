@@ -330,10 +330,21 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   await expect.poll(clipped).toEqual([]);
   const padding = await page.locator('.db-attention').evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]);
   expect(padding).toEqual(await page.locator('.db-tile').first().evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]));
-  // Each tile's Full view, as an operator reaches it.
-  for (const tile of next.tiles) {
-    await openTileFull(page, tile.source, tile.id);
-    await expect.poll(clipped, tile.id).toEqual([]);
+  // Every source's Full view, as an operator reaches it. The fixture's overview
+  // carries five of the nine sources, so the Full views come from one
+  // `all`-scoped tile per source: all nine panels with every row, which is what
+  // `?view=details` measured before #645.
+  const full = dashboardWithTiles(frames.dashboard_view, next.sources.map(s => s.id));
+  full.layout.revision += 1;
+  await page.evaluate(view => { window.framesForTest.dashboard_view = view; }, full);
+  await expect(page.locator('.db-tile')).toHaveCount(full.tiles.length);
+  for (const { source } of full.tiles) {
+    await openTileFull(page, source);
+    await expect(page.locator('#cockpitView')).not.toHaveAttribute('data-tile-loading');
+    // `clipped` skips what has no box, so a body the Full view hid would pass unmeasured.
+    const body = source === 'hosts' ? '#cockpit .card' : '#cockpitView .panel[data-detail-active] .panel-body';
+    await expect(page.locator(body).first(), source).toBeVisible();
+    await expect.poll(clipped, source).toEqual([]);
     await page.keyboard.press('Escape');
     await expect(page.locator('#dashboardOverview')).toBeVisible();
   }

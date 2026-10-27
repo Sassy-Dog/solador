@@ -201,14 +201,19 @@ longer timeout on the frame-1 assertion cannot help — once frame 2 has been
 served, frame 1 is gone — so do not reach for one; hold the frame instead.
 
 **Per-panel specs enter a tile's Full view, never `?view=details` (#645).**
-`azure`, `containers`, `crons`, `github`, `openclaw`, `services`, `usage` and
-`status-layout` use `tests/frontend/tile-full.js`: it stubs the IPC, boots the
-overview with one `all`-scoped tile per source, and opens the panel through the
-tile's View button then **Full view** (`tileFull`), the one way in; there is no
-URL or hook that skips the menu. A tile's Full view is headed by the tile's own
-name (#640), not the payload's `title`, and shows only its own panel, so a spec
-about two panels (`github.spec.js`) leaves and enters each tile. Each spec
-asserts its renderer sends `{tile: <id>}`; `{ __frames: [a, b] }` plus
+`azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
+`tests/frontend/tile-full.js`: it stubs the IPC, boots the overview with one
+`all`-scoped tile per source, and opens the panel through the tile's View button
+then **Full view** (`tileFull`), the one way in; there is no URL or hook that
+skips the menu. `status-layout` keeps its own multi-frame stub but builds its
+Full-view tiles with the same `dashboardWithTiles` and enters them with the same
+`openTileFull`; its clipping test walks all nine sources' Full views. A tile's
+Full view is headed by the tile's own name (#640), not the payload's `title`,
+and shows only its own panel, so a spec about two panels (`github.spec.js`)
+leaves and enters each tile, and a spec measuring a panel first asserts it is
+visible: a panel the Full view hides has no box, and a width or overflow check
+on it passes for any content. Each of the seven tile-full.js specs asserts its
+renderer sends `{tile: <id>}`; `{ __frames: [a, b] }` plus
 `advance(page, command)` holds a multi-frame panel answer the way
 `stubCockpit` does. `layout.spec.js`, `settings.spec.js` and `screenshots.spec.js`
 (`cockpit.png`, `cockpit-narrow.png`) still boot `?view=details`; the cutover of #639 removes that path.

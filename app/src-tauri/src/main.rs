@@ -8958,10 +8958,12 @@ mod tests {
     /// Every panel command asks `find_tile` for the source its tile must show,
     /// and nothing but that call's literal says which (#645). Tauri's `State`
     /// cannot be built outside a running app, so the commands themselves cannot
-    /// be called here; this reads the call each one makes from this file and
-    /// pins it, so a command that names a neighbour's source (which the
-    /// frontend's double and `scope_to_tile`'s own tests would both accept)
-    /// fails here.
+    /// be called here; this reads each one's body from this file and pins the
+    /// literal, that the command hands on its own `tile`, and that it builds
+    /// with its own `*_unscoped` builder (`cockpit` with its own `Some(id)` arm).
+    /// A command that names a neighbour's source, drops its tile or borrows a
+    /// neighbour's builder, which the frontend's double and `scope_to_tile`'s
+    /// own tests would all accept, fails here.
     #[test]
     fn each_panel_command_scopes_its_tile_to_its_own_source() {
         // Command, the function whose body makes the call, and the call's text.
@@ -8990,20 +8992,41 @@ mod tests {
         // Only the code above this module: its own table must not be read back.
         let whole = include_str!("main.rs").replace("\r\n", "\n");
         let source = whole.split("#[cfg(test)]\nmod tests {").next().unwrap();
-        for ((command, function, call), (named, want)) in table.iter().zip(expected) {
-            assert_eq!(*command, named, "table rows line up");
+        fn body_of<'a>(source: &'a str, function: &str) -> &'a str {
             let start = source
                 .find(&format!("\nfn {function}("))
-                .unwrap_or_else(|| panic!("no `fn {function}` for the {command} command"));
+                .unwrap_or_else(|| panic!("no `fn {function}`"));
             let body = &source[start..];
-            let body = &body[..body.find("\n}\n").expect("function ends")];
+            &body[..body.find("\n}\n").expect("function ends")]
+        }
+        for ((command, function, call), (named, want)) in table.iter().zip(expected) {
+            assert_eq!(*command, named, "table rows line up");
+            let body = body_of(source, function);
             let at = body
                 .find(call)
                 .unwrap_or_else(|| panic!("`{function}` makes no `{call}…` call"));
             let literal = &body[at + call.len()..];
             let got = &literal[..literal.find('"').expect("literal ends")];
             assert_eq!(got, want, "the {command} command scopes its tile to {got}");
+            if *command == "cockpit" {
+                continue;
+            }
+            assert!(
+                literal[got.len()..].starts_with("\", tile.as_deref(),"),
+                "the {command} command hands its own tile to `scope_to_tile`"
+            );
+            assert!(
+                body.contains(&format!("{function}_unscoped(&state)")),
+                "the {command} command builds with `{function}_unscoped`"
+            );
         }
+        // `cockpit` reaches `cockpit_for_tile`, the row above, only with its own tile.
+        let cockpit = body_of(source, "cockpit");
+        assert!(
+            cockpit.contains("match tile.as_deref() {")
+                && cockpit.contains("Some(id) => cockpit_for_tile("),
+            "the cockpit command scopes a Machines tile with its own tile"
+        );
         // The nine are all of them: a tenth command that takes a tile is a new
         // row here, not a command nothing pins.
         assert_eq!(

@@ -69,11 +69,15 @@ const runnerRows = (page) => page.locator("#runnersBody .gh-row");
 
 // MARK: - Repos
 
-test("the Repos panel paints Rust's title, trailing label and column header", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
+test("the Repos panel is headed by its tile's name and paints Rust's trailing label and column header", async ({ page, baseURL }) => {
+  const titled = { ...(await fixture(baseURL, "sample-repos.json")), title: "Rust's own title" };
+  const { repos } = await gotoWithFixtures(page, baseURL, { repos: titled }, "repos");
   await expect(page.locator("#reposPanel")).toBeVisible();
 
-  await expect(page.locator("#reposTitle")).toHaveText(repos.title);
+  // A tile's Full view is headed by the tile's own name (#640), not the
+  // payload's `title`. The fixture's title is the tile's name too, so it is
+  // changed here: the two must differ for the assertion to tell them apart.
+  await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
   await expect(page.locator("#reposTrailing")).toHaveText(repos.trailing);
 
   // The header labels AND their widths are Rust's — a column re-typed here
@@ -228,6 +232,7 @@ test("a per-account failure names the account in the header without blanking the
   // so one expired token would move half the cockpit.
   const degraded = await page.locator("#reposPanel").boundingBox();
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
+  // The tile's own name heads its Full view (#640), not the payload's title.
   await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
 });
 
