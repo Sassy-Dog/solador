@@ -210,6 +210,8 @@ test("a per-account failure names the account in the header without blanking the
 
   const failing = {
     ...good,
+    // Differs from the tile's name, so the heading asserted below can only be the tile's.
+    title: "Rust's own title",
     footer: {
       text: "⚠ work: no token saved — add one in Settings · last ok 4m ago",
       color: "#e09a26",

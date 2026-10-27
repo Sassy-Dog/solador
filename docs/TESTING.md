@@ -213,9 +213,10 @@ so a heading assertion needs a payload title that differs from the tile's name:
 several fixtures' titles equal it, and an assertion that cannot tell the two
 apart pins neither. The view shows only its own panel, so a spec about two
 panels (`github.spec.js`) leaves and enters each tile, and a spec measuring a
-panel first asserts it is visible: a panel the Full view hides has no box, and a width or overflow check
-on it passes for any content. Each of the seven tile-full.js specs asserts its
-renderer sends `{tile: <id>}`; `{ __frames: [a, b] }` plus
-`advance(page, command)` holds a multi-frame panel answer the way
-`stubCockpit` does. `layout.spec.js`, `settings.spec.js` and `screenshots.spec.js`
-(`cockpit.png`, `cockpit-narrow.png`) still boot `?view=details`; the cutover of #639 removes that path.
+panel first asserts it is visible: a panel the Full view hides has no box, and
+a width or overflow check on it passes for any content. Each of the seven
+tile-full.js specs asserts its renderer sends `{tile: <id>}`;
+`{ __frames: [a, b] }` plus `advance(page, command)` holds a multi-frame panel
+answer the way `stubCockpit` does. `layout.spec.js`, `settings.spec.js` and
+`screenshots.spec.js` (`cockpit.png`, `cockpit-narrow.png`) still boot
+`?view=details`; the cutover of #639 removes that path.

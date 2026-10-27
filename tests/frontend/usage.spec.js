@@ -321,11 +321,14 @@ test("a pathologically long warning stays inside the tile and starves nothing be
   const amber = (await fixture(baseURL, "sample-usage-stale.json")).footer.color;
 
   // Both header lines at their worst at once: the warning exaggerated, the
-  // clock at the busiest arrangement this panel can really produce.
+  // clock at the busiest arrangement this panel can really produce. The
+  // payload's title differs from the tile's name so the heading below can
+  // only be the tile's.
   await page.evaluate(
     ([vm, warning, clocks, color]) =>
       window.__SOLADOR_USAGE_TEST__.render({
         ...vm,
+        title: "Rust's own title",
         footer: { text: warning, color },
         freshness: { text: clocks, color },
       }),
