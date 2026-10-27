@@ -660,6 +660,7 @@
         fillCadence(box, source(draft.source)?.cadences?.find((c) => c.id === box.dataset.cadence));
       if (draft) fillMachineAlerts(q("[data-machine-alerts]"), source(draft.source));
     }
+    syncChip();
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
     paintFeedback();
@@ -1158,8 +1159,68 @@
     list.append(node("p", "db-sub", L("hiddenVolumesHelp")));
     return list;
   }
-  function openInspector(next) {
-    status("");
+  // Where a chip leads is Rust's call (`dashboard::chip_target`): a tile's
+  // Detail, or a trouble panel built for the chip. Nothing here decides which.
+  function openChip(source, auto = false) {
+    const target = model.attention.find((a) => a.source === source)?.target;
+    if (target?.tile)
+      openInspector({ kind: "details", source, tile: target.tile, attention: source }, auto);
+    else if (target?.trouble)
+      openInspector({ kind: "trouble", source, trouble: target.trouble, attention: source }, auto);
+  }
+  // The panel an open chip shows follows the next reading: the tile that was
+  // its target may have been hidden or re-scoped since, and the items move.
+  function syncChip() {
+    if (!active?.attention) return;
+    const target = model.attention.find((a) => a.source === active.attention)?.target;
+    if (target?.tile) {
+      if (active.kind !== "details" || active.tile !== target.tile) openChip(active.attention, true);
+    } else if (target?.trouble) {
+      if (active.kind !== "trouble") openChip(active.attention, true);
+      else {
+        active.trouble = target.trouble;
+        paintTrouble();
+      }
+    } else if (active.kind === "trouble") {
+      // Rust no longer reports the trouble, so the panel about it has nothing
+      // left to say (and no words of its own to say so with). A chip that led
+      // to a tile's Detail stays: that is still a valid Detail of the tile.
+      const inside = q(".db-inspector").contains(document.activeElement);
+      closeInspector(true);
+      if (inside) q('[data-action="edit"]').focus({ preventScroll: true });
+    }
+  }
+  function paintTrouble() {
+    const box = q(".db-inspector"), t = active.trouble;
+    const signature = JSON.stringify(t);
+    if (active.signature === signature) return;
+    active.signature = signature;
+    text(box.querySelector("h3"), t.title);
+    text(box.querySelector(".db-inspector-head .db-sub"), t.intro);
+    box.setAttribute("aria-label", t.title);
+    const body = box.querySelector(".db-inspector-body");
+    const focused = body.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
+    const items = node("ul", "db-trouble-items");
+    for (const item of t.items) {
+      const li = node("li", "db-trouble-item");
+      li.append(colored("strong", "", item.label, item.color));
+      if (item.value) li.append(node("span", "db-sub", item.value));
+      items.append(li);
+    }
+    const actions = node("div", "db-form-actions");
+    for (const link of t.tiles) actions.append(button(link.label, "details", link.id));
+    if (t.add) actions.append(button(t.add.label, "add", t.add.source, "db-primary"));
+    body.replaceChildren(items, actions);
+    if (focused?.action)
+      [...body.querySelectorAll("button[data-action]")]
+        .find((b) => b.dataset.action === focused.action && b.dataset.id === focused.id)
+        ?.focus({ preventScroll: true });
+  }
+  function openInspector(next, auto = false) {
+    // A reading that re-opens a chip (`auto`) is not the user acting: it keeps the
+    // status line, and moves focus only if it was inside the inspector.
+    const refocus = !auto || q(".db-inspector").contains(document.activeElement);
+    if (!auto) status("");
     active = next;
     syncAttention();
     const box = q(".db-inspector");
@@ -1314,6 +1375,9 @@
       box.querySelector(".db-inspector-body").append(library);
       fillHidden();
       (list.querySelector('[aria-pressed="true"]') || box.querySelector('[data-action="close"]')).focus({ preventScroll: true });
+    } else if (next.kind === "trouble") {
+      paintTrouble();
+      if (refocus) box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     } else {
       const tools = node("div", "db-inspector-tools"), views = node("div", "db-view-switch");
       views.setAttribute("role", "group");
@@ -1321,8 +1385,9 @@
       views.append(button(L("table"), "detail-view", "table"), button(L("detailList"), "detail-view", "list"));
       tools.append(views, head.lastElementChild);
       head.append(tools);
-      // Detail opened from a tile opens that tile's Full view; from an
-      // attention chip there is no tile, so it opens the whole source.
+      // Detail opens its tile's Full view. Every chip's Detail carries its
+      // tile now, so the `full` fallback (Solador's Full view for the whole
+      // source) is no longer reached from a chip; it stays until #639's cutover.
       const owner = next.tile ?? next.fromTile;
       const actions = node("div", "db-form-actions");
       actions.append(
@@ -1331,7 +1396,7 @@
       );
       box.append(actions);
       fillDetails();
-      box.querySelector('[data-action="close"]').focus({ preventScroll: true });
+      if (refocus) box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     }
     box.setAttribute("aria-label", copy.children[0].textContent);
   }
@@ -1742,11 +1807,11 @@
     wrap.append(table);
     return wrap;
   }
-  function closeInspector() {
+  function closeInspector(auto = false) {
     clearTimeout(previewTimer);
     previewVersion++;
     active = null;
-    status("");
+    if (!auto) status("");
     syncAttention();
     q(".db-inspector").hidden = true;
     q(".db-inspector").replaceChildren();
@@ -2062,7 +2127,7 @@
     }
     if (action === "attention") {
       if (active?.attention === id) closeInspector();
-      else openInspector({ kind: "details", source: id, attention: id });
+      else openChip(id);
       return;
     }
     if (action === "row") {
@@ -2280,6 +2345,11 @@
     if (action === "apply") {
       await apply();
       return;
+    }
+    if (action === "add" && active?.kind === "trouble") {
+      // The trouble panel's Add tile: a draft is only editable in edit mode.
+      editing = true;
+      render(true);
     }
     if (action === "add" || action === "duplicate") {
       await add(id, action === "duplicate");

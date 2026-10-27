@@ -712,6 +712,9 @@
   max-width: 75ch;
   margin-bottom: 8px;
 }
+#dashboardOverview .db-trouble-items { list-style:none; margin:0; padding:0; }
+#dashboardOverview .db-trouble-item { display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--db-line); font-size:12px; overflow-wrap:anywhere; }
+#dashboardOverview .db-trouble-item:last-child { border-bottom:0; }
 #dashboardOverview .db-detail-grid {
   display: flex;
   flex-direction: column;

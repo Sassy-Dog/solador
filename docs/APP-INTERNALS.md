@@ -534,7 +534,13 @@
   `machine_acknowledge_warning` saves before rendering, rolls back on failure,
   and does not enter dashboard layout undo history. Host deletion removes its
   acknowledgements. Polls started before the save cannot overwrite its response.
-- Attention chips toggle their Detail inspector. Detail defaults to compact
+- Attention chips toggle an inspector whose target Rust authors (`target` on
+  each `attention` entry, `dashboard::chip_target`): `{tile}` opens that tile's
+  Detail when exactly one visible tile keeps every row needing attention (the
+  `in_scope` / `matching_rows` row ids), otherwise `{trouble}` is a panel not
+  tied to a tile (items, links to each tile's Detail, **Add tile** with no
+  visible tile). A hidden tile is never a target and no chip opens Solador's Full
+  view. Detail defaults to compact
   tables, with a Table/List choice persisted per source in `detailViews`.
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
@@ -572,7 +578,10 @@
   overview's 1s read keeps running in a tile's Full view only to notice that,
   and repaints nothing there but the tile's heading: `updateView` runs on a
   forced render, so the open panel is not rebuilt every second. Detail from an
-  attention chip has no tile and opens the whole source.
+  attention chip carries its tile like any other, so its Full view is that
+  tile's. (The `full` action, Solador's Full view for a whole source, is no
+  longer reachable from a chip; #639's cutover removes it.) A trouble panel
+  closes when Rust stops reporting its source's trouble.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage, each
