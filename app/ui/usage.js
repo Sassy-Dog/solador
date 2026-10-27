@@ -28,8 +28,8 @@
 
 /** How often the panel asks Rust for a fresh payload.
  *
- *  Faster than either Rust-side cadence (Claude on the store's refresh
- *  interval, Neon and Sentry hourly) because the payload is not static between
+ *  Faster than either Rust-side cadence (the Claude rollups' own, 30s at the
+ *  least; the metered providers', hourly by default) because the payload is not static between
  *  fetches: every footer carries a relative age, and "updated 4m ago" has to
  *  tick up on a clock this side never sees move. Asking every 10s costs one
  *  lock and one JSON build. */
@@ -219,10 +219,11 @@ function renderUsage(payload) {
   // (`neon: as of 23h ago · sentry: as of 23h ago`). A DIFFERENT question from
   // the warning, which is why it is a different element carrying a different
   // string: the warning says the last attempt failed or the poller is late,
-  // this says the dollars and counts on the card were measured 23h ago. These
-  // providers are read hourly, so the second speaks a full half hour before the
-  // first does — the window where a figure is no longer current and the poller
-  // is not yet worth warning about, and the reason the two must never be joined
+  // this says the dollars and counts on the card were measured 23h ago. The
+  // second speaks after one cycle of the providers' cadence and the first after
+  // one and a half, so half a cycle apart (30 minutes at the hourly default) —
+  // the window where a figure is no longer current and the poller is not yet
+  // worth warning about, and the reason the two must never be joined
   // into one sentence. Rust classifies each age against the providers' cadence
   // and names each section, so nothing here compares an age to a threshold or
   // decides what to call a provider.

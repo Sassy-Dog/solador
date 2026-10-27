@@ -27,9 +27,11 @@
 //! layout shift. The em dash is for "configured, and we could not find out".
 //!
 //! **Three clocks, one warning line.** Claude reads local files on its own
-//! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon and Sentry are hourly API reads
-//! whose staleness window sits above their own cadence (90m), so a warning means
-//! a stuck poller rather than the normal gap between polls. Each section decides
+//! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon,
+//! Sentry and Vercel are API reads on the providers' cadence (hourly by
+//! default) whose staleness window is 1.5 cycles of that cadence (90m at the
+//! default), so a warning means a stuck poller rather than the normal gap
+//! between polls. Each section decides
 //! its own warning because each can fail on its own — and every one of them is
 //! then folded into the panel's **single header line** by
 //! [`merged_footer`](crate::panel::merged_footer), naming the section it came
@@ -47,9 +49,10 @@
 //! **And each metered section carries a second clock** (#338, the Azure Cost
 //! panel's arrangement one panel over). `freshness` is [`Freshness`] over the
 //! age of the last **success** and answers *"how old is the figure on screen"*;
-//! the warning answers *"did the last attempt fail, or is the poller late"*. On
-//! an hourly read the first speaks a full 30 minutes before the second does, and
-//! a nearly-hour-old dollar figure rendering identically to one measured a
+//! the warning answers *"did the last attempt fail, or is the poller late"*. The
+//! first speaks after one cycle and the second after one and a half, so half a
+//! cycle apart (30 minutes at the hourly default), and a nearly-hour-old dollar
+//! figure rendering identically to one measured a
 //! second ago is the same class of bug as unknown-rendered-as-zero. They are two
 //! fields for that reason and **must not be folded into one string**.
 //!
@@ -97,13 +100,17 @@ pub use usage::{summarize_logs, NeonClient, SentryClient, UsageSummary, VercelCl
 /// `UsageState::set_claude_cadence_secs`.
 pub const CLAUDE_STALE_AFTER_SECS: u64 = 150;
 
-/// Neon's and Sentry's `staleAfter: 90 * 60`. The window sits above the
-/// *default* hourly cadence. It does not follow the operator's cadence (#301
-/// made it theirs), so a cadence over 90 minutes goes stale between healthy
-/// polls: a known gap, tracked in #635.
-pub const PROVIDER_STALE_AFTER_SECS: u64 = 90 * 60;
+/// The Neon, Sentry and Vercel footers' staleness window for the operator's
+/// [`PanelInterval::UsageProviders`] cadence: one and a half cycles
+/// ([`crate::panel::stale_after_for_slow_cadence`]), which is the 90 minutes
+/// these footers have always had at the default hour (#635). Read at render
+/// time, so a cadence save moves it in the same response.
+#[must_use]
+pub fn provider_stale_after_secs(cadence_secs: u64) -> u64 {
+    crate::panel::stale_after_for_slow_cadence(cadence_secs)
+}
 
-/// How often the Neon and Sentry reads run — their own hourly cadence, not the
+/// How often the Neon, Sentry and Vercel reads run by default — hourly, on a cadence of their own, not the
 /// Claude rollups' cadence. Consumption and event stats move on the
 /// order of hours; asking every 30 seconds spends rate-limit budget to learn
 /// nothing.
@@ -516,7 +523,7 @@ struct ProviderView {
 /// `as of 23h ago`, and a line carrying it twice names neither of them.
 ///
 /// `cadence_secs` is the operator's `PanelInterval::UsageProviders`, not
-/// [`PROVIDER_STALE_AFTER_SECS`]. The two are deliberately different edges — a
+/// [`provider_stale_after_secs`]. The two are deliberately different edges — a
 /// reading stops being current after one whole cycle, and the *warning* only
 /// fires once the poller looks stuck — which is the window neither field can
 /// express alone.
@@ -589,7 +596,7 @@ fn neon_section(
                 .as_deref()
                 .or(invoice.last_error.as_deref()),
             now,
-            PROVIDER_STALE_AFTER_SECS,
+            provider_stale_after_secs(cadence_secs),
         ),
         // Consumption's clock too, because it is this section's primary
         // content. The invoice is a monthly figure whose own age says nothing a
@@ -632,7 +639,7 @@ fn sentry_section(
             state.last_updated,
             state.last_error.as_deref(),
             now,
-            PROVIDER_STALE_AFTER_SECS,
+            provider_stale_after_secs(cadence_secs),
         ),
         freshness: provider_freshness(SENTRY_ID, state, cadence_secs, now),
     }
@@ -693,7 +700,7 @@ fn vercel_section(
             state.last_updated,
             state.last_error.as_deref(),
             now,
-            PROVIDER_STALE_AFTER_SECS,
+            provider_stale_after_secs(cadence_secs),
         ),
         freshness: provider_freshness(VERCEL_ID, state, cadence_secs, now),
     }
@@ -1099,6 +1106,58 @@ mod tests {
             .find(|s| s["id"] == id)
     }
 
+    /// The Neon/Sentry/Vercel footers' window follows the cadence the panel is
+    /// rendered with (#635).
+    fn providers_footer(providers_at: u64, cadence: u64) -> Value {
+        let state = fixture_state(Fixture::Measured, NOW, providers_at);
+        view(&state, QUOTA, RATES, cadence, NOW)["footer"].clone()
+    }
+
+    #[test]
+    fn the_provider_window_is_one_and_a_half_cycles_of_the_cadence() {
+        assert_eq!(
+            provider_stale_after_secs(CADENCE),
+            90 * 60,
+            "no regression at 1h"
+        );
+        assert_eq!(provider_stale_after_secs(300), 450);
+        assert_eq!(provider_stale_after_secs(2 * 3_600), 3 * 3_600);
+        for cadence in [300, CADENCE, 2 * 3_600, 6 * 3_600] {
+            let window = provider_stale_after_secs(cadence);
+            assert!(
+                providers_footer(NOW - window, cadence).is_null(),
+                "{cadence}"
+            );
+            let text = providers_footer(NOW - window - 1, cadence)["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(text.contains("neon: stale"), "{cadence}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_healthy_provider_loop_never_shows_a_stale_footer() {
+        for cadence in [300, CADENCE, 2 * 3_600, 6 * 3_600] {
+            assert!(
+                providers_footer(NOW - cadence, cadence).is_null(),
+                "{cadence}"
+            );
+        }
+    }
+
+    #[test]
+    fn at_the_floor_a_stuck_provider_poller_is_flagged_within_two_cycles() {
+        let text = providers_footer(NOW - 2 * 300, 300)["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            text,
+            "⚠ neon: stale · updated 10m ago ⚠ sentry: stale · updated 10m ago"
+        );
+    }
+
     // MARK: plan block
 
     /// Off is one muted setup line and no plan section; on, the measured
@@ -1271,6 +1330,11 @@ mod tests {
         );
         assert_eq!(payload["loading"], true);
         assert!(state.neon.is_loading());
+        // Before the first read there is no age to show: no warning, and no
+        // `ago` anywhere in the section's freshness.
+        assert!(payload["footer"].is_null());
+        let text = payload["freshness"]["text"].as_str().unwrap_or_default();
+        assert!(!text.contains("ago"), "no fabricated age: {text}");
     }
 
     /// The log root could not even be located, so nothing was read. Distinct

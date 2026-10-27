@@ -1444,9 +1444,8 @@ await window.__TAURI__.core.invoke("azure_cost");
 
 **Four sources, and Vercel is the odd one.** Claude Code's token rollups are
 a walk of `~/.claude/projects` on `PanelInterval::ClaudeRollups`
-(`staleAfter` 2.5 cycles, 150s at the default 60s). Neon consumption and Sentry event stats are hourly API reads
-inside the same loop (`staleAfter` a flat 90m, above the *default* hourly cadence; it does not yet
-follow the operator's, so a cadence over 90 minutes warns between healthy polls, [#635](https://github.com/Sassy-Dog/solador/issues/635)). The Claude and Codex plan
+(`staleAfter` 2.5 cycles, 150s at the default 60s). Neon consumption and Sentry event stats are API reads
+inside the same loop on `PanelInterval::UsageProviders`, hourly by default (`staleAfter` 1.5 cycles of the providers' own cadence, 90m at the default, [#635](https://github.com/Sassy-Dog/solador/issues/635)). The loop runs each half only when its own cadence is due and sleeps until the next one is, so neither cadence is rounded to the other's; the log walk runs on its own setting, plus once when a resume from sleep forces it ([below](#waking-up-with-the-machine)). The Claude and Codex plan
 limits are a fifth, on a loop of their own (`plan_usage_loop`, every 15 minutes
 by default, `staleAfter` twice that) and only once the operator has opted in;
 see [the plans' own limits](#the-plans-own-limits). Azure cost is its own loop
@@ -1472,7 +1471,7 @@ time a poll was missed. `footer` is
 entirely: *is the poller stuck*. Its window sits **past** the cadence — an hour
 of grace on Azure (`azure::stale_after_secs`, the flat `5 * 60 * 60` the panel
 used to hardcode, now derived so an operator who changes the interval does not
-get a warning on every healthy read), and a flat 90m on the hourly reads. Between
+get a warning on every healthy read), and 1.5 cycles of the panel's own cadence on the Crons and metered-provider reads (90m at their 1h default). Between
 the two edges the card shows a dated figure and no warning at all — the state
 neither field can express alone, and the reason they were not folded into one.
 
@@ -1646,7 +1645,7 @@ into the rollups above it or attributed to a `VendorAccount`.
 
 **Applied without a restart**, like the GitHub panels: saving or clearing a Neon
 key, a Sentry token, an org id or a slug wakes the usage loop *and* forces its
-hourly half to run on that pass, so a newly-saved key fills its section in
+provider half to run on that pass, so a newly-saved key fills its section in
 seconds rather than within the hour. A SAS URL wakes the Azure loop the same way.
 The Sentry quota, the Azure budget and the two Neon rates wake nothing on
 purpose — all four are read at render time, so changing one repaints the bar or
@@ -1678,7 +1677,7 @@ await window.__TAURI__.core.invoke("crons");
       "title": "cron-relay-drift-check (platform/prd) — error for 7d 22h"
     }
   ],
-  "footer": null,                         // staleAfter 90m, the other Sentry read's window
+  "footer": null,                         // staleAfter 1.5 cycles of the providers' cadence (90m at the default)
   "freshness": {"state": "live", "measured_secs_ago": 600, "text": null, "color": null}
   //   ^ how old the ROWS are, which is not what the footer answers. Every age
   //     above is frozen at read time, so a `7d 22h` read an hour ago is really
@@ -2118,10 +2117,10 @@ a portfolio fetch on a credential it has no use for.
 |---|---|
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
-| the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
+| the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
 | Claude rollups appearing or disappearing, seen by a usage pass | the Services loop, once (`claude_presence_wakes_services`, [#627](https://github.com/Sassy-Dog/solador/issues/627)): Anthropic's row is derived from `claude_present()`, which no edit changes, so nothing else would wake the loop for it. A pass where presence did not change wakes nothing |
 | a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
-| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read it at render time for `freshness` only, their warning window still being a fixed 90 minutes (a known gap, tracked in [#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
+| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read theirs at render time too, each its own, and their window is 1.5 cycles of it, so the save moves it in the same response ([#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |
@@ -2132,13 +2131,20 @@ a portfolio fetch on a credential it has no use for.
 
 **A resume is the one caller allowed to wake every loop at once**, and it is not
 a mutation. Closing a laptop suspends every poll task, so the slow loops —
-GitHub, usage (1h), Azure (4h), containers, OpenClaw, the plan limits — otherwise resume on their
+GitHub, usage, Sentry Crons, Azure (4h), containers, OpenClaw, the plan limits — otherwise resume on their
 own schedule and the cockpit paints last night's data for up to a full interval
 after the lid opens. The plan loop's wake reads only a provider that is on and
-due by the wall clock, so a short nap spends no request. Containers is in that list as of
+due by the wall clock, so a short nap spends no request. The usage wake forces
+both of its halves, the Claude log walk and the metered providers: each
+otherwise runs only when its own cadence has elapsed by `Instant`, which may not
+count the sleep ([#635](https://github.com/Sassy-Dog/solador/issues/635)). Containers is in that list as of
 [#301](https://github.com/Sassy-Dog/solador/issues/301): a 10s tick was too
 short to be worth waking, but its cadence is a setting now, and one stretched to
-ten minutes has exactly this problem. The rule above holds for *edits* because an edit changes
+ten minutes has exactly this problem. Sentry Crons joined it in
+[#635](https://github.com/Sassy-Dog/solador/issues/635): its staleness window became 1.5
+cycles, so at a short cadence a nap of more than half a cycle would read stale on a healthy
+loop until the late poll landed; the wake costs one Sentry request, and none while no token
+is saved. The rule above holds for *edits* because an edit changes
 one source; a resume is every source at once becoming untrustworthy, so
 `resume_loop` ([`src/resume.rs`](src-tauri/src/resume.rs)) fires the lot.
 
@@ -3212,7 +3218,7 @@ and that immediacy is itself the check on the corresponding wake:
    To exercise the provider half, save a Neon org API key (plus its org id under
    Settings → Connections) and/or a Sentry `org:read` token and slug. Both apply
    without a relaunch — `settings_save_secret` wakes the usage loop *and* forces
-   its hourly half — so the sections should appear within seconds. That
+   its provider half — so the sections should appear within seconds. That
    immediacy is itself the check on the wake. A key with no org id is the
    interesting case: the section appears, both figures render `—`, and the panel
    header says `⚠ neon: Add your Neon org ID in Settings` — never a fabricated
@@ -3429,7 +3435,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. A different footer, `couldn't read runners — GitHub has more than this build will count — …`, means the org registers more runners than the walk will read (`RUNNERS_PAGE_CAP` x 100); the token is fine and the rows are the last good fetch. |
 | The **Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`azure_cost` command, or a script error in `usage.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
-| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Connections shows **Stored** for the credential; if it does, the hourly read has not run yet — saving wakes it, so re-save to force a pass. |
+| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Connections shows **Stored** for the credential; if it does, the provider read has not run yet — saving wakes it, so re-save to force a pass. |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |

@@ -55,7 +55,7 @@
   weekly such as `(WEEK · FABLE)`, each with its reset countdown and a bar
   coloured like the CPU/RAM meters, 70/90%), **opt-in per provider and off in
   a fresh store** (15 min by default, see `docs/APP-INTERNALS.md`, **Authentication**); Neon, Sentry +
-  Vercel (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
+  Vercel (hourly by default). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
   (MTD)` from operator-entered rates, and a best-effort `NEON LAST INVOICE` off
   an undocumented endpoint — that one failing degrades to `—` plus a footer,
@@ -110,9 +110,17 @@
   cadence-following footer reads its cadence at render time, so a save already
   moves it: Containers (2.5 cycles, never under 30s; the shared 150s floor would
   loosen the 10s default five-fold, #633), Azure Cost (cadence + 1h) and the plan limits (twice the
-  cadence). Sentry Crons and the metered Usage providers read it at render time
-  for `freshness` only; their warning window is still a fixed 90 minutes, a
-  known gap tracked in #635.
+  cadence). Sentry Crons and the metered Usage providers (Neon, Sentry, Vercel)
+  read it at render time too, each its own (`PanelInterval::Crons` and
+  `UsageProviders`): the window is 1.5 cycles
+  (`panel::stale_after_for_slow_cadence`; 90 minutes at the 1h default, 7.5
+  minutes at the 300s floor), so a healthy loop is not stale between polls
+  and a stuck one is flagged within two cycles (#635). The usage loop runs
+  its two halves on their own cadences: each turn runs only the half that is
+  due (the Claude rollups never ride the providers' turn, so a slow rollups
+  cadence is honoured), then sleeps until the next half is, and each provider
+  is stamped as its read completes. A saved provider credential forces the
+  providers onto the next turn; a resume from sleep forces both.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness signal of
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,
