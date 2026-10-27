@@ -541,6 +541,152 @@ mod tests {
         assert_eq!(out["rows"], json!([]));
     }
 
+    /// Row ids are built twice: by `dashboard::source_rows`, which names every
+    /// row a scope can pick, and by this module's filters, which must rebuild
+    /// the same id to keep that row (#641). For each scoped source this runs one
+    /// sample payload through both. Every id `source_rows` gives is used as an
+    /// `item:` scope, and the scoped payload must hold exactly one entry: none
+    /// means this module derives a different id for it, more means two entries
+    /// share one. The last assertion is that the sample holds nothing
+    /// `source_rows` does not name, so a new kind of entry cannot slip past.
+    #[test]
+    fn each_scoped_source_rebuilds_the_ids_the_dashboard_gives_its_rows() {
+        fn item(v: &Value, key: &str) -> usize {
+            v[key].as_array().map_or(0, Vec::len)
+        }
+        fn nested(v: &Value, key: &str) -> usize {
+            v[key]
+                .as_array()
+                .map_or(0, |groups| groups.iter().map(|g| item(g, "rows")).sum())
+        }
+        fn present(v: &Value) -> usize {
+            usize::from(!v.is_null())
+        }
+        type Held = Box<dyn Fn(&Value) -> usize>;
+        let sources: Vec<(&str, Value, Held, &[&str])> = vec![
+            (
+                "ghWorkflows",
+                json!({"rows":[
+                    {"repo":"o/a","name":"a"},{"repo":"o/b","name":"b"}]}),
+                Box::new(move |v| item(v, "rows")),
+                &[],
+            ),
+            (
+                "ghRunners",
+                json!({"rows":[
+                    {"org":"o","name":"a"},{"org":"o","name":"b"},{"org":"p","name":"a"}]}),
+                Box::new(move |v| item(v, "rows")),
+                &[],
+            ),
+            (
+                "services",
+                json!({"rows":[{"id":"s1","label":"One"},{"id":"s2","label":"Two"}]}),
+                Box::new(move |v| item(v, "rows")),
+                &[],
+            ),
+            (
+                "sentryCrons",
+                json!({"rows":[{"id":"m1","label":"One"},{"id":"m2","label":"Two"}]}),
+                Box::new(move |v| item(v, "rows")),
+                &[],
+            ),
+            (
+                "containers",
+                json!({"sections":[
+                    {"host":"hostA","label":"A","rows":[{"name":"db"},{"name":"web"}]},
+                    {"host":"hostB","label":"B","rows":[{"name":"db"}]}]}),
+                Box::new(move |v| nested(v, "sections")),
+                &[],
+            ),
+            (
+                "claudeUsage",
+                json!({"trailing":"1M","projects":[{"name":"p"}],
+                    "windows":[{"label":"Today"},{"label":"7 days"}],
+                    "plans":[{"id":"claude","rows":[{"label":"5H"},{"label":"7D"}]}],
+                    "providers":[
+                        {"id":"neon","rows":[{"label":"Compute"}]},
+                        {"id":"sentry","rows":[{"label":"Compute"}]}]}),
+                Box::new(move |v| item(v, "windows") + nested(v, "plans") + nested(v, "providers")),
+                // The trailing total is a line of its own, not an entry in any
+                // list this module filters.
+                &["claude-today"],
+            ),
+            (
+                "azureCost",
+                json!({"headline":{"value":"$10"},
+                    "stats":[{"label":"Today","value":"$1"},{"label":"Yesterday","value":"$2"}],
+                    "budget":{"label":"Budget","value":"50%"}}),
+                Box::new(move |v| {
+                    present(&v["headline"]) + item(v, "stats") + present(&v["budget"])
+                }),
+                &[],
+            ),
+            (
+                "openclawAgents",
+                json!({"runtimes":[
+                    {"id":"r1",
+                        "agents":{"rows":[{"id":"a1"},{"id":"a2"}]},
+                        "channels":{"rows":[{"id":"c1"}]},
+                        "connection":{"text":"up"},"hint":{"text":"h"},
+                        "pairing":{"title":"p"},"cron":{"title":"c"}},
+                    {"id":"r2",
+                        "agents":{"rows":[{"id":"a1"}]},
+                        "channels":{"rows":[{"id":"c1"}]},
+                        "connection":{"text":"up"},"hint":null,"pairing":null,"cron":null}]}),
+                Box::new(move |v| {
+                    v["runtimes"].as_array().map_or(0, |runtimes| {
+                        runtimes
+                            .iter()
+                            .map(|r| {
+                                nested_one(r, "agents")
+                                    + nested_one(r, "channels")
+                                    + ["connection", "hint", "pairing", "cron"]
+                                        .iter()
+                                        .filter(|k| !r[**k].is_null())
+                                        .count()
+                            })
+                            .sum()
+                    })
+                }),
+                &[],
+            ),
+        ];
+        fn nested_one(runtime: &Value, key: &str) -> usize {
+            runtime[key]["rows"].as_array().map_or(0, Vec::len)
+        }
+        for (source, payload, held, unfiltered) in &sources {
+            let ids = crate::dashboard::all_row_ids(source, payload);
+            let distinct: BTreeSet<&String> = ids.iter().collect();
+            assert_eq!(distinct.len(), ids.len(), "{source}: ids are distinct");
+            assert_eq!(
+                held(payload),
+                ids.len() - unfiltered.len(),
+                "{source}: the sample holds exactly what source_rows names: {ids:?}"
+            );
+            for id in ids.iter().filter(|id| !unfiltered.contains(&id.as_str())) {
+                let scoped = scope_payload(&tile(source, &format!("item:{id}")), payload.clone());
+                assert_eq!(
+                    held(&scoped),
+                    1,
+                    "{source}: scoping to {id:?} must keep that entry and no other: {scoped}"
+                );
+            }
+        }
+    }
+
+    /// Machines are cards, and a Machines tile keeps them by the card's `id`
+    /// (`CockpitFrame::payload`); `source_rows` must name each by the same key.
+    #[test]
+    fn machines_are_named_by_their_card_id() {
+        let cards = json!({"hosts":[
+            {"id":"local","hostName":"Studio","connection":{"state":"live"}},
+            {"id":"2b1c","error":{"hostName":"nuc"},"connection":{"state":"unreachable"}}]});
+        assert_eq!(
+            crate::dashboard::all_row_ids("hosts", &cards),
+            ["local", "2b1c"]
+        );
+    }
+
     #[test]
     fn hosts_come_back_unchanged() {
         let p = json!({"hosts":[{"hostName":"a"}]});

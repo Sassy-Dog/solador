@@ -427,6 +427,9 @@
       if (!ids.has(id)) {
         el.remove();
         tiles.delete(id);
+        // An open View menu belongs to its tile: with the tile gone nothing
+        // else would clear it, and the same id coming back would reopen it.
+        if (viewMenu === id) viewMenu = null;
       }
     const empty = grid.querySelector(".db-empty");
     if (empty) empty.remove();
@@ -525,13 +528,22 @@
     const trigger = button(L("view"), "views", t.id, "db-plain db-view-button");
     trigger.setAttribute("aria-haspopup", "menu");
     trigger.setAttribute("aria-expanded", String(open));
+    trigger.id = "db-view-button-" + t.id;
     footer.append(trigger);
     if (!open) return;
+    // The WAI-ARIA menu button pattern: the button names the menu it controls
+    // (only while the menu exists, so the reference never dangles), the menu is
+    // labelled by the button, and items are reached by arrow keys rather than
+    // Tab, so each carries a roving tabindex of -1.
     const menu = node("div", "db-view-menu");
+    menu.id = "db-view-menu-" + t.id;
+    trigger.setAttribute("aria-controls", menu.id);
     menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-labelledby", trigger.id);
     for (const v of views) {
       const item = button(v.label, "view-" + v.id, t.id);
       item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
       menu.append(item);
     }
     footer.append(menu);
@@ -2362,6 +2374,9 @@
       // browser's Tab moves on from View rather than from <body>. Focusing View
       // before closing would focus a button the repaint then detaches.
       closeViewMenu(true);
+    } else if ((e.key === "Home" || e.key === "End") && items.length) {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1].focus({ preventScroll: true });
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
       e.preventDefault();
       const step = e.key === "ArrowDown" ? 1 : -1;

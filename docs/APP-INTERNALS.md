@@ -487,7 +487,7 @@
   volume (`disk_volume` in `app/src-tauri/src/dashboard.rs`). **Hidden volumes**
   (`Host.hidden_volume_mounts` / `Settings.local_hidden_volume_mounts`) are
   filtered once per frame by the `cockpit` command's `apply_machine_preferences`
-  (via `app/src-tauri/src/volumes.rs`, on `cockpit_view`'s payload), before the
+  (via `app/src-tauri/src/volumes.rs`, on `cockpit_with`'s payload), before the
   Hosts panel or the dashboard reads a card, so a hidden volume never
   colours the strip, names itself in the status or raises attention. The list's
   one home is the Machines tile's Configure → **Volumes shown** (rule 4: shared
@@ -543,12 +543,21 @@
   A tile's footer ends in a **View** button (`views` in the tile JSON,
   authored in `dashboard.rs`'s `TILE_VIEWS`) whose menu opens Detail or Full
   view; the frontend paints only the view ids its `VIEW_ACTIONS` can open, and
-  an open menu is rebuilt with the footer on each repaint.
+  an open menu is rebuilt with the footer on each repaint. The menu follows
+  the WAI-ARIA menu button pattern: the button carries `aria-controls` (only
+  while the menu exists) and the menu `aria-labelledby`, items hold a roving
+  `tabindex="-1"`, and Arrow keys wrap while Home and End go to the first and
+  last item; Escape and Tab close it. A tile that leaves the overview takes
+  its open menu with it.
   Detail opened from a tile (View, `N more`, a row or a runner group) offers
   **Full view**, the tile's Full view: its source's panel holding only the tile's
-  rows (the panel command takes the tile id and `tile_scope` filters, never
-  inserting a key the payload lacks; Machines cards before layout, while `No
-  hosts configured` still counts the configured hosts, not the kept cards),
+  rows (the panel command takes the tile id, refuses a gone, hidden or
+  foreign tile before it builds or prints anything, and `tile_scope` filters,
+  never inserting a key the payload lacks; the ids it keeps are the ones
+  `dashboard::source_rows` names, which `tile_scope`'s drift test checks per
+  source; Machines cards are built once per poll and filtered before layout,
+  while `No hosts configured` still counts the configured hosts, not the
+  kept cards),
   titled with the tile's name, with Rust's `fullNote` under the header row when
   the scope filters (`Scope: …`, plus the totals clause on every source but
   Machines, which has no totals). Until the tile's own first reading lands the

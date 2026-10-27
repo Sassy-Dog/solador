@@ -126,7 +126,7 @@ through `machine_set_volume_hidden`, which writes `Host.hidden_volume_mounts` or
 `Settings.local_hidden_volume_mounts` in `store.json` without reloading the poll
 set, so a hide never costs a host its sparkline history (the original view's
 `applyHiddenMounts()` vs `reload()`). The filter runs once per frame in the `cockpit` command's
-`apply_machine_preferences` (`app/src-tauri/src/volumes.rs`), on `cockpit_view`'s
+`apply_machine_preferences` (`app/src-tauri/src/volumes.rs`), on `cockpit_with`'s
 payload and before either view reads the cards.
 
 Machines Detail also shows thermal pressure: Normal, Fair, Hot or Critical when
@@ -2324,7 +2324,7 @@ Two things worth knowing about this surface:
   the settings one, because the settings payload is only fetched while that
   surface is open and this value has to be on the page from the first frame.
   `app/ui/app.js` paints it as `--row-gap`, over the pre-payload value
-  `app/ui/app.css` still declares. It needs no wake: `cockpit_view` re-reads the
+  `app/ui/app.css` still declares. It needs no wake: `cockpit_with` re-reads the
   store every frame, so a change lands on the next 1s tick. It moves that one
   axis and no other — the gap *between* panels is `viewmodel::cockpit::SPACING`
   and the grids that separate a panel's sections are a third, both fixed.
@@ -2927,7 +2927,7 @@ for a different one — answering every width with one payload is how
 **Nothing automated exercises the Tauri IPC boundary**
 ([#123](https://github.com/Sassy-Dog/solador/issues/123)). Both sides of the
 seam are tested and the seam itself is not: the Rust tests call
-`cockpit_view(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`,
+`cockpit_payload(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`,
 `azure::view(…)` and `openclaw::view(…)` directly rather than through their
 `#[tauri::command]`
 wrappers, and the Playwright suite stubs `window.__TAURI__.core.invoke` — every
