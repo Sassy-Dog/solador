@@ -302,8 +302,9 @@ struct App {
     /// the Usage card.
     crons: Mutex<CronsState>,
     /// Cuts the crons loop's sleep short after the Sentry token or org slug
-    /// changes. A long cadence is long enough that waiting one out is
-    /// indistinguishable from the credential having been rejected.
+    /// changes, and on a resume from sleep. A long cadence is long enough that
+    /// waiting one out is indistinguishable from the credential having been
+    /// rejected.
     crons_wake: tokio::sync::Notify,
     /// The Azure Cost panel's state, on its own 4h cadence.
     azure: Mutex<AzureState>,
@@ -3687,9 +3688,9 @@ async fn poll_crons(app: &Arc<App>) {
 ///
 /// Same argument as [`AZURE_FIRST_READ_RETRY`]: the hourly rhythm is right for a
 /// watch on a weekly cron and wrong for a first read that failed because the
-/// network was not up yet at login, and `crons_wake` only fires on a Settings
-/// edit — so that first failure would otherwise sit on the cockpit, red, for an
-/// hour.
+/// network was not up yet at login, and `crons_wake` fires only on a Settings
+/// edit or a resume from sleep, neither of which that first read gets — so its
+/// failure would otherwise sit on the cockpit, red, for an hour.
 const CRONS_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The Sentry Crons panel's poll loop, on the operator's cadence for this panel
@@ -8109,41 +8110,34 @@ mod tests {
         }
     }
 
-    /// The alignment the many-cycles test reaches only by chance: the walk
-    /// falls due a second before the providers do, runs first, and the
-    /// providers' next pass waits out all of it. At the 300s floor, with all
-    /// four requests at their 30s timeout, a walk of up to 30s still lands
-    /// the next reading inside the window.
+    /// The alignment the many-cycles test reaches only by chance: the walk and
+    /// the providers fall due in the same turn, `usage_loop` runs the walk
+    /// first, and the providers' pass waits out all of it. At the 300s floor,
+    /// with all four requests at their 30s timeout, a walk of up to 30s still
+    /// lands the next reading inside the window (the footer warns only past
+    /// it). A walk that falls due a second earlier runs alone, and the
+    /// providers, due while it ran, go next with no sleep.
     #[test]
-    fn a_walk_due_just_before_the_providers_still_fits_the_floor_window() {
+    fn a_walk_due_with_the_providers_still_fits_the_floor_window() {
+        use std::time::Duration as D;
         const PASS: u64 = 120;
         let window = usage::provider_stale_after_secs(300);
+        let only = |rollups, providers| UsageTurn { rollups, providers };
         for walk in [5, 25, 30] {
             // The last provider pass ran 0..120, so the providers fall due at 420.
-            let walk_starts = PASS + 300 - 1;
-            let first = usage_clocks(60, Some(60), 300, Some(walk_starts - PASS));
-            assert_eq!(
-                first.turn(false, false),
-                UsageTurn {
-                    rollups: true,
-                    providers: false
-                },
-                "walk {walk}s"
-            );
-            let next_pass = walk_starts + walk;
-            let second = usage_clocks(60, Some(0), 300, Some(next_pass - PASS));
-            assert_eq!(
-                second.turn(false, false),
-                UsageTurn {
-                    rollups: false,
-                    providers: true
-                },
-                "walk {walk}s"
-            );
+            let both = usage_clocks(60, Some(60), 300, Some(300));
+            assert_eq!(both.turn(false, false), only(true, true), "walk {walk}s");
+            let next_pass = PASS + 300 + walk;
             assert!(
                 next_pass <= window,
                 "walk {walk}s: {next_pass}s between readings against {window}s"
             );
+
+            let first = usage_clocks(60, Some(60), 300, Some(299));
+            assert_eq!(first.turn(false, false), only(true, false), "walk {walk}s");
+            let after = usage_clocks(60, Some(0), 300, Some(299 + walk));
+            assert_eq!(after.sleep(), D::ZERO, "walk {walk}s");
+            assert_eq!(after.turn(false, false), only(false, true), "walk {walk}s");
         }
     }
 
