@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy (csp_server.py), so a blocked style surfaces as a console error
@@ -21,35 +22,19 @@ test.afterEach(async ({ page }) => {
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
 /**
- * Stubs the whole IPC surface (there is no real Tauri IPC in a browser) and
- * records every call, so a test can assert *which* command painted the panel.
- *
- * `cockpit` has to be answered too: app.js replaces the entire document body
- * with an error line when its first `invoke` rejects, which would take the
- * containers panel down with it and make this suite fail for the wrong reason.
+ * Enters the Containers tile's Full view (View, then Full view) with the IPC
+ * stubbed and every call recorded, so a test can assert *which* command painted
+ * the panel and what it sent. `cockpit` has to be answered too: app.js replaces
+ * the entire document body with an error line when its first `invoke` rejects,
+ * which would take the containers panel down with it and make this suite fail
+ * for the wrong reason.
  */
-async function stubIpc(page, { cockpit, containers }) {
-  await page.addInitScript(
-    ({ cockpit, containers }) => {
-      window.__CALLS__ = [];
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command, args) => {
-            window.__CALLS__.push({ command, args });
-            if (command === "cockpit") return cockpit;
-            if (command === "containers") return containers;
-            return null;
-          },
-        },
-      };
-    },
-    { cockpit, containers }
-  );
-}
-
-/** Loads the app and waits for the panel to have been painted at least once. */
-async function gotoApp(page) {
-  await page.goto("/index.html?view=details");
+async function gotoApp(page, baseURL, { cockpit, containers } = {}) {
+  await gotoTileFull(page, baseURL, {
+    source: "containers",
+    cockpit: cockpit ?? (await fixture(baseURL, "sample-cockpit.json")),
+    answers: { containers: containers ?? (await fixture(baseURL, "sample-containers.json")) },
+  });
   await expect(page.locator("#containersPanel")).toBeVisible();
 }
 
@@ -62,11 +47,13 @@ const rgb = (hex) => {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
 
-test("the panel paints Rust's title, trailing counts and section order", async ({ page, baseURL }) => {
-  await gotoApp(page);
-  const payload = await fixture(baseURL, "sample-containers.json");
+test("the Containers panel is headed by its tile's name and paints Rust's trailing counts and section order", async ({ page, baseURL }) => {
+  const payload = { ...(await fixture(baseURL, "sample-containers.json")), title: "Rust's own title" };
+  await gotoApp(page, baseURL, { containers: payload });
 
-  await expect(page.locator("#containersTitle")).toHaveText(payload.title);
+  // Headed by the tile's own name (#640), not the payload's `title`. The
+  // fixture's title is the tile's name too, so it is changed here.
+  await expect(page.locator("#containersTitle")).toHaveText("Containers / VMs");
   // The rollup counts every container, including the ones rules collapsed —
   // asserted against Rust's own string so a re-derivation in JS would fail here.
   await expect(page.locator("#containersTrailing")).toHaveText(payload.trailing);
@@ -78,7 +65,7 @@ test("the panel paints Rust's title, trailing counts and section order", async (
 });
 
 test("present, absent and aggregate rows carry Rust's strings and colours", async ({ page, baseURL }) => {
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
   const payload = await fixture(baseURL, "sample-containers.json");
   const local = payload.sections.find((s) => s.host === "this machine");
 
@@ -115,7 +102,7 @@ test("present, absent and aggregate rows carry Rust's strings and colours", asyn
 });
 
 test("a healthy panel shows no warning", async ({ page, baseURL }) => {
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
   expect((await fixture(baseURL, "sample-containers.json")).footer).toBeNull();
   await expect(page.locator("#containersStale")).toBeHidden();
 });
@@ -123,8 +110,7 @@ test("a healthy panel shows no warning", async ({ page, baseURL }) => {
 test("the empty state is one sentence plus the warning, not an empty grid", async ({ page, baseURL }) => {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const containers = await fixture(baseURL, "sample-containers-empty.json");
-  await stubIpc(page, { cockpit, containers });
-  await gotoApp(page);
+  await gotoApp(page, baseURL, { cockpit, containers });
 
   await expect(page.locator("#containersBody .cont-empty")).toHaveText(containers.empty.message);
   await expect(page.locator(".cont-section")).toHaveCount(0);
@@ -162,8 +148,7 @@ test("a section with no rows says which kind of empty it is", async ({ page, bas
       ],
     },
   ];
-  await stubIpc(page, { cockpit, containers });
-  await gotoApp(page);
+  await gotoApp(page, baseURL, { cockpit, containers });
 
   await expect(page.locator('.cont-section[data-host="this machine"] .cont-empty'))
     .toHaveText("no container runtimes");
@@ -197,8 +182,7 @@ test("container names reach the DOM as text, never as markup", async ({ page, ba
       ],
     },
   ];
-  await stubIpc(page, { cockpit, containers });
-  await gotoApp(page);
+  await gotoApp(page, baseURL, { cockpit, containers });
 
   await expect(rowsOf(page, "this machine").first().locator(".cont-name")).toHaveText(hostile);
   expect(await page.locator("#containersBody img").count()).toBe(0);
@@ -206,26 +190,23 @@ test("container names reach the DOM as text, never as markup", async ({ page, ba
 });
 
 test("a failed load leaves no invented panel chrome on screen", async ({ page, baseURL }) => {
-  const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  await page.addInitScript((cockpit) => {
-    window.__TAURI__ = {
-      core: {
-        invoke: async (command) => {
-          if (command === "cockpit") return cockpit;
-          throw new Error("containers unavailable");
-        },
-      },
-    };
-  }, cockpit);
-  await page.goto("/index.html?view=details");
+  await gotoTileFull(page, baseURL, {
+    source: "containers",
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { containers: { __throw: "containers unavailable" } },
+  });
 
-  // The cockpit still painted, so the page is alive...
-  await expect(page.locator("#cockpit .card").first()).toBeVisible();
+  // The Full view is up, so the page is alive...
+  await expect(page.locator("#cockpitView")).toBeVisible();
   // ...and the panel stayed hidden rather than showing an empty heading and a
   // blank count, which would read as "nothing is running" instead of "we
   // don't know".
   await expect(page.locator("#containersPanel")).toBeHidden();
-  await expect(page.locator("#containersTitle")).toHaveText("");
+  // The heading is the tile's own name (#640), set before any reading, not
+  // anything the failed reading supplied; the panel is hidden under it and the
+  // count stays blank.
+  await expect(page.locator("#containersTitle")).toHaveText("Containers / VMs");
+  await expect(page.locator("#containersTrailing")).toHaveText("");
 });
 
 test("host groups sit side by side once Rust says the panel is wide enough", async ({ page, baseURL }) => {
@@ -238,8 +219,7 @@ test("host groups sit side by side once Rust says the panel is wide enough", asy
     "fixture must be wide enough for 2"
   ).toBe(2);
 
-  await stubIpc(page, { cockpit: wide, containers });
-  await gotoApp(page);
+  await gotoApp(page, baseURL, { cockpit: wide, containers });
 
   await expect(page.locator("#containersPanel")).toHaveAttribute("data-cols", "2");
   const tracks = await page.locator("#containersBody").evaluate((el) =>
@@ -258,12 +238,18 @@ test("a narrow panel keeps the host groups stacked", async ({ page, baseURL }) =
   const containers = await fixture(baseURL, "sample-containers.json");
   expect(narrow.panelRows.flat().find((p) => p.id === "containers").columns).toBe(1);
 
-  await stubIpc(page, { cockpit: narrow, containers });
-  await gotoApp(page);
+  await gotoApp(page, baseURL, { cockpit: narrow, containers });
 
   await expect(page.locator("#containersPanel")).toHaveAttribute("data-cols", "1");
   const tracks = await page.locator("#containersBody").evaluate((el) =>
     getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length
   );
   expect(tracks).toBe(1);
+});
+
+// The renderer asks for its own tile's reading (#639): `{}` would be the
+// source-wide payload, wrong in a tile's Full view whenever its scope narrows.
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
+  expect(await lastArgs(page, "containers")).toEqual({ tile: tileIdFor("containers") });
 });

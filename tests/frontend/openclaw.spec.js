@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy (csp_server.py), so a blocked style surfaces as a console error rather
@@ -22,38 +23,19 @@ test.afterEach(async ({ page }) => {
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
 /**
- * Stubs the whole IPC surface and records every call, so a test can assert the
- * panel was painted by the `openclaw` command rather than by a fixture the page
- * happened to fetch.
- *
- * `cockpit` has to be answered too: app.js replaces the entire document body
- * with an error line when its first `invoke` rejects, which would take this
- * panel down with it and fail the suite for the wrong reason.
+ * Enters the openclawAgents tile's Full view (View, then Full view) with the IPC stubbed
+ * and every call recorded, so a test can assert *which* command painted the
+ * panel and what it sent. `cockpit` has to be answered too: app.js replaces the
+ * entire document body with an error line when its first `invoke` rejects.
  */
-async function stubIpc(page, { cockpit, openclaw }) {
-  await page.addInitScript(
-    ({ cockpit, openclaw }) => {
-      window.__CALLS__ = [];
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command, args) => {
-            window.__CALLS__.push({ command, args });
-            if (command === "cockpit") return cockpit;
-            if (command === "openclaw") return openclaw;
-            return null;
-          },
-        },
-      };
-    },
-    { cockpit, openclaw }
-  );
+async function gotoPanel(page, baseURL, { cockpit, openclaw }) {
+  await gotoTileFull(page, baseURL, { source: "openclawAgents", cockpit, answers: { openclaw: openclaw } });
 }
 
 async function gotoWith(page, baseURL, name = "sample-openclaw.json") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const openclaw = await fixture(baseURL, name);
-  await stubIpc(page, { cockpit, openclaw });
-  await page.goto("/index.html?view=details");
+  await gotoPanel(page, baseURL, { cockpit, openclaw });
   return openclaw;
 }
 
@@ -66,11 +48,15 @@ const rgb = (hex) => {
 const runtime = (page) => page.locator("#openclawBody .oc-runtime");
 const section = (page, id) => page.locator(`#openclawBody .oc-section[data-section="${id}"]`);
 
-test("the panel paints Rust's title, trailing label and agent rows", async ({ page, baseURL }) => {
-  const vm = await gotoWith(page, baseURL);
+test("the OpenClaw panel is headed by its tile's name and paints Rust's trailing label and agent rows", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const vm = { ...(await fixture(baseURL, "sample-openclaw.json")), title: "Rust's own title" };
+  await gotoPanel(page, baseURL, { cockpit, openclaw: vm });
   await expect(page.locator("#openclawPanel")).toBeVisible();
 
-  await expect(page.locator("#openclawTitle")).toHaveText(vm.title);
+  // Headed by the tile's own name (#640), not the payload's `title`. The
+  // fixture's title is the tile's name too, so it is changed here.
+  await expect(page.locator("#openclawTitle")).toHaveText("OpenClaw");
   await expect(page.locator("#openclawTrailing")).toHaveText(vm.trailing);
 
   const agents = vm.runtimes[0].agents;
@@ -252,4 +238,11 @@ test("the panel renders no staleness warning, because it is event-driven", async
   const vm = await gotoWith(page, baseURL);
   expect(vm.footer).toBeUndefined();
   await expect(page.locator("#openclawPanel .panel-stale")).toHaveCount(0);
+});
+
+// The renderer asks for its own tile's reading (#639): `{}` would be the
+// source-wide payload, wrong in a tile's Full view whenever its scope narrows.
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoWith(page, baseURL);
+  expect(await lastArgs(page, "openclaw")).toEqual({ tile: tileIdFor("openclawAgents") });
 });

@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { dashboardWithTiles, openTileFull } from "./tile-full.js";
 
 /**
  * Generates the product screenshots solador.app and the README show, from the
@@ -53,23 +54,32 @@ const PAYLOADS = {
  * one payload is how `cockpit-narrow.png` once showed overlapping host cards: a
  * layout computed for 2732px painted into a 900px window. So each viewport
  * below has its own dump, and a width with none is refused, never approximated.
- * The widths are what those viewports measure (1800, 1024 and 900 wide, less
- * the page padding); a CSS change that moves them fails here loudly, and the
+ * The widths are what those viewports measure (1800, 1024, 908, 900 and 462
+ * wide, less the page padding); a CSS change that moves them fails here loudly, and the
  * fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
  */
 const COCKPITS = {
   1768: "sample-showcase-cockpit-1768.json",
   992: "sample-showcase-cockpit-992.json",
+  876: "sample-showcase-cockpit-876.json",
   868: "sample-showcase-cockpit-868.json",
+  430: "sample-showcase-cockpit-430.json",
 };
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
-async function stubShowcase(page, baseURL) {
+/**
+ * `tileSource` swaps the showcase overview for one `all`-scoped tile of that
+ * source (the showcase overview has no Containers, Usage, Azure Cost or
+ * OpenClaw tile), so the panel shot is that tile's Full view of the showcase
+ * readings. Without it the overview is the showcase's own.
+ */
+async function stubShowcase(page, baseURL, tileSource = null) {
   const answers = {};
   for (const [command, file] of Object.entries(PAYLOADS)) {
     answers[command] = await fixture(baseURL, file);
   }
+  if (tileSource) answers.dashboard_view = dashboardWithTiles(answers.dashboard_view, [tileSource]);
   const cockpits = {};
   for (const [width, file] of Object.entries(COCKPITS)) {
     cockpits[width] = await fixture(baseURL, file);
@@ -107,6 +117,19 @@ async function loadDetails(page, baseURL) {
   await expectNoMisses(page);
 }
 
+/**
+ * A panel as an operator sees it from a tile: the overview, the tile's View
+ * button, then Full view (`tileFull`). Rust's showcase payload answers the
+ * panel's command whatever the tile asked for.
+ */
+async function loadTileFull(page, baseURL, source) {
+  await stubShowcase(page, baseURL, source);
+  await page.goto("/index.html");
+  await openTileFull(page, source);
+  await page.waitForTimeout(300); // sparklines animate in
+  await expectNoMisses(page);
+}
+
 test.beforeAll(async () => {
   await fs.mkdir(OUT, { recursive: true });
 });
@@ -129,23 +152,26 @@ test.describe("at 2x: the shots people look at", () => {
     await page.screenshot({ path: path.join(OUT, "overview.png"), fullPage: true });
   });
 
-  // [selector, file name, viewport width]. Hosts is one card — this
-  // machine's — at the narrow width: the whole host grid at 1800 wide and 2x
-  // is a 3500px image for a tile that shows a few hundred.
-  for (const [selector, name, width] of [
-    ["#cockpit > .card >> nth=0", "hosts", 900],
-    ["#reposPanel", "repos", 1800],
-    ["#runnersPanel", "runners", 1800],
-    ["#containersPanel", "containers", 1800],
-    ["#usagePanel", "usage", 1800],
-    ["#cronsPanel", "crons", 1800],
-    ["#servicesPanel", "services", 1800],
-    ["#azurePanel", "azure-cost", 1800],
-    ["#openclawPanel", "openclaw", 1800],
+  // [selector, file name, viewport width, tile source]. A tile's Full view gives
+  // its panel the whole window, so the window is sized to the panel: 908 for the
+  // panels that were half a cockpit wide (876), 462 for the quarter-wide ones
+  // (430), keeping each image the shape the site and README lay out. Hosts is
+  // one card — this machine's — at the narrow width: the whole host grid at 1800
+  // wide and 2x is a 3500px image for a tile that shows a few hundred.
+  for (const [selector, name, width, source] of [
+    ["#cockpit > .card >> nth=0", "hosts", 900, "hosts"],
+    ["#reposPanel", "repos", 908, "ghWorkflows"],
+    ["#runnersPanel", "runners", 908, "ghRunners"],
+    ["#containersPanel", "containers", 908, "containers"],
+    ["#usagePanel", "usage", 462, "claudeUsage"],
+    ["#cronsPanel", "crons", 462, "sentryCrons"],
+    ["#servicesPanel", "services", 462, "services"],
+    ["#azurePanel", "azure-cost", 908, "azureCost"],
+    ["#openclawPanel", "openclaw", 462, "openclawAgents"],
   ]) {
     test(`panel: ${name}`, async ({ page, baseURL }) => {
       await page.setViewportSize({ width, height: 1200 });
-      await loadDetails(page, baseURL);
+      await loadTileFull(page, baseURL, source);
       const panel = page.locator(selector);
       await expect(panel).toBeVisible();
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });

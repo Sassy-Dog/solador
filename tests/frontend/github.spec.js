@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { advance, gotoTileFull, openTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy (csp_server.py), so a blocked style surfaces as a console error rather
@@ -21,40 +22,39 @@ test.afterEach(async ({ page }) => {
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
 /**
- * Stubs the whole IPC surface and records every call, so a test can assert
- * *which* command painted a panel.
+ * Enters one GitHub tile's Full view (View, then Full view) with the IPC
+ * stubbed and every call recorded. `panel` is "repos" (the Repos tile) or
+ * "runners" (the Runners tile): a tile's Full view shows only its own panel, so
+ * a test about a panel enters that panel's tile. The other panel's command is
+ * still answered, because the page asks for both on every pass.
  *
  * `cockpit` has to be answered too: app.js replaces the entire document body
  * with an error line when its first `invoke` rejects, which would take these
  * panels down with it and make the suite fail for the wrong reason.
  */
-async function stubIpc(page, { cockpit, repos, runners }) {
-  await page.addInitScript(
-    ({ cockpit, repos, runners }) => {
-      window.__CALLS__ = [];
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command, args) => {
-            window.__CALLS__.push({ command, args });
-            if (command === "cockpit") return cockpit;
-            if (command === "repos") return repos;
-            if (command === "runners") return runners;
-            return null;
-          },
-        },
-      };
-    },
-    { cockpit, repos, runners }
-  );
+const GITHUB_TILE = { repos: "ghWorkflows", runners: "ghRunners" };
+async function gotoPanel(page, baseURL, { cockpit, repos, runners }, panel) {
+  await gotoTileFull(page, baseURL, {
+    source: GITHUB_TILE[panel],
+    sources: Object.values(GITHUB_TILE),
+    cockpit,
+    answers: { repos, runners },
+  });
+}
+
+/** Leaves the open Full view and enters the other GitHub tile's, as an operator would. */
+async function switchPanel(page, panel) {
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await openTileFull(page, GITHUB_TILE[panel]);
 }
 
 /** Loads the app with both panels stubbed from the dumped fixtures. */
-async function gotoWithFixtures(page, baseURL, overrides = {}) {
+async function gotoWithFixtures(page, baseURL, overrides = {}, panel = "repos") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const repos = overrides.repos ?? (await fixture(baseURL, "sample-repos.json"));
   const runners = overrides.runners ?? (await fixture(baseURL, "sample-runners.json"));
-  await stubIpc(page, { cockpit, repos, runners });
-  await page.goto("/index.html?view=details");
+  await gotoPanel(page, baseURL, { cockpit, repos, runners }, panel);
   return { repos, runners };
 }
 
@@ -69,11 +69,15 @@ const runnerRows = (page) => page.locator("#runnersBody .gh-row");
 
 // MARK: - Repos
 
-test("the Repos panel paints Rust's title, trailing label and column header", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+test("the Repos panel is headed by its tile's name and paints Rust's trailing label and column header", async ({ page, baseURL }) => {
+  const titled = { ...(await fixture(baseURL, "sample-repos.json")), title: "Rust's own title" };
+  const { repos } = await gotoWithFixtures(page, baseURL, { repos: titled }, "repos");
   await expect(page.locator("#reposPanel")).toBeVisible();
 
-  await expect(page.locator("#reposTitle")).toHaveText(repos.title);
+  // A tile's Full view is headed by the tile's own name (#640), not the
+  // payload's `title`. The fixture's title is the tile's name too, so it is
+  // changed here: the two must differ for the assertion to tell them apart.
+  await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
   await expect(page.locator("#reposTrailing")).toHaveText(repos.trailing);
 
   // The header labels AND their widths are Rust's — a column re-typed here
@@ -97,7 +101,7 @@ test("the Repos panel paints Rust's title, trailing label and column header", as
 });
 
 test("every repo row carries Rust's cells, widths and dot colour", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   await expect(repoRows(page)).toHaveCount(repos.rows.length);
 
   const names = await repoRows(page).locator(".gh-repo-name").allTextContents();
@@ -126,7 +130,7 @@ test("every repo row carries Rust's cells, widths and dot colour", async ({ page
  * deriving either from a number.
  */
 test("an unknown count renders an em dash, a real zero renders a dimmed zero", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const texts = repos.rows.flatMap((r) => r.cells.map((c) => c.text));
   expect(texts, "the fixture must contain an unknown count").toContain("—");
   expect(texts, "…and a genuine zero beside it").toContain("0");
@@ -144,7 +148,7 @@ test("an unknown count renders an em dash, a real zero renders a dimmed zero", a
 });
 
 test("only a repo awaiting approval pulses its dot", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const blinking = repos.rows.filter((r) => r.blinking);
   expect(blinking.length, "the fixture must contain an approval gate").toBeGreaterThan(0);
 
@@ -157,7 +161,7 @@ test("only a repo awaiting approval pulses its dot", async ({ page, baseURL }) =
 });
 
 test("the health line is Rust's sentence and Rust's colour", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const health = page.locator("#reposHealth");
   await expect(health).toBeVisible();
   await expect(health).toHaveText(repos.health.text);
@@ -166,7 +170,7 @@ test("the health line is Rust's sentence and Rust's colour", async ({ page, base
 
 test("with no token the Repos panel is one sentence, no table and no health claim", async ({ page, baseURL }) => {
   const empty = await fixture(baseURL, "sample-repos-empty.json");
-  await gotoWithFixtures(page, baseURL, { repos: empty });
+  await gotoWithFixtures(page, baseURL, { repos: empty }, "repos");
 
   await expect(page.locator("#reposBody .gh-message")).toHaveText(empty.message.text);
   expect(empty.message.text).toBe("connect a GitHub token in Settings");
@@ -181,14 +185,14 @@ test("the loading state replaces the table rather than showing an empty one", as
   const empty = await fixture(baseURL, "sample-repos-empty.json");
   // The authenticated-but-not-yet-fetched payload, as Rust builds it.
   const loading = { ...empty, message: { text: "loading…" } };
-  await gotoWithFixtures(page, baseURL, { repos: loading });
+  await gotoWithFixtures(page, baseURL, { repos: loading }, "repos");
 
   await expect(page.locator("#reposBody .gh-message")).toHaveText("loading…");
   await expect(page.locator("#reposBody .gh-head")).toHaveCount(0);
 });
 
 test("a Repos panel with every account answering shows no warning", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   expect(repos.footer).toBeNull();
   await expect(page.locator("#reposStale")).toBeHidden();
 });
@@ -201,17 +205,19 @@ test("a Repos panel with every account answering shows no warning", async ({ pag
  */
 test("a per-account failure names the account in the header without blanking the panel", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-repos.json");
-  await gotoWithFixtures(page, baseURL, { repos: good });
+  await gotoWithFixtures(page, baseURL, { repos: good }, "repos");
   const healthy = await page.locator("#reposPanel").boundingBox();
 
   const failing = {
     ...good,
+    // Differs from the tile's name, so the heading asserted below can only be the tile's.
+    title: "Rust's own title",
     footer: {
       text: "⚠ work: no token saved — add one in Settings · last ok 4m ago",
       color: "#e09a26",
     },
   };
-  await gotoWithFixtures(page, baseURL, { repos: failing });
+  await gotoWithFixtures(page, baseURL, { repos: failing }, "repos");
 
   await expect(repoRows(page)).toHaveCount(good.rows.length);
   const stale = page.locator("#reposStale");
@@ -228,13 +234,14 @@ test("a per-account failure names the account in the header without blanking the
   // so one expired token would move half the cockpit.
   const degraded = await page.locator("#reposPanel").boundingBox();
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
+  // The tile's own name heads its Full view (#640), not the payload's title.
   await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
 });
 
 // MARK: - Repos: tap to open
 
 test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
 
   // Addressed by repo, not by position: rows are sorted by short name, so
   // `.first()` silently follows any rename of any *other* fixture repo, and
@@ -261,7 +268,7 @@ test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", as
 });
 
 test("every repo row is its own tap target, including the unreachable one", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const rows = repoRows(page);
   await expect(rows).toHaveCount(repos.rows.length);
 
@@ -284,7 +291,7 @@ test("every repo row is its own tap target, including the unreachable one", asyn
 });
 
 test("a repo row opens from the keyboard, not only from a click", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
 
   await repoRows(page).first().focus();
   await page.keyboard.press("Enter");
@@ -301,7 +308,7 @@ test("a row with no URL is not a link and opens nothing", async ({ page, baseURL
   // the plain, unclickable row it used to be rather than throwing on click and
   // taking the panel's rendering down with it.
   repos.rows = repos.rows.map(({ url, linkLabel, ...rest }) => rest);
-  await gotoWithFixtures(page, baseURL, { repos });
+  await gotoWithFixtures(page, baseURL, { repos }, "repos");
 
   const row = repoRows(page).first();
   await expect(row).toHaveCount(1);
@@ -315,10 +322,12 @@ test("a row with no URL is not a link and opens nothing", async ({ page, baseURL
 // MARK: - GitHub Runners
 
 test("the Runners panel paints Rust's stats, chips and trailing label", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL);
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
   await expect(page.locator("#runnersPanel")).toBeVisible();
 
-  await expect(page.locator("#runnersTitle")).toHaveText(runners.title);
+  // A tile's Full view is headed by the tile's own name (#640), not the
+  // payload's `title`; this tile is named for its source.
+  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
   await expect(page.locator("#runnersTrailing")).toHaveText(runners.trailing);
   expect(runners.trailing, "the fixture must exercise the missing count").toContain("missing");
 
@@ -350,7 +359,7 @@ test("the Runners panel paints Rust's stats, chips and trailing label", async ({
  * and "flush right" are the contract.
  */
 test("the Runners header keeps the stats and the chips on one line", async ({ page, baseURL }) => {
-  await gotoWithFixtures(page, baseURL);
+  await gotoWithFixtures(page, baseURL, {}, "runners");
   await expect(page.locator("#runnersPanel")).toHaveAttribute("data-cols", "2");
 
   // Exercise a classic scrollbar even on Macs configured for overlay ones.
@@ -385,7 +394,7 @@ test("the Runners header keeps the stats and the chips on one line", async ({ pa
 });
 
 test("registered and absent runner rows carry Rust's state words and colours", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL);
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
   await expect(runnerRows(page)).toHaveCount(runners.rows.length);
 
   // The order is Rust's: macOS before Linux, digit-aware by name within — and
@@ -419,7 +428,7 @@ test("registered and absent runner rows carry Rust's state words and colours", a
  * and the menu never survives its click.
  */
 test("right-clicking an absent runner offers Rust's Forget and invokes runners_forget", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL);
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
   const absent = runners.rows.find((r) => r.kind === "absent");
   const row = runnerRows(page).filter({
     has: page.locator(".gh-runner-name", { hasText: absent.name }),
@@ -446,7 +455,7 @@ test("right-clicking an absent runner offers Rust's Forget and invokes runners_f
 
 /** A registered runner has nothing to forget, so it gets no menu at all. */
 test("a registered runner offers no context menu", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL);
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
   const registered = runners.rows.find((r) => r.kind === "registered");
   await runnerRows(page)
     .filter({ has: page.locator(".gh-runner-name", { hasText: registered.name }) })
@@ -475,7 +484,7 @@ test("the OS column holds one position across every runner state", async ({ page
     "recycling",
   ]);
 
-  await gotoWithFixtures(page, baseURL, { runners });
+  await gotoWithFixtures(page, baseURL, { runners }, "runners");
   // The narrowest the cockpit ever hands this panel: `PanelKind::GhRunners`'s
   // own 400pt min_width. Aligned there, aligned at every width above it.
   //
@@ -502,7 +511,9 @@ test("the OS column holds one position across every runner state", async ({ page
 });
 
 test("the widest presence label fits its table cell without truncating", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL);
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
+  // A hidden panel measures 0 <= 0 for any label, so it must be laid out first.
+  await expect(page.locator("#runnersPanel")).toBeVisible();
   await page.locator("#runnersPanel").evaluate((el) => {
     el.style.width = "400px";
   });
@@ -512,12 +523,13 @@ test("the widest presence label fits its table cell without truncating", async (
     const status = rows.nth(index).locator(".gh-runner-status");
     await expect(status).toHaveText(expected.status);
     const [scroll, client] = await status.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect(client, `"${expected.status}" has a laid-out cell`).toBeGreaterThan(0);
     expect(scroll, `"${expected.status}" is clipped by its reserved slot`).toBeLessThanOrEqual(client);
   }
 });
 
 test("a healthy Runners panel shows no warning", async ({ page, baseURL }) => {
-  const { runners } = await gotoWithFixtures(page, baseURL);
+  const { runners } = await gotoWithFixtures(page, baseURL, {}, "runners");
   expect(runners.footer).toBeNull();
   await expect(page.locator("#runnersStale")).toBeHidden();
 });
@@ -536,7 +548,7 @@ test("a failed fetch keeps the last-good rows and surfaces the error in the head
       color: "#e09a26",
     },
   };
-  await gotoWithFixtures(page, baseURL, { runners: failing });
+  await gotoWithFixtures(page, baseURL, { runners: failing }, "runners");
 
   await expect(runnerRows(page)).toHaveCount(good.rows.length);
   const stale = page.locator("#runnersStale");
@@ -557,7 +569,7 @@ test("a failed fetch keeps the last-good rows and surfaces the error in the head
  */
 test("a Runners error does not make the card taller", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-runners.json");
-  await gotoWithFixtures(page, baseURL, { runners: good });
+  await gotoWithFixtures(page, baseURL, { runners: good }, "runners");
   const healthy = await page.locator("#runnersPanel").boundingBox();
 
   const failing = {
@@ -567,7 +579,7 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
       color: "#e09a26",
     },
   };
-  await gotoWithFixtures(page, baseURL, { runners: failing });
+  await gotoWithFixtures(page, baseURL, { runners: failing }, "runners");
   await expect(page.locator("#runnersStale")).toBeVisible();
   const degraded = await page.locator("#runnersPanel").boundingBox();
 
@@ -579,7 +591,8 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
   // the panel's name, and the copy ate "GitHub Runners" down to zero the moment
   // the warning appeared. The message is what ellipsises now, not the label.
   const title = page.locator("#runnersTitle");
-  await expect(title).toHaveText("GitHub Runners");
+  // The tile's own name heads its Full view (#640), not the payload's title.
+  await expect(title).toHaveText("Runners");
   const [titled, staled] = await Promise.all([title.boundingBox(), page.locator("#runnersStale").boundingBox()]);
   expect(titled.width, "the panel keeps its name when it degrades").toBeGreaterThan(0);
   expect(
@@ -608,10 +621,13 @@ test("a long Repos warning ellipsises itself, never the panel's name", async ({ 
       color: "#e0a03a",
     },
   };
-  // The cockpit width the README's panel screenshots are taken at, where the
-  // half-width Repos card is ~876pt and the warning fits in part.
-  await page.setViewportSize({ width: 1800, height: 1200 });
-  await gotoWithFixtures(page, baseURL, { repos: refused });
+  // The panel is ~876pt wide, where the warning fits in part. In Solador's Full
+  // view that was the half-width Repos card at an 1800pt window; a tile's Full
+  // view gives the panel the whole window, so the window is the panel's width
+  // plus the page padding.
+  await page.setViewportSize({ width: 908, height: 1200 });
+  await gotoWithFixtures(page, baseURL, { repos: refused }, "repos");
+  expect(Math.round((await page.locator("#reposPanel").boundingBox()).width)).toBe(876);
   const stale = page.locator("#reposStale");
   await expect(stale).toBeVisible();
   await expect(stale).toHaveAttribute("title", refused.footer.text);
@@ -646,11 +662,14 @@ test("a long Repos warning ellipsises itself, never the panel's name", async ({ 
 test("a loading payload paints the loading line, not the connect-a-token one", async ({ page, baseURL }) => {
   const repos = { ...(await fixture(baseURL, "sample-repos.json")), message: { text: "loading…" }, rows: [], loading: true };
   const runners = { ...(await fixture(baseURL, "sample-runners.json")), message: { text: "loading runners…" }, rows: [], loading: true };
-  await gotoWithFixtures(page, baseURL, { repos, runners });
+  await gotoWithFixtures(page, baseURL, { repos, runners }, "repos");
 
+  // Each panel in its own tile's Full view.
   await expect(page.locator("#reposBody .gh-message")).toHaveText("loading…");
+  const repoMessages = await page.locator(".gh-message").allTextContents();
+  await switchPanel(page, "runners");
   await expect(page.locator("#runnersBody .gh-message")).toHaveText("loading runners…");
-  for (const text of await page.locator(".gh-message").allTextContents()) {
+  for (const text of [...repoMessages, ...(await page.locator(".gh-message").allTextContents())]) {
     expect(text, "a panel that has not looked may not send anyone to Settings").not.toContain("Settings");
   }
 });
@@ -666,51 +685,39 @@ test("a loading panel is re-asked promptly, and settles once it is not", async (
   const loading = { ...(await fixture(baseURL, "sample-runners.json")), message: { text: "loading runners…" }, rows: [], loading: true };
   const settled = await fixture(baseURL, "sample-runners.json");
 
-  // Answers `loading` until the fourth ask, then the real payload — and counts
-  // every call so the cadence itself can be asserted rather than inferred.
-  await page.addInitScript(
-    (vms) => {
-      window.__RUNNER_CALLS__ = [];
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command) => {
-            if (command === "cockpit") return vms.cockpit;
-            if (command === "repos") return null;
-            if (command !== "runners") return null;
-            window.__RUNNER_CALLS__.push(Date.now());
-            return window.__RUNNER_CALLS__.length > 3 ? vms.settled : vms.loading;
-          },
-        },
-      };
-    },
-    { cockpit, loading, settled }
-  );
-  await page.goto("/index.html?view=details");
+  // Answers `loading` until the test advances it (never by counting asks, #407)
+  // and records the time of every ask so the cadence itself can be asserted
+  // rather than inferred.
+  await gotoPanel(page, baseURL, { cockpit, repos: null, runners: { __frames: [loading, settled] } }, "runners");
+  const asks = () =>
+    page.evaluate(() => window.__CALL_TIMES__.filter((_, i) => window.__CALLS__[i].command === "runners"));
 
-  // Four asks inside a couple of seconds is only reachable on the fast cadence:
-  // at the settled 10s the fourth would be half a minute away.
-  await expect
-    .poll(() => page.evaluate(() => window.__RUNNER_CALLS__.length), { timeout: 6000 })
-    .toBeGreaterThanOrEqual(4);
-  await expect(page.locator("#runnersBody .gh-row").first()).toBeVisible();
+  // Four asks inside a couple of seconds, with the reading still loading, is
+  // only reachable on the fast cadence: at the settled 10s the fourth would be
+  // half a minute away.
+  await expect.poll(async () => (await asks()).length, { timeout: 6000 }).toBeGreaterThanOrEqual(4);
+  await expect(page.locator("#runnersBody .gh-message")).toHaveText("loading runners…");
 
-  const gaps = await page.evaluate(() =>
-    window.__RUNNER_CALLS__.slice(1).map((t, i) => t - window.__RUNNER_CALLS__[i])
-  );
+  const times = await asks();
+  const gaps = times.slice(1).map((t, i) => t - times[i]);
   for (const gap of gaps) {
     expect(gap, `polls while loading were ${gaps.join("/")}ms apart`).toBeLessThan(5000);
   }
 
+  // The reading settles when the test says so.
+  await advance(page, "runners");
+  await expect(page.locator("#runnersBody .gh-row").first()).toBeVisible();
+
   // …and once settled it backs off, or the cockpit would poll every second
   // forever.
-  const settledCount = await page.evaluate(() => window.__RUNNER_CALLS__.length);
+  const settledCount = (await asks()).length;
   await page.waitForTimeout(2500);
-  expect(await page.evaluate(() => window.__RUNNER_CALLS__.length)).toBeLessThanOrEqual(settledCount + 1);
+  expect((await asks()).length).toBeLessThanOrEqual(settledCount + 1);
 });
 
 test("with no token the Runners panel is one sentence, no stats and no warning", async ({ page, baseURL }) => {
   const empty = await fixture(baseURL, "sample-runners-empty.json");
-  await gotoWithFixtures(page, baseURL, { runners: empty });
+  await gotoWithFixtures(page, baseURL, { runners: empty }, "runners");
 
   await expect(page.locator("#runnersBody .gh-message")).toHaveText(empty.message.text);
   expect(empty.message.text).toBe("connect a GitHub token in Settings");
@@ -731,17 +738,18 @@ const chip = (label, color, detail = "why") => ({ label, color, detail });
 async function gotoWithVerdict(page, baseURL, availability) {
   const repos = { ...(await fixture(baseURL, "sample-repos.json")), availability };
   const runners = { ...(await fixture(baseURL, "sample-runners.json")), availability };
-  return gotoWithFixtures(page, baseURL, { repos, runners });
+  return gotoWithFixtures(page, baseURL, { repos, runners }, "repos");
 }
 
 test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
   // One shared element would be orphaned when reflow splits the two panels
   // onto separate rows, which is why the verdict travels on both payloads.
   const { repos } = await gotoWithVerdict(page, baseURL, chip("Operational", "#1c6b41"));
-  for (const [chipId, titleId] of [
-    ["#reposAvailability", "#reposTitle"],
-    ["#runnersAvailability", "#runnersTitle"],
+  for (const [chipId, titleId, panel] of [
+    ["#reposAvailability", "#reposTitle", "repos"],
+    ["#runnersAvailability", "#runnersTitle", "runners"],
   ]) {
+    if (panel === "runners") await switchPanel(page, "runners");
     await expect(page.locator(chipId)).toHaveText(repos.availability.label);
     await expect(page.locator(chipId)).toHaveCSS("color", rgb(repos.availability.color));
     const [c, t] = await Promise.all([
@@ -764,6 +772,7 @@ test("every verdict paints Rust's label and colour", async ({ page, baseURL }) =
     ["Status Unknown", "#5a6b60"], // statuspage unreadable
   ]) {
     await gotoWithVerdict(page, baseURL, chip(label, color));
+    await switchPanel(page, "runners");
     await expect(page.locator("#runnersAvailability")).toHaveText(label);
     await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb(color));
   }
@@ -772,6 +781,7 @@ test("every verdict paints Rust's label and colour", async ({ page, baseURL }) =
 test("an unreachable status page reads as unknown and keeps the fleet rows", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-runners.json");
   await gotoWithVerdict(page, baseURL, chip("Status Unknown", "#5a6b60", "Couldn't read GitHub's status page."));
+  await switchPanel(page, "runners");
   await expect(page.locator("#runnersAvailability")).toHaveText("Status Unknown");
   await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb("#5a6b60"));
   // Never green, and never at the cost of the reading it annotates.
@@ -784,14 +794,16 @@ test("the incident detail is reachable on hover, as text and never as markup", a
   // string on the panel sourced from someone else's CMS.
   const detail = 'GitHub Actions: major outage. Incident: <img src=x onerror="alert(1)"> (critical).';
   await gotoWithVerdict(page, baseURL, chip("Major Outage", "#e05a4f", detail));
+  await switchPanel(page, "runners");
   await expect(page.locator("#runnersAvailability")).toHaveAttribute("title", detail);
   expect(await page.locator("#runnersAvailability").evaluate((el) => el.querySelector("img"))).toBeNull();
 });
 
 test("a payload with no verdict hides the chip rather than emptying it", async ({ page, baseURL }) => {
   await gotoWithVerdict(page, baseURL, null);
-  await expect(page.locator("#runnersAvailability")).toBeHidden();
   await expect(page.locator("#reposAvailability")).toBeHidden();
+  await switchPanel(page, "runners");
+  await expect(page.locator("#runnersAvailability")).toBeHidden();
 });
 
 /**
@@ -802,9 +814,11 @@ test("a payload with no verdict hides the chip rather than emptying it", async (
  */
 test("the verdict costs no height and does not truncate", async ({ page, baseURL }) => {
   await gotoWithVerdict(page, baseURL, null);
+  await switchPanel(page, "runners");
   const bare = await page.locator("#runnersPanel").boundingBox();
 
   await gotoWithVerdict(page, baseURL, chip("Fleet Down", "#e05a4f"));
+  await switchPanel(page, "runners");
   const withChip = page.locator("#runnersAvailability");
   await expect(withChip).toBeVisible();
   expect((await page.locator("#runnersPanel").boundingBox()).height).toBeCloseTo(bare.height, 1);
@@ -812,7 +826,8 @@ test("the verdict costs no height and does not truncate", async ({ page, baseURL
     await withChip.evaluate((el) => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width)),
     "the verdict is never the element that ellipsises"
   ).toBe(true);
-  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
+  // The tile's own name heads its Full view (#640), not the payload's title.
+  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
 });
 
 // MARK: - Injection
@@ -827,9 +842,10 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
   const hostile = '<img src=x onerror="window.__PWNED__=1">';
   repos.rows = [{ ...repos.rows[0], name: hostile }];
   runners.rows = [{ ...runners.rows[0], name: hostile }];
-  await gotoWithFixtures(page, baseURL, { repos, runners });
+  await gotoWithFixtures(page, baseURL, { repos, runners }, "repos");
 
   await expect(repoRows(page).first().locator(".gh-repo-name")).toHaveText(hostile);
+  await switchPanel(page, "runners");
   await expect(runnerRows(page).first().locator(".gh-runner-name")).toHaveText(hostile);
   // Every <img> on the page must be one the page itself put there. This used to
   // read `toHaveCount(0)`, which was the same claim while index.html contained
@@ -850,7 +866,7 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
 test("a wide panel splits Repos and keeps Runners in one aligned table", async ({ page, baseURL }) => {
   // sample-cockpit.json is dumped at 2732pt, so its two-panel rows are 1358pt
   // each — past both breakpoints (Repos needs 1136, Runners 816).
-  const { repos, runners } = await gotoWithFixtures(page, baseURL);
+  const { repos, runners } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const cols = (id) =>
     cockpit.panelRows.flat().find((p) => p.id === id).columns;
@@ -859,7 +875,6 @@ test("a wide panel splits Repos and keeps Runners in one aligned table", async (
 
   // Rust's number reaches the DOM as the custom property the CSS reads.
   await expect(page.locator("#reposPanel")).toHaveAttribute("data-cols", "2");
-  await expect(page.locator("#runnersPanel")).toHaveAttribute("data-cols", "2");
 
   // Repos: two tables, each with its own header, and every repo rendered once.
   await expect(page.locator("#reposBody .gh-col")).toHaveCount(2);
@@ -875,7 +890,10 @@ test("a wide panel splits Repos and keeps Runners in one aligned table", async (
     repos.rows.slice(0, Math.ceil(repos.rows.length / 2)).map((r) => r.name)
   );
 
-  // Runners: one shared set of columns, regardless of panel width.
+  // Runners, in their own tile's Full view: one shared set of columns,
+  // regardless of panel width.
+  await switchPanel(page, "runners");
+  await expect(page.locator("#runnersPanel")).toHaveAttribute("data-cols", "2");
   await expect(runnerRows(page)).toHaveCount(runners.rows.length);
   await expect(page.locator("#runnersBody .db-detail-table")).toHaveCount(1);
 });
@@ -886,20 +904,20 @@ test("a narrow panel keeps every list in one column", async ({ page, baseURL }) 
   expect(narrow.panelRows.flat().find((p) => p.id === "ghRunners").columns).toBe(1);
   const repos = await fixture(baseURL, "sample-repos.json");
   const runners = await fixture(baseURL, "sample-runners.json");
-  await stubIpc(page, { cockpit: narrow, repos, runners });
-  await page.goto("/index.html?view=details");
+  await gotoPanel(page, baseURL, { cockpit: narrow, repos, runners }, "repos");
 
   await expect(page.locator("#reposPanel")).toHaveAttribute("data-cols", "1");
   await expect(page.locator("#reposBody .gh-col")).toHaveCount(1);
   await expect(page.locator("#reposBody .gh-head")).toHaveCount(1);
   await expect(repoRows(page)).toHaveCount(repos.rows.length);
+  await switchPanel(page, "runners");
   await expect(page.locator("#runnersBody .db-detail-table")).toHaveCount(1);
 });
 
 test("the repo name column is a reservation, so the numeric block never moves", async ({ page, baseURL }) => {
   // #206's rule, now applied to REPO as well: a name that grew to its own text
   // would drag all eight numeric columns right on exactly the longest row.
-  const { repos } = await gotoWithFixtures(page, baseURL);
+  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const reserved = repos.columns[0].width;
   expect(reserved, "REPO carries a width, not null").toBeGreaterThan(0);
   await expect(repoRows(page).first().locator(".gh-repo-name")).toHaveCSS(
@@ -919,4 +937,14 @@ test("the repo name column is a reservation, so the numeric block never moves", 
     );
   expect(xs.length, "one ISSUES cell per row").toBeGreaterThan(1);
   expect(new Set(xs).size, `ISSUES column x positions ${xs}`).toBe(1);
+});
+
+// Both GitHub renderers ask for their own tile's reading (#639). Only the
+// six the issue names are pinned elsewhere; these two were covered by
+// dashboard.spec.js's `repos` assertion and are pinned here for `runners`.
+test("each GitHub panel asks for its own tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoWithFixtures(page, baseURL, {}, "repos");
+  expect(await lastArgs(page, "repos")).toEqual({ tile: tileIdFor("ghWorkflows") });
+  await switchPanel(page, "runners");
+  expect(await lastArgs(page, "runners")).toEqual({ tile: tileIdFor("ghRunners") });
 });
