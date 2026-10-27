@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy (csp_server.py), so a blocked style surfaces as a console error rather
@@ -22,37 +23,22 @@ test.afterEach(async ({ page }) => {
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
 /**
- * Stubs the whole IPC surface and records every call, so a test can assert
- * *which* command painted the panel.
+ * Enters the Usage tile's Full view (View, then Full view) with the IPC stubbed
+ * and every call recorded, so a test can assert *which* command painted the
+ * panel and what it sent.
  *
  * `cockpit` has to be answered too: app.js replaces the entire document body
  * with an error line when its first `invoke` rejects, which would take this
  * panel down with it and fail the suite for the wrong reason.
  */
-async function stubIpc(page, { cockpit, usage }) {
-  await page.addInitScript(
-    ({ cockpit, usage }) => {
-      window.__CALLS__ = [];
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command, args) => {
-            window.__CALLS__.push({ command, args });
-            if (command === "cockpit") return cockpit;
-            if (command === "usage") return usage;
-            return null;
-          },
-        },
-      };
-    },
-    { cockpit, usage }
-  );
+async function gotoUsagePanel(page, baseURL, { cockpit, usage }) {
+  await gotoTileFull(page, baseURL, { source: "claudeUsage", cockpit, answers: { usage } });
 }
 
 async function gotoWithUsage(page, baseURL, name = "sample-usage.json") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const usage = await fixture(baseURL, name);
-  await stubIpc(page, { cockpit, usage });
-  await page.goto("/index.html?view=details");
+  await gotoUsagePanel(page, baseURL, { cockpit, usage });
   return usage;
 }
 
@@ -512,8 +498,7 @@ async function gotoWithColumns(page, baseURL, columns, mutate) {
   }
   const usage = await fixture(baseURL, "sample-usage.json");
   if (mutate) mutate(usage);
-  await stubIpc(page, { cockpit, usage });
-  await page.goto("/index.html?view=details");
+  await gotoUsagePanel(page, baseURL, { cockpit, usage });
   return usage;
 }
 
@@ -549,8 +534,7 @@ test("a narrow card stacks the providers under the rollups, dividers and all", a
   const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
   expect(narrow.panelRows.flat().find((p) => p.id === "claudeUsage").columns).toBe(1);
   const usage = await fixture(baseURL, "sample-usage.json");
-  await stubIpc(page, { cockpit: narrow, usage });
-  await page.goto("/index.html?view=details");
+  await gotoUsagePanel(page, baseURL, { cockpit: narrow, usage });
 
   const claude = await page.locator("#usageBody .usage-main").boundingBox();
   const providers = await page.locator("#usageBody .usage-providers").boundingBox();
@@ -580,4 +564,11 @@ test("with no providers the Claude block takes the whole two-column body", async
     Math.abs(claude.width - bodyWidth),
     "the rollups span both tracks, not one"
   ).toBeLessThan(1);
+});
+
+// The renderer asks for its own tile's reading (#639): `{}` would be the
+// source-wide payload, wrong in a tile's Full view whenever its scope narrows.
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoWithUsage(page, baseURL);
+  expect(await lastArgs(page, "usage")).toEqual({ tile: tileIdFor("claudeUsage") });
 });

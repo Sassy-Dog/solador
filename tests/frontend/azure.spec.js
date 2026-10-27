@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites — see usage.spec.js. This panel leans on
 // CSSOM harder than most: the caption's amber is the whole signal that the
@@ -19,30 +20,20 @@ test.afterEach(async ({ page }) => {
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
-async function stubIpc(page, { cockpit, azure }) {
-  await page.addInitScript(
-    ({ cockpit, azure }) => {
-      window.__CALLS__ = [];
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command, args) => {
-            window.__CALLS__.push({ command, args });
-            if (command === "cockpit") return cockpit;
-            if (command === "azure_cost") return azure;
-            return null;
-          },
-        },
-      };
-    },
-    { cockpit, azure }
-  );
+/**
+ * Enters the azureCost tile's Full view (View, then Full view) with the IPC stubbed
+ * and every call recorded, so a test can assert *which* command painted the
+ * panel and what it sent. `cockpit` has to be answered too: app.js replaces the
+ * entire document body with an error line when its first `invoke` rejects.
+ */
+async function gotoPanel(page, baseURL, { cockpit, azure }) {
+  await gotoTileFull(page, baseURL, { source: "azureCost", cockpit, answers: { azure_cost: azure } });
 }
 
 async function gotoWithAzure(page, baseURL, name = "sample-azure.json") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const azure = await fixture(baseURL, name);
-  await stubIpc(page, { cockpit, azure });
-  await page.goto("/index.html?view=details");
+  await gotoPanel(page, baseURL, { cockpit, azure });
   return azure;
 }
 
@@ -198,8 +189,7 @@ test("a narrow card stacks the breakdowns under the costs, divider and all", asy
   const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
   expect(narrow.panelRows.flat().find((p) => p.id === "azureCost").columns).toBe(1);
   const azure = await fixture(baseURL, "sample-azure.json");
-  await stubIpc(page, { cockpit: narrow, azure });
-  await page.goto("/index.html?view=details");
+  await gotoPanel(page, baseURL, { cockpit: narrow, azure });
 
   const costs = await page.locator("#azureBody .az-main").boundingBox();
   const breakdowns = await page.locator("#azureBody .az-columns").boundingBox();
@@ -341,4 +331,11 @@ test("a missing SAS URL reads as setup and a failed read reads as a failure", as
     "color",
     rgb(failed.message.color)
   );
+});
+
+// The renderer asks for its own tile's reading (#639): `{}` would be the
+// source-wide payload, wrong in a tile's Full view whenever its scope narrows.
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoWithAzure(page, baseURL);
+  expect(await lastArgs(page, "azure_cost")).toEqual({ tile: tileIdFor("azureCost") });
 });

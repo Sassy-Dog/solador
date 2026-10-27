@@ -53,5 +53,11 @@ to how `remote::plan` refuses is a change to the prompt.
 `--showcase` dumps — a working morning with exactly one tile out of true, held by
 `the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
 `site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
-from `tests/frontend/og-card.html`. Its cockpit stub refuses any grid width it
-has no dump for, rather than paint a layout computed for another one.
+from `tests/frontend/og-card.html`. The nine `panel-*.png` are a tile's **Full
+view** (View, then Full view) of the showcase readings, in a window sized to the
+panel's old card (908pt for the half-width panels, 462pt for the quarter-width
+ones, 900pt for Hosts), so each image keeps the shape `site/index.html` lays
+out; `cockpit.png` and `cockpit-narrow.png` still come from Solador's Full view.
+Its cockpit stub refuses any grid width it has no dump for, rather than paint a
+layout computed for another one; each viewport has its own `--width` dump in
+`fixtures:showcase`.

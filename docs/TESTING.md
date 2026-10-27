@@ -199,3 +199,16 @@ latency, and a loaded merge-group runner lost that race and ejected #406.
 The window is intra-test and independent of #401's server-startup one. A
 longer timeout on the frame-1 assertion cannot help — once frame 2 has been
 served, frame 1 is gone — so do not reach for one; hold the frame instead.
+
+**Per-panel specs enter a tile's Full view, never `?view=details` (#645).**
+`azure`, `containers`, `crons`, `github`, `openclaw`, `services`, `usage` and
+`status-layout` use `tests/frontend/tile-full.js`: it stubs the IPC, boots the
+overview with one `all`-scoped tile per source, and opens the panel through the
+tile's View button then **Full view** (`tileFull`), the one way in; there is no
+URL or hook that skips the menu. A tile's Full view is headed by the tile's own
+name (#640), not the payload's `title`, and shows only its own panel, so a spec
+about two panels (`github.spec.js`) leaves and enters each tile. Each spec
+asserts its renderer sends `{tile: <id>}`; `{ __frames: [a, b] }` plus
+`advance(page, command)` holds a multi-frame panel answer the way
+`stubCockpit` does. `layout.spec.js` and `settings.spec.js` still boot
+`?view=details`; the cutover of #639 removes that path.

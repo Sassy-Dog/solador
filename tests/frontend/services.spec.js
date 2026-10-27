@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy, so a blocked style surfaces as a console error rather than a thrown
@@ -27,18 +28,7 @@ const rgb = (hex) => {
 async function gotoWithServices(page, baseURL, overrides) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const svc = overrides ?? (await fixture(baseURL, "sample-services.json"));
-  await page.addInitScript(
-    (vms) => {
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command) =>
-            command === "cockpit" ? vms.cockpit : command === "services" ? vms.services : null,
-        },
-      };
-    },
-    { cockpit, services: svc }
-  );
-  await page.goto("/index.html?view=details");
+  await gotoTileFull(page, baseURL, { source: "services", cockpit, answers: { services: svc } });
   return svc;
 }
 
@@ -47,7 +37,9 @@ const rows = (page) => page.locator("#servicesBody .svc-row");
 test("the panel paints one row per vendor, in Rust's order", async ({ page, baseURL }) => {
   const svc = await gotoWithServices(page, baseURL);
   await expect(page.locator("#servicesPanel")).toBeVisible();
-  await expect(page.locator("#servicesTitle")).toHaveText(svc.title);
+  // A tile's Full view is headed by the tile's own name (#640), not the
+  // payload's `title`; this tile is named for its source.
+  await expect(page.locator("#servicesTitle")).toHaveText("Service Health");
   await expect(page.locator("#servicesTrailing")).toHaveText(svc.trailing);
 
   // Order is fixed and Rust's. A list that re-sorted itself as things broke
@@ -172,4 +164,11 @@ test("before any pass there is the loading line and no footer", async ({ page, b
   expect(loading.loading).toBe(true);
   await expect(page.locator("#servicesBody .svc-empty")).toHaveText(loading.empty.message);
   await expect(page.locator("#servicesStale")).toBeHidden();
+});
+
+// The renderer asks for its own tile's reading (#639): `{}` would be the
+// source-wide payload, wrong in a tile's Full view whenever its scope narrows.
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoWithServices(page, baseURL);
+  expect(await lastArgs(page, "services")).toEqual({ tile: tileIdFor("services") });
 });

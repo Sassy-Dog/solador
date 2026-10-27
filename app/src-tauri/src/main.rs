@@ -8955,6 +8955,64 @@ mod tests {
         assert_eq!(built.get(), 2, "no tile builds once");
     }
 
+    /// Every panel command asks `find_tile` for the source its tile must show,
+    /// and nothing but that call's literal says which (#645). Tauri's `State`
+    /// cannot be built outside a running app, so the commands themselves cannot
+    /// be called here; this reads the call each one makes from this file and
+    /// pins it, so a command that names a neighbour's source (which the
+    /// frontend's double and `scope_to_tile`'s own tests would both accept)
+    /// fails here.
+    #[test]
+    fn each_panel_command_scopes_its_tile_to_its_own_source() {
+        // Command, the function whose body makes the call, and the call's text.
+        let table: [(&str, &str, &str); 9] = [
+            ("cockpit", "cockpit_for_tile", "tile_from_store(app, id, \""),
+            ("repos", "repos", "scope_to_tile(&state, \""),
+            ("runners", "runners", "scope_to_tile(&state, \""),
+            ("containers", "containers", "scope_to_tile(&state, \""),
+            ("services", "services", "scope_to_tile(&state, \""),
+            ("crons", "crons", "scope_to_tile(&state, \""),
+            ("usage", "usage", "scope_to_tile(&state, \""),
+            ("azure_cost", "azure_cost", "scope_to_tile(&state, \""),
+            ("openclaw", "openclaw", "scope_to_tile(&state, \""),
+        ];
+        let expected = [
+            ("cockpit", "hosts"),
+            ("repos", "ghWorkflows"),
+            ("runners", "ghRunners"),
+            ("containers", "containers"),
+            ("services", "services"),
+            ("crons", "sentryCrons"),
+            ("usage", "claudeUsage"),
+            ("azure_cost", "azureCost"),
+            ("openclaw", "openclawAgents"),
+        ];
+        // Only the code above this module: its own table must not be read back.
+        let whole = include_str!("main.rs").replace("\r\n", "\n");
+        let source = whole.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        for ((command, function, call), (named, want)) in table.iter().zip(expected) {
+            assert_eq!(*command, named, "table rows line up");
+            let start = source
+                .find(&format!("\nfn {function}("))
+                .unwrap_or_else(|| panic!("no `fn {function}` for the {command} command"));
+            let body = &source[start..];
+            let body = &body[..body.find("\n}\n").expect("function ends")];
+            let at = body
+                .find(call)
+                .unwrap_or_else(|| panic!("`{function}` makes no `{call}…` call"));
+            let literal = &body[at + call.len()..];
+            let got = &literal[..literal.find('"').expect("literal ends")];
+            assert_eq!(got, want, "the {command} command scopes its tile to {got}");
+        }
+        // The nine are all of them: a tenth command that takes a tile is a new
+        // row here, not a command nothing pins.
+        assert_eq!(
+            source.matches("tile: Option<String>").count(),
+            table.len(),
+            "every command taking `tile: Option<String>` is in the table"
+        );
+    }
+
     /// One poll of a scoped Machines tile builds the cards once, although it
     /// lays them out twice (#641). The build is what [`cockpit_cards`] counts.
     #[test]

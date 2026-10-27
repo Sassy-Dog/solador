@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { dashboardWithTiles, openTileFull } from './tile-full.js';
 
 test.beforeEach(async ({ page }) => {
   page.statusErrors = [];
@@ -10,11 +11,14 @@ test.beforeEach(async ({ page }) => {
 test.afterEach(async ({ page }) => { expect(page.statusErrors).toEqual([]); });
 
 const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', usage: 'usage', azure_cost: 'azure', openclaw: 'openclaw' };
-async function open(page, baseURL, details = false) {
+// `sources` replaces the overview's tiles with one `all`-scoped tile per source
+// (ids from tile-full.js), for a test that enters a tile's Full view.
+async function open(page, baseURL, sources = null) {
   const frames = {};
   for (const [command, file] of Object.entries(files)) {
     frames[command] = await (await fetch(`${baseURL}/sample-${file}.json`)).json();
   }
+  if (sources) frames.dashboard_view = dashboardWithTiles(frames.dashboard_view, sources);
   await page.addInitScript(frames => {
     window.framesForTest = frames;
     window.dashboardReads = 0;
@@ -26,8 +30,8 @@ async function open(page, baseURL, details = false) {
       return window.framesForTest[command] ?? null;
     } } };
   }, frames);
-  await page.goto(`/index.html${details ? '?view=details' : ''}`);
-  await expect(page.locator(details ? '#openclawBody .oc-runtime' : '.db-tile').first()).toBeVisible();
+  await page.goto('/index.html');
+  await expect(page.locator('.db-tile').first()).toBeVisible();
   return frames;
 }
 const bounds = (page, selector) => page.locator(selector).evaluateAll(elements => elements.map(el => {
@@ -171,29 +175,36 @@ for (const presentation of ['summary', 'detailed']) test(`all overview sources r
   expect(await bounds(page, '.db-tile, .db-tile-footer')).toEqual(before);
 });
 
-test('detailed panels retain their footprint through failure, empty and recovery frames', async ({ page, baseURL }) => {
-  const frames = await open(page, baseURL, true);
-  await page.evaluate(() => refreshPanels());
-  await layoutSettled(page);
-  const before = await bounds(page, '.panel');
-  for (const suffix of ['empty', 'error', 'stale']) {
-    const changed = structuredClone(frames);
-    for (const [command, file] of Object.entries(files)) {
-      if (['cockpit', 'dashboard_view'].includes(command)) continue;
-      const variants = { empty:['containers','repos','runners','services','crons','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','usage','azure'] };
-      if (variants[suffix].includes(file)) changed[command] = await (await fetch(`${baseURL}/sample-${file}-${suffix}.json`)).json();
-    }
-    await page.evaluate(async changed => { window.framesForTest = changed; await refreshPanels(); }, changed);
+// Each panel in its own tile's Full view: [source, command, fixture file].
+const panelTiles = [
+  ['containers', 'containers', 'containers'], ['ghWorkflows', 'repos', 'repos'], ['ghRunners', 'runners', 'runners'],
+  ['services', 'services', 'services'], ['sentryCrons', 'crons', 'crons'], ['claudeUsage', 'usage', 'usage'],
+  ['azureCost', 'azure_cost', 'azure'], ['openclawAgents', 'openclaw', 'openclaw'],
+];
+for (const [source, command, file] of panelTiles) {
+  test(`${source}'s Full view retains its footprint through failure, empty and recovery frames`, async ({ page, baseURL }) => {
+    const frames = await open(page, baseURL, [source]);
+    await openTileFull(page, source);
+    await page.evaluate(() => refreshPanels());
     await layoutSettled(page);
-    expect(await bounds(page, '.panel'), suffix).toEqual(before);
-  }
-  await page.evaluate(async frames => { window.framesForTest = frames; await refreshPanels(); }, frames);
-  await layoutSettled(page);
-  expect(await bounds(page, '.panel')).toEqual(before);
-});
+    const before = await bounds(page, '.panel');
+    const variants = { empty:['containers','repos','runners','services','crons','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','usage','azure'] };
+    for (const suffix of ['empty', 'error', 'stale']) {
+      const changed = structuredClone(frames);
+      if (variants[suffix].includes(file)) changed[command] = await (await fetch(`${baseURL}/sample-${file}-${suffix}.json`)).json();
+      await page.evaluate(async changed => { window.framesForTest = changed; await refreshPanels(); }, changed);
+      await layoutSettled(page);
+      expect(await bounds(page, '.panel'), suffix).toEqual(before);
+    }
+    await page.evaluate(async frames => { window.framesForTest = frames; await refreshPanels(); }, frames);
+    await layoutSettled(page);
+    expect(await bounds(page, '.panel')).toEqual(before);
+  });
+}
 
 test('a disconnected detailed host hides old readings without moving the next panel', async ({ page, baseURL }) => {
-  const frames = await open(page, baseURL, true);
+  await open(page, baseURL, ['hosts']);
+  await openTileFull(page, 'hosts');
   const live = await (await fetch(`${baseURL}/sample.json`)).json();
   const down = await (await fetch(`${baseURL}/sample-unreachable.json`)).json();
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, live);
@@ -208,7 +219,8 @@ test('a disconnected detailed host hides old readings without moving the next pa
 });
 
 test('a host first connecting after a cold failure keeps the surrounding layout anchored', async ({ page, baseURL }) => {
-  await open(page, baseURL, true);
+  await open(page, baseURL, ['hosts']);
+  await openTileFull(page, 'hosts');
   const live = await (await fetch(`${baseURL}/sample.json`)).json();
   const down = await (await fetch(`${baseURL}/sample-unreachable.json`)).json();
   // Remove existing cards so this is a cold failure, not cached live markup.
@@ -316,9 +328,13 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   await expect.poll(clipped).toEqual([]);
   const padding = await page.locator('.db-attention').evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]);
   expect(padding).toEqual(await page.locator('.db-tile').first().evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]));
-  await page.goto('/index.html?view=details');
-  await expect(page.locator('.card').first()).toBeVisible();
-  await expect.poll(clipped).toEqual([]);
+  // Each tile's Full view, as an operator reaches it.
+  for (const tile of next.tiles) {
+    await openTileFull(page, tile.source, tile.id);
+    await expect.poll(clipped, tile.id).toEqual([]);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#dashboardOverview')).toBeVisible();
+  }
 });
 
 test('resizing releases obsolete height reservations without clipping content', async ({page, baseURL}) => {

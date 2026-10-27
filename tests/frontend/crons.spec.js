@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy, so a blocked style surfaces as a console error rather than a thrown
@@ -37,18 +38,7 @@ const GREEN_DIM = "#2f7a5c";
 
 async function gotoWithCrons(page, baseURL, payload) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  await page.addInitScript(
-    (vms) => {
-      window.__TAURI__ = {
-        core: {
-          invoke: async (command) =>
-            command === "cockpit" ? vms.cockpit : command === "crons" ? vms.crons : null,
-        },
-      };
-    },
-    { cockpit, crons: payload }
-  );
-  await page.goto("/index.html?view=details");
+  await gotoTileFull(page, baseURL, { source: "sentryCrons", cockpit, answers: { crons: payload } });
   return payload;
 }
 
@@ -58,7 +48,9 @@ const rowFor = (page, monitor) => rows(page).filter({ hasText: monitor }).first(
 test("the panel paints one row per failing environment, in Rust's order", async ({ page, baseURL }) => {
   const vm = await gotoWithCrons(page, baseURL, await fixture(baseURL, "sample-crons.json"));
   await expect(page.locator("#cronsPanel")).toBeVisible();
-  await expect(page.locator("#cronsTitle")).toHaveText(vm.title);
+  // A tile's Full view is headed by the tile's own name (#640), not the
+  // payload's `title`; this tile is named for its source.
+  await expect(page.locator("#cronsTitle")).toHaveText("Scheduled Jobs");
   await expect(page.locator("#cronsTrailing")).toHaveText(vm.trailing);
 
   // Order is Rust's: oldest first, with the entries nobody can put a number on
@@ -247,4 +239,12 @@ test("a monitor name is rendered as text and never as markup", async ({ page, ba
   const el = rows(page).nth(0);
   await expect(el.locator(".cron-name")).toHaveText(vm.rows[0].label);
   expect(await el.evaluate((n) => n.querySelector("img, script"))).toBeNull();
+});
+
+// The renderer asks for its own tile's reading (#639): `{}` here would be the
+// source-wide payload, which a tile scoped to anything but `all` would paint
+// wrongly in its Full view.
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoWithCrons(page, baseURL, await fixture(baseURL, "sample-crons.json"));
+  expect(await lastArgs(page, "crons")).toEqual({ tile: tileIdFor("sentryCrons") });
 });
