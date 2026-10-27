@@ -1321,10 +1321,81 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
         .filter(|s| {
             s["attentionCount"].as_u64().unwrap_or(0) > 0 || !list(s, "warnings").is_empty()
         })
-        .map(|s| json!({"source":s["id"],"label":s["attentionLabel"],"color":s["attentionColor"]}))
+        .map(|s| {
+            let tiles: Vec<&DashboardTile> = layout
+                .tiles
+                .iter()
+                .filter(|t| !t.hidden && t.source == s["id"])
+                .collect();
+            json!({"source":s["id"],"label":s["attentionLabel"],"color":s["attentionColor"],"target":chip_target(s, &tiles)})
+        })
         .collect();
     json!({"layout":layout,"tiles":tiles,"hiddenTiles":hidden_tiles,"presets":presets(),"sources":sources,"attention":attention,"labels":labels()})
 }
+
+/// Where an attention chip leads: `{"tile": id}` when exactly one visible tile
+/// of the source keeps every row needing attention (the rows `in_scope` and the
+/// tile's repository selection keep, the same ones its Detail shows), and
+/// otherwise `{"trouble": {..}}`, a panel built for the chip. A chip never
+/// leads to a hidden tile or to Solador's Full view.
+///
+/// `tiles` are the source's visible tiles, in overview order. A source whose
+/// trouble is only a warning has no row to miss, so any tile shows it.
+fn chip_target(source: &Value, tiles: &[&DashboardTile]) -> Value {
+    let needing: Vec<&Value> = list(source, "rows")
+        .iter()
+        .filter(|r| r["attention"] == true)
+        .collect();
+    let covering: Vec<&DashboardTile> = tiles
+        .iter()
+        .copied()
+        .filter(|t| {
+            let kept = matching_rows(t, source);
+            needing
+                .iter()
+                .all(|r| kept.iter().any(|k| k["id"] == r["id"]))
+        })
+        .collect();
+    if let [only] = covering.as_slice() {
+        return json!({"tile": only.id});
+    }
+    let title = string(source, "title");
+    let mut items: Vec<Value> = needing
+        .iter()
+        .map(|r| json!({"label":r["label"],"value":r["value"],"color":r["color"]}))
+        .collect();
+    items.extend(
+        list(source, "warnings")
+            .iter()
+            .map(|w| json!({"label":w["text"],"value":"","color":w["color"]})),
+    );
+    let (intro, add) = match (tiles.len(), covering.len()) {
+        (0, _) => (
+            format!("No tile on the overview shows {title}."),
+            Some(json!({"source":source["id"],"label":"Add tile"})),
+        ),
+        (1, _) => (
+            format!("{} does not show every item.", title_case(&tiles[0].title)),
+            None,
+        ),
+        (n, 0) => (
+            format!("None of the {n} {title} tiles shows every item."),
+            None,
+        ),
+        (n, _) => (
+            format!("More than one of the {n} {title} tiles shows every item."),
+            None,
+        ),
+    };
+    let links: Vec<Value> = tiles
+        .iter()
+        .map(|t| json!({"id":t.id,"label":format!("Open {} Detail", title_case(&t.title))}))
+        .collect();
+    json!({"trouble":{"title":format!("{title} needs attention"),"intro":intro,"items":items,"tiles":links,"add":add}})
+}
+
+#[cfg(test)]
+mod chip_target_tests;
 
 fn presets() -> Value {
     json!([
@@ -2301,11 +2372,18 @@ mod tests {
         let baseline = crate::dump_dashboard();
         let payload = crate::dump_crons(crate::crons::Fixture::Alerting, false);
         let mut layout = default_layout();
-        let attention = view(&layout, std::slice::from_ref(&payload))["attention"].clone();
+        // The chips themselves; where each leads depends on the tiles, by design.
+        let chips = |v: &Value| -> Vec<Value> {
+            list(v, "attention")
+                .iter()
+                .map(|a| json!({"source":a["source"],"label":a["label"],"color":a["color"]}))
+                .collect()
+        };
+        let attention = chips(&view(&layout, std::slice::from_ref(&payload)));
         layout.tiles.iter_mut().for_each(|t| t.hidden = true);
         assert!(list(&view(&layout, std::slice::from_ref(&payload)), "tiles").is_empty());
         assert_eq!(
-            view(&layout, std::slice::from_ref(&payload))["attention"],
+            chips(&view(&layout, std::slice::from_ref(&payload))),
             attention
         );
         let mut duplicate = layout.tiles[4].clone();
@@ -2313,12 +2391,12 @@ mod tests {
         duplicate.hidden = false;
         layout.tiles.push(duplicate);
         assert_eq!(
-            view(&layout, std::slice::from_ref(&payload))["attention"],
+            chips(&view(&layout, std::slice::from_ref(&payload))),
             attention
         );
         layout.tiles.clear();
         let removed = view(&layout, &[payload]);
-        assert_eq!(removed["attention"], attention);
+        assert_eq!(chips(&removed), attention);
         assert!(list(&removed, "tiles").is_empty());
         assert!(list(&removed, "hiddenTiles").is_empty());
         assert!(list(&baseline, "sources")

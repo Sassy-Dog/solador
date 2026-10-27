@@ -660,6 +660,7 @@
         fillCadence(box, source(draft.source)?.cadences?.find((c) => c.id === box.dataset.cadence));
       if (draft) fillMachineAlerts(q("[data-machine-alerts]"), source(draft.source));
     }
+    syncChip();
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
     paintFeedback();
@@ -1158,6 +1159,56 @@
     list.append(node("p", "db-sub", L("hiddenVolumesHelp")));
     return list;
   }
+  // Where a chip leads is Rust's call (`dashboard::chip_target`): a tile's
+  // Detail, or a trouble panel built for the chip. Nothing here decides which.
+  function openChip(source) {
+    const target = model.attention.find((a) => a.source === source)?.target;
+    if (target?.tile)
+      openInspector({ kind: "details", source, tile: target.tile, attention: source });
+    else if (target?.trouble)
+      openInspector({ kind: "trouble", source, trouble: target.trouble, attention: source });
+  }
+  // The panel an open chip shows follows the next reading: the tile that was
+  // its target may have been hidden or re-scoped since, and the items move.
+  function syncChip() {
+    if (!active?.attention) return;
+    const target = model.attention.find((a) => a.source === active.attention)?.target;
+    if (target?.tile) {
+      if (active.kind !== "details" || active.tile !== target.tile) openChip(active.attention);
+    } else if (target?.trouble) {
+      if (active.kind !== "trouble") openChip(active.attention);
+      else {
+        active.trouble = target.trouble;
+        paintTrouble();
+      }
+    }
+  }
+  function paintTrouble() {
+    const box = q(".db-inspector"), t = active.trouble;
+    const signature = JSON.stringify(t);
+    if (active.signature === signature) return;
+    active.signature = signature;
+    text(box.querySelector("h3"), t.title);
+    text(box.querySelector(".db-inspector-head .db-sub"), t.intro);
+    box.setAttribute("aria-label", t.title);
+    const body = box.querySelector(".db-inspector-body");
+    const focused = body.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
+    const items = node("ul", "db-trouble-items");
+    for (const item of t.items) {
+      const li = node("li", "db-trouble-item");
+      li.append(colored("strong", "", item.label, item.color));
+      if (item.value) li.append(node("span", "db-sub", item.value));
+      items.append(li);
+    }
+    const actions = node("div", "db-form-actions");
+    for (const link of t.tiles) actions.append(button(link.label, "details", link.id));
+    if (t.add) actions.append(button(t.add.label, "add", t.add.source, "db-primary"));
+    body.replaceChildren(items, actions);
+    if (focused?.action)
+      [...body.querySelectorAll("button[data-action]")]
+        .find((b) => b.dataset.action === focused.action && b.dataset.id === focused.id)
+        ?.focus({ preventScroll: true });
+  }
   function openInspector(next) {
     status("");
     active = next;
@@ -1314,6 +1365,9 @@
       box.querySelector(".db-inspector-body").append(library);
       fillHidden();
       (list.querySelector('[aria-pressed="true"]') || box.querySelector('[data-action="close"]')).focus({ preventScroll: true });
+    } else if (next.kind === "trouble") {
+      paintTrouble();
+      box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     } else {
       const tools = node("div", "db-inspector-tools"), views = node("div", "db-view-switch");
       views.setAttribute("role", "group");
@@ -2062,7 +2116,7 @@
     }
     if (action === "attention") {
       if (active?.attention === id) closeInspector();
-      else openInspector({ kind: "details", source: id, attention: id });
+      else openChip(id);
       return;
     }
     if (action === "row") {
@@ -2280,6 +2334,11 @@
     if (action === "apply") {
       await apply();
       return;
+    }
+    if (action === "add" && active?.kind === "trouble") {
+      // The trouble panel's Add tile: a draft is only editable in edit mode.
+      editing = true;
+      render(true);
     }
     if (action === "add" || action === "duplicate") {
       await add(id, action === "duplicate");

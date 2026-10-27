@@ -51,11 +51,23 @@ used, total and usage percentage in both views. This does not change the Full ho
 ordering or which volume triggers attention. List shows key readings and context
 immediately, with secondary fields on expansion. Expansion, table scroll position
 and keyboard focus survive live reading updates, and collapsing a row releases the extra
-height. Detail's **Full view** button opens a full panel: from a tile's Detail,
-that tile's Full view (below); from a **Needs Attention** chip's Detail, which has
-no tile, the whole source's panel with its specialized readings and controls.
-Clicking an active **Needs Attention** chip again closes its Detail view;
-clicking a different chip switches sources. The active chip is highlighted.
+height. Detail's **Full view** button opens that tile's Full view (below).
+
+**A Needs Attention chip never opens Solador's Full view.** Rust decides where
+each chip leads (`target` on the chip in `dashboard_view`; `chip_target` in
+`dashboard.rs`). When exactly one visible tile of the source keeps every row
+needing attention (its scope and repository selection are applied to the same
+row ids `in_scope` uses), the chip opens that tile's Detail, filtered to the
+tile's scope. A hidden tile is never a target. Otherwise it opens a **trouble
+panel**, tied to no tile, that lists the source's attention items and warnings
+in Rust's words: with no visible tile it offers **Add tile** for the source
+(which opens the same draft as **Add tile** in edit mode); with several tiles
+it links to each tile's Detail; with one tile that does not keep every item it
+links to that tile's Detail and says the tile does not show every item. Chips
+still read every source, even one without a tile. Clicking an active chip again
+closes its panel; clicking a different chip switches sources. The active chip
+is highlighted. An open chip follows the next reading: if its tile is hidden or
+re-scoped, it becomes the trouble panel, and the trouble panel's items refresh.
 
 **A tile's Full view.** From the tile's **View** menu, **Full view** opens it
 directly; in Detail opened from a tile (its **View** menu, its
@@ -365,6 +377,9 @@ pollers. Rust owns attention, scope filtering, truncation and the rendered text;
 frontend suite's `sample-dashboard-expanded.json` is dumped through the same
 Rust projection (`--dump-dashboard <path> --expanded`) to exercise All, sorted
 repos and grouped runners without recreating those rules in JavaScript.
+`sample-dashboard-chips.json` (`--chips`) is Rust's view of a layout where each
+source's attention chip leads somewhere different, so the chip tests assert
+Rust's targets rather than recomputing them.
 `dashboard_save` validates and saves the whole layout, rolls memory back if the
 atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
@@ -403,7 +418,10 @@ the scratch-store procedure below, then hide/restore a tile, duplicate Machines
 with a Remote machines scope, relaunch, and verify the saved view. Open the
 duplicate's **View** → **Detail** and its **Full view**: only its machines, under
 its name and scope note; Escape returns to it. Open connection settings, and confirm Overview
-returns correctly. The existing full-panel smoke checklist starts from the toolbar's
+returns correctly. Click a **Needs Attention** chip for a source with one tile
+(its Detail, in that tile's scope), for one with no tile (the trouble panel and
+**Add tile**) and for one with two tiles (a link to each Detail); none opens
+Solador's Full view. The existing full-panel smoke checklist starts from the toolbar's
 **Full view**; the tile's Full view has its own row in the extras below. The macOS dashboard smoke
 passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
 credential service in the test build. It covered hide/restore, duplication and

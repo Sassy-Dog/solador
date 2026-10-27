@@ -7023,6 +7023,12 @@ fn dump_github(empty: bool, runners: bool) -> Value {
 
 /// The overview fixture uses the exact same panel views as its live command.
 fn dump_dashboard() -> Value {
+    dump_dashboard_of(&dashboard::default_layout())
+}
+
+/// The same readings under another layout, so a fixture can hold a Rust-authored
+/// attention chip target for a layout the default does not have.
+fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
     let mut hosts = dump_cockpit(1200.0, 3, HostOverflowMode::Stack);
     hosts["id"] = json!("hosts");
     // The Machines tile's GPU meters need a GPU to draw: ubu-01 serves a local
@@ -7057,7 +7063,22 @@ fn dump_dashboard() -> Value {
         dump_openclaw(openclaw::Fixture::Connected),
     ];
     cadence::attach(&mut payloads, &cadences);
-    dashboard::view(&dashboard::default_layout(), &payloads)
+    dashboard::view(layout, &payloads)
+}
+
+/// The layout behind `sample-dashboard-chips.json`: one source per way an
+/// attention chip can lead. Repos has a tile whose scope misses a failing repo,
+/// Runners has only a hidden tile, and Machines has two tiles that keep every
+/// row. The rest keep the default's one tile, or none.
+fn chips_layout() -> store::DashboardLayout {
+    let mut layout = dashboard::default_layout();
+    layout.tiles[1].scope = "healthy".into();
+    layout.tiles[2].hidden = true;
+    let mut second = layout.tiles[0].clone();
+    second.id = "hosts-second".into();
+    second.title = "Spare Machines".into();
+    layout.tiles.push(second);
+    layout
 }
 
 /// Returns the path argument following `flag` if `flag` is present, falling
@@ -7093,6 +7114,8 @@ fn run_dump(args: &[String]) -> bool {
     if let Some(path) = dump_flag_path(args, "--dump-dashboard", "sample-dashboard.json") {
         let mut snapshot = if showcase {
             dump_showcase_dashboard()
+        } else if args.iter().any(|arg| arg == "--chips") {
+            dump_dashboard_of(&chips_layout())
         } else {
             dump_dashboard()
         };

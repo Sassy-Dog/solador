@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
 async function openDashboard(page, baseURL, expanded = false, prepare = null) {
   const names = {
-    dashboard_view: expanded ? "dashboard-expanded" : "dashboard",
+    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded ? "dashboard-expanded" : "dashboard",
     cockpit: "cockpit",
     settings_view: "settings",
     repos: "repos",
@@ -300,7 +300,7 @@ function warningFrame(view, acknowledged, critical = false) {
   source.warnings = [];
   source.attentionCount = row.attention ? 1 : 0;
   result.attention = result.attention.filter(s => s.source !== 'hosts');
-  if (row.attention) result.attention.push({source:'hosts', label:'Machines · 1', color:row.metrics[1].color});
+  if (row.attention) result.attention.push({source:'hosts', label:'Machines · 1', color:row.metrics[1].color, target:{tile:'overview-hosts'}});
   return result;
 }
 
@@ -2437,17 +2437,122 @@ test("a scope that keeps nothing shows the tile's own sentence in its Full view 
   await expect(page.locator(".db-full-state")).toHaveCount(0);
 });
 
-test("Detail from an attention chip opens the source-wide panel", async ({ page, baseURL }) => {
-  await openDashboard(page, baseURL, false, healthyRepos);
-  await action(page, "attention").filter({ hasText: "GitHub Repos" }).click();
-  const before = await callCount(page, "repos");
+// Attention chips (#644). `sample-dashboard-chips.json` is Rust's own view of a
+// layout built so each source's chip leads somewhere different (`chips_layout`
+// in main.rs): Machines has two tiles that keep every row, Repos one tile
+// scoped `healthy` (it misses the failing repos), Runners only a hidden tile,
+// Services and Scheduled Jobs one covering tile each, and the rest no tile.
+const chip = (page, text) => action(page, "attention").filter({ hasText: text });
+const inspector = (page) => page.locator("#dashboardInspector");
+const chipTarget = (model, source) => model.attention.find((a) => a.source === source).target;
+
+test("a chip fully covered by one visible tile opens that tile's Detail, filtered to its scope", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  expect(chipTarget(model, "sentryCrons")).toEqual({ tile: "overview-sentryCrons" });
+  await chip(page, "Scheduled Jobs").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  const rows = model.sources.find((s) => s.id === "sentryCrons").rows;
+  const scoped = rows.filter((r) => r.scopes.includes("active"));
+  expect(scoped.length).toBeLessThan(rows.length);
+  await expect(inspector(page).locator(".db-detail-resource")).toHaveCount(scoped.length);
+  for (const r of rows.filter((r) => !r.scopes.includes("active")))
+    await expect(inspector(page)).not.toContainText(r.label);
+  // Its Full view button is the tile's own.
   await detailFull(page).click();
-  await expect(page.locator("#cockpitView")).toHaveAttribute("data-detail-source", "ghWorkflows");
-  await expect(page.locator("#reposPanel")).toBeVisible();
-  await expect.poll(() => callCount(page, "repos")).toBeGreaterThan(before);
-  expect(await lastArgs(page, "repos")).toEqual({});
-  await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
-  await expect(page.locator(".db-full-note")).toHaveCount(0);
+  await expect(page.locator("#cockpitView")).toBeVisible();
+  expect(await lastArgs(page, "crons")).toEqual({ tile: "overview-sentryCrons" });
+});
+
+test("a chip for a source with no tile opens the trouble panel with Add tile", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const { trouble } = chipTarget(model, "containers");
+  await chip(page, "Containers").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(inspector(page).locator("h3")).toHaveText(trouble.title);
+  await expect(inspector(page)).toContainText(trouble.intro);
+  for (const item of trouble.items) await expect(inspector(page)).toContainText(item.label);
+  await expect(inspector(page).getByRole("button", { name: "Detail" })).toHaveCount(0);
+  await inspector(page).getByRole("button", { name: trouble.add.label, exact: true }).click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "configure");
+  await expect(page.locator("#dashboard-title")).toHaveValue("Containers / VMs");
+  await expect(page.locator("#cockpitView")).toBeHidden();
+});
+
+test("a chip for a source with two tiles links to each tile's Detail", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const { trouble } = chipTarget(model, "hosts");
+  expect(trouble.tiles.map((t) => t.id)).toEqual(["overview-hosts", "hosts-second"]);
+  await chip(page, "Machines").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(inspector(page).getByRole("button", { name: "Add tile" })).toHaveCount(0);
+  for (const link of trouble.tiles) {
+    await expect(inspector(page).getByRole("button", { name: link.label, exact: true })).toBeVisible();
+  }
+  await inspector(page).getByRole("button", { name: trouble.tiles[1].label, exact: true }).click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  // That tile's Detail: its Full view button opens that tile.
+  await detailFull(page).click();
+  await expect(page.locator("#cockpitView")).toBeVisible();
+  expect(await lastArgs(page, "cockpit")).toMatchObject({ tile: "hosts-second" });
+});
+
+test("a chip whose only tile misses an item opens the trouble panel, not that tile's Detail", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const { trouble } = chipTarget(model, "ghWorkflows");
+  await chip(page, "GitHub Repos").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(inspector(page)).toContainText("does not show every item");
+  for (const item of trouble.items) await expect(inspector(page)).toContainText(item.label);
+  // The link leads to the tile's Detail, which shows only its own scope.
+  await inspector(page).getByRole("button", { name: trouble.tiles[0].label, exact: true }).click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  const rows = model.sources.find((s) => s.id === "ghWorkflows").rows;
+  await expect(inspector(page).locator(".db-detail-resource")).toHaveCount(rows.filter((r) => r.scopes.includes("healthy")).length);
+  for (const item of trouble.items) await expect(inspector(page)).not.toContainText(item.label);
+});
+
+test("a hidden tile is never a chip's target", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const hidden = model.layout.tiles.find((t) => t.source === "ghRunners");
+  expect(hidden.hidden).toBe(true);
+  const { trouble } = chipTarget(model, "ghRunners");
+  await chip(page, "Runners").click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await expect(inspector(page).getByRole("button", { name: trouble.add.label, exact: true })).toBeVisible();
+  await expect(inspector(page).locator(`[data-id="${hidden.id}"]`)).toHaveCount(0);
+});
+
+test("no chip reaches Solador's Full view, and the trouble panel paints only Rust's words", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  for (const { source, target } of model.attention) {
+    await action(page, "attention").nth(model.attention.findIndex((a) => a.source === source)).click();
+    await expect(inspector(page)).toHaveAttribute("data-kind", target.tile ? "details" : "trouble");
+    await expect(page.locator("#cockpitView")).toBeHidden();
+    await expect(page.locator("#dashboardOverview")).toBeVisible();
+    if (target.trouble) {
+      const t = target.trouble;
+      const allowed = new Set([
+        ...Object.values(model.labels), t.title, t.intro,
+        ...t.items.flatMap((i) => [i.label, i.value].filter(Boolean)),
+        ...t.tiles.map((l) => l.label), ...(t.add ? [t.add.label] : []),
+      ]);
+      const painted = await inspector(page).locator("*").evaluateAll((els) =>
+        els.filter((el) => !el.children.length).map((el) => el.textContent.trim()).filter(Boolean));
+      for (const word of painted) expect(allowed.has(word), `"${word}" is not Rust's`).toBe(true);
+      expect(painted).toContain(t.intro);
+    }
+    await action(page, "close").click();
+  }
+});
+
+test("an open trouble panel follows the next reading", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  await chip(page, "Containers").click();
+  const next = structuredClone(model.attention);
+  const at = next.findIndex((a) => a.source === "containers");
+  next[at].target.trouble.items[0].label = "vm-renamed";
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), next);
+  await expect(inspector(page)).toContainText("vm-renamed");
 });
 
 test("a tile that disappears while its Full view is open returns to the overview", async ({ page, baseURL }) => {
