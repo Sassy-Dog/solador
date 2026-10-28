@@ -57,6 +57,25 @@ fn by_id<'a>(store: &'a Store, id: &str) -> &'a DashboardTile {
     tiles(store).iter().find(|t| t.id == id).expect("tile")
 }
 
+fn by_id_in<'a>(data: &'a StoreData, id: &str) -> &'a DashboardTile {
+    data.dashboard
+        .as_ref()
+        .expect("a dashboard")
+        .tiles
+        .iter()
+        .find(|t| t.id == id)
+        .expect("tile")
+}
+
+/// Saves `store` and returns the file's text, parsed. Every dropped-value test
+/// asserts on what the next save writes, not on what is in memory.
+fn saved(dir: &TempDir, store: &Store) -> (String, Value) {
+    store.save().expect("save");
+    let text = fs::read_to_string(dir.path().join(STORE_FILE_NAME)).expect("read");
+    let on_disk = serde_json::from_str(&text).expect("json");
+    (text, on_disk)
+}
+
 fn tabs_layout() -> Value {
     json!([
         {"min_width": 0.0, "host_overflow": "tabs", "slots": [{"panel": "hosts", "span": "full"}]},
@@ -277,16 +296,15 @@ fn the_copy_is_spent_by_its_first_pass() {
         json!({"ghRunners": "list"}),
     );
     let mut data: StoreData = serde_json::from_value(stored).expect("parse");
-    assert!(
-        data.carry_view_settings_onto_tiles(),
+    data.carry_view_settings_onto_tiles();
+    let after_first = data.clone();
+    assert_eq!(
+        by_id_in(&data, "m1").core_row_span,
+        4,
         "the first pass carries"
     );
-    let after_first = data.clone();
-    assert!(
-        !data.carry_view_settings_onto_tiles(),
-        "a second pass has nothing left to carry"
-    );
-    assert_eq!(data, after_first, "a second pass changes nothing");
+    data.carry_view_settings_onto_tiles();
+    assert_eq!(data, after_first, "a second pass has nothing left to carry");
 }
 
 #[test]
@@ -307,4 +325,91 @@ fn out_of_range_tile_values_are_clamped_on_read() {
     let (_dir, store) = open(&json!({"version": 3, "dashboard": {"tiles": [t]}}));
     assert_eq!(by_id(&store, "m1").core_row_span, 4);
     assert_eq!(by_id(&store, "m1").row_gap_px, 16);
+}
+
+// A value with no tile to apply to is dropped, and its legacy key is not kept:
+// Solador's Full view, the only other place it applied, is gone (#647). Each case
+// below is one way to have no tile.
+
+fn assert_no_legacy_keys(text: &str, on_disk: &Value) {
+    assert!(on_disk.get("layout").is_none(), "layout kept: {text}");
+    for key in ["core_row_span", "row_gap_px", "host_overflow_mode"] {
+        assert!(on_disk["settings"].get(key).is_none(), "{key} kept: {text}");
+    }
+    assert!(
+        on_disk["dashboard"].get("detailViews").is_none(),
+        "detailViews kept: {text}"
+    );
+}
+
+#[test]
+fn core_rows_and_overflow_with_no_machines_tile_are_dropped_not_kept() {
+    let mut stored = old_store(
+        json!({"host_overflow_mode": "tabs"}),
+        Some(tabs_layout()),
+        json!({}),
+    );
+    stored["dashboard"]["tiles"] = json!([tile("r1", "ghWorkflows"), tile("s1", "services")]);
+    let (dir, store) = open(&stored);
+
+    let defaults = DashboardTile::new("x", "hosts", "x", "all");
+    for t in tiles(&store) {
+        assert_eq!(t.core_row_span, defaults.core_row_span, "{}", t.id);
+        assert_eq!(t.host_overflow, defaults.host_overflow, "{}", t.id);
+        assert_eq!(t.row_gap_px, 7, "row spacing still lands on every tile");
+    }
+    assert_eq!(tiles(&store).len(), 2, "no Machines tile is invented");
+
+    let (text, on_disk) = saved(&dir, &store);
+    assert_no_legacy_keys(&text, &on_disk);
+    let reopened = Store::open_in(dir.path(), false).expect("reopen");
+    assert_eq!(
+        reopened.data(),
+        store.data(),
+        "nothing resurfaces on reload"
+    );
+}
+
+#[test]
+fn an_overview_with_no_tiles_drops_every_value_and_stays_empty() {
+    let mut stored = old_store(
+        json!({"host_overflow_mode": "tabs"}),
+        Some(tabs_layout()),
+        json!({"ghRunners": "list"}),
+    );
+    stored["dashboard"]["tiles"] = json!([]);
+    let (dir, store) = open(&stored);
+
+    assert!(
+        tiles(&store).is_empty(),
+        "an intentionally empty overview stays empty: the shipped one is not brought back"
+    );
+    let (text, on_disk) = saved(&dir, &store);
+    assert_no_legacy_keys(&text, &on_disk);
+    assert!(on_disk["dashboard"]["tiles"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_detail_view_for_a_source_with_no_tile_is_dropped_not_kept() {
+    let (dir, store) = open(&old_store(
+        json!({}),
+        None,
+        json!({"containers": "list", "ghRunners": "list"}),
+    ));
+    let defaults = DashboardTile::new("x", "containers", "x", "all");
+    for t in tiles(&store).iter().filter(|t| t.source != "ghRunners") {
+        assert_eq!(t.detail_view, defaults.detail_view, "{}", t.id);
+    }
+    assert_eq!(
+        by_id(&store, "u1").detail_view,
+        "list",
+        "a source with tiles still carries"
+    );
+
+    let (text, on_disk) = saved(&dir, &store);
+    assert_no_legacy_keys(&text, &on_disk);
+    assert!(
+        !text.contains("containers\":\"list"),
+        "the containers choice is not kept anywhere: {text}"
+    );
 }

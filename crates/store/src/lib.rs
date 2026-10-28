@@ -88,7 +88,7 @@ pub const APP_DIR_NAME: &str = "app.solador.desktop";
 /// The data directory this app used before it was renamed.
 ///
 /// Kept so an upgrade does not silently look like a first launch: hosts, the
-/// tracked portfolio, the cockpit layout and every container rule live in that
+/// tracked portfolio, the dashboard layout and every container rule live in that
 /// one file, and an app that quietly starts empty is indistinguishable from an
 /// app that lost them.
 pub const LEGACY_APP_DIR_NAME: &str = "com.sassydog.devcanopy.app";
@@ -265,7 +265,7 @@ impl Default for StoreData {
 impl StoreData {
     /// The one-time upgrade copy of #647: the view settings that were global
     /// move onto the tiles they applied to, then the globals are taken so the
-    /// next save drops them. Returns whether anything was carried.
+    /// next save drops them.
     ///
     /// * `core_row_span` -> every Machines tile;
     /// * `row_gap_px` -> every tile;
@@ -278,9 +278,16 @@ impl StoreData {
     /// load of a store that was not saved in between carries the same values and
     /// a store that was saved carries nothing. When no overview was ever
     /// configured and a value to carry is not the default, the shipped overview
-    /// is materialised first, since a value with no tile to land on would be
-    /// dropped silently.
-    pub fn carry_view_settings_onto_tiles(&mut self) -> bool {
+    /// is materialised first, so the value has tiles to land on.
+    ///
+    /// **A value with no tile to apply to is dropped, on purpose, and its
+    /// legacy key is not kept.** That is a configured overview with no Machines
+    /// tile (for `core_row_span` and host overflow), an overview with no tiles
+    /// at all, and a `detailViews` entry for a source no tile shows. Solador's
+    /// Full view, the only other place those values applied, is gone, so there
+    /// is nothing left for them to apply to; the next save writes none of the
+    /// legacy keys.
+    pub fn carry_view_settings_onto_tiles(&mut self) {
         let settings = &mut self.settings;
         let core_row_span = settings.legacy_core_row_span.take();
         let row_gap_px = settings.legacy_row_gap_px.take();
@@ -300,33 +307,27 @@ impl StoreData {
             self.dashboard = Some(DashboardLayout::shipped());
         }
         let Some(dashboard) = self.dashboard.as_mut() else {
-            return false;
+            return;
         };
-        let mut carried = false;
         for tile in &mut dashboard.tiles {
             if tile.source == "hosts" {
                 if let Some(span) = core_row_span {
                     tile.core_row_span = span;
-                    carried = true;
                 }
                 if let Some(mode) = overflow {
                     tile.host_overflow = mode;
-                    carried = true;
                 }
             }
             if let Some(px) = row_gap_px {
                 tile.row_gap_px = px;
-                carried = true;
             }
             if let Some(view) = detail_views.get(&tile.source) {
                 tile.detail_view.clone_from(view);
                 if tile.source == "ghRunners" {
                     tile.runner_full_view.clone_from(view);
                 }
-                carried = true;
             }
         }
-        carried
     }
 }
 
