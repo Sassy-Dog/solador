@@ -1307,7 +1307,7 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
 /// OS · architecture grouping.
 pub fn runners_view(state: &GitHubState, group_labels: &[String], now: u64) -> Value {
     let mut view = runners_payload(state, group_labels, now);
-    // On every payload, setup ones included: a Runners tile's Configure edits
+    // On every payload, setup ones included: a GitHub Runners tile's Configure edits
     // the list before a token is connected too.
     view["groupLabels"] =
         crate::runner_groups::section(group_labels, state.runner_labels().as_deref());

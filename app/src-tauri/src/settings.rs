@@ -1201,7 +1201,7 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         // Where the shared Refresh Interval went (#615), said once so an
         // operator who looks for it is told rather than left to wonder. Each
         // source polls on its own cadence, edited in its tile's Configure.
-        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, Usage, Containers, Azure Cost, Scheduled Jobs). Host metrics poll every second regardless — that cadence is the charts' time axis.",
+        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, Usage, Containers, Azure Cost, Sentry Crons). Host metrics poll every second regardless — that cadence is the charts' time axis.",
         "crashReporting": crash_reporting_section(settings, crash),
     })
 }

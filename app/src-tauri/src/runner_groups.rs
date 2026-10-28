@@ -1,7 +1,7 @@
-//! The runner group labels: one list, edited from a Runners tile's Configure.
+//! The runner group labels: one list, edited from a GitHub Runners tile's Configure.
 //!
-//! The list is not the tile's. It decides the groups of every Runners tile, of
-//! Detail and of each Runners tile's Full view, so the section says it is shared and every edit
+//! The list is not the tile's. It decides the groups of every GitHub Runners tile, of
+//! Detail and of each GitHub Runners tile's Full view, so the section says it is shared and every edit
 //! saves on the click — never part of a tile draft's Apply or the dashboard's
 //! undo history.
 
@@ -141,7 +141,7 @@ pub fn section(listed: &[String], runner_labels: Option<&[Vec<String>]>) -> Valu
     json!({
         "heading": "Group by labels",
         "firstMatch": "First match wins: a runner joins the group of the first label below that it carries.",
-        "shared": "Shared · saved immediately · applies everywhere runners appear: every Runners tile and its Full view.",
+        "shared": "Shared · saved immediately · applies everywhere runners appear: every GitHub Runners tile and its Full view.",
         "help": "Split runner groups by labels your runners carry — runner-large, say, to see large and small runners apart. An OS · architecture splits only once one of its runners carries a listed label; its runners carrying none of them are grouped as other. Labels match the way GitHub matches runs-on, ignoring case. With none listed, runners group by OS and architecture alone.",
         "empty": "No group labels — runners group by OS and architecture.",
         "inputLabel": "Runner label (e.g. runner-large)",
@@ -335,7 +335,7 @@ mod tests {
         );
         assert_eq!(
             section["shared"],
-            "Shared · saved immediately · applies everywhere runners appear: every Runners tile and its Full view."
+            "Shared · saved immediately · applies everywhere runners appear: every GitHub Runners tile and its Full view."
         );
     }
 

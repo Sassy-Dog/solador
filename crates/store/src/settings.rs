@@ -104,7 +104,7 @@ impl From<HostOverflowMode> for String {
 pub enum PanelInterval {
     /// Containers/VMs — local docker/podman/tart plus every host's agent.
     Containers,
-    /// The one GitHub poll that fills both the Repos and the Runners tiles.
+    /// The one GitHub poll that fills both the Repos and the GitHub Runners tiles.
     GitHub,
     /// The Services tile's third-party status pages.
     Services,

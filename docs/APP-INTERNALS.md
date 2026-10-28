@@ -335,10 +335,10 @@
   change take up to one full interval (four hours, on Azure) to apply. Each is
   edited in the **Configure of the tile(s) it feeds** (#614; it was Settings →
   Preferences → **Panel Poll Cadence**, #337) — Containers, GitHub Repos *and*
-  Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
+  GitHub Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
   maps a panel to a list of sources), Service Health, Usage (three: the Claude
-  rollups, the metered providers and the plan limits), Azure Cost and Scheduled
-  Jobs (Sentry crons) — under **Poll cadence**, one control per cadence (a
+  rollups, the metered providers and the plan limits), Azure Cost and Sentry
+  Crons — under **Poll cadence**, one control per cadence (a
   source carries a `cadences` list, so a tile fed by three polls shows all
   three), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
@@ -554,7 +554,7 @@
   visible tile). A hidden tile is never a target and no chip opens Solador's Full
   view. Detail defaults to compact
   tables, with a Table/List choice persisted per tile (`detailView`, and
-  `runnerFullView` for a Runners tile's Full view).
+  `runnerFullView` for a GitHub Runners tile's Full view).
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
   group identity each runner row carries (`groupId`, label split included);

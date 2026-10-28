@@ -1,9 +1,12 @@
 # Solador Cross-Platform Cockpit (`app/`)
 
 The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app opening on a
-compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Health**
-and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
-presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
+compact overview of **Machines**, **GitHub Repos**, **GitHub Runners**, **Service Health**
+and **Sentry Crons**. **Edit dashboard** changes tile order, visibility, scope,
+presentation and width. A tile stores its own title, so these are the names a
+new layout, an added tile and a new tile's Full view start with: a saved tile
+keeps the title it was saved with (an existing "Runners" or "Scheduled Jobs"
+tile stays that until you rename it in Configure; there is no migration). **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings in Detail, and Detail opens the tile's own
 **Full view** (see [Dashboard tiles](#dashboard-tiles)); **Escape**
 returns from a Full view to the overview. Connections and credentials remain
@@ -315,7 +318,7 @@ a busy repo Failed. The column and direction are saved per tile; numeric columns
 start descending, Repo and Status ascending.
 
 Runners default to **By OS, architecture and group labels** (the shipped overview tile and any
-Runners tile you add start there); **Individual runners** is one click away. A
+GitHub Runners tile you add start there); **Individual runners** is one click away. A
 saved tile that says `list`, or carries no choice, stays a list.
 Each type shows busy / online (`2/3 busy`, or `none online`), then busy, idle
 and offline counts, plus recycling, missing or unknown counts when present. A
@@ -357,9 +360,9 @@ panels fit their rows rather than reserving an empty list area.
 Architecture comes from GitHub's ARM64, X64 or ARM labels and survives in the
 absence roster. Missing or conflicting labels render Unknown architecture.
 **Runner group labels** split a type further, by labels your runners carry.
-They are edited in any Runners tile's **Configure**, under **Group by labels**:
+They are edited in any GitHub Runners tile's **Configure**, under **Group by labels**:
 a shared setting, saved on the click, that applies everywhere runners appear —
-every Runners tile and the Full view (see [Where a setting
+every GitHub Runners tile and its Full view (see [Where a setting
 lives](#where-a-setting-lives)). **A type splits only where a listed label
 appears**: list `runner-large` and, if a Linux · X64 runner carries it, Linux ·
 X64 becomes `LINUX · X64 · runner-large` and `LINUX · X64 · other`, while a type
@@ -555,10 +558,10 @@ acknowledging a warning in Detail, are shortcuts, not homes, and are not ruled
 on here.
 
 **Worked example: runner group labels** (rule 4). The labels change what every
-Runners tile and the Full view show, so they are edited where the groups are
-seen, in a Runners tile's Configure → **Group by labels**, and the section says
-`Shared · saved immediately · applies everywhere runners appear: every Runners
-tile and the Full view.` They save on the click (`runner_group_label_add` /
+GitHub Runners tile and its Full view show, so they are edited where the groups are
+seen, in a GitHub Runners tile's Configure → **Group by labels**, and the section says
+`Shared · saved immediately · applies everywhere runners appear: every GitHub Runners
+tile and its Full view.` They save on the click (`runner_group_label_add` /
 `_move` / `_remove`), not with the tile's **Apply**, because a shared list cannot
 wait on one tile's draft. They used to live under Settings → Preferences, apart
 from the groups they split, where an operator who had just added one could not
@@ -570,13 +573,13 @@ does not fit it yet:
 | Setting | Lives in | Fits? |
 |---|---|---|
 | Rows to show, repo checklist, Disk strip, runner view (and Repos sorting, by its column headers) | the tile's Configure, or the tile itself | rule 1 |
-| Runner group labels | Runners tile Configure, marked shared | rule 4 |
+| Runner group labels | GitHub Runners tile Configure, marked shared | rule 4 |
 | Container Group Rules | Containers tile Configure, marked shared (#613) | rule 4 |
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
 | Crash reporting, updates | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, GitHub (Repos and Runners), Services, Usage (Claude rollups; metered providers; plan limits), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
-| Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
+| Poll cadence of Containers, GitHub (Repos and Runners), Services, Usage (Claude rollups; metered providers; plan limits), Azure Cost and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
+| Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the GitHub Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
 | CPU core rows, Row spacing, host overflow, Detail / Full view Table-or-List | the tile's Configure → **Full view** / **Detail** page, per tile | rule 1 ([#647](https://github.com/Sassy-Dog/solador/issues/647)) |
 
 ### Settings and connections
@@ -2289,7 +2292,7 @@ Two things worth knowing about this surface:
   [#614](https://github.com/Sassy-Dog/solador/issues/614) the control is in the
   Configure of the tile(s) each feeds (**Poll cadence** — Containers, GitHub
   Repos and Runners, Service Health, Usage (three: its Claude rollups, metered
-  providers and plans), Azure Cost, Scheduled Jobs), not
+  providers and plans), Azure Cost, Sentry Crons), not
   here; it was this tab's **Panel Poll Cadence**
   group ([#337](https://github.com/Sassy-Dog/solador/issues/337)). It says it is
   shared by every tile of that source and the Full view, saves on the click
@@ -3044,12 +3047,12 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
 | the rules editor (`container_rule_add` / `_set` / `_remove`, #613) | **Edit dashboard** → the Containers tile's **Configure** → **Container Group Rules**: press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern, saved on the click before **Apply**; switching to Hide drops the group-label and expected-count fields; **Delete** removes it. Settings → Connections → This machine has no rules editor at all. A rule that survives a relaunch with Apply never pressed is the intended behaviour; one that needs Apply is the defect |
-| Configure's three pages (`dashboard_save`, `TILE_VIEWS`, #647) | **Edit dashboard** → the Machines tile's **Configure**: the switch at the top reads **This tile** / **Detail** / **Full view**. On **Full view** set *CPU core rows* to `3`, *Host overflow* to **Show as tabs** and *Row spacing* to `8`, then **Apply** from that page; open a Runners tile's Configure and check its **Detail** and **Full view** pages each offer Table / List | one **Apply** saves all three pages. The Machines tile's Full view (View menu → **Full view**) shows three core rows and, with two hosts and a narrow window, a tab bar; list rows sit 8px apart. A value outside a field's range (*CPU core rows* `9`) is refused by the field before anything is saved, and pressing **Apply** from **This tile** with that value left on **Full view** switches back to **Full view** with the field focused (Rust refuses the same value on `dashboard_save`; it is clamped, not refused, only when read from a hand-edited `store.json`) |
+| Configure's three pages (`dashboard_save`, `TILE_VIEWS`, #647) | **Edit dashboard** → the Machines tile's **Configure**: the switch at the top reads **This tile** / **Detail** / **Full view**. On **Full view** set *CPU core rows* to `3`, *Host overflow* to **Show as tabs** and *Row spacing* to `8`, then **Apply** from that page; open a GitHub Runners tile's Configure and check its **Detail** and **Full view** pages each offer Table / List | one **Apply** saves all three pages. The Machines tile's Full view (View menu → **Full view**) shows three core rows and, with two hosts and a narrow window, a tab bar; list rows sit 8px apart. A value outside a field's range (*CPU core rows* `9`) is refused by the field before anything is saved, and pressing **Apply** from **This tile** with that value left on **Full view** switches back to **Full view** with the field focused (Rust refuses the same value on `dashboard_save`; it is clamped, not refused, only when read from a hand-edited `store.json`) |
 | Edit from a Full view | open any tile's **Full view** (tile **View** menu), then press **Edit** in the toolbar. Then press Escape, and press **Edit** on the overview | from the Full view, the overview opens with that tile's **Configure** on its **Full view** page; from the overview, **Configure** opens on **This tile** |
 | a failed `cockpit` read in a Machines tile's Full view (`dashboard::COCKPIT_LOAD_FAILED`, #667) | open a Machines tile's Full view while the `cockpit` command is failing (for example with the app's IPC unavailable, or a host list the read cannot build), then let it recover | the Full view shows Rust's sentence in the loading line's place, never a plain "loading"; when the next read succeeds the sentence goes and the host cards show |
 | `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press **Apply cadence**; then set it to `30` and **Apply cadence**; then press **Use default** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. A refusal that silently stores `5` instead is the defect this row exists to catch |
-| `panel_interval_save` (GitHub) | **Edit dashboard** → a Runners tile's **Configure** → **Poll cadence**: set it to `300` and **Apply cadence**; then open a GitHub Repos tile's **Configure** | the Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
-| `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
+| `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and **Apply cadence**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
+| `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the GitHub Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |

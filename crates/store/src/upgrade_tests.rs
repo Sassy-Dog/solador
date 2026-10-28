@@ -15,7 +15,7 @@ fn tile(id: &str, source: &str) -> Value {
 }
 
 /// A pre-change store with an overview of two Machines tiles, a Repos tile and
-/// two Runners tiles, and every old global set off its default.
+/// two GitHub Runners tiles, and every old global set off its default.
 fn old_store(extra_settings: Value, layout: Option<Value>, detail_views: Value) -> Value {
     let mut settings = json!({"core_row_span": 4, "row_gap_px": 7});
     settings

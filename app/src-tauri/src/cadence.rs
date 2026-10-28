@@ -26,7 +26,7 @@ use store::settings::{interval_label, PanelInterval, Settings};
 /// cannot be added without stating which tiles' Configure host its control.
 ///
 /// A list, because one poll can fill several kinds of tile: `github_loop`'s one
-/// pass is both the Repos tile and the Runners tile, so they share one cadence
+/// pass is both the Repos tile and the GitHub Runners tile, so they share one cadence
 /// and each shows the same control with the same value.
 pub fn source_ids(panel: PanelInterval) -> &'static [&'static str] {
     match panel {
@@ -68,7 +68,7 @@ fn source_title(id: &str) -> &'static str {
         .map_or("", |(_, title)| title)
 }
 
-/// "every Containers / VMs tile", "every GitHub Repos tile and every Runners
+/// "every Containers / VMs tile", "every GitHub Repos tile and every GitHub Runners
 /// tile": the tiles one cadence moves, named, so a shared control says exactly
 /// what it is shared by.
 fn tiles_sentence(titles: &[&str]) -> String {
@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(sections[0]["value"], json!(300));
         assert_eq!(
             sections[0]["shared"],
-            json!("Shared \u{b7} saved immediately \u{b7} applies to every GitHub Repos tile and every Runners tile and their Full views.")
+            json!("Shared \u{b7} saved immediately \u{b7} applies to every GitHub Repos tile and every GitHub Runners tile and their Full views.")
         );
     }
 

@@ -4267,9 +4267,9 @@ fn machine_set_volume_hidden(
     Ok(dashboard_view(width, state))
 }
 
-/// Applies one edit to the runner group labels and saves it, from a Runners
+/// Applies one edit to the runner group labels and saves it, from a GitHub Runners
 /// tile's Configure. Saved on the click and outside the dashboard's undo
-/// history: the list is shared by every Runners tile, Detail and the Full
+/// history: the list is shared by every GitHub Runners tile, Detail and the Full
 /// view, not a property of the tile being configured. No poll is woken: the
 /// `runners` command reads the list on every request, so this very response
 /// is regrouped.

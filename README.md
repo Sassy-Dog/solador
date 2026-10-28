@@ -78,7 +78,7 @@ Volumes you don't care about can be hidden per machine from the tile, Detail or 
 and a Machines tile can drop its Disk strip. GitHub Repos supports
 per-tile repository selection, sortable columns and an All rows option.
 Runners can show every individual runner or counts grouped by OS and architecture,
-optionally split by runner labels you list in the Runners tile's Configure — `runner-large`,
+optionally split by runner labels you list in the GitHub Runners tile's Configure — `runner-large`,
 say, to see large and small runners apart. Only an OS and architecture where a runner
 carries one splits, and Detail and Full show every runner's labels.
 
@@ -91,7 +91,7 @@ carries one splits, and Detail and Full show every runner's labels.
 | **Usage** | Claude Code token rollups, the Claude and Codex plans' own 5-hour and weekly limits (opt-in), plus Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
 | **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
-| **Services** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
+| **Service Health** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
 | **OpenClaw** | an [OpenClaw](crates/openclaw/) agent farm, over a live WebSocket — the one panel that is event-driven rather than polled |
 
 <details>
@@ -99,9 +99,9 @@ carries one splits, and Detail and Full show every runner's labels.
 
 | | |
 |:--:|:--:|
-| ![Repos](site/assets/screenshots/panel-repos.png) | ![Runners](site/assets/screenshots/panel-runners.png) |
+| ![Repos](site/assets/screenshots/panel-repos.png) | ![GitHub Runners](site/assets/screenshots/panel-runners.png) |
 | ![Containers](site/assets/screenshots/panel-containers.png) | ![Usage](site/assets/screenshots/panel-usage.png) |
-| ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Services](site/assets/screenshots/panel-services.png) |
+| ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Service Health](site/assets/screenshots/panel-services.png) |
 | ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](site/assets/screenshots/panel-openclaw.png) |
 
 Each tile's own **Configure** has a **Full view** page for how its panel is
@@ -325,7 +325,7 @@ installer, an update check on macOS, and all nine panels.
 - **Windows has no update channel.** The app tells you that instead of
   pretending a check failed; you install the next release over the current one.
 - **Linux runs the agent, not the cockpit.**
-- **The Services panel only watches what you actually read.** The vendor list is
+- **The Service Health panel only watches what you actually read.** The vendor list is
   derived from your own configuration rather than shipped, so a cockpit with no
   credentials and no added status pages watches nothing and says so. That is
   deliberate — five hardcoded vendors are one maintainer's stack — but it does

@@ -28,7 +28,7 @@
   frozen, and its footer says so (`runners_error_message`) instead of the
   PAT-scope hint.
   Runner groups are OS · architecture, split by the operator's **runner group
-  labels** (`store.json`'s `runner_group_labels`, edited in a Runners tile's
+  labels** (`store.json`'s `runner_group_labels`, edited in a GitHub Runners tile's
   Configure and marked shared — see **Where a setting lives** in
   `app/README.md`). **An OS · architecture splits only where a listed label
   appears**: into one group per listed label a runner carries, plus `other`;
