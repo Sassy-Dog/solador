@@ -700,6 +700,16 @@ mod tests {
         assert_eq!(lines, ["plan usage: codex-plan read failed (rate-limited)"]);
         assert_eq!(source.not_before, Some(NOW + 60), "still recorded");
 
+        // Exactly the cadence: due at the same instant either way, so a
+        // deferral that changes nothing is not news. Negative control: `>=`.
+        let mut source = PlanSource {
+            last_attempt: Some(NOW),
+            ..PlanSource::default()
+        };
+        let lines = record_outcome(&mut source, p, Some(&throttled(CADENCE)), NOW, CADENCE);
+        assert_eq!(lines, ["plan usage: codex-plan read failed (rate-limited)"]);
+        assert_eq!(source.not_before, Some(NOW + CADENCE), "still recorded");
+
         let mut source = PlanSource {
             last_attempt: Some(NOW),
             ..PlanSource::default()
@@ -778,8 +788,10 @@ mod tests {
     }
 
     /// A reading that lands after `reset()` is stale: no line, and
-    /// `last_failure` is not touched. Negative control: move `record_outcome`
-    /// above the generation check and both assertions fail.
+    /// `last_failure` is not touched. Negative controls: moving
+    /// `record_outcome` above the generation check trips only the
+    /// `last_failure` assertion (the stale path still returns before the sink
+    /// loop); deleting the generation check entirely trips `lines.is_empty()`.
     #[tokio::test]
     async fn a_failure_that_lands_after_a_reset_logs_nothing_and_leaves_last_failure() {
         let usage = Mutex::new(UsageState::new());
