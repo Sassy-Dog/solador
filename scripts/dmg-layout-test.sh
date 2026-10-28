@@ -211,6 +211,9 @@ hdiutil() {
         echo attach >> "$FLAKY_LOG"
         if (( $(wc -l < "$FLAKY_LOG") <= FLAKY_FAILS )); then
             echo "hdiutil: attach failed - $FLAKY_MESSAGE" >&2
+            # #660: an optional second error line, to prove the `error:` field
+            # of a `dmg attach:` line carries only the first.
+            if [[ -n "${FLAKY_SECOND:-}" ]]; then echo "$FLAKY_SECOND" >&2; fi
             return 1
         fi
     fi
@@ -239,13 +242,16 @@ else
     fail "a busy attach is retried until it mounts (status, attaches: $result; $(cat "$work/err"))"
 fi
 result="$(attach_under_flake 99 "$busy")"
-if [[ "$result" == "1 5" ]] && grep -q "$busy" "$work/err" && grep -q "could not mount" "$work/err"; then
+# #660: anchored to the stub's own line, which only the give-up's final print of
+# hdiutil's error can produce; a `dmg attach:` line ends in it but never starts
+# with it, so it cannot satisfy the check.
+if [[ "$result" == "1 5" ]] && grep -q "^hdiutil: attach failed - $busy\$" "$work/err" && grep -q "could not mount" "$work/err"; then
     pass "a busy attach gives up after 5 tries and names the error"
 else
     fail "a busy attach gives up after 5 tries and names the error (status, attaches: $result; $(cat "$work/err"))"
 fi
 result="$(attach_under_flake 99 "no mountable file systems")"
-if [[ "$result" == "1 1" ]] && grep -q "no mountable file systems" "$work/err"; then
+if [[ "$result" == "1 1" ]] && grep -q "^hdiutil: attach failed - no mountable file systems\$" "$work/err"; then
     pass "any other attach failure is not retried"
 else
     fail "any other attach failure is not retried (status, attaches: $result; $(cat "$work/err"))"
@@ -264,6 +270,21 @@ if [[ "$result" == "0 3" && "$(diag_count)" == 2 ]] \
     pass "two busy attaches leave two dmg attach lines with attempt, exit, devices, mountpoint and error"
 else
     fail "two busy attaches leave two dmg attach lines (status, attaches: $result; lines: $(diag_count); $(cat "$work/err"))"
+fi
+# #660: an error of two lines. Each `error:` field carries the first line only
+# (`head -n 1`); the give-up still prints both lines, the second on its own.
+# Without `head -n 1` the second line lands on the line after each `dmg attach:`
+# line: the -A1 count (0 here, 5 without it) and the total count (1 here, 6
+# without it) both catch that.
+second="second line of the same error"
+result="$(FLAKY_SECOND="$second" attach_under_flake 99 "$busy")"
+if [[ "$result" == "1 5" ]] \
+    && [[ "$(grep -c "^dmg attach: attempt [1-5]/5 .*; error: hdiutil: attach failed - $busy\$" "$work/err")" == 5 ]] \
+    && [[ "$(grep -A1 '^dmg attach: attempt' "$work/err" | grep -c "^$second\$")" == 0 ]] \
+    && [[ "$(grep -c "^$second\$" "$work/err")" == 1 ]]; then
+    pass "a two-line attach error shows only its first line in each error field"
+else
+    fail "a two-line attach error shows only its first line in each error field (status, attaches: $result; $(cat "$work/err"))"
 fi
 result="$(attach_under_flake 0 "$busy")"
 if [[ "$result" == "0 1" ]] && ! grep -q '^dmg attach:' "$work/err"; then
