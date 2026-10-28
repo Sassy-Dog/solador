@@ -406,8 +406,8 @@ const PANEL_SECTIONS = {
  * no-op.
  *
  * The count lands as a custom property, which is enough on its own for the
- * panels whose split is pure CSS (Containers' section grid, Runners'
- * multi-column list). A panel that has to rebuild its DOM to re-split (Repos,
+ * panels whose split is pure CSS (Containers' section grid; Runners is handed
+ * a count but paints no split). A panel that has to rebuild its DOM to re-split (Repos,
  * whose columns each carry their own header) also gets an event, so it
  * re-renders now rather than at the far end of its own 10s poll.
  */

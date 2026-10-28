@@ -108,9 +108,10 @@ impl PanelKind {
     /// two of these plus a gutter, so for the panels that paint the count
     /// (Containers, Repos, Usage, Azure Cost) an overstated figure keeps one
     /// column on a window that could carry two, and an understated one splits a
-    /// list into columns too narrow to scan. Services, Sentry Crons and OpenClaw
-    /// paint no column split, so for them the figure is only the measured width
-    /// of one content column.
+    /// list into columns too narrow to scan. Runners, Services, Sentry Crons and
+    /// OpenClaw paint no column split (Runners receives a count, but no CSS rule
+    /// or JS reads it), so for them the figure is only the measured width of one
+    /// content column.
     ///
     /// OpenClaw's and Usage's figures were inherited guesses until they were
     /// measured against their dumped fixtures, by shrinking the panel until
