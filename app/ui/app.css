@@ -17,11 +17,11 @@
      `.card`, `.panel` and `.group`, which separate their own children by 10 —
      and the panel that renders 21+ rows got taller for it, which the cockpit
      cannot afford on a screen whose whole job is fitting rows in. So the number
-     is the OPERATOR's now (`row_gap_px`, Settings → General), and the answer
-     shipped in an untouched store is 0: flush.
+     is the OPERATOR's now (each tile's `row_gap_px`, in its Configure), and the
+     answer shipped in an untouched store is 0: flush.
 
-     The value therefore ARRIVES FROM RUST, as `rowGapPx` on the cockpit
-     payload, exactly like `--cockpit-gap` — which is a reversal, and the reason
+     The value therefore ARRIVES FROM RUST, as `rowGapPx` on the tile in
+     `dashboard_view`, exactly like `--cockpit-gap` — which is a reversal, and the reason
      is that the number stopped being the frontend's. It was authored here while
      spacing inside a list was a thing nothing but this stylesheet had an opinion
      about; a preference is not that. What is left here is the value the page

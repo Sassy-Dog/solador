@@ -64,10 +64,9 @@ The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
 duplicate and scope them, or add a view of any of the nine sources below.
 **Needs attention** includes hidden sources. A tile's **View** menu opens its
 **Detail**, or its own **Full view**: the source's full panel holding only that
-tile's scope, under the tile's name. Toggle **Full view** at the top right for the
-full cockpit. Both views keep the Solador heading
-and the same **Full view**, **Fit window to tiles**, **Edit dashboard** and
-**Settings** icons at the top right. **Fit window to tiles** shrinks or grows the
+tile's scope, under the tile's name; **Escape** returns to the overview. Both
+views keep the Solador heading and the same **Fit window to tiles**,
+**Edit dashboard** and **Settings** icons at the top right. **Fit window to tiles** shrinks or grows the
 window's height to the tiles, so no empty space is left below them. Editing also offers **Add tile** and **Undo** icons; every icon has a
 tooltip on hover or keyboard focus.
 Connections stay in **Settings**.
@@ -105,10 +104,8 @@ carries one splits, and Detail and Full show every runner's labels.
 | ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Services](site/assets/screenshots/panel-services.png) |
 | ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](site/assets/screenshots/panel-openclaw.png) |
 
-At a narrower width the layout reflows rather than scrolling, and you can
-rearrange the panels per width band in Settings → Layout:
-
-![Narrow](site/assets/screenshots/cockpit-narrow.png)
+Each tile's own **Configure** has a **Full view** page for how its panel is
+laid out (CPU core rows, row spacing, host overflow, Table or List).
 
 </details>
 

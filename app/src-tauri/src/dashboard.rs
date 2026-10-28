@@ -1446,7 +1446,7 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
 /// of the source keeps every row needing attention (the rows `in_scope` and the
 /// tile's repository selection keep, the same ones its Detail shows), and
 /// otherwise `{"trouble": {..}}`, a panel built for the chip. A chip never
-/// leads to a hidden tile or to Solador's Full view.
+/// leads to a hidden tile or to a source-wide panel.
 ///
 /// `tiles` are the source's visible tiles, in overview order. A source whose
 /// trouble is only a warning has no row to miss, so any tile shows it.

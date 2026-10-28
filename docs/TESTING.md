@@ -200,7 +200,7 @@ The window is intra-test and independent of #401's server-startup one. A
 longer timeout on the frame-1 assertion cannot help — once frame 2 has been
 served, frame 1 is gone — so do not reach for one; hold the frame instead.
 
-**Per-panel specs enter a tile's Full view, never `?view=details` (#645).**
+**Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
 `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
 `tests/frontend/tile-full.js`: it stubs the IPC, boots the overview with one
 `all`-scoped tile per source, and opens the panel through the tile's View button
@@ -218,22 +218,23 @@ a width or overflow check on it passes for any content. Each of the seven
 tile-full.js specs asserts its renderer sends `{tile: <id>}`;
 `{ __frames: [a, b] }` plus `advance(page, command)` holds a multi-frame panel
 answer the way `stubCockpit` does. `layout.spec.js`, `settings.spec.js` and
-`screenshots.spec.js` (`cockpit.png`, `cockpit-narrow.png`) still boot
-`?view=details`; the cutover of #639 removes that path.
+`screenshots.spec.js` enter a tile's Full view the same way (`overview.png` and
+the nine `panel-*.png` are the only shots).
 
-**The overview and a tile's Full view are tested without Solador's Full view
-(#646).** `overview-standalone.spec.js` boots the overview through the same
-`tile-full.js` stub and takes away what the cutover will: the `allPanels` icon,
-and the `cockpit` payload's `settingsLabel`, `spacing` and `rowGapPx`. It does not
-remove `#fullView`, the host of every panel, which the cutover re-purposes
-rather than deletes (`app/README.md`, "The overview and a tile's Full view no
-longer lean on…"). What it asserts, each clause one test: Settings opens and
+**The overview and a tile's Full view are tested with a bare `cockpit`
+(#646, #647).** Solador's Full view is gone, so `overview-standalone.spec.js` no
+longer has anything to take away but the `cockpit` answer itself: its stub gives
+the overview and Settings only what `dashboard_view` carries. `#fullView`, the
+host of every panel, stays (`app/README.md`, "The overview and a tile's Full
+view stand on one page"). What it asserts, each clause one test: Settings opens and
 closes over the overview, and over Machines, Runners and Scheduled Jobs Full
 views, which Escape then leaves for the overview with focus on the tile's View
 button (Escape from the overview is not tested); the Settings button and the
-gaps come from `dashboard_view` (`labels.settings`, `rowGapPx`, `spacing`); a
-`cockpit` rejection leaves the overview up with `labels.cockpitFailed`, and the
-line clears when `cockpit` answers again; a Machines tile removed while its Full
+gaps come from `dashboard_view` (`labels.settings`, each tile's `rowGapPx`,
+`spacing`); a `cockpit` rejection leaves the overview up with
+`labels.cockpitFailed`, and the line clears when `cockpit` answers again; a
+Machines tile's Full view whose `cockpit` read failed shows that same sentence
+rather than a loading line, and shows its cards once a read succeeds (#667); a Machines tile removed while its Full
 view is open shows the tile-gone message and never that line, even when a
 `dashboard_view` that still has the tile is in flight, and a `cockpit` read that
 keeps failing asks whether the tile is gone once; a rejected `dashboard_view`

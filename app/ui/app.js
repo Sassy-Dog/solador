@@ -57,9 +57,9 @@ let settingsOpen = false;
 let overviewOpen = false;
 // Whether the panel for dashboard source `source` should be reading now. A
 // renderer asks this before every read: nothing while the overview is up, and
-// in a tile's Full view only that tile's source (Solador's Full view, which
-// names no tile, reads them all). dashboard.js answers `fullSource`; before it
-// has loaded there is no tile, so every panel reads once at boot.
+// in a tile's Full view only that tile's source. dashboard.js answers
+// `fullSource`; before it has loaded there is no tile, so every panel reads
+// once at boot.
 const panelWanted = (source) => {
   if (overviewOpen) return false;
   const only = window.soladorDashboard?.fullSource?.() ?? null;
@@ -509,8 +509,7 @@ function applyHostTabs(spec, grid) {
  * Two payloads call this with the same stored values: `dashboard_view`, which
  * the overview reads from its first frame whatever `cockpit` is doing (so a
  * tile's Full view has its row gap before any `cockpit` response), and
- * `cockpit`, which is all Solador's Full view has while the overview is not
- * loaded.
+ * `cockpit`, which a Machines tile's Full view also reads.
  */
 function applySpacing(spacing, rowGapPx) {
   const style = document.documentElement.style;
@@ -617,7 +616,7 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
     }
   };
 
-  // The cards are read where they are shown (Solador's Full view, a Machines
+  // The cards are read where they are shown (a Machines
   // tile's Full view), and while the last read failed, so that the overview's
   // sentence clears on its own once `cockpit` answers again.
   refreshCockpit = async () => {

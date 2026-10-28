@@ -579,8 +579,8 @@
   and repaints nothing there but the tile's heading: `updateView` runs on a
   forced render, so the open panel is not rebuilt every second. Detail from an
   attention chip carries its tile like any other, so its Full view is that
-  tile's. (The `full` action, Solador's Full view for a whole source, is no
-  longer reachable from a chip; #639's cutover removes it.) A trouble panel
+  tile's. (The `full` action, a whole source's panel, is gone with Solador's Full
+  view, #647.) A trouble panel
   closes when Rust stops reporting its source's trouble.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
@@ -601,8 +601,7 @@
   beside Needs Attention. About puts update controls above naturally flowing
   status/help/notes without nested scrolling. Notes format headings, lists,
   emphasis and code through DOM nodes; HTML stays text, and URLs stay selectable.
-  Settings calls the full cockpit arrangement **Full view layout** and keeps a 12px vertical/
-  16px horizontal header inset.
+  Settings keeps a 12px vertical/16px horizontal header inset.
 
 ### Error vocabulary (`crates/fault`)
 
