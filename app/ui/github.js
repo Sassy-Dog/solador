@@ -203,8 +203,9 @@ function renderRepos(payload) {
     children.push(messageNode(payload.message));
   } else {
     // Each column is a table in its own right — its own header, its own
-    // right-flush numeric block. Unlike the runner list this cannot be CSS
-    // multi-column: balancing has no way to repeat a header per column.
+    // right-flush numeric block. Unlike the runner list (one flex column) this
+    // cannot be CSS multi-column: balancing has no way to repeat a header per
+    // column.
     const cols = Math.max(1, Number($g("reposPanel").dataset.cols) | 0);
     const rows = payload.rows || [];
     const nameWidth = (payload.columns[0] || {}).width;
