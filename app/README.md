@@ -2312,10 +2312,12 @@ Two things worth knowing about this surface:
   (`coreRowSpan`, `rowGapPx`) are listed once, in `crates/store`'s
   `RANGE_BOUNDED_TILE_FIELDS`: that list drives both the clamp on read of a
   hand-edited `store.json` and the strict `DashboardLayout::from_ipc_value`
-  that `dashboard_save` refuses through (the shell only words the refusal); a
-  test fails when a numeric tile field is missing from it. The old global values (Settings →
-  Preferences' rows, the Layout tab's first breakpoint and `detailViews`) are
-  read once at load by `StoreData::carry_view_settings_onto_tiles`, copied onto
+  that `dashboard_save` reads through, which lives in the store; the shell
+  words the refusal, and `validate_view_settings` still checks the typed tile
+  (its ranges and the Machines-only rule). A test fails when a tile field that
+  serialises as a number or `null` is missing from the list. The old global
+  values (Settings → Preferences' rows, the Layout tab's first breakpoint and
+  `detailViews`) are read once at load by `StoreData::carry_view_settings_onto_tiles`, copied onto
   the tiles they applied to, and dropped by the next save; nothing writes them.
   The core row span reaches the host cards through `align_core_ladders` (from
   the open Machines tile's own `HostLook`), and the row gap rides the tile in

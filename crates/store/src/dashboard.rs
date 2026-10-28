@@ -10,53 +10,51 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::ops::RangeInclusive;
 
-/// A tile field whose value must lie in a range. The one list of them is
-/// [`RANGE_BOUNDED_TILE_FIELDS`]; both the clamp on read and the refusal over
-/// IPC come from it (#669).
+/// A tile field whose value must lie in a range. [`TileRangeField::spec`] is
+/// its one definition and [`RANGE_BOUNDED_TILE_FIELDS`] the one list of them;
+/// both the clamp on read and the refusal over IPC come from there (#669).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileRangeField {
     CoreRowSpan,
     RowGapPx,
 }
 
-/// One entry of [`RANGE_BOUNDED_TILE_FIELDS`].
+/// What [`TileRangeField::spec`] says about a field.
 #[derive(Debug, Clone)]
-pub struct RangeBoundedField {
-    pub field: TileRangeField,
+pub(crate) struct RangeBoundedField {
     /// The field's key in the tile's JSON.
-    pub key: &'static str,
-    pub range: RangeInclusive<u8>,
-    /// What an absent or `null` value reads as.
-    pub default: u8,
+    pub(crate) key: &'static str,
+    pub(crate) range: RangeInclusive<u8>,
+    /// What the field reads as when its key is absent (serde's `default`) or
+    /// `null`.
+    pub(crate) default: u8,
+}
+
+impl TileRangeField {
+    /// Exhaustive, so a new variant does not compile until it is defined.
+    pub(crate) fn spec(self) -> RangeBoundedField {
+        match self {
+            TileRangeField::CoreRowSpan => RangeBoundedField {
+                key: "coreRowSpan",
+                range: CORE_ROW_SPAN_RANGE,
+                default: DEFAULT_CORE_ROW_SPAN,
+            },
+            TileRangeField::RowGapPx => RangeBoundedField {
+                key: "rowGapPx",
+                range: ROW_GAP_PX_RANGE,
+                default: DEFAULT_ROW_GAP_PX,
+            },
+        }
+    }
 }
 
 /// Every range-bounded tile field, in one place. Listing a field here makes it
-/// refused over IPC; its deserialiser reads through [`read_ranged`], which looks
-/// the field up here, so it clamps on read too. The test
-/// `every_numeric_tile_field_is_range_bounded` fails when a numeric tile field
-/// is missing from this list.
-pub const RANGE_BOUNDED_TILE_FIELDS: [fn() -> RangeBoundedField; 2] = [
-    || RangeBoundedField {
-        field: TileRangeField::CoreRowSpan,
-        key: "coreRowSpan",
-        range: CORE_ROW_SPAN_RANGE,
-        default: DEFAULT_CORE_ROW_SPAN,
-    },
-    || RangeBoundedField {
-        field: TileRangeField::RowGapPx,
-        key: "rowGapPx",
-        range: ROW_GAP_PX_RANGE,
-        default: DEFAULT_ROW_GAP_PX,
-    },
-];
-
-fn bounded(key: &str) -> RangeBoundedField {
-    RANGE_BOUNDED_TILE_FIELDS
-        .iter()
-        .map(|f| f())
-        .find(|f| f.key == key)
-        .expect("a deserialiser names a field in RANGE_BOUNDED_TILE_FIELDS")
-}
+/// refused over IPC; its deserialiser and default read [`TileRangeField::spec`],
+/// so it clamps on read too. The test `every_numeric_tile_field_is_range_bounded`
+/// fails when a tile field that serialises as a number or `null` is missing
+/// from this list.
+pub(crate) const RANGE_BOUNDED_TILE_FIELDS: [TileRangeField; 2] =
+    [TileRangeField::CoreRowSpan, TileRangeField::RowGapPx];
 
 /// Why a layout arriving over IPC was not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,14 +75,15 @@ impl DashboardLayout {
     /// and `null` read as the default; a float such as `3.5` is refused.
     pub fn from_ipc_value(raw: Value) -> Result<Self, TileReadError> {
         for tile in raw["tiles"].as_array().into_iter().flatten() {
-            for f in RANGE_BOUNDED_TILE_FIELDS.iter().map(|f| f()) {
+            for field in RANGE_BOUNDED_TILE_FIELDS {
+                let f = field.spec();
                 let outside = tile.get(f.key).is_some_and(|v| {
                     !v.is_null()
                         && v.as_u64()
                             .is_none_or(|n| !f.range.contains(&(n.min(255) as u8)))
                 });
                 if outside {
-                    return Err(TileReadError::OutOfRange(f.field));
+                    return Err(TileReadError::OutOfRange(field));
                 }
             }
         }
@@ -92,10 +91,10 @@ impl DashboardLayout {
     }
 }
 
-/// The shared read of a range-bounded field: absent or `null` is the default,
-/// anything else is clamped into the range.
-fn read_ranged<'de, D: Deserializer<'de>>(d: D, key: &str) -> Result<u8, D::Error> {
-    let f = bounded(key);
+/// The shared read of a range-bounded field: `null` is the default, anything
+/// else is clamped into the range.
+fn read_ranged<'de, D: Deserializer<'de>>(d: D, field: TileRangeField) -> Result<u8, D::Error> {
+    let f = field.spec();
     Ok(Option::<u8>::deserialize(d)?
         .map_or(f.default, |v| v.clamp(*f.range.start(), *f.range.end())))
 }
@@ -164,19 +163,19 @@ fn disk_shown() -> bool {
     true
 }
 fn default_core_row_span() -> u8 {
-    DEFAULT_CORE_ROW_SPAN
+    TileRangeField::CoreRowSpan.spec().default
 }
 fn default_row_gap_px() -> u8 {
-    DEFAULT_ROW_GAP_PX
+    TileRangeField::RowGapPx.spec().default
 }
 fn table_view() -> String {
     "table".into()
 }
 fn de_core_row_span<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    read_ranged(d, "coreRowSpan")
+    read_ranged(d, TileRangeField::CoreRowSpan)
 }
 fn de_row_gap_px<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    read_ranged(d, "rowGapPx")
+    read_ranged(d, TileRangeField::RowGapPx)
 }
 
 impl DashboardTile {
@@ -290,7 +289,8 @@ mod tests {
     /// default on both.
     #[test]
     fn every_listed_field_clamps_on_read_and_is_refused_over_ipc() {
-        for f in RANGE_BOUNDED_TILE_FIELDS.iter().map(|f| f()) {
+        for field in RANGE_BOUNDED_TILE_FIELDS {
+            let f = field.spec();
             let over = u64::from(*f.range.end()) + 1;
             let raw = layout_with(f.key, json!(over));
             let read: DashboardLayout = serde_json::from_value(raw.clone()).unwrap();
@@ -298,14 +298,14 @@ mod tests {
             assert_eq!(read_back[f.key], json!(*f.range.end()), "{} clamps", f.key);
             assert_eq!(
                 DashboardLayout::from_ipc_value(raw),
-                Err(TileReadError::OutOfRange(f.field)),
+                Err(TileReadError::OutOfRange(field)),
                 "{} refused",
                 f.key
             );
             for bad in [json!(3.5), json!("2"), json!(-1), json!(100_000)] {
                 assert_eq!(
                     DashboardLayout::from_ipc_value(layout_with(f.key, bad.clone())),
-                    Err(TileReadError::OutOfRange(f.field)),
+                    Err(TileReadError::OutOfRange(field)),
                     "{} = {bad}",
                     f.key
                 );
@@ -322,19 +322,34 @@ mod tests {
                     f.key
                 );
             }
+            // An absent key takes serde's `default`, which is the same entry.
+            let mut tile = tile_json();
+            tile.as_object_mut().unwrap().remove(f.key);
+            let absent = DashboardLayout::from_ipc_value(json!({"tiles": [tile]})).unwrap();
+            assert_eq!(
+                serde_json::to_value(&absent.tiles[0]).unwrap()[f.key],
+                json!(f.default),
+                "{} absent",
+                f.key
+            );
         }
     }
 
     /// A numeric tile field missing from the list would clamp on read and
-    /// slip through IPC unrefused. Every number a tile serialises must be in
-    /// [`RANGE_BOUNDED_TILE_FIELDS`]; a deliberately unbounded number would
-    /// have to be exempted here, by name.
+    /// slip through IPC unrefused. Every tile field that serialises as a
+    /// number, or as `null` (an unset `Option<u8>`), must be in
+    /// [`RANGE_BOUNDED_TILE_FIELDS`]; a deliberately unbounded one would have
+    /// to be exempted here, by name. A field that serialises as absent
+    /// (`skip_serializing_if`) is not seen by this probe.
     #[test]
     fn every_numeric_tile_field_is_range_bounded() {
-        let listed: Vec<&str> = RANGE_BOUNDED_TILE_FIELDS.iter().map(|f| f().key).collect();
+        let listed: Vec<&str> = RANGE_BOUNDED_TILE_FIELDS
+            .iter()
+            .map(|f| f.spec().key)
+            .collect();
         let tile = tile_json();
         for (key, value) in tile.as_object().unwrap() {
-            if value.is_number() {
+            if value.is_number() || value.is_null() {
                 assert!(
                     listed.contains(&key.as_str()),
                     "{key} is a number but not in RANGE_BOUNDED_TILE_FIELDS"
