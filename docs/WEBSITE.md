@@ -54,11 +54,23 @@ to how `remote::plan` refuses is a change to the prompt.
 `the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
 `site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
 from `tests/frontend/og-card.html`. The nine `panel-*.png` are a tile's **Full
-view** (View, then Full view) of the showcase readings, in a window sized to the
-panel's old card (908pt for the half-width panels, 462pt for the quarter-width
-ones, 900pt for Hosts), so each image keeps the shape `site/index.html` lays
-out. There are no other cockpit shots: `cockpit.png` and `cockpit-narrow.png`
+view** (View, then Full view) of the showcase readings. Full view lays a panel out
+in columns across the whole window, so the window is sized per panel in
+`tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
+crops each image into a 311x195 box with `object-fit: cover`, anchored top left,
+so the image's shape decides what the card shows. 908pt for Repos and Runners,
+462pt for the panels that stack (Containers, Azure Cost, Usage, Crons, Services,
+OpenClaw), 900pt for Hosts. Containers keeps the remote host under this machine's
+(the generator asserts it is inside the crop), and every screenshot's
+`width`/`height` in `site/index.html` is the file's pixel size (`site.spec.js`
+compares them; `mark.svg`'s sizes are not checked). The Usage card's alt text
+names Neon, Sentry and Vercel consumption, but at the 3-up 311x195 crop the
+image ends at the Codex plan rows, and the showcase Usage payload carries no
+Vercel reading at all, so the crop does not yet match that caption. Azure
+Cost's "Azure Database for PostgreSQL" is still cut by the panel's own ellipsis at
+462pt. There are no other cockpit shots: `cockpit.png` and `cockpit-narrow.png`
 went with Solador's Full view (#647).
 Its cockpit stub refuses any grid width it has no dump for, rather than paint a
 layout computed for another one; each viewport has its own `--width` dump in
-`fixtures:showcase`.
+`fixtures:showcase` (a tile's Full view asks at the window's own width as well as the
+overview's, so Hosts' 900pt needs a 900 dump beside the 868 one).
