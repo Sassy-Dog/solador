@@ -273,11 +273,14 @@ else
 fi
 # #660: an error of two lines. Each `error:` field carries the first line only
 # (`head -n 1`); the give-up still prints both lines, the second on its own.
+# Without `head -n 1` the second line lands on the line after each `dmg attach:`
+# line: the -A1 count (0 here, 5 without it) and the total count (1 here, 6
+# without it) both catch that.
 second="second line of the same error"
 result="$(FLAKY_SECOND="$second" attach_under_flake 99 "$busy")"
 if [[ "$result" == "1 5" ]] \
     && [[ "$(grep -c "^dmg attach: attempt [1-5]/5 .*; error: hdiutil: attach failed - $busy\$" "$work/err")" == 5 ]] \
-    && ! grep '^dmg attach: ' "$work/err" | grep -q "$second" \
+    && [[ "$(grep -A1 '^dmg attach: attempt' "$work/err" | grep -c "^$second\$")" == 0 ]] \
     && [[ "$(grep -c "^$second\$" "$work/err")" == 1 ]]; then
     pass "a two-line attach error shows only its first line in each error field"
 else
