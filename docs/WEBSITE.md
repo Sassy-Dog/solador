@@ -61,8 +61,12 @@ crops each image into a 311x195 box with `object-fit: cover`, anchored top left,
 so the image's shape decides what the card shows. 908pt for Repos and Runners,
 462pt for the panels that stack (Containers, Azure Cost, Usage, Crons, Services,
 OpenClaw), 900pt for Hosts. Containers keeps the remote host under this machine's
-(the generator asserts it is inside the crop), and every `width`/`height` in
-`site/index.html` is the file's pixel size (`site.spec.js` compares them). Azure
+(the generator asserts it is inside the crop), and every screenshot's
+`width`/`height` in `site/index.html` is the file's pixel size (`site.spec.js`
+compares them; `mark.svg`'s sizes are not checked). The Usage card's alt text
+names Neon, Sentry and Vercel consumption, but at the 3-up 311x195 crop the
+image ends at the Codex plan rows, and the showcase Usage payload carries no
+Vercel reading at all, so the crop does not yet match that caption. Azure
 Cost's "Azure Database for PostgreSQL" is still cut by the panel's own ellipsis at
 462pt. There are no other cockpit shots: `cockpit.png` and `cockpit-narrow.png`
 went with Solador's Full view (#647).
