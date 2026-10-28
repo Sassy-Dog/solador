@@ -875,7 +875,7 @@ async function configureRunners(page) {
   return page.locator("[data-group-labels]");
 }
 
-test("the Runners Configure lists group labels with counts and the shared note", async ({ page, baseURL }) => {
+test("the GitHub Runners Configure lists group labels with counts and the shared note", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
   const editor = model.sources.find(s => s.id === "ghRunners").groupLabels;
   const section = await configureRunners(page);
@@ -1359,7 +1359,7 @@ test("a saved override survives a local tick, a repaint and untick, and Apply se
     { hostId: first.id, thresholds: expect.objectContaining({ ramWarning: 50, ramCritical: 60 }), width: expect.any(Number) });
 });
 
-test("a fresh dashboard groups Runners by OS and architecture, and an added GitHub Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
+test("a fresh dashboard groups GitHub Runners by OS and architecture, and an added GitHub Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
   const original = await openDashboard(page, baseURL);
   expect(original.tiles.find(t => t.source === "ghRunners").runnerView).toBe("grouped");
   await expect(tile(page, "ghRunners").locator('.db-item-name')).toHaveText(["LINUX · ARM64", "MACOS · ARM64"]);

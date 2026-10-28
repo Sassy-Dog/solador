@@ -560,8 +560,8 @@ on here.
 **Worked example: runner group labels** (rule 4). The labels change what every
 GitHub Runners tile and its Full view show, so they are edited where the groups are
 seen, in a GitHub Runners tile's Configure → **Group by labels**, and the section says
-`Shared · saved immediately · applies everywhere runners appear: every Runners
-tile and the Full view.` They save on the click (`runner_group_label_add` /
+`Shared · saved immediately · applies everywhere runners appear: every GitHub Runners
+tile and its Full view.` They save on the click (`runner_group_label_add` /
 `_move` / `_remove`), not with the tile's **Apply**, because a shared list cannot
 wait on one tile's draft. They used to live under Settings → Preferences, apart
 from the groups they split, where an operator who had just added one could not

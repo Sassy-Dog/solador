@@ -830,7 +830,7 @@
       if (repo.id === focused) input.focus({preventScroll:true});
     }
   }
-  // The runner group labels are shared by every Runners view, not this tile:
+  // The runner group labels are shared by every GitHub Runners view, not this tile:
   // every control is a plain button and the input has no name, so formTile()
   // never reads the list into the draft, and each edit saves on the click.
   // Only the list and the seen labels are repainted, so a poll cannot clear

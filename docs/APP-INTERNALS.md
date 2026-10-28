@@ -335,10 +335,10 @@
   change take up to one full interval (four hours, on Azure) to apply. Each is
   edited in the **Configure of the tile(s) it feeds** (#614; it was Settings →
   Preferences → **Panel Poll Cadence**, #337) — Containers, GitHub Repos *and*
-  Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
+  GitHub Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
   maps a panel to a list of sources), Service Health, Usage (three: the Claude
-  rollups, the metered providers and the plan limits), Azure Cost and Scheduled
-  Jobs (Sentry crons) — under **Poll cadence**, one control per cadence (a
+  rollups, the metered providers and the plan limits), Azure Cost and Sentry
+  Crons — under **Poll cadence**, one control per cadence (a
   source carries a `cadences` list, so a tile fed by three polls shows all
   three), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
