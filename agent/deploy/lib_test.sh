@@ -3339,7 +3339,13 @@ run_bootstrap() {
         unset XDG_CACHE_HOME
         export USER="${USER:-tester}"
         umask 022
-        "$BASH" "$BOOTSTRAP_SCRIPT" "$@"
+        # stdin is /dev/null, never the caller's (#659): the real install.sh
+        # that bootstrap.sh execs reads its bearer token from stdin when the
+        # home has no env file, so a suite started with an open stdin (an
+        # agent harness or CI wrapper pipe that never reaches EOF) would
+        # block on that prompt until the watchdog fired. No case here pipes
+        # a token through bootstrap; run_install is where tokens are piped.
+        "$BASH" "$BOOTSTRAP_SCRIPT" "$@" </dev/null
     ) >"$BOOTSTRAP_OUT" 2>&1
     BOOTSTRAP_STATUS=$?
     return "$BOOTSTRAP_STATUS"
@@ -4045,6 +4051,55 @@ test_bootstrap_signature_gate() {
     fi
     BOOTSTRAP_PATH=""
     unset SOLADOR_AGENT_RELEASE
+}
+
+# #659: run_bootstrap must not hand bootstrap.sh -- and through it the real
+# install.sh and its token prompt -- the stdin of whoever started the suite.
+# The fake install.sh below reads one line the way install.sh's prompt does
+# (`read ... || true`). The run starts with an OPEN stdin that never reaches
+# EOF (a read-write fifo has no writer to close it), is given 15 s, and is
+# stopped and failed if it is still alive. Remove the `</dev/null` in
+# run_bootstrap and this case fails.
+test_bootstrap_ignores_callers_open_stdin() {
+    local home="$TMP/home-bootstrap-open-stdin" src="$TMP/bootstrap-open-stdin-src" dir
+    local fifo="$TMP/bootstrap-open-stdin.fifo" done_file="$TMP/bootstrap-open-stdin.done"
+    local pid tries=0 stuck pids
+    local label="bootstrap.sh does not inherit the caller's open stdin: install.sh's read returns and the run exits 0"
+    mkdir -p "$home"
+    rm -rf "$src" "$fifo" "$done_file"
+    dir="$src/solador-main"
+    mkdir -p "$dir/agent/deploy"
+    cat > "$dir/agent/deploy/install.sh" <<'STUB'
+#!/bin/sh
+read -r _token || true
+exit 0
+STUB
+    chmod +x "$dir/agent/deploy/install.sh"
+    echo "pubkey" > "$dir/agent/release-signing-key.pub"
+    mkdir -p "$FIXTURES"
+    ( cd "$src" && tar -czf "$FIXTURES/main" "solador-main" )
+    mkfifo "$fifo"
+
+    reset_argv_logs
+    ( run_bootstrap "$home"; echo "$BOOTSTRAP_STATUS" > "$done_file" ) <>"$fifo" &
+    pid=$!
+    while [ ! -e "$done_file" ] && [ "$tries" -lt 15 ]; do
+        sleep 1
+        tries=$((tries + 1))
+    done
+    if [ -e "$done_file" ]; then
+        wait "$pid" 2>/dev/null || true
+        assert_eq "$label" "0" "$(cat "$done_file")"
+    else
+        stuck="$(watchdog_tree "$pid" 0)"
+        pids="$(printf '%s\n' "$stuck" | awk '{ print $1 }')"
+        # shellcheck disable=SC2086
+        [ -z "$pids" ] || kill -KILL $pids 2>/dev/null || true
+        kill -KILL "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        fail "$label" "still blocked after 15 s with an open stdin" "$stuck"
+    fi
+    rm -f "$fifo"
 }
 
 # A re-run hint printed by the REAL install.sh, reached through bootstrap.sh,
@@ -10029,6 +10084,7 @@ CASES="
         test_bootstrap_failure_paths
         test_bootstrap_passes_through_install_exit_status
         test_bootstrap_signature_gate
+        test_bootstrap_ignores_callers_open_stdin
         test_bootstrap_rerun_hint_names_bootstrap
         test_bootstrap_uninstall_rerun_hint
         test_install_linux_flow
