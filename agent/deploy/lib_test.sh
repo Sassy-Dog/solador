@@ -10072,6 +10072,7 @@ CASES="
         test_install_release_resolution
         test_install_through_the_feed
         test_install_signature_gate
+        test_bootstrap_ignores_callers_open_stdin
         test_bootstrap_extraction_and_passthrough
         test_bootstrap_help_when_piped
         test_bootstrap_resolves_commit_from_pax_header
@@ -10084,7 +10085,6 @@ CASES="
         test_bootstrap_failure_paths
         test_bootstrap_passes_through_install_exit_status
         test_bootstrap_signature_gate
-        test_bootstrap_ignores_callers_open_stdin
         test_bootstrap_rerun_hint_names_bootstrap
         test_bootstrap_uninstall_rerun_hint
         test_install_linux_flow
