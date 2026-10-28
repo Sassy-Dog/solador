@@ -122,9 +122,9 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
 
 /// The per-view options a tile carries (#647). Refused rather than clamped, so
 /// an edit no picker can produce is told so. In a hand-edited `store.json` a
-/// value serde reads as a `u8` is clamped into range on read instead
-/// (`DashboardTile`), `null` reads the default, and anything else fails the
-/// store's parse.
+/// `coreRowSpan` or `rowGapPx` that serde reads as a `u8` is clamped into
+/// range on read instead (`DashboardTile`'s `read_ranged`), `null` reads the
+/// default, and anything else fails the store's parse.
 fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
     let hosts = tile.source == "hosts";
     if !CORE_ROW_SPAN_RANGE.contains(&tile.core_row_span)
