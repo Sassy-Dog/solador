@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 
 /// A tile field whose value must lie in a range. [`TileRangeField::spec`] is
 /// its one definition and [`RANGE_BOUNDED_TILE_FIELDS`] the one list of them;
-/// both the clamp on read and the refusal over IPC come from there (#669).
+/// the clamp on read and the refusal over IPC both read it (#669).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileRangeField {
     CoreRowSpan,
@@ -48,11 +48,13 @@ impl TileRangeField {
     }
 }
 
-/// Every range-bounded tile field, in one place. Listing a field here makes it
-/// refused over IPC; its deserialiser and default read [`TileRangeField::spec`],
-/// so it clamps on read too. The test `every_numeric_tile_field_is_range_bounded`
+/// The range-bounded tile fields that [`DashboardLayout::from_ipc_value`]
+/// refuses over IPC. It is a hand-maintained array: the clamp on read comes
+/// from each field's deserialiser reading [`TileRangeField::spec`], not from
+/// this list. Two tests keep them together: `every_numeric_tile_field_is_range_bounded`
 /// fails when a tile field that serialises as a number or `null` is missing
-/// from this list.
+/// here, and `every_listed_field_clamps_on_read_and_is_refused_over_ipc`
+/// fails when a listed field does not also clamp on read.
 pub(crate) const RANGE_BOUNDED_TILE_FIELDS: [TileRangeField; 2] =
     [TileRangeField::CoreRowSpan, TileRangeField::RowGapPx];
 
