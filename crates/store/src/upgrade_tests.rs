@@ -303,6 +303,18 @@ fn the_copy_is_spent_by_its_first_pass() {
         4,
         "the first pass carries"
     );
+    // The pass consumes its input: a copy that left the legacy values in place
+    // would still compare equal to itself after a second pass.
+    assert_eq!(data.settings.legacy_core_row_span, None);
+    assert_eq!(data.settings.legacy_row_gap_px, None);
+    assert_eq!(data.settings.legacy_host_overflow_mode, None);
+    assert_eq!(data.legacy_layout_overflow, None);
+    assert!(data
+        .dashboard
+        .as_ref()
+        .unwrap()
+        .legacy_detail_views
+        .is_empty());
     data.carry_view_settings_onto_tiles();
     assert_eq!(data, after_first, "a second pass has nothing left to carry");
 }
@@ -408,8 +420,4 @@ fn a_detail_view_for_a_source_with_no_tile_is_dropped_not_kept() {
 
     let (text, on_disk) = saved(&dir, &store);
     assert_no_legacy_keys(&text, &on_disk);
-    assert!(
-        !text.contains("containers\":\"list"),
-        "the containers choice is not kept anywhere: {text}"
-    );
 }

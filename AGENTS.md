@@ -192,8 +192,9 @@ Deploy, CSP and screenshot detail: `docs/WEBSITE.md`.
 1. Add the data source as a crate under `crates/` (or a module in an existing one).
 2. Add a `PanelKind` case — **including its `min_width`** — in
    `crates/viewmodel/src/cockpit.rs`. Skipping it does not compile (the `match`
-   is exhaustive and `PanelKind::ALL` is a fixed-length array), and
-   `every_panel_kind_declares_a_positive_min_width` fails on a zero.
+   is exhaustive), and `every_panel_kind_declares_a_positive_min_width` fails on
+   a zero. Add the kind to `PanelKind::ALL` too; nothing enforces that, and the
+   tests that iterate `ALL` never see a kind left out.
 3. Add the Tauri command in `app/src-tauri/src/`.
 4. Add the frontend renderer in `app/ui/`.
 

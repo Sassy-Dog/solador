@@ -165,10 +165,10 @@ pub enum Fault {
 
 /// The longest a stock sentence may be, in characters.
 ///
-/// A panel header is one line beside two clocks, and the narrowest card a
-/// panel can be placed in is a Quarter of a four-quarter grid — but the
-/// containment budget this is sized against is a **Half**, the width at which
-/// the screenshot in #352 wrapped a Neon warning to six lines. #351 makes an
+/// A panel header is one line beside two clocks. The bound was sized against
+/// the width of a half-width card on the grid Solador's Full view used to lay
+/// panels on (gone, #647), where the screenshot in #352 wrapped a Neon warning
+/// to six lines. The bound was not changed when that grid went. #351 makes an
 /// over-long message survivable at the rendering layer; this bound is what
 /// makes it comfortable rather than merely survivable.
 ///
