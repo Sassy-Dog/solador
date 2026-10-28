@@ -159,6 +159,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               if (command === "panel_interval_save") {
                 // The floor is Rust's (`PanelInterval::check_secs`); this double
                 // only refuses the way it does, with a sentence naming the floor.
+                if (args.secs > 4294967295) throw `Not saved \u2014 ${c.label} polls at most every 4294967295 seconds, the largest cadence that can be stored. You asked for ${args.secs} seconds.`;
                 if (args.secs < c.min) throw `${c.label}: ${args.secs}s is below the ${c.min}s floor. ${c.help}`;
                 for (const x of all) {
                   x.value = args.secs;
@@ -2997,7 +2998,21 @@ test("a cadence typed in exponent form is read as the number it is, and a fracti
   await section.locator('[data-action="cadence-apply"]').click();
   // 12.7 is never saved as 12: Rust is sent 0 and refuses it in the floor's words.
   await expect.poll(async () => (await commandArgs(page, "panel_interval_save")).at(-1).secs).toBe(0);
-  await expect(page.locator("[data-cadence] > .db-action-error")).toBeVisible();
+  await expect(page.locator("[data-cadence] > .db-action-error")).toContainText("is below the");
+});
+
+test("a cadence over the largest storable is sent whole and refused in Rust's sentence, not serde's (#649)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureCadence(page, "containers");
+  for (const [typed, sent] of [["1e10", 1e10], ["10000000000", 1e10], ["1e30", Number.MAX_SAFE_INTEGER]]) {
+    await section.locator("input").fill(typed);
+    await section.locator('[data-action="cadence-apply"]').click();
+    await expect.poll(async () => (await commandArgs(page, "panel_interval_save")).at(-1).secs).toBe(sent);
+    const error = page.locator("[data-cadence] > .db-action-error");
+    await expect(error).toContainText("largest cadence that can be stored");
+    await expect(error).not.toContainText("invalid value");
+  }
+  await expect(section.locator(".db-cadence-status")).not.toContainText("Set to");
 });
 
 test("a draft is replaced by the saved value when the saved cadence changes under it (#623)", async ({ page, baseURL }) => {
@@ -3009,7 +3024,7 @@ test("a draft is replaced by the saved value when the saved cadence changes unde
   await section.locator("input").fill("77");
   await section.locator('[data-action="cadence-reset"]').click();
   await expect(section.locator(".db-cadence-status")).toHaveText("Using the default.");
-  await expect(section.locator("input")).not.toHaveValue("77");
+  await expect(section.locator("input")).toHaveValue("45");
 });
 
 test("a failed cadence save says so beside the section, keeps the typed value and the status (#614)", async ({ page, baseURL }) => {

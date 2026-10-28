@@ -2341,9 +2341,11 @@
         // Rust decides whether the number is legal and says why not; an empty
         // or negative entry is sent as 0 (a u32 cannot carry it), which every
         // floor refuses in its own words.
-        // Number() keeps `1e3` as 1000; a fraction is sent as 0, not cut.
+        // Number() keeps `1e3` as 1000; a fraction is sent as 0, not cut. A huge
+        // value is held at the largest integer JSON carries exactly, still far
+        // over any stored cadence, so Rust refuses it in its own words.
         const secs = Number(box.querySelector("input").value);
-        await cadenceChange("panel_interval_save", { panel, secs: Number.isInteger(secs) ? Math.max(0, secs) : 0 }, selector);
+        await cadenceChange("panel_interval_save", { panel, secs: Number.isInteger(secs) ? Math.min(Math.max(0, secs), Number.MAX_SAFE_INTEGER) : 0 }, selector);
       }
       return;
     }
