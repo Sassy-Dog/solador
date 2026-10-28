@@ -158,7 +158,7 @@ test("both breakdown columns render, capped at five rows each", async ({ page, b
   );
 });
 
-test("on a half-width card the breakdowns sit beside the costs, not under them", async ({ page, baseURL }) => {
+test("on a window wide enough for two columns the breakdowns sit beside the costs, not under them", async ({ page, baseURL }) => {
   // `panel_columns` affords Azure Cost two content columns once its width holds
   // two of its `min_width` plus a gutter (2 * 400 + 16 = 816pt). The split
   // itself is CSS over `--panel-cols`, so this is about the frontend applying

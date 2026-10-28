@@ -74,10 +74,10 @@ function sectionHeader(section) {
  *  panel's `min_width` is set by the name line alone (on the retired span grid
  *  that also let OpenClaw sit in a quarter beside a three-quarter Containers).
  *
- *  The extra line is free where this panel actually lives: it shares a row with
- *  Containers and is the shorter card, so `align-items:stretch` was padding
- *  that space out anyway. If OpenClaw ever becomes the tallest panel in its
- *  row, this is the first thing to revisit. */
+ *  On the retired span grid the extra line was free: OpenClaw shared a row with
+ *  Containers and was the shorter card, so `align-items:stretch` was padding
+ *  that space out anyway. In a tile's Full view it is the only panel, so the
+ *  second line costs one line of height per agent. */
 function agentNode(agent) {
   const box = node("div", "oc-agent");
   const row = node("div", "oc-row");

@@ -1825,10 +1825,10 @@ characters; stacked, each gets the whole card. That is what took this panel's
 something that must not truncate does, which is now the cron summary rather than
 an agent row — and 240 is also the width one content column of it needs (history: it
 let OpenClaw sit in a quarter beside a three-quarter Containers on the retired
-span grid). The extra line is free where this
-panel lives: it shares a row with Containers and is the shorter card, so
-`align-items:stretch` was padding that space out anyway. If OpenClaw ever
-becomes the tallest panel in its row, revisit it.
+span grid). On the retired span grid the extra line was free: OpenClaw shared
+a row with Containers and was the shorter card, so `align-items:stretch` was
+padding that space out anyway. In a tile's Full view it is the only panel, so
+the second line costs one line of height per agent.
 
 ```js
 await window.__TAURI__.core.invoke("openclaw");

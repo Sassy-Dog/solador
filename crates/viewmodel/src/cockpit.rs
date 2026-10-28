@@ -105,9 +105,12 @@ impl PanelKind {
     ///
     /// What the number decides today: [`panel_columns`] gives a panel a second
     /// content column once its width (a tile's Full view is the window) holds
-    /// two of these plus a gutter, so an overstated figure keeps a panel in one
+    /// two of these plus a gutter, so for the panels that paint the count
+    /// (Containers, Repos, Usage, Azure Cost) an overstated figure keeps one
     /// column on a window that could carry two, and an understated one splits a
-    /// list into columns too narrow to scan.
+    /// list into columns too narrow to scan. Services, Sentry Crons and OpenClaw
+    /// paint no column split, so for them the figure is only the measured width
+    /// of one content column.
     ///
     /// OpenClaw's and Usage's figures were inherited guesses until they were
     /// measured against their dumped fixtures, by shrinking the panel until
@@ -136,18 +139,17 @@ impl PanelKind {
             // Five rows of `vendor · status word · dot`. The binding
             // constraint is "Services Degraded" beside the longest vendor
             // name. 240 rather than the ~220 that measures, for the same
-            // reason OpenClaw is 240: it is also the width *one content
-            // column* needs, and at 220 a window of 456pt would already split
-            // five one-line rows into two columns — a split that buys a
-            // gutter and costs the scan.
+            // reason OpenClaw is 240: it is the measured width of *one content
+            // column*, held with the same margin. This panel paints no column
+            // split (`--panel-cols` is not read here), so the figure decides
+            // nothing else.
             PanelKind::Services => 240.0,
             // Two-line rows: monitor slug plus its age, then `project/env` and
             // the state word. Same construction as OpenClaw's agent rows and the
             // same figure for the same reason — the binding constraint is a
-            // 240pt content column, and at less than that a narrow window
-            // would split a list of one-or-two failing monitors into two
-            // columns. Splitting the name onto its own line is what keeps this at
-            // 240 rather than the ~400 a single line of
+            // 240pt content column. This panel paints no column split either,
+            // so 240 is only that measured one-column width. Splitting the name
+            // onto its own line is what keeps this at 240 rather than the ~400 a single line of
             // `slug · platform/prd · error · 7d 22h` would need.
             PanelKind::SentryCrons => 240.0,
         }
