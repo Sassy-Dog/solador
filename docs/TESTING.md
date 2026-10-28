@@ -227,7 +227,7 @@ longer has anything to take away but the `cockpit` answer itself: its stub gives
 the overview and Settings only what `dashboard_view` carries. `#fullView`, the
 host of every panel, stays (`app/README.md`, "The overview and a tile's Full
 view stand on one page"). What it asserts, each clause one test: Settings opens and
-closes over the overview, and over Machines, Runners and Scheduled Jobs Full
+closes over the overview, and over Machines, GitHub Runners and Sentry Crons Full
 views, which Escape then leaves for the overview with focus on the tile's View
 button (Escape from the overview is not tested); the Settings button and the
 gaps come from `dashboard_view` (`labels.settings`, each tile's `rowGapPx`,

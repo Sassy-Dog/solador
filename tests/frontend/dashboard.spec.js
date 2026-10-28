@@ -153,7 +153,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             if (command === "panel_interval_save" || command === "panel_interval_clear") {
               if (window.__FAIL_CADENCE__) throw "Could not save the poll cadence.";
               // Every source carrying the id, as in Rust: one cadence, one value
-              // (GitHub's is on both the Repos and the Runners tile).
+              // (GitHub's is on both the Repos and the GitHub Runners tile).
               const all = original.sources.flatMap(x => x.cadences || []).filter(x => x.id === args.panel);
               const [c] = all;
               if (command === "panel_interval_save") {
@@ -540,7 +540,7 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
     expect(await status.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
 });
 
-test("a Runners tile's Full table keeps Status in view, labels on one line", async ({page, baseURL}) => {
+test("a GitHub Runners tile's Full table keeps Status in view, labels on one line", async ({page, baseURL}) => {
   await page.setViewportSize({width:1800, height:1200});
   await openDashboard(page, baseURL, true);
   await openFull(page, "ghRunners");
@@ -884,7 +884,7 @@ test("the Runners Configure lists group labels with counts and the shared note",
   await expect(row).toContainText("runner-large");
   await expect(row).toContainText(editor.rows[0].carriers);
   await expect(section).toContainText(editor.firstMatch);
-  await expect(section).toContainText("Shared · saved immediately · applies everywhere runners appear: every Runners tile and its Full view.");
+  await expect(section).toContainText("Shared · saved immediately · applies everywhere runners appear: every GitHub Runners tile and its Full view.");
   await expect(section.locator('[data-action="group-label-seen"]')).toHaveText(editor.seen);  // The labels decide Detail's and Full's groups too, so a list tile shows them.
   await page.getByLabel("Runner view", { exact: true }).selectOption("list");
   await expect(section).toBeVisible();
@@ -1359,7 +1359,7 @@ test("a saved override survives a local tick, a repaint and untick, and Apply se
     { hostId: first.id, thresholds: expect.objectContaining({ ramWarning: 50, ramCritical: 60 }), width: expect.any(Number) });
 });
 
-test("a fresh dashboard groups Runners by OS and architecture, and an added Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
+test("a fresh dashboard groups Runners by OS and architecture, and an added GitHub Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
   const original = await openDashboard(page, baseURL);
   expect(original.tiles.find(t => t.source === "ghRunners").runnerView).toBe("grouped");
   await expect(tile(page, "ghRunners").locator('.db-item-name')).toHaveText(["LINUX · ARM64", "MACOS · ARM64"]);
@@ -2892,7 +2892,7 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
 // The poll cadences moved from Settings into the Configure of the tile(s) they
 // feed (#614, #615). Seven sources carry them, Usage three (its Claude
 // rollups, metered providers and plans' limit windows); GitHub's one cadence is
-// on both its Repos and Runners tiles; Machines carries none.
+// on both its Repos and GitHub Runners tiles; Machines carries none.
 const CADENCE_SOURCES = ["containers", "ghWorkflows", "ghRunners", "services", "claudeUsage", "azureCost", "sentryCrons"];
 const cadencesOf = (model, id) => model.sources.find(s => s.id === id).cadences;
 async function configureCadence(page, source, panel = null) {
@@ -3349,7 +3349,7 @@ test("Apply saves the tile's own settings from any page", async ({ page, baseURL
   expect(await savedTile(page, "overview-ghRunners")).toMatchObject({ coreRowSpan: 2, hostOverflow: "stack", rowGapPx: 0, detailView: "table" });
 });
 
-test("a Runners tile's Full view and Detail choices save separately", async ({ page, baseURL }) => {
+test("a GitHub Runners tile's Full view and Detail choices save separately", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
   await editTile(page, "overview-ghRunners");
   await pageButton(page, "Full view").click();
@@ -3482,7 +3482,7 @@ test("the settled panel names head the overview tiles, the Add-tile picker and a
   await expect(page.locator("#dashboard-title")).toHaveValue("GitHub Runners");
 });
 
-test("a Runners tile's Full view is headed by the whole name 'GitHub Runners' (#665)", async ({ page, baseURL }) => {
+test("a GitHub Runners tile's Full view is headed by the whole name 'GitHub Runners' (#665)", async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 900, height: 900 });
   await openDashboard(page, baseURL);
   await openFull(page, "ghRunners");

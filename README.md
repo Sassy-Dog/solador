@@ -99,7 +99,7 @@ carries one splits, and Detail and Full show every runner's labels.
 
 | | |
 |:--:|:--:|
-| ![Repos](site/assets/screenshots/panel-repos.png) | ![Runners](site/assets/screenshots/panel-runners.png) |
+| ![Repos](site/assets/screenshots/panel-repos.png) | ![GitHub Runners](site/assets/screenshots/panel-runners.png) |
 | ![Containers](site/assets/screenshots/panel-containers.png) | ![Usage](site/assets/screenshots/panel-usage.png) |
 | ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Service Health](site/assets/screenshots/panel-services.png) |
 | ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](site/assets/screenshots/panel-openclaw.png) |

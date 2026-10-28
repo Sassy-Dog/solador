@@ -2685,7 +2685,7 @@
     }
   });
   window.soladorDashboard = {
-    // The open Runners tile's Full view Table/List, and the shortcut that
+    // The open GitHub Runners tile's Full view Table/List, and the shortcut that
     // writes the same per-tile value Configure's Full view page does.
     runnerFullView: () => (fullTile && tile(fullTile.id)?.runnerFullView) || "table",
     async setRunnerFullView(view) {

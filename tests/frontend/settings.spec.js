@@ -705,7 +705,7 @@ test("the retired GitHub tab is gone and org watching lives on the account", asy
   await expect(orgInput).toHaveValue("");
 });
 
-// The group labels moved to the Runners tile's Configure: one editor, beside
+// The group labels moved to the GitHub Runners tile's Configure: one editor, beside
 // the groups it changes. A second copy here would be two homes for one list.
 test("preferences no longer edits runner group labels", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);

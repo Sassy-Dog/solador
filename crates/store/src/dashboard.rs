@@ -53,7 +53,7 @@ pub struct DashboardTile {
     /// Table or List in this tile's Detail.
     #[serde(default = "table_view")]
     pub detail_view: String,
-    /// Runners tiles only: Table or List in this tile's Full view, separate from
+    /// GitHub Runners tiles only: Table or List in this tile's Full view, separate from
     /// Detail's.
     #[serde(default = "table_view")]
     pub runner_full_view: String,

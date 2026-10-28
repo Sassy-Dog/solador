@@ -140,7 +140,7 @@ fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
         return Err("Choose Table or List for a view.".into());
     }
     if tile.source != "ghRunners" && tile.runner_full_view != "table" {
-        return Err("Only a Runners tile has a Full view of its own to lay out.".into());
+        return Err("Only a GitHub Runners tile has a Full view of its own to lay out.".into());
     }
     Ok(())
 }

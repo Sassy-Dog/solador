@@ -554,7 +554,7 @@
   visible tile). A hidden tile is never a target and no chip opens Solador's Full
   view. Detail defaults to compact
   tables, with a Table/List choice persisted per tile (`detailView`, and
-  `runnerFullView` for a Runners tile's Full view).
+  `runnerFullView` for a GitHub Runners tile's Full view).
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
   group identity each runner row carries (`groupId`, label split included);

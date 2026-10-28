@@ -24,7 +24,7 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
 /**
  * Enters one GitHub tile's Full view (View, then Full view) with the IPC
  * stubbed and every call recorded. `panel` is "repos" (the Repos tile) or
- * "runners" (the Runners tile): a tile's Full view shows only its own panel, so
+ * "runners" (the GitHub Runners tile): a tile's Full view shows only its own panel, so
  * a test about a panel enters that panel's tile. The other panel's command is
  * still answered, because the page asks for both on every pass.
  *

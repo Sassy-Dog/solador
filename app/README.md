@@ -362,7 +362,7 @@ absence roster. Missing or conflicting labels render Unknown architecture.
 **Runner group labels** split a type further, by labels your runners carry.
 They are edited in any GitHub Runners tile's **Configure**, under **Group by labels**:
 a shared setting, saved on the click, that applies everywhere runners appear —
-every GitHub Runners tile and the Full view (see [Where a setting
+every GitHub Runners tile and its Full view (see [Where a setting
 lives](#where-a-setting-lives)). **A type splits only where a listed label
 appears**: list `runner-large` and, if a Linux · X64 runner carries it, Linux ·
 X64 becomes `LINUX · X64 · runner-large` and `LINUX · X64 · other`, while a type
@@ -558,7 +558,7 @@ acknowledging a warning in Detail, are shortcuts, not homes, and are not ruled
 on here.
 
 **Worked example: runner group labels** (rule 4). The labels change what every
-GitHub Runners tile and the Full view show, so they are edited where the groups are
+GitHub Runners tile and its Full view show, so they are edited where the groups are
 seen, in a GitHub Runners tile's Configure → **Group by labels**, and the section says
 `Shared · saved immediately · applies everywhere runners appear: every Runners
 tile and the Full view.` They save on the click (`runner_group_label_add` /
