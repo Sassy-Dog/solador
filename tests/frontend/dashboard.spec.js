@@ -158,7 +158,11 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               const [c] = all;
               if (command === "panel_interval_save") {
                 // The floor is Rust's (`PanelInterval::check_secs`); this double
-                // only refuses the way it does, with a sentence naming the floor.
+                // only refuses the way it does. Its sentences, below and for the
+                // ceiling, are STAND-INS: the wording is Rust's and is guarded by
+                // the Rust tests, so an assertion on this text checks the
+                // webview's plumbing and says nothing about Rust's words.
+                if (args.secs > 4294967295) throw `Not saved \u2014 ${c.label} polls at most every 4294967295 seconds, the largest cadence that can be stored. You asked for ${args.secs} seconds.`;
                 if (args.secs < c.min) throw `${c.label}: ${args.secs}s is below the ${c.min}s floor. ${c.help}`;
                 for (const x of all) {
                   x.value = args.secs;
@@ -2997,7 +3001,26 @@ test("a cadence typed in exponent form is read as the number it is, and a fracti
   await section.locator('[data-action="cadence-apply"]').click();
   // 12.7 is never saved as 12: Rust is sent 0 and refuses it in the floor's words.
   await expect.poll(async () => (await commandArgs(page, "panel_interval_save")).at(-1).secs).toBe(0);
-  await expect(page.locator("[data-cadence] > .db-action-error")).toBeVisible();
+  await expect(page.locator("[data-cadence] > .db-action-error")).toContainText("is below the");
+});
+
+// Proves only the webview half: `1e10` and `10000000000` are sent whole, `1e30`
+// is capped at Number.MAX_SAFE_INTEGER, and a thrown refusal is shown. The IPC
+// double types the sentence by hand, so this cannot tell serde's decode failure
+// from Rust's refusal; the wording is guarded by the Rust test
+// `a_cadence_above_the_largest_storable_is_refused_in_rusts_words`
+// (app/src-tauri/src/main.rs), and the IPC decode by the manual smoke checklist.
+test("a cadence over u32::MAX is sent whole (capped at MAX_SAFE_INTEGER) and a thrown refusal is shown (#649)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureCadence(page, "containers");
+  for (const [typed, sent] of [["1e10", 1e10], ["10000000000", 1e10], ["1e30", Number.MAX_SAFE_INTEGER]]) {
+    await section.locator("input").fill(typed);
+    await section.locator('[data-action="cadence-apply"]').click();
+    await expect.poll(async () => (await commandArgs(page, "panel_interval_save")).at(-1).secs).toBe(sent);
+    const error = page.locator("[data-cadence] > .db-action-error");
+    await expect(error).toContainText("largest cadence that can be stored");
+  }
+  await expect(section.locator(".db-cadence-status")).not.toContainText("Set to");
 });
 
 test("a draft is replaced by the saved value when the saved cadence changes under it (#623)", async ({ page, baseURL }) => {
@@ -3009,7 +3032,7 @@ test("a draft is replaced by the saved value when the saved cadence changes unde
   await section.locator("input").fill("77");
   await section.locator('[data-action="cadence-reset"]').click();
   await expect(section.locator(".db-cadence-status")).toHaveText("Using the default.");
-  await expect(section.locator("input")).not.toHaveValue("77");
+  await expect(section.locator("input")).toHaveValue("45");
 });
 
 test("a failed cadence save says so beside the section, keeps the typed value and the status (#614)", async ({ page, baseURL }) => {

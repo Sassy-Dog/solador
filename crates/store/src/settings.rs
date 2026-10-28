@@ -346,24 +346,34 @@ impl PanelInterval {
     /// # Errors
     ///
     /// [`IntervalRejection::BelowFloor`] when `secs` is under
-    /// [`IntervalSpec::floor_secs`]. There is deliberately no upper bound: a
+    /// [`IntervalSpec::floor_secs`]; [`IntervalRejection::AboveCeiling`] when it
+    /// is over [`MAX_CADENCE_SECS`], the largest number a stored cadence can
+    /// hold. Taking a `u64` is what lets that refusal be Rust's own: a narrower
+    /// argument type fails in the IPC decoder, in serde's words, before this
+    /// runs. Short of that ceiling there is deliberately no upper bound: a
     /// cadence that is too *slow* costs nobody anything and says so on the
     /// panel's own staleness footer.
-    pub fn check_secs(self, secs: u32) -> Result<u32, IntervalRejection> {
-        if secs < self.spec().floor_secs {
-            Err(IntervalRejection::BelowFloor {
+    pub fn check_secs(self, secs: u64) -> Result<u32, IntervalRejection> {
+        let Ok(stored) = u32::try_from(secs) else {
+            return Err(IntervalRejection::AboveCeiling {
                 panel: self,
                 asked: secs,
+            });
+        };
+        if stored < self.spec().floor_secs {
+            Err(IntervalRejection::BelowFloor {
+                panel: self,
+                asked: stored,
             })
         } else {
-            Ok(secs)
+            Ok(stored)
         }
     }
 }
 
 /// Why a requested cadence was not stored.
 ///
-/// One variant today, and an enum rather than a `String` so the refusal is a
+/// An enum rather than a `String` so the refusal is a
 /// *value* the caller can test against rather than a sentence it has to match
 /// on. The sentence is [`IntervalRejection::user_message`], per the repo-wide
 /// `user_message()` convention.
@@ -376,14 +386,23 @@ pub enum IntervalRejection {
         /// What the operator asked for.
         asked: u32,
     },
+    /// Over [`MAX_CADENCE_SECS`], which no stored cadence can hold. Nothing was
+    /// written.
+    AboveCeiling {
+        /// The panel the request was for.
+        panel: PanelInterval,
+        /// What the operator asked for.
+        asked: u64,
+    },
 }
 
 impl IntervalRejection {
-    /// The floor that refused the request.
+    /// The floor of the panel the request was for.
     #[must_use]
     pub const fn floor_secs(self) -> u32 {
         match self {
-            IntervalRejection::BelowFloor { panel, .. } => panel.spec().floor_secs,
+            IntervalRejection::BelowFloor { panel, .. }
+            | IntervalRejection::AboveCeiling { panel, .. } => panel.spec().floor_secs,
         }
     }
 
@@ -405,9 +424,17 @@ impl IntervalRejection {
                     interval_label(asked),
                 )
             }
+            IntervalRejection::AboveCeiling { panel, asked } => format!(
+                "Not saved \u{2014} {} polls at most every {MAX_CADENCE_SECS} seconds, the largest cadence that can be stored. You asked for {asked} seconds.",
+                panel.spec().label,
+            ),
         }
     }
 }
+
+/// The largest cadence a panel can store, in seconds: the stored type's own
+/// ceiling, so a request over it is refused rather than wrapped or cut.
+pub const MAX_CADENCE_SECS: u32 = u32::MAX;
 
 /// A cadence in seconds, said in words: `10 seconds`, `1 minute`, `4 hours`.
 ///
@@ -1091,7 +1118,10 @@ mod tests {
             PanelInterval::ClaudeRollups,
         ] {
             for secs in REFRESH_INTERVAL_CHOICES {
-                assert!(panel.check_secs(secs).is_ok(), "{panel:?} at {secs}s");
+                assert!(
+                    panel.check_secs(u64::from(secs)).is_ok(),
+                    "{panel:?} at {secs}s"
+                );
             }
             assert_eq!(panel.spec().default_secs, DEFAULT_REFRESH_INTERVAL_SECS);
         }
@@ -1316,14 +1346,14 @@ mod tests {
     fn check_secs_accepts_at_the_floor_and_refuses_below_it() {
         for panel in PanelInterval::ALL {
             let floor = panel.spec().floor_secs;
-            assert_eq!(panel.check_secs(floor), Ok(floor), "{panel:?}");
+            assert_eq!(panel.check_secs(u64::from(floor)), Ok(floor), "{panel:?}");
             assert_eq!(
-                panel.check_secs(floor * 3),
+                panel.check_secs(u64::from(floor * 3)),
                 Ok(floor * 3),
                 "{panel:?}: an accepted value comes back unchanged, never rounded"
             );
             assert_eq!(
-                panel.check_secs(floor - 1),
+                panel.check_secs(u64::from(floor - 1)),
                 Err(IntervalRejection::BelowFloor {
                     panel,
                     asked: floor - 1,
@@ -1338,6 +1368,29 @@ mod tests {
         }
     }
 
+    /// The ceiling is the stored type's own: the maximum is accepted, one more
+    /// is refused in Rust's sentence, nothing is wrapped (#649).
+    #[test]
+    fn check_secs_refuses_above_the_largest_storable_cadence() {
+        let max = u64::from(MAX_CADENCE_SECS);
+        for panel in PanelInterval::ALL {
+            assert_eq!(panel.check_secs(max), Ok(MAX_CADENCE_SECS), "{panel:?}");
+            for asked in [max + 1, 10_000_000_000, u64::MAX] {
+                let rejection = panel.check_secs(asked).expect_err("over the ceiling");
+                assert_eq!(rejection, IntervalRejection::AboveCeiling { panel, asked });
+                let message = rejection.user_message();
+                assert!(message.starts_with("Not saved"), "{message}");
+                assert!(message.contains(panel.spec().label), "{message}");
+                assert!(message.contains("4294967295 seconds"), "{message}");
+                assert!(
+                    message.contains(&format!("You asked for {asked} seconds")),
+                    "{message}"
+                );
+                assert!(!message.contains("invalid value"), "{message}");
+            }
+        }
+    }
+
     /// **The property that makes "refused, not clamped" true.** Anything
     /// `check_secs` accepts, the setter stores untouched — so no value an
     /// operator types can arrive on disk as a different number without them
@@ -1348,7 +1401,9 @@ mod tests {
         for panel in PanelInterval::ALL {
             let spec = panel.spec();
             for asked in [spec.floor_secs, spec.floor_secs + 1, spec.default_secs] {
-                let checked = panel.check_secs(asked).expect("at or above the floor");
+                let checked = panel
+                    .check_secs(u64::from(asked))
+                    .expect("at or above the floor");
                 let outcome = s.set_panel_interval_secs(panel, checked);
                 assert_eq!(outcome, ClampOutcome::Applied(asked), "{panel:?}");
                 assert_eq!(s.panel_interval_secs(panel), asked, "{panel:?}");
@@ -1403,7 +1458,7 @@ mod tests {
             );
             assert!(
                 panel
-                    .check_secs(spec.floor_secs - 1)
+                    .check_secs(u64::from(spec.floor_secs - 1))
                     .expect_err("below the floor")
                     .user_message()
                     .contains(spec.label),

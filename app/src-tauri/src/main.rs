@@ -4468,12 +4468,16 @@ fn sync_app_cadences(app: &App) {
 /// panel a bypassed floor is a spend decision. The `min` the control carries is
 /// a courtesy to the number input, not the gate.
 ///
+/// A value over the largest storable cadence is refused the same way, and
+/// `secs` is a `u64` for that reason: a narrower type would fail in the IPC
+/// decoder, in serde's words, before this ran (#649).
+///
 /// Saved on the click and outside the dashboard's undo history (#614): the
 /// cadence is the source's, shared by every tile of it and the Full view.
 #[tauri::command]
 fn panel_interval_save(
     panel: String,
-    secs: u32,
+    secs: u64,
     width: f64,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
@@ -4482,7 +4486,7 @@ fn panel_interval_save(
 }
 
 /// The command's body, over a plain `&App` so a test can drive it.
-fn panel_interval_save_in(app: &App, panel: &str, secs: u32) -> Result<(), String> {
+fn panel_interval_save_in(app: &App, panel: &str, secs: u64) -> Result<(), String> {
     let kind = PanelInterval::parse(panel).ok_or("Skipped \u{2014} unknown panel.")?;
     let secs = kind.check_secs(secs).map_err(|r| r.user_message())?;
     {
@@ -8072,6 +8076,26 @@ mod tests {
         assert!(!woken(&app.github_wake), "a refusal wakes nothing");
     }
 
+    /// A value over the largest storable cadence is refused in Rust's sentence,
+    /// not serde's, with nothing stored and no loop woken (#649).
+    #[test]
+    fn a_cadence_above_the_largest_storable_is_refused_in_rusts_words() {
+        let (_dir, _rt, app) = test_app();
+        let before = github_secs(&app);
+        for asked in [u64::from(u32::MAX) + 1, 10_000_000_000, 1u64 << 53] {
+            let error = panel_interval_save_in(&app, "github", asked).unwrap_err();
+            assert!(error.starts_with("Not saved"), "{error}");
+            assert!(
+                error.contains("largest cadence that can be stored"),
+                "{error}"
+            );
+            assert!(!error.contains("invalid value"), "{error}");
+            assert_eq!(github_secs(&app), before, "the refusal stored nothing");
+            assert_eq!(windows_of(&app), (150, 150, 150));
+            assert!(!woken(&app.github_wake), "a refusal wakes nothing");
+        }
+    }
+
     /// A failed disk write puts the previous cadence back, for a save and a
     /// clear alike, and wakes nothing (#623).
     #[test]
@@ -8219,7 +8243,7 @@ mod tests {
         ] {
             let (_dir, _rt, app) = test_app();
             panel_interval_save_in(&app, panel, secs).unwrap();
-            assert_eq!(panel_interval(&app.store, kind).as_secs(), u64::from(secs));
+            assert_eq!(panel_interval(&app.store, kind).as_secs(), secs);
             // Drain the save's permit so only the clear can be what we see.
             for target in ALL_WAKE_TARGETS {
                 woken(wake_notify(&app, target));
@@ -8227,7 +8251,7 @@ mod tests {
             panel_interval_clear_in(&app, panel).unwrap();
             assert_ne!(
                 panel_interval(&app.store, kind).as_secs(),
-                u64::from(secs),
+                secs,
                 "clearing {panel} must change the effective cadence"
             );
             for target in ALL_WAKE_TARGETS {

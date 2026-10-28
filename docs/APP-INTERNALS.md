@@ -344,7 +344,10 @@
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
   its floor *and why that floor exists* (`app/src-tauri/src/cadence.rs`), and a
   below-floor value is **refused with that reason** rather than clamped to a
-  number the operator did not choose. `set_panel_interval_secs` still clamps and
+  number the operator did not choose. A value over the
+  largest storable cadence (`u32::MAX` seconds) is refused too, in Rust's own
+  sentence: `panel_interval_save` takes `secs` as a `u64` so the refusal is not
+  an IPC decode failure in serde's words (#649). `set_panel_interval_secs` still clamps and
   `panel_interval_secs` still clamps on read, because a hand-edited `store.json`
   reaches neither gate. Settings carries none of them.
   **The GitHub, Services and Claude-rollup cadences were one setting until
