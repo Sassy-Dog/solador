@@ -81,7 +81,8 @@ Two release trains, neither triggers the other: a `v*` tag runs `release.yml`
 (signed, notarized, universal macOS bundle plus a signed NSIS Windows
 installer, attached to a **draft**; publishing runs `publish-feed.yml`), and an
 `agent-v*` tag runs `release-agent.yml` (four agent binaries, the Linux musl
-ones static, with minisign signatures; publishing runs `publish-agent-feed.yml`). Every job that
+ones static, with minisign signatures; publishing runs
+`publish-agent-feed.yml`). Every job that
 holds a credential declares `environment: prd`; `ci.yml` references zero
 secrets and `scripts/secrets-guard.sh` asserts it. Neither train can be
 exercised by a PR. Signing runs last, after the version stamp; the build
@@ -161,7 +162,8 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
 e2e server bind, the multi-frame cockpit stub and the `dmg` / notarization
 suites in `docs/TESTING.md`). Agent tests run via `cargo test` in `agent/`;
 `agent/deploy/lib_test.sh` gates the deploy scripts. Do not weaken or
-reorder a guard without reading its test: every guard here except `scripts/agent-deps-guard.sh` ships a negative
+reorder a guard without reading its test: every guard here except
+`scripts/agent-deps-guard.sh` ships a negative
 control proving it fails when it should.
 
 ## Versioning (`docs/VERSIONING.md`)
