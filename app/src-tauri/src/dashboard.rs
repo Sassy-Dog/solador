@@ -4,6 +4,7 @@
 
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+use store::dashboard::{TileRangeField, TileReadError};
 use store::settings::{CORE_ROW_SPAN_RANGE, DEFAULT_CORE_ROW_SPAN, ROW_GAP_PX_RANGE};
 use store::{DashboardLayout, DashboardTile, HostOverflowMode};
 use viewmodel::card;
@@ -173,29 +174,16 @@ fn row_gap_refusal() -> String {
     )
 }
 
-/// Reads a layout arriving over IPC (`dashboard_save`). `DashboardTile` clamps
-/// `coreRowSpan` and `rowGapPx` as it deserialises, which is right for a
-/// hand-edited `store.json` and wrong here: a request no picker can produce would
-/// be silently rewritten (9 rows becoming 4) instead of refused. So the raw
-/// numbers are checked against the same ranges first, and only then is the layout
-/// built and left to [`validate`] for the rest.
+/// Reads a layout arriving over IPC (`dashboard_save`). The strict read, which
+/// refuses an out-of-range view setting instead of clamping it as a hand-edited
+/// `store.json` is, lives in `crates/store` (`DashboardLayout::from_ipc_value`);
+/// this only words the refusal, and [`validate`] checks the rest.
 pub fn layout_from_ipc(raw: Value) -> Result<DashboardLayout, String> {
-    for tile in raw["tiles"].as_array().into_iter().flatten() {
-        let outside = |key: &str, range: std::ops::RangeInclusive<u8>| {
-            tile.get(key).is_some_and(|v| {
-                !v.is_null()
-                    && v.as_u64()
-                        .is_none_or(|n| !range.contains(&(n.min(255) as u8)))
-            })
-        };
-        if outside("coreRowSpan", CORE_ROW_SPAN_RANGE) {
-            return Err(core_rows_refusal());
-        }
-        if outside("rowGapPx", ROW_GAP_PX_RANGE) {
-            return Err(row_gap_refusal());
-        }
-    }
-    serde_json::from_value(raw).map_err(|_| "That dashboard edit could not be read.".to_string())
+    DashboardLayout::from_ipc_value(raw).map_err(|e| match e {
+        TileReadError::OutOfRange(TileRangeField::CoreRowSpan) => core_rows_refusal(),
+        TileReadError::OutOfRange(TileRangeField::RowGapPx) => row_gap_refusal(),
+        TileReadError::Unreadable => "That dashboard edit could not be read.".to_string(),
+    })
 }
 
 fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {

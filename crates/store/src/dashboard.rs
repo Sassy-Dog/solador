@@ -3,10 +3,102 @@
 //! intentional and never changes polling or credentials.
 
 use crate::settings::{
-    clamp_core_row_span, clamp_row_gap_px, HostOverflowMode, DEFAULT_CORE_ROW_SPAN,
-    DEFAULT_ROW_GAP_PX,
+    HostOverflowMode, CORE_ROW_SPAN_RANGE, DEFAULT_CORE_ROW_SPAN, DEFAULT_ROW_GAP_PX,
+    ROW_GAP_PX_RANGE,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+use std::ops::RangeInclusive;
+
+/// A tile field whose value must lie in a range. The one list of them is
+/// [`RANGE_BOUNDED_TILE_FIELDS`]; both the clamp on read and the refusal over
+/// IPC come from it (#669).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileRangeField {
+    CoreRowSpan,
+    RowGapPx,
+}
+
+/// One entry of [`RANGE_BOUNDED_TILE_FIELDS`].
+#[derive(Debug, Clone)]
+pub struct RangeBoundedField {
+    pub field: TileRangeField,
+    /// The field's key in the tile's JSON.
+    pub key: &'static str,
+    pub range: RangeInclusive<u8>,
+    /// What an absent or `null` value reads as.
+    pub default: u8,
+}
+
+/// Every range-bounded tile field, in one place. Listing a field here makes it
+/// refused over IPC; its deserialiser reads through [`read_ranged`], which looks
+/// the field up here, so it clamps on read too. The test
+/// `every_numeric_tile_field_is_range_bounded` fails when a numeric tile field
+/// is missing from this list.
+pub const RANGE_BOUNDED_TILE_FIELDS: [fn() -> RangeBoundedField; 2] = [
+    || RangeBoundedField {
+        field: TileRangeField::CoreRowSpan,
+        key: "coreRowSpan",
+        range: CORE_ROW_SPAN_RANGE,
+        default: DEFAULT_CORE_ROW_SPAN,
+    },
+    || RangeBoundedField {
+        field: TileRangeField::RowGapPx,
+        key: "rowGapPx",
+        range: ROW_GAP_PX_RANGE,
+        default: DEFAULT_ROW_GAP_PX,
+    },
+];
+
+fn bounded(key: &str) -> RangeBoundedField {
+    RANGE_BOUNDED_TILE_FIELDS
+        .iter()
+        .map(|f| f())
+        .find(|f| f.key == key)
+        .expect("a deserialiser names a field in RANGE_BOUNDED_TILE_FIELDS")
+}
+
+/// Why a layout arriving over IPC was not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileReadError {
+    /// A range-bounded field held a value outside its range, or no whole
+    /// number at all (a string, a float, a negative).
+    OutOfRange(TileRangeField),
+    /// The payload is not a layout.
+    Unreadable,
+}
+
+impl DashboardLayout {
+    /// Reads a layout arriving over IPC. `DashboardTile` clamps its
+    /// range-bounded fields as it deserialises, which is right for a
+    /// hand-edited `store.json` and wrong here: a request no picker can
+    /// produce would be silently rewritten instead of refused. Each field of
+    /// [`RANGE_BOUNDED_TILE_FIELDS`] is checked against its range first. Absent
+    /// and `null` read as the default; a float such as `3.5` is refused.
+    pub fn from_ipc_value(raw: Value) -> Result<Self, TileReadError> {
+        for tile in raw["tiles"].as_array().into_iter().flatten() {
+            for f in RANGE_BOUNDED_TILE_FIELDS.iter().map(|f| f()) {
+                let outside = tile.get(f.key).is_some_and(|v| {
+                    !v.is_null()
+                        && v.as_u64()
+                            .is_none_or(|n| !f.range.contains(&(n.min(255) as u8)))
+                });
+                if outside {
+                    return Err(TileReadError::OutOfRange(f.field));
+                }
+            }
+        }
+        serde_json::from_value(raw).map_err(|_| TileReadError::Unreadable)
+    }
+}
+
+/// The shared read of a range-bounded field: absent or `null` is the default,
+/// anything else is clamped into the range.
+fn read_ranged<'de, D: Deserializer<'de>>(d: D, key: &str) -> Result<u8, D::Error> {
+    let f = bounded(key);
+    Ok(Option::<u8>::deserialize(d)?
+        .map_or(f.default, |v| v.clamp(*f.range.start(), *f.range.end())))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,10 +173,10 @@ fn table_view() -> String {
     "table".into()
 }
 fn de_core_row_span<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    Ok(Option::<u8>::deserialize(d)?.map_or(DEFAULT_CORE_ROW_SPAN, clamp_core_row_span))
+    read_ranged(d, "coreRowSpan")
 }
 fn de_row_gap_px<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    Ok(Option::<u8>::deserialize(d)?.map_or(DEFAULT_ROW_GAP_PX, clamp_row_gap_px))
+    read_ranged(d, "rowGapPx")
 }
 
 impl DashboardTile {
@@ -175,5 +267,93 @@ impl DashboardLayout {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tile_json() -> Value {
+        serde_json::to_value(DashboardTile::new("t", "hosts", "T", "all")).unwrap()
+    }
+
+    fn layout_with(key: &str, value: Value) -> Value {
+        let mut tile = tile_json();
+        tile[key] = value;
+        json!({"revision": 0, "tiles": [tile]})
+    }
+
+    /// The list drives both paths: for every listed field, a value past the
+    /// top clamps on read and is refused over IPC, and null reads as the
+    /// default on both.
+    #[test]
+    fn every_listed_field_clamps_on_read_and_is_refused_over_ipc() {
+        for f in RANGE_BOUNDED_TILE_FIELDS.iter().map(|f| f()) {
+            let over = u64::from(*f.range.end()) + 1;
+            let raw = layout_with(f.key, json!(over));
+            let read: DashboardLayout = serde_json::from_value(raw.clone()).unwrap();
+            let read_back = serde_json::to_value(&read.tiles[0]).unwrap();
+            assert_eq!(read_back[f.key], json!(*f.range.end()), "{} clamps", f.key);
+            assert_eq!(
+                DashboardLayout::from_ipc_value(raw),
+                Err(TileReadError::OutOfRange(f.field)),
+                "{} refused",
+                f.key
+            );
+            for bad in [json!(3.5), json!("2"), json!(-1), json!(100_000)] {
+                assert_eq!(
+                    DashboardLayout::from_ipc_value(layout_with(f.key, bad.clone())),
+                    Err(TileReadError::OutOfRange(f.field)),
+                    "{} = {bad}",
+                    f.key
+                );
+            }
+            let null = DashboardLayout::from_ipc_value(layout_with(f.key, Value::Null)).unwrap();
+            assert_eq!(
+                serde_json::to_value(&null.tiles[0]).unwrap()[f.key],
+                json!(f.default)
+            );
+            for ok in [*f.range.start(), *f.range.end()] {
+                assert!(
+                    DashboardLayout::from_ipc_value(layout_with(f.key, json!(ok))).is_ok(),
+                    "{} = {ok}",
+                    f.key
+                );
+            }
+        }
+    }
+
+    /// A numeric tile field missing from the list would clamp on read and
+    /// slip through IPC unrefused. Every number a tile serialises must be in
+    /// [`RANGE_BOUNDED_TILE_FIELDS`]; a deliberately unbounded number would
+    /// have to be exempted here, by name.
+    #[test]
+    fn every_numeric_tile_field_is_range_bounded() {
+        let listed: Vec<&str> = RANGE_BOUNDED_TILE_FIELDS.iter().map(|f| f().key).collect();
+        let tile = tile_json();
+        for (key, value) in tile.as_object().unwrap() {
+            if value.is_number() {
+                assert!(
+                    listed.contains(&key.as_str()),
+                    "{key} is a number but not in RANGE_BOUNDED_TILE_FIELDS"
+                );
+            }
+        }
+        for key in listed {
+            assert!(
+                tile[key].is_number(),
+                "{key} is listed but not a tile number"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_payload_is_unreadable_not_out_of_range() {
+        assert_eq!(
+            DashboardLayout::from_ipc_value(json!({"tiles": [{"id": 1}]})),
+            Err(TileReadError::Unreadable)
+        );
     }
 }

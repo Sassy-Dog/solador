@@ -2308,7 +2308,12 @@ Two things worth knowing about this surface:
   per-tile fields (`coreRowSpan`, `rowGapPx`, `hostOverflow`, `detailView`,
   `runnerFullView` on the overview's tile), edited in that tile's Configure
   (**This tile** / **Detail** / **Full view**, built from Rust's `TILE_VIEWS`)
-  and validated per tile by `dashboard_save`. The old global values (Settings →
+  and validated per tile by `dashboard_save`. The range-bounded two
+  (`coreRowSpan`, `rowGapPx`) are listed once, in `crates/store`'s
+  `RANGE_BOUNDED_TILE_FIELDS`: that list drives both the clamp on read of a
+  hand-edited `store.json` and the strict `DashboardLayout::from_ipc_value`
+  that `dashboard_save` refuses through (the shell only words the refusal); a
+  test fails when a numeric tile field is missing from it. The old global values (Settings →
   Preferences' rows, the Layout tab's first breakpoint and `detailViews`) are
   read once at load by `StoreData::carry_view_settings_onto_tiles`, copied onto
   the tiles they applied to, and dropped by the next save; nothing writes them.
