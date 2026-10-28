@@ -829,6 +829,12 @@ still alive after those passes has its temp directory removed and is SIGKILLed
 so their short deadlines measure the blocking case rather than fixture creation;
 normal runs remain bounded during setup as well.
 
+The suite does not depend on the stdin it was started with (#659): `run_bootstrap`
+gives `bootstrap.sh` (and the real `install.sh` it execs, whose token prompt
+reads stdin) `/dev/null`, and `run_install` pipes `INSTALL_STDIN`.
+`test_bootstrap_ignores_callers_open_stdin` runs the bootstrap path with an open
+stdin that never reaches EOF and fails after 15 s if it blocks.
+
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs every host command (`cargo`,
 `curl`, `sleep`, `uname`, `sw_vers`, `systemctl`, `loginctl`, `launchctl`,
