@@ -597,9 +597,10 @@ jobs:
     # sessions, and .gitignore cannot stop `git add -f`. It reads only git's
     # index, so it sits with the other credential-free checks.
     #
-    # The agent-guide size pair (#638) fails when any chain of tracked AGENTS.md
-    # files exceeds 32,768 bytes, Codex's default `project_doc_max_bytes`; it
-    # lists tracked paths from the index and measures them on disk. A docs-only PR is exactly where the guide grows,
+    # The agent-guide size pair (#638) fails when any chain of tracked
+    # AGENTS.md/CLAUDE.md files exceeds 32,768 bytes, Codex's default
+    # `project_doc_max_bytes`; it lists tracked paths from the index and
+    # measures them on disk. A docs-only PR is exactly where the guide grows,
     # and this job always runs.
     runs-on: ubuntu-latest
     steps:
@@ -637,7 +638,7 @@ jobs:
       - name: The .claude guard refuses what it claims to refuse
         run: scripts/claude-dir-guard-test.sh
 
-      - name: Every AGENTS.md chain is within the 32 KiB guidance budget
+      - name: Every AGENTS.md/CLAUDE.md chain is within the 32 KiB guidance budget
         run: scripts/agent-guide-size-guard.sh
 
       - name: The size guard refuses what it claims to refuse

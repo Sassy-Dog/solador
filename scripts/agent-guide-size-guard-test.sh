@@ -79,6 +79,17 @@ put sub/AGENTS.md 20000
 expect "a nested file fails when it takes the chain over, though each is under" fail "chain ending at sub/AGENTS.md" "40000 bytes"
 
 fresh_repo
+put AGENTS.md 12000
+put a/AGENTS.md 12000
+put a/b/AGENTS.md 12000
+expect "a three-level chain fails only when all three files are summed" fail "chain ending at a/b/AGENTS.md" "36000 bytes" "a/b/AGENTS.md a/AGENTS.md AGENTS.md"
+
+fresh_repo
+put AGENTS.md 20000
+put sub/CLAUDE.md 12800
+expect "a nested CLAUDE.md that takes its chain over the budget fails" fail "chain ending at sub/CLAUDE.md" "32800 bytes"
+
+fresh_repo
 put AGENTS.md 20000
 put sub/AGENTS.md 12768
 expect "a chain of exactly 32768 bytes across two files passes" pass "within 32768"
