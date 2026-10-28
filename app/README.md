@@ -459,7 +459,7 @@ Removing or hiding a tile keeps its connections and monitoring. Layout and conne
 optional `dashboard` store field holds tile identities, scopes and order, plus a
 revision that rejects stale saves. Stores without it receive the default five
 tiles. An intentionally empty layout stays empty. Existing connections,
-credentials, preferences and the full-panel layout are retained.
+credentials and preferences are retained. Layout settings from before tile views (core rows, row spacing, host overflow, Table/List) are copied onto tiles once, on upgrade; a value with no tile to apply to is dropped.
 
 **Add tile** offers Remote machines, Repos needing attention and Linux runners
 as presets, followed by all sources. Each preset opens the same editable draft,

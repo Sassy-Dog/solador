@@ -43,7 +43,7 @@
 │   │                       #   the token never crosses plain HTTP off loopback
 │   │                       #   and Tailscale (`plain`, #449)
 │   ├── store/              # settings/hosts/repos/container-rules/runner-roster/
-│   │                       #   cockpit-layout JSON + OS credential-store wrappers
+│   │                       #   dashboard-layout JSON + OS credential-store wrappers
 │   ├── github/             # GitHub client (REST + one GraphQL walk) + the "is it us?" verdict
 │   ├── servicestatus/      # Atlassian Statuspage, status.io, Azure RSS
 │   ├── accelerator/        # the IOKit `IOAccelerator` GPU reader, shared by

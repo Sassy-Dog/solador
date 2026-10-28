@@ -742,8 +742,8 @@ async function gotoWithVerdict(page, baseURL, availability) {
 }
 
 test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
-  // One shared element would be orphaned when reflow splits the two panels
-  // onto separate rows, which is why the verdict travels on both payloads.
+  // One shared element would be orphaned when the two panels are shown
+  // apart (each in its own tile's Full view), which is why the verdict travels on both payloads.
   const { repos } = await gotoWithVerdict(page, baseURL, chip("Operational", "#1c6b41"));
   for (const [chipId, titleId, panel] of [
     ["#reposAvailability", "#reposTitle", "repos"],
