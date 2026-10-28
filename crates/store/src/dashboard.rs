@@ -11,8 +11,9 @@ use serde_json::Value;
 use std::ops::RangeInclusive;
 
 /// A tile field whose value must lie in a range. [`TileRangeField::spec`] is
-/// its one definition and [`RANGE_BOUNDED_TILE_FIELDS`] the one list of them;
-/// the clamp on read and the refusal over IPC both read it (#669).
+/// its one definition and [`RANGE_BOUNDED_TILE_FIELDS`] the one list of them.
+/// The clamp on read and the refusal over IPC both read `spec`; only the
+/// refusal walks the list (#669).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileRangeField {
     CoreRowSpan,
@@ -93,8 +94,9 @@ impl DashboardLayout {
     }
 }
 
-/// The shared read of a range-bounded field: `null` is the default, anything
-/// else is clamped into the range.
+/// The shared read of a range-bounded field: `null` is the default, a `u8` is
+/// clamped into the range, and anything else (300, -1, 3.5, "2") fails the
+/// read.
 fn read_ranged<'de, D: Deserializer<'de>>(d: D, field: TileRangeField) -> Result<u8, D::Error> {
     let f = field.spec();
     Ok(Option::<u8>::deserialize(d)?
@@ -286,9 +288,10 @@ mod tests {
         json!({"revision": 0, "tiles": [tile]})
     }
 
-    /// The list drives both paths: for every listed field, a value past the
-    /// top clamps on read and is refused over IPC, and null reads as the
-    /// default on both.
+    /// Walks the list, which drives only the IPC refusal, and checks that each
+    /// listed field also clamps on read (its deserialiser reads `spec()`): a
+    /// value past the top clamps on read and is refused over IPC, and null
+    /// reads as the default on both.
     #[test]
     fn every_listed_field_clamps_on_read_and_is_refused_over_ipc() {
         for field in RANGE_BOUNDED_TILE_FIELDS {
