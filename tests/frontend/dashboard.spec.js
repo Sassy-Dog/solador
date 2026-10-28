@@ -271,6 +271,12 @@ const action = (page, name) =>
   page.locator(`#dashboardOverview [data-action="${name}"]`);
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const viewButton = (page, source) => tile(page, source).getByRole("button", { name: "View", exact: true });
+// A tile's Full view the way an operator enters it: View, then Full view.
+async function openFull(page, source) {
+  await viewButton(page, source).click();
+  await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
+  await expect(page.locator("#fullView")).toBeVisible();
+}
 async function openDetail(page, source) {
   await viewButton(page, source).click();
   await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
@@ -422,7 +428,9 @@ test('critical attention stays visible with a saved acknowledgement in table and
 test("dashboard toolbar icons keep accessible labels and keyboard tooltips through editing", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const toolbar = page.locator(".db-chrome");
-  for (const name of ["Full view", "Fit window to tiles", "Edit dashboard", "Settings"]) {
+  // There is no toolbar button for Solador's own Full view any more (#647).
+  await expect(toolbar.getByRole("button", { name: "Full view", exact: true })).toHaveCount(0);
+  for (const name of ["Fit window to tiles", "Edit dashboard", "Settings"]) {
     const button = toolbar.getByRole("button", { name, exact: true });
     await expect(button).toBeVisible();
     await button.focus();
@@ -441,19 +449,17 @@ test("dashboard toolbar icons keep accessible labels and keyboard tooltips throu
   await edit.press("Enter");
   await expect(edit).toHaveAccessibleName("Edit dashboard");
   await expect(edit).toHaveAttribute("aria-pressed", "false");
-  await toolbar.getByRole("button", { name: "Full view", exact: true }).click();
-  await expect(page.locator("#fullView")).toBeVisible();
+  await openFull(page, "hosts");
   await expect(toolbar.getByRole("heading", {name:"Solador", exact:true})).toBeVisible();
-  await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "true");
   await expect(toolbar.getByRole("button", {name:"Settings", exact:true}).locator("svg")).toHaveCount(1);
   await toolbar.getByRole("button", {name:"Settings", exact:true}).click();
   await page.locator('#settingsClose').click();
   await expect(page.locator('#fullView')).toBeVisible();
+  // Edit in a tile's Full view goes to that tile's Configure on the overview.
   await edit.focus();
   await edit.press('Enter');
-  await expect(edit).toBeFocused();
+  await expect(page.locator('#dashboardOverview')).toBeVisible();
   await expect(edit).toHaveAccessibleName('Done editing');
-  await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "false");
   await toolbar.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.locator("#settings")).toBeVisible();
 });
@@ -477,8 +483,7 @@ test("Fit window to tiles sends the measured content height from either view, an
   expect(overview.viewportHeight).toBe(3000);
   expect(await fits()).toEqual([overview]);
 
-  await toolbar.getByRole("button", { name: "Full view", exact: true }).click();
-  await expect(page.locator("#fullView")).toBeVisible();
+  await openFull(page, "hosts");
   await fit.click();
   expect((await fits())[1]).toEqual(await measured());
 
@@ -535,10 +540,10 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
     expect(await status.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
 });
 
-test('a half-width Full runners table keeps Status in view, labels on one line', async ({page, baseURL}) => {
+test("a Runners tile's Full table keeps Status in view, labels on one line", async ({page, baseURL}) => {
   await page.setViewportSize({width:1800, height:1200});
   await openDashboard(page, baseURL, true);
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await openFull(page, "ghRunners");
   const panel = page.locator('#runnersPanel');
   await expect(panel.locator('.db-detail-table')).toBeVisible();
   const edge = await panel.evaluate(el => el.getBoundingClientRect().right);
@@ -1535,7 +1540,7 @@ test("runner group Full view preserves the filter, tracks membership, and clears
   await page.getByRole('button', {name:'All runners', exact:true}).click();
   await expect(runners).toHaveCount(6);
   await expect(page.locator('#runnersTitle')).toBeFocused();
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
   await expect(page.locator('#dashboardOverview')).toBeVisible();
 });
 
@@ -1649,7 +1654,7 @@ test("Full runners table and list show labels", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, true);
   const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
   const mac = payload.rows.find(r => r.name === "mac-s1");
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await openFull(page, "ghRunners");
   const panel = page.locator("#runnersPanel");
   await expect(panel.locator("thead th")).toContainText(["Labels"]);
   const cell = panel.locator(`tr[data-runner='${JSON.stringify(["acme", "mac-s1"])}'] .db-label-chip`);
@@ -1671,7 +1676,8 @@ test("Full filtered to a group says what matched", async ({ page, baseURL }) => 
   await action(page, "tileFull").click();
   await page.evaluate(() => refreshPanels());
   await expect(page.locator("#runnersBody .gh-group-match")).toHaveText("matched by runner-large");
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
   await tile(page, "ghRunners").getByRole("button", { name: /MACOS · ARM64/ }).click();
   await action(page, "tileFull").click();
   await expect(page.locator("#runnersBody .gh-runner-filter")).toContainText("MACOS · ARM64");
@@ -2289,8 +2295,7 @@ test("details reach the tile's Full view and the source's connection settings", 
   await expect(page.locator("#reposPanel")).toBeHidden();
   await expect.poll(() => page.evaluate(() => window.__CALLS__.filter(c => c.command === "cockpit").at(-1).args))
     .toEqual({ width: expect.any(Number), tile: "overview-hosts" });
-  // The toolbar's Full view toggle leaves a tile's Full view as it leaves Solador's.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await action(page, "close").click();
   await openDetail(page, "ghWorkflows");
@@ -2304,10 +2309,6 @@ test("details reach the tile's Full view and the source's connection settings", 
   await page.locator("#settingsClose").click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await expect(page.locator("#fullView")).toBeHidden();
-  await action(page, "allPanels").click();
-  await expect(page.locator("#fullView")).toBeVisible();
-  await expect(page.locator("#reposPanel")).toBeVisible();
-  await expect(page.locator("#containersPanel")).toBeVisible();
 });
 
 // The Repos tile scoped to Healthy repos; Rust's note for it, word for word.
@@ -2331,7 +2332,7 @@ test("Detail's Full view opens the tile's own scoped panel", async ({ page, base
   await openDetail(page, "ghWorkflows");
   await detailFull(page).click();
   await expect(page.locator("#dashboardOverview")).toBeHidden();
-  await expect(page.locator("#fullView")).toHaveAttribute("data-detail-source", "ghWorkflows");
+  await expect(page.locator("#fullView")).toHaveAttribute("data-full-source", "ghWorkflows");
   await expect(page.locator("#reposPanel")).toBeVisible();
   await expect(page.locator("#runnersPanel")).toBeHidden();
   expect(await page.evaluate(() => window.__CALLS__)).toContainEqual({ command: "repos", args: { tile: "overview-ghWorkflows" } });
@@ -2365,11 +2366,6 @@ test("Escape returns to the overview and restores the panel", async ({ page, bas
     await expect(page.locator(".db-full-note")).toHaveCount(0);
     await expect(back).toBeFocused();
   }
-  // Solador's own Full view has no tile to leave; Escape there changes nothing.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
-  await expect(page.locator("#fullView")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.locator("#fullView")).toBeVisible();
 });
 
 // A distinctive repo, so a reading painted where it should not be is findable.
@@ -2383,11 +2379,11 @@ const holdRepos = (page) => page.evaluate(async (name) => {
 
 test("a tile's Full view shows a loading line, never the rows the panel last held (#640)", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, healthyRepos);
-  // Solador's own Full view leaves source-wide repo rows in the panel.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  // An earlier Full view of the same source leaves its rows in the panel.
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposBody")).toBeVisible();
   await expect(page.locator("#reposBody")).not.toBeEmpty();
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await page.evaluate(() => { window.__HOLD_TILE__ = "repos"; });
   await openTileFullViaDetail(page, "overview-ghWorkflows");

@@ -50,16 +50,14 @@ const PAYLOADS = {
  * The cockpit payload, keyed by the grid width it was laid out for.
  *
  * `app.js` asks for the cockpit *at* its measured grid width, because Rust
- * reflows the host grid and the panel rows for it. Answering every width with
- * one payload is how `cockpit-narrow.png` once showed overlapping host cards: a
- * layout computed for 2732px painted into a 900px window. So each viewport
- * below has its own dump, and a width with none is refused, never approximated.
- * The widths are what those viewports measure (1800, 1024, 908, 900 and 462
- * wide, less the page padding); a CSS change that moves them fails here loudly, and the
+ * sizes the host grid for it. Answering every width with one payload is how a
+ * narrow shot once showed overlapping host cards: a layout computed for 2732px
+ * painted into a 900px window. So each viewport below has its own dump, and a
+ * width with none is refused, never approximated. The widths are what those
+ * viewports measure (1024, 908, 900 and 462 wide, less the page padding); a CSS change that moves them fails here loudly, and the
  * fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
  */
 const COCKPITS = {
-  1768: "sample-showcase-cockpit-1768.json",
   992: "sample-showcase-cockpit-992.json",
   876: "sample-showcase-cockpit-876.json",
   868: "sample-showcase-cockpit-868.json",
@@ -105,16 +103,6 @@ async function stubShowcase(page, baseURL, tileSource = null) {
 /** Every cockpit request so far was answered at its own width. */
 async function expectNoMisses(page) {
   expect(await page.evaluate(() => window.__showcaseMisses)).toEqual([]);
-}
-
-async function loadDetails(page, baseURL) {
-  await stubShowcase(page, baseURL);
-  await page.goto("/index.html?view=details");
-  // Every panel paints from its own command, so waiting on the last one to
-  // have a title is what "the cockpit is drawn" means here.
-  await expect(page.locator("#cronsPanel")).toBeVisible();
-  await page.waitForTimeout(300); // sparklines animate in
-  await expectNoMisses(page);
 }
 
 /**
@@ -177,24 +165,6 @@ test.describe("at 2x: the shots people look at", () => {
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });
     });
   }
-});
-
-// Full-page and tall: at 2x these would add megabytes to git history on every
-// regeneration for detail nobody zooms into.
-test.describe("at 1x: the full-height shots", () => {
-  test("the whole cockpit, at the width it was designed for", async ({ page, baseURL }) => {
-    // 1800pt clears the widest layout band, so this is the arrangement the
-    // reflow math actually produces rather than a narrow fallback.
-    await page.setViewportSize({ width: 1800, height: 1200 });
-    await loadDetails(page, baseURL);
-    await page.screenshot({ path: path.join(OUT, "cockpit.png"), fullPage: true });
-  });
-
-  test("a narrow cockpit, showing the reflow", async ({ page, baseURL }) => {
-    await page.setViewportSize({ width: 900, height: 1200 });
-    await loadDetails(page, baseURL);
-    await page.screenshot({ path: path.join(OUT, "cockpit-narrow.png"), fullPage: true });
-  });
 });
 
 /**

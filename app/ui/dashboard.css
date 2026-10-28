@@ -160,10 +160,6 @@
 .db-chrome .db-actions:has(.db-icon:hover) .db-icon:not(:hover) .db-tooltip {
   visibility: hidden;
 }
-.db-chrome [data-action="allPanels"] .db-tooltip {
-  left: 0;
-  right: auto;
-}
 .db-chrome .db-sample {
   font-size: 11px;
   color: var(--db-muted);
@@ -943,18 +939,11 @@
 #dashboardOverview .db-extra-metrics .db-row {
   font-size: 11px;
 }
-#fullView[data-detail-source] .panel:not([data-detail-active]) {
+#fullView[data-full-source] .panel:not([data-full-active]) {
   display: none !important;
 }
-#fullView[data-detail-source] .panel-row:not(:has([data-detail-active])) {
-  display: none;
-}
-#fullView[data-detail-source] .panel[data-detail-active] {
-  grid-column: 1 / -1 !important;
-}
-#fullView[data-detail-source]:not([data-detail-source="hosts"]) #cockpit,
-#fullView[data-detail-source]:not([data-detail-source="hosts"]) > .topbar,
-#fullView[data-detail-source]:not([data-detail-source="hosts"]) #emptyMsg {
+#fullView[data-full-source]:not([data-full-source="hosts"]) #cockpit,
+#fullView[data-full-source]:not([data-full-source="hosts"]) > .topbar {
   display: none !important;
 }
 
@@ -1012,14 +1001,14 @@
 #fullView, #settings { --panel:var(--db-panel); --panelAlt:var(--db-raised); --line:var(--db-line); --ink:var(--db-text); --muted:var(--db-muted); color:var(--db-text); }
 #fullView .panel { background:var(--db-raised); border-color:var(--db-line); border-radius:9px; padding:16px; }
 #fullView .panel-title { font-weight:500; }
-#fullView[data-detail-source] .panel-title { font-size:14px; }
+#fullView[data-full-source] .panel-title { font-size:14px; }
 /* A tile's Full view: Rust's note under the header row, muted like the
    panel's trailing and freshness lines. */
 #fullView .db-full-state { font-size:12px; color:var(--muted); margin:4px 0 8px; }
 /* Until a tile's own first reading lands, the panel holds only the rows it last
    painted: hide them, keeping the header (the tile's name) and the notes. */
-#fullView[data-tile-loading] .panel[data-detail-active] > :not(.panel-hdr, .db-full-note, .db-full-state),
-#fullView[data-tile-loading][data-detail-source="hosts"] :is(#cockpit, #emptyMsg) {
+#fullView[data-tile-loading] .panel[data-full-active] > :not(.panel-hdr, .db-full-note, .db-full-state),
+#fullView[data-tile-loading][data-full-source="hosts"] #cockpit {
   display: none !important;
 }
 #fullView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }
@@ -1032,7 +1021,7 @@
   #runnersPanel .panel-hdr::after { content:""; flex-basis:100%; order:1; }
   #runnersPanel .db-view-switch { order:2; }
 }
-#fullView[data-detail-source] .panel-body { min-height:0; }
+#fullView[data-full-source] .panel-body { min-height:0; }
 #fullView #runnersBody .gh-row { padding:5px 0; border-bottom:1px solid var(--db-line); }
 #fullView .gh-runner-name, #fullView .gh-runner-os, #fullView .gh-runner-status { font-size:12px; line-height:18px; font-weight:400; }
 #fullView .gh-runner-identity { display:flex; align-items:center; gap:8px; }

@@ -673,7 +673,8 @@ fn cockpit_payload(input: CockpitInput) -> Value {
     align_core_ladders(&mut cards, columns, look.core_row_span);
     // A cockpit with no monitored host says so in words made here, like every
     // other string the frontend paints -- the local card alone would read as a
-    // finished setup rather than an untouched one.
+    // finished setup rather than an untouched one. The overview's Machines tile
+    // reads it (`dashboard::source_view`); a tile's Full view paints no copy.
     let empty = if remote_count == 0 {
         json!({ "message": "No hosts configured. Add one in Settings." })
     } else {
@@ -700,16 +701,9 @@ fn cockpit_payload(input: CockpitInput) -> Value {
             .map(|kind| (kind.id().to_owned(), json!(viewmodel::cockpit::panel_columns(*kind, available, SPACING))))
             .collect::<serde_json::Map<String, Value>>(),
         "empty": empty,
-        // The Settings surface is opened from the page's top bar while no
-        // overview model has arrived, so its button's label has to arrive
-        // before anything has asked for the settings payload. Same rule as
-        // every other string on the page: made in Rust, and in exactly one
-        // place -- `settings::OPEN_LABEL` is what the Settings view itself
-        // renders too.
-        "settingsLabel": settings::OPEN_LABEL,
         // What the overview says when `dashboard_view` fails. A failed call has no
         // words of its own, and this is the other command the page is already
-        // polling, so the sentence is made here, in one place, like the label above.
+        // polling, so the sentence is made here, in one place.
         "overviewLoadFailed": dashboard::OVERVIEW_LOAD_FAILED,
     })
 }
@@ -10176,12 +10170,30 @@ mod tests {
     fn the_payload_carries_the_card_sizing_and_none_of_the_arrangement() {
         let vm = stacked_payload(vec![], 0, 1000.0);
         assert_eq!(vm["hostCardMinWidth"], 900.0);
-        // Solador's Full view's arrangement keys are gone with it (#647), and
-        // the gaps are the dashboard's: the card gap `spacing`, each tile's own
-        // `rowGapPx`.
-        for gone in ["panels", "panelRows", "spacing", "rowGapPx"] {
-            assert!(vm.get(gone).is_none(), "{gone} must not ride the cockpit");
-        }
+        // Nothing arranges panels any more (#647), and the gaps are the
+        // dashboard's. The payload is exactly the host cards' sizing, the
+        // columns each panel affords the window, the overview's empty line and
+        // its load-failure sentence.
+        let mut keys: Vec<&str> = vm
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "empty",
+                "hostCardMinWidth",
+                "hostColumns",
+                "hostTabs",
+                "hosts",
+                "overviewLoadFailed",
+                "panelColumns",
+                "volumeSlots",
+            ]
+        );
     }
 
     /// No hosts is a configuration state, not a broken app — so it arrives as

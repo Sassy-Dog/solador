@@ -891,9 +891,8 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // still filling in, and inferring that from the message text would make
         // it parse a string it is otherwise careful never to interpret.
         "loading": repos_loading(state),
-        // On both panels, not one shared element: `reflow` splits Repos and
-        // Runners onto separate rows below ~932pt, so a single chip would be
-        // orphaned from one of them at exactly the widths this cockpit runs at.
+        // On both panels, not one shared element: a narrow window can split Repos and
+        // Runners apart, so a single chip would be orphaned from one of them.
         "availability": availability_chip(state, now_secs),
         "columns": columns(),
         "rows": sorted
@@ -4506,9 +4505,8 @@ mod tests {
         )
     }
 
-    /// Both panels carry the chip — `reflow` splits them onto separate rows on
-    /// a narrow cockpit, so one shared element would be orphaned from one of
-    /// them at exactly the widths this is used at.
+    /// Both panels carry the chip — a tile's Full view shows only one of
+    /// them, so one shared element would be orphaned from the other.
     #[test]
     fn both_panels_carry_the_availability_chip() {
         let state = linux_dark();

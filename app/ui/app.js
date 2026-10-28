@@ -398,87 +398,12 @@ const PANEL_SECTIONS = {
   openclawAgents: "openclawPanel",
 };
 
-// The row shape currently on screen. Rebuilding the containers moves the
-// sections, which restarts CSS animations (the needs-approval dot pulses) and
-// throws away scroll position — so it happens on a real reflow and not on every
-// one-second poll.
-let panelRowShape = "";
-
-/**
- * Arranges the panel sections into rows.
- *
- * The arrangement is `viewmodel::cockpit`'s `hosts_forward` layout reflowed for
- * the measured width (`panelRows` in the payload) — applied here, never decided
- * here. A CSS `repeat(auto-fit, minmax(…))` over these panels would be a second
- * implementation of every panel's own `min_width`, and it would get the case
- * that matters wrong: OpenClaw + Usage stay paired at a width where Repos +
- * Runners must split, which no single global breakpoint can express.
- *
- * Every row is the same four quarter tracks (`.panel-row` in the stylesheet),
- * and a panel claims its `weight` of them with `grid-column`. The weights are
- * Rust's for the same reason the rows are: `panel_widths` derived every `width`
- * and `columns` in the payload from this exact grid, so a track re-derived here
- * would be free to disagree with the width the panel was told it has.
- *
- * The track list used to be per-row — `2fr 1fr 1fr` for a half beside two
- * quarters — which looks equivalent and is not. `fr` splits what is left after
- * the row's *own* gutters, so a two-panel row gave its halves `(W-g)/2` and a
- * three-panel row gave its half `(W-2g)/2`. Same span, 8pt apart on the shipped
- * cockpit, and the edge between Repos and Runners missed the edge between
- * Containers and OpenClaw directly below it.
- *
- * The start line is explicit rather than left to auto-placement. A panel with no
- * section here (`hosts`, rendered in the grid above) or one still `hidden` on a
- * cold start is skipped by auto-placement entirely, and its neighbours would
- * slide up into tracks Rust never gave them — painting them at a width that
- * contradicts the `columns` their contents were laid out for. A gap is the
- * honest rendering of a slot this container is not filling.
- */
-function applyPanelRows(rows) {
-  if (!Array.isArray(rows) || !rows.length) return;
-  const shape = JSON.stringify(
-    rows.map((row) => (row || []).map((p) => p && [p.id, p.weight]))
-  );
-  if (shape === panelRowShape) return;
-  panelRowShape = shape;
-
-  const built = [];
-  for (const row of rows) {
-    // Sections and their tracks are paired off before either is used, and the
-    // start line advances across the whole row — including the panels this
-    // container has no section for, whose quarters are still spoken for.
-    const placed = [];
-    let start = 1;
-    for (const panel of row || []) {
-      const weight = Math.min(4, Math.max(1, Number(panel && panel.weight) | 0));
-      const section = panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null;
-      if (section) placed.push([section, `${start} / span ${weight}`]);
-      start += weight;
-    }
-    if (!placed.length) continue;
-    const container = document.createElement("div");
-    container.className = "panel-row";
-    for (const [section, column] of placed) {
-      // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
-      // attribute outright. Same setter the host grid's column count uses.
-      section.style.gridColumn = column;
-    }
-    // `append` MOVES the existing sections, so each panel keeps whatever its
-    // own script last painted into it — nothing is rebuilt, only re-parented.
-    container.append(...placed.map(([section]) => section));
-    built.push(container);
-  }
-  // Safe after the moves above: the old containers are empty by now.
-  $("panelRows").replaceChildren(...built);
-}
-
 /**
  * Hands each panel the content-column count Rust derived for its width.
  *
- * Deliberately OUTSIDE `applyPanelRows`'s shape memo: the memo skips the
- * rebuild when the same panels still share the same rows, but a window resize
- * changes their *width* without changing that shape — so a count applied
- * inside it would freeze at whatever the last reflow happened to see.
+ * Rust derives it from the window's width (`panel_columns`), so a resize
+ * changes it and every `cockpit` answer re-applies it; the same count is a
+ * no-op.
  *
  * The count lands as a custom property, which is enough on its own for the
  * panels whose split is pure CSS (Containers' section grid, Runners'
@@ -613,24 +538,8 @@ function renderCockpit(p) {
   const cols = Math.max(1, Number(p.hostColumns) | 0);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
 
-  const hostsPanel = (p.panels || []).find((panel) => panel.id === "hosts");
-  $("hostsTitle").textContent = window.soladorDashboard?.tileHeading?.("hosts") || (hostsPanel ? hostsPanel.title : "");
-
-  // The Settings button's label is Rust's too. The overview paints it from
-  // `dashboard_view`'s labels (dashboard.js); this is the same word for the
-  // page that has no overview model, and is gone with Solador's Full view.
-  const toggle = $("settingsToggle");
-  if (!window.soladorDashboard?.hasModel?.()) {
-    if (toggle.querySelector(".db-tooltip")) {
-      toggle.setAttribute("aria-label", p.settingsLabel || "");
-      toggle.querySelector(".db-tooltip").textContent = p.settingsLabel || "";
-    } else toggle.textContent = p.settingsLabel || "";
-    toggle.hidden = !p.settingsLabel;
-  }
-
-  const emptyEl = $("emptyMsg");
-  emptyEl.textContent = p.empty ? p.empty.message : "";
-  emptyEl.hidden = !p.empty;
+  // The Machines Full view's title is its tile's name.
+  $("hostsTitle").textContent = window.soladorDashboard?.tileHeading?.("hosts") || "";
 
   applyPanelColumns(p.panelColumns);
 
@@ -720,7 +629,7 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
   if (window.__TAURI__) {
     setInterval(async () => { if (!settingsOpen) await refreshCockpit(); }, 1000);
     // A resize changes the width Rust decides the column count from, so ask
-    // again rather than waiting up to a full poll interval to reflow.
+    // again rather than waiting up to a full poll interval to resize.
     let pending = false;
     window.addEventListener("resize", () => {
       if (pending || settingsOpen) return;

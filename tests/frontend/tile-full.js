@@ -93,7 +93,7 @@ export async function openTileFull(page, source, tileId = tileIdFor(source)) {
   await tile.getByRole("button", { name: "View", exact: true }).click();
   await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
   await expect(page.locator("#fullView")).toBeVisible();
-  await expect(page.locator("#fullView")).toHaveAttribute("data-detail-source", source);
+  await expect(page.locator("#fullView")).toHaveAttribute("data-full-source", source);
 }
 
 /**

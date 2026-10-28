@@ -14,12 +14,12 @@
 </head>
 <body>
   <section id="dashboardOverview" hidden aria-label="Solador overview"></section>
-  <!-- Where the panels live: a tile's Full view shows one of them, Solador's
-       Full view all of them. The overview, Settings and the page's boot read
-       nothing from inside it. The Hosts panel's title comes from Rust's panel
-       table, like every other string on the page; the grid's column count
-       comes from the same payload's `hostColumns`. Focusable so that opening
-       a tile's Full view has somewhere to put keyboard focus. -->
+  <!-- Where a tile's Full view lives: it shows one of the panels below, named
+       after the tile (dashboard.js). The overview, Settings and the page's boot
+       read nothing from inside it. The Hosts title is the tile's name; the
+       grid's column count comes from the `cockpit` payload's `hostColumns`.
+       Focusable so that opening a tile's Full view has somewhere to put
+       keyboard focus. -->
   <div id="fullView" tabindex="-1">
     <div class="topbar">
       <h2 class="panel-title" id="hostsTitle"></h2>
@@ -38,22 +38,8 @@
            the Settings tabs have none. -->
       <nav class="tabs host-tabs" id="hostTabs" hidden></nav>
       <span class="grow"></span>
-      <!-- dashboard.js moves this same button into the shared icon toolbar,
-           preserving settings.js's listener, and shows it from the overview's
-           own labels. It stays here, labeled by the cockpit payload, only
-           while there is no overview model. -->
-      <button class="btn" id="settingsToggle" type="button" hidden></button>
     </div>
-    <p class="empty" id="emptyMsg"></p>
     <div class="cockpit" id="cockpit"></div>
-
-    <!-- The panel block below the host grid. Which panels share a row, and in
-         what order, is `viewmodel::cockpit`'s `hosts_forward` layout reflowed
-         for the measured width and delivered as the cockpit payload's
-         `panelRows`; app.js only applies it. The sections start here as
-         authored siblings so they exist before the first payload arrives, and
-         app.js re-parents them into row containers on the first reflow. -->
-    <div class="panel-rows" id="panelRows">
 
     <!-- Containers / VMs. Hidden until Rust has supplied a payload: a panel
          that renders its own chrome before anything has answered would be a
@@ -209,8 +195,6 @@
       </header>
       <div class="panel-body" id="openclawBody" tabindex="0" role="region" aria-labelledby="openclawTitle"></div>
     </section>
-
-    </div>
   </div>
 
   <!-- Settings. An in-app view, not a second window: a window would need

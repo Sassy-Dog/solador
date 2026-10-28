@@ -2,9 +2,9 @@ import { test, expect } from "@playwright/test";
 import { stubTileIpc, openTileFull, tileIdFor, lastArgs, advance } from "./tile-full.js";
 
 /**
- * The overview and a tile's Full view stand on their own (#646): neither leans
- * on its icon (`allPanels`), or on the `cockpit` payload for the Settings label
- * and the spacing, or on a `cockpit` poll for anything that is not a host card.
+ * The overview and a tile's Full view stand on their own (#646, #647): neither
+ * leans on the `cockpit` payload for the Settings label or the spacing, or on a
+ * `cockpit` poll for anything that is not a host card.
  *
  * Each test names the line it guards; the PR lists the negative controls.
  */
@@ -26,13 +26,14 @@ const READS = [
 const PANEL_COMMANDS = READS.map(([, command]) => command).filter((command) => command !== "cockpit");
 const gear = '.db-chrome [data-action="settings"]';
 
-test("Settings and a tile's Full view work without the allPanels icon, or a Settings label or spacing from cockpit", async ({ page, baseURL }) => {
+test("Settings and a tile's Full view take their Settings label and spacing from the overview, not cockpit", async ({ page, baseURL }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const dashboard = await fixture(baseURL, "sample-dashboard.json");
   // The cockpit payload with everything the overview reads from it taken out:
   // the Settings label and the spacing can then only come from `dashboard_view`.
-  const { settingsLabel, ...cockpit } = await fixture(baseURL, "sample-cockpit.json");
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  expect(cockpit.settingsLabel, "the cockpit payload no longer carries a Settings label").toBeUndefined();
   const settings = await fixture(baseURL, "sample-settings.json");
   await stubTileIpc(page, baseURL, {
     sources: ["hosts", "ghRunners", "sentryCrons"], cockpit, answers: { settings_view: settings },
@@ -42,8 +43,6 @@ test("Settings and a tile's Full view work without the allPanels icon, or a Sett
   await page.goto("/index.html");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await expect(page.locator(gear)).toHaveAttribute("aria-label", dashboard.labels.settings);
-  // ...nor the toolbar's Full view icon.
-  await page.locator('[data-action="allPanels"]').evaluate((icon) => icon.remove());
 
   // Settings opens and closes over the overview.
   await page.locator(gear).click();
@@ -73,7 +72,7 @@ test("Settings and a tile's Full view work without the allPanels icon, or a Sett
     await expect(page.locator("#fullView")).toBeHidden();
     await page.locator("#settingsClose").click();
     await expect(page.locator("#fullView")).toBeVisible();
-    await expect(page.locator("#fullView")).toHaveAttribute("data-detail-source", source);
+    await expect(page.locator("#fullView")).toHaveAttribute("data-full-source", source);
     await expect(page.locator("#dashboardOverview")).toBeHidden();
 
     // Escape returns to the overview and to that tile's View button.
@@ -202,6 +201,27 @@ test("a cockpit read that keeps failing in a Machines tile's Full view asks whet
   await expect.poll(cockpitCalls, { timeout: 8000 }).toBeGreaterThan(seen + 2);
   expect(await page.evaluate(() => cockpitFailed)).toBe(true);
   expect(await page.evaluate(() => window.__ASKED__)).toBe(1);
+});
+
+test("a Machines tile's Full view says its cards failed to load, never that they are loading", async ({ page, baseURL }) => {
+  const dashboard = await fixture(baseURL, "sample-dashboard.json");
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  await stubTileIpc(page, baseURL, {
+    source: "hosts", cockpit: { __frames: [{ __throw: "cockpit is down" }, cockpit] }, answers: {},
+  });
+  await page.goto("/index.html");
+  await openTileFull(page, "hosts");
+  const state = page.locator("#fullView .db-full-state");
+  // Rust's cockpitFailed sentence, in place of the loading line the tile
+  // carries for a first reading that is not coming.
+  await expect(state).toHaveText(dashboard.labels.cockpitFailed);
+  const tile = dashboard.tiles.find((t) => t.source === "ghWorkflows");
+  expect(tile.fullLoading, "the tile carries a loading line of its own").toBeTruthy();
+  await expect(state).not.toHaveText(tile.fullLoading);
+  // Once `cockpit` answers, the cards paint and the line is gone.
+  await advance(page, "cockpit");
+  await expect(state).toHaveCount(0);
+  await expect(page.locator("#cockpit .card").first()).toBeVisible();
 });
 
 test("a failed boot cockpit read shows Rust's line, and it clears on its own once cockpit answers", async ({ page, baseURL }) => {

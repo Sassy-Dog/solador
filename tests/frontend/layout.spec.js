@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { advance, gotoTileFull } from "./tile-full.js";
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, baseURL }) => {
   // Served under the app's real CSP (csp_server.py) rather than no policy at
   // all. A blocked inline style or stylesheet surfaces as a console error
   // naming the policy, not as a thrown exception -- collect those so every
@@ -13,7 +14,7 @@ test.beforeEach(async ({ page }) => {
   // to install a `window.__TAURI__` mock via `addInitScript` before its
   // first navigation, and a beforeEach at file scope always runs before a
   // describe-scoped one, so navigating here would run the real (un-mocked)
-  // page load first. Every test calls `gotoApp(page)` itself instead.
+  // page load first. Every test calls `gotoApp(page, baseURL)` itself instead.
   page.cspErrors = [];
   page.on("console", (msg) => {
     if (msg.type() === "error" && /content security policy|refused to (apply|load)/i.test(msg.text())) {
@@ -22,62 +23,39 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test.afterEach(async ({ page }) => {
+test.afterEach(async ({ page, baseURL }) => {
   expect(page.cspErrors, "no CSP violations while the page ran").toEqual([]);
 });
 
-async function gotoApp(page) {
-  await page.goto("/index.html?view=details");
+/**
+ * Enters a Machines tile's Full view -- the only place host cards are drawn --
+ * with the IPC stubbed (tile-full.js). The `cockpit` answer is whatever
+ * `stubCockpit` was given for this page, or `sample.json` (one live host).
+ */
+async function gotoApp(page, baseURL, extra = {}) {
+  const frames = page.__cockpitFrames;
+  const cockpit = frames
+    ? frames.length > 1 ? { __frames: frames } : frames[0]
+    : await (await fetch(`${baseURL}/sample.json`)).json();
+  await gotoTileFull(page, baseURL, { source: "hosts", cockpit, ...extra });
   await page.waitForFunction(() => document.querySelectorAll(".cores .core").length > 0);
 }
 
 /**
- * Stubs `window.__TAURI__.core.invoke` with Rust-dumped payloads (there is no
- * real Tauri IPC in a browser context). Every command — `cockpit` and the
- * panels' own — is answered alike with the CURRENT frame, and the frame only
- * moves when the test says so: the returned `advance()` steps the stub to the
- * next payload, after which the app's own 1s poll (`setInterval` in app.js,
- * armed only when `window.__TAURI__` exists) delivers it.
+ * Records the `cockpit` frames the next `gotoApp` serves, and returns the
+ * stepper. The frame only moves when the test says so: `advance()` steps the
+ * stub to the next payload, after which the app's own 1s poll (`setInterval`
+ * in app.js, armed only when `window.__TAURI__` exists) delivers it.
  *
- * The frame is test-advanced, not call-counted, because of #407. The stub used
- * to answer frame N to the Nth `invoke`, so frame 1 was gone the moment the
- * cockpit's second poll fired. A test that asserted on frame 1 after `gotoApp`
- * was therefore racing the app's 1000ms cadence with Playwright's own latency,
- * which a loaded merge-group runner lost (14 retries, every one already
- * `stale`). Under this stub frame 1 is served for as long as the test keeps
- * looking at it; only the frame-2 assertion waits on the poll, and its timeout
- * already covers the interval. Do not "simplify" this back to a call counter —
- * a longer timeout cannot help once frame 1 has been served for the last time.
- * (The panel scripts' own startup invokes counted too under the old stub; with
- * two payloads that handed them frame 2 as *their* payload without moving the
- * cockpit's, but a three-frame stub would have lost a frame to them.)
- *
- * `advance()` past the last payload throws, so a test that steps further than
- * it has frames fails on the step rather than quietly repeating the last one.
- * The frame is per-document: `addInitScript` re-runs on every navigation, so
- * a `goto`/`reload` after `advance()` starts over at the first payload.
+ * The frame is test-advanced, not call-counted, because of #407: a stub that
+ * answered frame N to the Nth `invoke` raced the app's 1000ms cadence against
+ * Playwright's own latency, which a loaded merge-group runner lost. Do not
+ * "simplify" this back to a call counter. `advance()` past the last payload
+ * throws, so a test that steps further than it has frames fails on the step.
  */
 async function stubCockpit(page, payloads) {
-  await page.addInitScript((vms) => {
-    let frame = 0;
-    window.__COCKPIT_STUB__ = {
-      advance: () => {
-        if (frame + 1 >= vms.length) {
-          throw new Error(
-            `stubCockpit: advance() past the last frame (frame ${frame + 1} of ${vms.length} is already current)`
-          );
-        }
-        frame += 1;
-        return frame;
-      },
-    };
-    window.__TAURI__ = {
-      core: { invoke: async () => vms[frame] },
-    };
-  }, payloads);
-  return {
-    advance: () => page.evaluate(() => window.__COCKPIT_STUB__.advance()),
-  };
+  page.__cockpitFrames = payloads;
+  return { advance: () => advance(page, "cockpit") };
 }
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
@@ -88,49 +66,12 @@ const rgb = (hex) => {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
 
-/**
- * Stubs the cockpit *and* every panel command, so the cards carry their real
- * contents rather than empty chrome.
- *
- * `stubCockpit` answers every command with the cockpit payload, which the panel
- * scripts happily render as a panel with nothing in it — fine when the question
- * is which row a section lands in, useless when it is how tall the section is
- * or where its edge falls. Panels of identical empty height agree about
- * everything.
- */
-async function stubPanels(page, baseURL, cockpit) {
-  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw", "services", "crons"];
-  const files = {
-    containers: "sample-containers.json",
-    repos: "sample-repos.json",
-    runners: "sample-runners.json",
-    usage: "sample-usage.json",
-    azure: "sample-azure.json",
-    openclaw: "sample-openclaw.json",
-    services: "sample-services.json",
-    crons: "sample-crons.json",
-  };
-  const payloads = { cockpit };
-  for (const name of named) payloads[name] = await fixture(baseURL, files[name]);
-  await page.addInitScript((vms) => {
-    window.__TAURI__ = {
-      core: {
-        // `azure_cost` is the command; `azure` is the fixture. Anything else
-        // (`settings_*`) answers null -- unlike `stubCockpit`, which answers
-        // every command with its current cockpit frame.
-        invoke: async (command) =>
-          vms[command === "azure_cost" ? "azure" : command] ?? null,
-      },
-    };
-  }, payloads);
-}
-
 /** The one live host `--dump` writes, as the offline fallback serves it. */
 const firstHost = async (page) =>
   page.evaluate(async () => (await (await fetch("sample.json")).json()).hosts[0]);
 
-test("core grid uses only column counts core_columns would accept", async ({ page }) => {
-  await gotoApp(page);
+test("core grid uses only column counts core_columns would accept", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
   // 16 cores -> 1, 2, 4, 8. The 16-column rung used to be here too, and a
   // 1900px card took it: one row of sixteen cells stretched over the whole
   // block. A full last row was only half the rule -- the rung must also stay
@@ -152,8 +93,8 @@ test("core grid uses only column counts core_columns would accept", async ({ pag
   }
 });
 
-test("cores block keeps the 2-row height until cells hit the squeeze floor, then grows", async ({ page }) => {
-  await gotoApp(page);
+test("cores block keeps the 2-row height until cells hit the squeeze floor, then grows", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
   const expectedPx = `${(await firstHost(page)).coreBlockHeight}px`;
   // app.css's fallback is `var(--core-block-h, 220px)`: if render() silently
   // failed to set the property (exactly the failure mode a blocked style
@@ -183,7 +124,7 @@ test("cores block keeps the 2-row height until cells hit the squeeze floor, then
   }
 });
 
-test("a many-core host keeps its core sparklines visible at narrow rungs", async ({ page }) => {
+test("a many-core host keeps its core sparklines visible at narrow rungs", async ({ page, baseURL }) => {
   // 36 cores at a ~990px container sit on the 6-column rung -> 6 rows. The
   // fixed 220px block gave each tile ~30px, which padding and the label
   // consumed whole: the plot flexed to 0 and the charts silently vanished
@@ -205,7 +146,7 @@ test("a many-core host keeps its core sparklines visible at narrow rungs", async
     };
   });
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
   const got = await page.evaluate(async () => {
     const wrap = document.querySelector(".cores-wrap");
     wrap.style.width = "990px";
@@ -225,8 +166,8 @@ test("a many-core host keeps its core sparklines visible at narrow rungs", async
   expect(got.minPlot).toBeGreaterThan(12);
 });
 
-test("charts widen their time window instead of stretching", async ({ page }) => {
-  await gotoApp(page);
+test("charts widen their time window instead of stretching", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
   const density = async (w) =>
     page.evaluate(async (width) => {
       document.body.style.width = width + "px";
@@ -252,13 +193,13 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
   expect(Math.abs(wide.px - narrow.px)).toBeLessThan(0.5);
 });
 
-test("sparklines carry the original gradient fade under the line", async ({ page }) => {
+test("sparklines carry the original gradient fade under the line", async ({ page, baseURL }) => {
   // Parity with the original (Sparkline:27-30): the area under the line fades from
   // 0.28 of the series colour at the top to transparent at the bottom, over
   // the FULL chart height. userSpaceOnUse is the load-bearing detail:
   // The original's LinearGradient spans the view frame, so an idle-flat line must
   // not compress the fade into its own bounding box and paint a solid band.
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
   const got = await page.evaluate(async () => {
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
@@ -291,7 +232,7 @@ test("sparklines carry the original gradient fade under the line", async ({ page
   }
 });
 
-test("a filling history hugs the right edge at fixed density, never stretching", async ({ page }) => {
+test("a filling history hugs the right edge at fixed density, never stretching", async ({ page, baseURL }) => {
   // Parity with the original (Sparkline:54-59): the newest sample is pinned at the
   // right edge and points step left by a FIXED step, so a history that is
   // still filling occupies only the right side of the chart. Stretching the
@@ -300,7 +241,7 @@ test("a filling history hugs the right edge at fixed density, never stretching",
   const vm = JSON.parse(readFileSync("../../app/ui/sample.json", "utf8"));
   vm.hosts[0].cpuHistory = vm.hosts[0].cpuHistory.slice(0, 6);
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
   const got = await page.evaluate(async () => {
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
@@ -317,14 +258,14 @@ test("a filling history hugs the right edge at fixed density, never stretching",
   expect(got.xs[0]).toBeGreaterThan(got.w * 0.9);
 });
 
-test("a host with no discrete GPU renders an em dash, never zero", async ({ page }) => {
-  await gotoApp(page);
+test("a host with no discrete GPU renders an em dash, never zero", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
   await expect(page.locator(".gpuValue")).toHaveText("—");
   await expect(page.locator(".vramText")).toHaveText("VRAM: —");
 });
 
-test("volume bar width is proportional to its fraction, not fixed full", async ({ page }) => {
-  await gotoApp(page);
+test("volume bar width is proportional to its fraction, not fixed full", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
   // Under a CSP that silently blocks `style="width:…;background:…"`, every
   // bar renders at its track's full width with a transparent fill -- a
   // fabricated 100%-full reading regardless of the real fraction. None of
@@ -344,8 +285,8 @@ test("volume bar width is proportional to its fraction, not fixed full", async (
   expect(background).not.toBe("rgba(0, 0, 0, 0)");
 });
 
-test("a core cell's value text renders its usage colour", async ({ page }) => {
-  await gotoApp(page);
+test("a core cell's value text renders its usage colour", async ({ page, baseURL }) => {
+  await gotoApp(page, baseURL);
   // Under the broken CSP this fell back to `.cap`'s inherited --muted grey
   // (the attribute carrying the real colour was blocked outright, and it
   // still sat unused in the markup, so nothing about the DOM's structure
@@ -382,7 +323,7 @@ test("a host that fails after connecting blanks its card and says it cannot be c
     await fixture(baseURL, "sample-unreachable.json"),
   ]);
 
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   // First poll: live and green, real numbers on screen. The stub keeps serving
   // this frame until `advance()` below, so these assertions are not racing the
@@ -433,7 +374,7 @@ test("a host whose agent stopped sampling loses the green dot even though every 
     await fixture(baseURL, "sample-sampler-stale.json"),
   ]);
 
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   // Frame 1 is served until `advance()`, so observing `live` does not depend
   // on out-racing the 1s poll -- the race that ejected #406 from the merge
@@ -462,7 +403,7 @@ test("a host whose agent stopped sampling loses the green dot even though every 
 test("every configured host gets its own card, in payload order", async ({ page, baseURL }) => {
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const cards = page.locator(".cockpit .card");
   await expect(cards).toHaveCount(vm.hosts.length);
@@ -481,7 +422,7 @@ test("one unreachable host shows its error card while the others stay live", asy
   // when they must not.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   // Four cards: this machine leads, then the three remotes.
   const cards = page.locator(".cockpit .card");
@@ -514,7 +455,7 @@ test("this machine leads the grid and admits what it could not measure", async (
   // (`local::lower_unknowns`) and both are asserted against Rust's own dump.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const local = page.locator(".cockpit .card").first();
   expect(vm.hosts[0].id, "the local card leads the payload").toBe("local");
@@ -551,7 +492,7 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
   vm.hosts[0].cpuModel = "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz".padEnd(120, " Turbo");
   expect(vm.hosts[0].cpuModel.length).toBeGreaterThanOrEqual(120);
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const card = page.locator(".cockpit .card").first();
   const box = async (sel) => await card.locator(sel).boundingBox();
@@ -600,198 +541,6 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
   await expect(downCard.locator(".cpuValue")).toHaveText("—");
 });
 
-test("the panel rows below the grid are the ones Rust reflowed", async ({ page, baseURL }) => {
-  // The rows AND the track widths are `viewmodel::cockpit`'s — `reflow` decides
-  // who shares a row, each placement's `PanelSpan` weight decides how much of it
-  // they get — applied here and not decided here. A CSS `auto-fit` would be a
-  // second implementation of every panel's own `min_width`.
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  await stubCockpit(page, [vm]);
-  await gotoApp(page);
-
-  // Rows carrying only panels this frontend has no section for (`hosts`, which
-  // is the grid above) are skipped.
-  const known = [
-    "containers",
-    "openclawAgents",
-    "ghWorkflows",
-    "ghRunners",
-    "claudeUsage",
-    "azureCost",
-    "services",
-    "sentryCrons",
-  ];
-  const expected = vm.panelRows
-    .map((row) => row.map((p) => p.id).filter((id) => known.includes(id)))
-    .filter((row) => row.length);
-
-  const rows = page.locator("#panelRows .panel-row");
-  await expect(rows).toHaveCount(expected.length);
-  // Four quarter tracks on every row, whatever it holds — the grid is the same
-  // one everywhere, and a panel claims its share with `grid-column`.
-  const tracks = await rows.evaluateAll((els) =>
-    els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
-  );
-  expect(tracks).toEqual(expected.map(() => 4));
-
-  // The row the span system exists for: Containers takes half, OpenClaw and
-  // Usage a quarter each.
-  const quarter = expected.findIndex(
-    (row) => row.join() === "containers,openclawAgents,claudeUsage"
-  );
-  expect(quarter, "the wide fixture must carry the authored quarter row").toBeGreaterThan(-1);
-  const spans = await rows
-    .nth(quarter)
-    .evaluate((el) =>
-      [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim())
-    );
-  expect(spans).toEqual(["1", "3", "4"]);
-
-  // …and the last row is Azure Cost beside the two lean panels: a half still
-  // buys the cost breakdowns their own column, and a row of its own for either
-  // short list would leave most of a full-width band empty. Same shape as the
-  // quarter row above it, so the two land on the same gridlines.
-  expect(expected[expected.length - 1]).toEqual(["azureCost", "services", "sentryCrons"]);
-  await expect(rows.last().locator("section")).toHaveCount(3);
-  const lastSpans = await rows
-    .last()
-    .evaluate((el) => [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim()));
-  expect(lastSpans).toEqual(["1", "3", "4"]);
-});
-
-/**
- * The bug the four-quarter grid was introduced for. Each row used to size its
- * own tracks with the weights it happened to contain — `2fr 1fr 1fr` beside
- * `2fr 2fr` — and `fr` divides what is left after *that row's* gutters. So a
- * Half beside two Quarters came out half a gutter narrower than a Half beside
- * one Half, and the vertical edge between Repos and Runners missed the edge
- * between Containers and OpenClaw directly below it by 8pt on the shipped
- * cockpit. Both are `half`; they must land on the same gridline.
- */
-test("a half is the same width in every row", async ({ page, baseURL }) => {
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  // Both cards have to be on screen to be measured, and `stubCockpit` leaves
-  // Repos hidden — it never answers the `repos` command with a repos payload.
-  await stubPanels(page, baseURL, vm);
-  await gotoApp(page);
-  await expect(page.locator("#reposPanel")).toBeVisible();
-  await expect(page.locator("#containersPanel")).toBeVisible();
-
-  const spanOf = (id) =>
-    vm.panelRows.flat().find((p) => p.id === id)?.span;
-  expect(spanOf("ghWorkflows"), "the fixture must carry two halves in different rows").toBe("half");
-  expect(spanOf("containers")).toBe("half");
-
-  const [repos, containers] = await Promise.all([
-    page.locator("#reposPanel").boundingBox(),
-    page.locator("#containersPanel").boundingBox(),
-  ]);
-  expect(containers.width).toBeCloseTo(repos.width, 1);
-  expect(
-    containers.x + containers.width,
-    "the edge under Repos and the edge under Containers are one line"
-  ).toBeCloseTo(repos.x + repos.width, 1);
-});
-
-test("every card sharing a row is the same height", async ({ page, baseURL }) => {
-  // The ragged edge this replaces: cards were `align-items:start`, so a short
-  // panel beside a long one left a gap the row read as damage. Content stays
-  // top-aligned inside the stretched card — the extra height is trailing space,
-  // not stretched rows — so this asserts the CARD heights match AND that at
-  // least one card is genuinely taller than its own content. Without the second
-  // half, a fixture whose panels happened to be equally tall would pass with
-  // `align-items:start` back in place.
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  // Real panel contents, not the empty chrome `stubCockpit` produces: cards of
-  // identical empty height pass a height-equality test without proving
-  // anything, and there is no trailing space in one for the slack check below
-  // to find.
-  await stubPanels(page, baseURL, vm);
-  await gotoApp(page);
-  await expect(page.locator("#reposPanel")).toBeVisible();
-  await expect(page.locator("#openclawPanel .oc-agent").first()).toBeVisible();
-
-  const rows = page.locator("#panelRows .panel-row");
-  const shared = await rows.evaluateAll((els) =>
-    els
-      .map((el) =>
-        [...el.querySelectorAll(":scope > section")].map((section) => {
-          const box = section.getBoundingClientRect();
-          const content = section.lastElementChild.getBoundingClientRect().bottom;
-          const padding = parseFloat(getComputedStyle(section).paddingBottom);
-          return { height: box.height, slack: box.bottom - content - padding };
-        })
-      )
-      .filter((cards) => cards.length > 1)
-  );
-  expect(shared.length, "the fixture must have at least one shared row").toBeGreaterThan(0);
-  for (const cards of shared) {
-    const heights = cards.map((c) => c.height);
-    for (const height of heights) {
-      expect(Math.abs(height - heights[0]), `heights ${heights.join("/")}`).toBeLessThan(1);
-    }
-  }
-  const slack = Math.max(...shared.flat().map((c) => c.slack));
-  expect(slack, "a shorter card is stretched to its row, not merely equal").toBeGreaterThan(24);
-});
-
-test("a reflow re-parents every panel without losing one", async ({ page, baseURL }) => {
-  // The row containers are rebuilt when the shape changes, and rebuilding them
-  // MOVES the existing sections. Get the order wrong — replaceChildren before
-  // the moves — and the panels are destroyed with their old containers, which
-  // no single-render test can see because the memo skips the rebuild entirely
-  // when the shape is unchanged. So this drives a real shape change: a wide
-  // payload with every authored row, then a 700pt one where the halves and the
-  // quarter row both break up.
-  const wide = await fixture(baseURL, "sample-cockpit.json");
-  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
-  expect(
-    narrow.panelRows.map((r) => r.length),
-    "the narrow fixture must actually reflow, or this test proves nothing"
-  ).not.toEqual(wide.panelRows.map((r) => r.length));
-
-  const frames = await stubCockpit(page, [wide, narrow]);
-  await gotoApp(page);
-
-  const sections = [
-    "containersPanel",
-    "openclawPanel",
-    "reposPanel",
-    "runnersPanel",
-    "usagePanel",
-    "azurePanel",
-    "servicesPanel",
-    "cronsPanel",
-  ];
-  // Both shapes are the payload's, not this test's: the sectionless `hosts` row
-  // is the grid above, so it contributes no rendered row.
-  const shapeOf = (vm) =>
-    vm.panelRows
-      .map((row) => row.filter((p) => p.id !== "hosts").length)
-      .filter((count) => count);
-  const rows = page.locator("#panelRows .panel-row");
-  // The wide frame is served until `advance()`, so this count is not racing
-  // the 1s poll (#407).
-  await expect(rows).toHaveCount(shapeOf(wide).length);
-
-  // Release the narrow payload; the app's own 1s poll delivers it. Wait for
-  // the reflow.
-  await frames.advance();
-  await expect(rows).toHaveCount(shapeOf(narrow).length, { timeout: 5000 });
-  for (const id of sections) {
-    await expect(page.locator(`#${id}`), `${id} survived the reflow`).toHaveCount(1);
-    await expect(page.locator(`#panelRows .panel-row > #${id}`)).toHaveCount(1);
-  }
-  // …and every section is accounted for by the rows Rust asked for. Counted as
-  // sections rather than as tracks: every row is the same four quarter tracks,
-  // so a track count says nothing about how many panels landed in it.
-  const perRow = await rows.evaluateAll((els) =>
-    els.map((el) => el.querySelectorAll(":scope > section").length)
-  );
-  expect(perRow).toEqual(shapeOf(narrow));
-  expect(perRow.reduce((a, b) => a + b, 0)).toBe(sections.length);
-});
-
 test("the grid lays out exactly the columns the view-model asked for", async ({ page, baseURL }) => {
   // Both fixtures hold the SAME three hosts and differ only in the width Rust
   // computed them for (`--dump-cockpit` vs `--width 1000`), so this is purely
@@ -801,7 +550,9 @@ test("the grid lays out exactly the columns the view-model asked for", async ({ 
   for (const name of ["sample-cockpit.json", "sample-cockpit-stacked.json"]) {
     const vm = await fixture(baseURL, name);
     await stubCockpit(page, [vm]);
-    await gotoApp(page);
+    // The card gap is the overview model's `spacing`; 11 is not the stylesheet's
+    // pre-payload 16, so it can only have come from the payload.
+    await gotoApp(page, baseURL, { dashboardKeys: { spacing: 11 } });
 
     const { tracks, gap } = await page.evaluate(() => {
       const style = getComputedStyle(document.querySelector(".cockpit"));
@@ -811,7 +562,7 @@ test("the grid lays out exactly the columns the view-model asked for", async ({ 
       };
     });
     expect(tracks, `${name}: grid tracks`).toBe(vm.hostColumns);
-    expect(gap, `${name}: grid gap`).toBe(vm.spacing);
+    expect(gap, `${name}: grid gap`).toBe(11);
   }
 });
 
@@ -826,7 +577,7 @@ test("side-by-side cards reserve volume slots so the sections below them line up
   );
 
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const measured = await page.locator(".cockpit .card").evaluateAll((cards) =>
     cards.map((card) => {
@@ -891,7 +642,7 @@ test("stacked host content adds no volume padding slots", async ({ page, baseURL
   expect(vm.volumeSlots, "nothing reserved when cards never share a row").toBe(0);
 
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   await expect(page.locator(".cockpit .card .volumes .vol.pad")).toHaveCount(0);
   const tiles = await page.locator(".cockpit .card .volumes").evaluateAll((els) =>
@@ -913,7 +664,7 @@ test("the tabs overflow mode shows one host at a time, and the bar switches betw
   expect(stacked.hostTabs, "stack is the default and produces no tab bar").toBeNull();
 
   await stubCockpit(page, [tabbed]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   // One tab per card, labelled and ordered by Rust — this machine leads the
   // bar exactly as it leads the grid.
@@ -956,7 +707,7 @@ test("a tab whose host cannot be contacted is red and pulses", async ({ page, ba
   expect(down.length, "the fixture must carry an unreachable host").toBeGreaterThan(0);
 
   await stubCockpit(page, [tabbed]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const alerting = page.locator("#hostTabs .tab[data-alert]");
   await expect(alerting).toHaveCount(down.length);
@@ -977,24 +728,22 @@ test("a tab whose host cannot be contacted is red and pulses", async ({ page, ba
 });
 
 test("the host tab bar rides the Hosts title line instead of costing a row", async ({ page, baseURL }) => {
-  // The tabs mode only ever appears below the side-by-side breakpoint — the
-  // narrowest, shortest windows — so a switcher on a row of its own spent
-  // vertical space exactly where there is none. It now sits inside `.topbar`
-  // between the title and the Settings button, and the topbar must not have
-  // grown taller to hold it.
+  // The tabs mode only ever appears below the side-by-side breakpoint -- the
+  // narrowest, shortest windows -- so a switcher on a row of its own spent
+  // vertical space exactly where there is none. It sits inside `.topbar`,
+  // after the title, and the topbar must not have grown taller to hold it.
   const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
   await stubCockpit(page, [tabbed]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const topbar = page.locator("#fullView > .topbar");
   const bar = page.locator("#hostTabs");
   await expect(bar).toBeVisible();
 
-  const [tb, barBox, title, button, firstTab] = await Promise.all([
+  const [tb, barBox, title, firstTab] = await Promise.all([
     topbar.boundingBox(),
     bar.boundingBox(),
     page.locator("#hostsTitle").boundingBox(),
-    page.locator("#settingsToggle").boundingBox(),
     bar.locator(".tab").first().boundingBox(),
   ]);
 
@@ -1002,11 +751,10 @@ test("the host tab bar rides the Hosts title line instead of costing a row", asy
   expect(sharesLine(title, firstTab), "the tabs sit on the Hosts title's line").toBe(true);
   expect(barBox.y).toBeGreaterThanOrEqual(tb.y);
   expect(barBox.y + barBox.height).toBeLessThanOrEqual(tb.y + tb.height + 0.5);
-  // Between the title and the button, in that order.
+  // After the title, on the same row...
   expect(barBox.x).toBeGreaterThanOrEqual(title.x + title.width);
-  expect(barBox.x + barBox.width).toBeLessThanOrEqual(button.x);
-  // …and the row is still exactly as tall as its tallest fixed member.
-  expect(tb.height).toBeCloseTo(button.height, 1);
+  // ...and the row is exactly as tall as its tallest member: no second line.
+  expect(tb.height).toBeCloseTo(Math.max(title.height, barBox.height), 0);
 
   // The strip scrolls rather than wrapping: wrapping would put the overflow
   // tabs back on a second line, which is the line this move reclaimed.
@@ -1022,7 +770,7 @@ test("stack keeps every host on screen, and leaves no tab bar behind", async ({ 
   const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
   const stacked = await fixture(baseURL, "sample-cockpit-stacked.json");
   const frames = await stubCockpit(page, [tabbed, stacked]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   // The tabbed frame is served until `advance()`, so this is not racing the
   // 1s poll (#407).
@@ -1040,40 +788,6 @@ test("stack keeps every host on screen, and leaves no tab bar behind", async ({ 
   expect(minHeight, "the tabbed floor must not outlive the tab bar").toBe("");
 });
 
-test("the Hosts panel title comes from Rust's panel table", async ({ page, baseURL }) => {
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  await stubCockpit(page, [vm]);
-  await gotoApp(page);
-  const hosts = vm.panels.find((p) => p.id === "hosts");
-  await expect(page.locator("#hostsTitle")).toHaveText(hosts.title);
-});
-
-test("a cockpit with no hosts says so instead of rendering an empty page", async ({ page, baseURL }) => {
-  // The message is Rust's (`cockpit_payload`, dumped by `--hosts 0`), not a
-  // string invented here: an unconfigured app must read as unconfigured, never
-  // as broken.
-  const empty = await fixture(baseURL, "sample-cockpit-empty.json");
-  const populated = await fixture(baseURL, "sample.json");
-  const frames = await stubCockpit(page, [populated, empty]);
-  await gotoApp(page);
-
-  // The populated frame is served until `advance()` (#407). Both frames render
-  // exactly one card, so the gate is the remote host's NAME -- absent from the
-  // empty payload -- which is what makes the replacement below an observed
-  // teardown rather than an assumed one.
-  await expect(page.locator(".cockpit .card .hostName")).toHaveText(populated.hosts[0].hostName);
-  await frames.advance();
-
-  // Every *remote* card is torn down when its host leaves the payload. The
-  // local one stays: this machine is always there, so "nothing configured" is a
-  // statement about monitored hosts, not about the page being empty.
-  await expect(page.locator(".cockpit .card")).toHaveCount(1, { timeout: 5000 });
-  await expect(page.locator(".cockpit .card .hostName")).toHaveText(empty.hosts[0].hostName);
-  // ...and the placeholder takes over rather than leaving a blank page.
-  await expect(page.locator("#emptyMsg")).toHaveText(empty.empty.message);
-  await expect(page.locator("#emptyMsg")).toBeVisible();
-});
-
 test("repeated renders do not leak chart bookkeeping (multi-host)", async ({ page, baseURL }) => {
   // Regression test for finding I1: render() used to replace #cores'
   // innerHTML on every single poll without pruning the discarded cells from
@@ -1089,7 +803,7 @@ test("repeated renders do not leak chart bookkeeping (multi-host)", async ({ pag
   // poll ticks.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   // 5 fixed top-level charts (cpu/mem/gpu/disk/net) that exist once and are
   // never rebuilt, plus one per core -- for each host that actually has data.
@@ -1136,7 +850,7 @@ test("a host that leaves the payload takes its chart bookkeeping with it", async
   const many = await fixture(baseURL, "sample-cockpit.json");
   const one = await fixture(baseURL, "sample.json");
   const frames = await stubCockpit(page, [many, one]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const cards = page.locator(".cockpit .card");
   // The three-host frame is served until `advance()`, so `before` is read off
@@ -1190,7 +904,7 @@ test("cards sharing a row share one core-block height", async ({ page, baseURL }
   reshape(b, 36);
 
   await stubCockpit(page, [vm]);
-  await gotoApp(page);
+  await gotoApp(page, baseURL);
 
   const measured = await page.evaluate(async () => {
     const wraps = [...document.querySelectorAll(".card:not([hidden]) .cores-wrap")];
@@ -1222,179 +936,117 @@ test("cards sharing a row share one core-block height", async ({ page, baseURL }
   expect(thirtySix.height).toBe(334);
 });
 
+
 /**
- * Every in-panel row list: the container that holds a panel's rows, the rows
- * inside it, and the `.panel` section it belongs to.
- *
- * This table is the point of the test below. The assertion is CROSS-panel, so
- * the spacing can only ever be checked against the other panels, never against
- * a number written here — there is no pixel in this file to keep in step with
- * the stylesheet. What a new panel has to declare is `list` and `row`.
- *
- * `panel` is not decoration: the test reads every `.panel` section the page
- * rendered and refuses to run against one this table does not name, so a panel
- * added later cannot opt out of the rhythm by going unlisted. Azure Cost is
- * here through its breakdown columns for exactly that reason.
+ * Every in-panel row list a tile's Full view can show: the source, the command
+ * that feeds its panel and the fixture that answers it, the container that
+ * holds the rows and the rows inside it.
  *
  * `row` is separate from `list` on purpose. A list also holds things that are
- * not rows — Containers' `.lbl` group label, Repos' `.gh-head`, Usage's
- * `.pv-divider`, Sentry Crons' `.cron-message` — and the gap either side of one
+ * not rows -- Containers' `.lbl` group label, Repos' `.gh-head`, Usage's
+ * `.pv-divider`, Sentry Crons' `.cron-message` -- and the gap either side of one
  * of those answers a different question (what separates a heading from its
- * list) from the one the report asked (what separates two rows).
+ * list) from the one asked (what separates two rows).
  */
 const ROW_LISTS = [
-  { panel: "containersPanel", list: "#containersBody .cont-section", row: ".cont-row" },
-  { panel: "reposPanel", list: "#reposBody .gh-col", row: ".gh-row:not(.gh-head)" },
-  { panel: "runnersPanel", list: "#runnersBody .gh-list", row: ".gh-row" },
-  { panel: "usagePanel", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
-  { panel: "azurePanel", list: "#azureBody .pv-section", row: ".pv-item" },
-  { panel: "servicesPanel", list: "#servicesBody", row: ".svc-row" },
-  { panel: "cronsPanel", list: "#cronsBody", row: ".cron-row" },
-  { panel: "openclawPanel", list: "#openclawBody .oc-section", row: ".oc-row, .oc-agent" },
+  { source: "containers", command: "containers", file: "sample-containers.json", list: "#containersBody .cont-section", row: ".cont-row" },
+  { source: "ghWorkflows", command: "repos", file: "sample-repos.json", list: "#reposBody .gh-col", row: ".gh-row:not(.gh-head)" },
+  { source: "ghRunners", command: "runners", file: "sample-runners.json", list: "#runnersBody .gh-list", row: ".gh-row", tile: { runnerFullView: "list" } },
+  { source: "claudeUsage", command: "usage", file: "sample-usage.json", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
+  { source: "azureCost", command: "azure_cost", file: "sample-azure.json", list: "#azureBody .pv-section", row: ".pv-item" },
+  { source: "services", command: "services", file: "sample-services.json", list: "#servicesBody", row: ".svc-row" },
+  { source: "sentryCrons", command: "crons", file: "sample-crons.json", list: "#cronsBody", row: ".cron-row" },
+  { source: "openclawAgents", command: "openclaw", file: "sample-openclaw.json", list: "#openclawBody .oc-section", row: ".oc-row, .oc-agent" },
 ];
 
 /**
- * Every measurable gap between two adjacent rows of the same list, per panel.
+ * Every measurable gap between two adjacent rows of the same list.
  *
  * MEASURED, never read off `getComputedStyle`: these lists reach their spacing
- * by two different mechanisms — a flex `gap` everywhere else, a child
- * `margin-bottom` in the multicol Runners list — so comparing declarations would
+ * by two different mechanisms -- a flex `gap` everywhere else, a child
+ * `margin-bottom` in the multicol Runners list -- so comparing declarations would
  * compare things that are not comparable, and a `gap:10px` on `.gh-list` would
  * read as a pass while rendering 0.
  */
-const measureRowGaps = (page) =>
-  page.evaluate((lists) =>
-    lists.map(({ panel, list, row }) => {
-      const gaps = [];
-      for (const container of document.querySelectorAll(list)) {
-        const kids = [...container.children];
-        for (let i = 1; i < kids.length; i++) {
-          const [prev, next] = [kids[i - 1], kids[i]];
-          if (!prev.matches(row) || !next.matches(row)) continue;
-          const a = prev.getBoundingClientRect();
-          const b = next.getBoundingClientRect();
-          // Runners is multi-column: the pair that straddles a column break is
-          // not a row gap at all — the second row starts back at the TOP of the
-          // next column, well above the first row's bottom edge. Everything
-          // below it in that column is measured normally.
-          if (b.top < a.bottom - 0.5) continue;
-          gaps.push(Math.round((b.top - a.bottom) * 100) / 100);
-        }
+const measureRowGaps = (page, { list, row }) =>
+  page.evaluate(({ list, row }) => {
+    const gaps = [];
+    for (const container of document.querySelectorAll(list)) {
+      const kids = [...container.children];
+      for (let i = 1; i < kids.length; i++) {
+        const [prev, next] = [kids[i - 1], kids[i]];
+        if (!prev.matches(row) || !next.matches(row)) continue;
+        const a = prev.getBoundingClientRect();
+        const b = next.getBoundingClientRect();
+        // Runners is multi-column: the pair that straddles a column break is
+        // not a row gap at all -- the second row starts back at the TOP of the
+        // next column, well above the first row's bottom edge.
+        if (b.top < a.bottom - 0.5) continue;
+        gaps.push(Math.round((b.top - a.bottom) * 100) / 100);
       }
-      return { panel, gaps };
-    }), ROW_LISTS);
-
-test("every panel's row list carries the same vertical rhythm", async ({ page, baseURL }) => {
-  // The report this closes: "the list of repos vs the list of runners". Repos
-  // sat at a 10px flex gap and Runners at 0 — `.gh-list` is multi-column, where
-  // `gap` sets `column-gap` and `row-gap` does nothing at all — and the two
-  // render side by side on the same row of the grid. Containers (3) and Usage
-  // (6) were two more values again. `measureRowGaps` says why it measures
-  // rather than reading the declarations.
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  // Driven at a NON-ZERO gap, and it has to be. The shipped `row_gap_px` is 0,
-  // where "every list agrees" is satisfied by every list rendering nothing —
-  // this test would pass on a stylesheet that had lost the token entirely. The
-  // value has to arrive the way the app's does, so it is set on the payload
-  // rather than poked into `--row-gap`: that is also the only thing asserting
-  // the multicol Runners list receives it at all.
-  vm.rowGapPx = 10;
-  // Real panel contents: an empty panel has no second row to measure against,
-  // and every list would agree about nothing.
-  await stubPanels(page, baseURL, vm);
-  await gotoApp(page);
-  await page.evaluate(async () => { window.soladorDashboard.detailView = () => 'list'; await refreshPanels(); });
-  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
-  await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
-
-  // Nothing may sit this out. A panel that renders and is not in ROW_LISTS is
-  // a list nobody is comparing, which is how the four values this closes got
-  // there in the first place.
-  const rendered = await page
-    .locator("#panelRows section.panel:not([hidden])")
-    .evaluateAll((els) => els.map((el) => el.id));
-  expect(rendered.length, "the fixture must render the panels").toBeGreaterThan(0);
-  const rostered = new Set(ROW_LISTS.map(({ panel }) => panel));
-  expect(rendered.filter((id) => !rostered.has(id)), "panels with no row list declared").toEqual([]);
-
-  const measured = await measureRowGaps(page);
-
-  // A panel that rendered no measurable pair would otherwise agree with
-  // everyone by saying nothing — which is exactly how a list drifts unnoticed.
-  for (const { panel, gaps } of measured) {
-    expect(gaps.length, `${panel} rendered no adjacent row pair to measure`).toBeGreaterThan(0);
-  }
-
-  const report = measured.map(({ panel, gaps }) => `${panel}=${[...new Set(gaps)].join("/")}`).join(", ");
-  const distinct = [...new Set(measured.flatMap(({ gaps }) => gaps))];
-  expect(distinct, `one row gap everywhere, got ${report}`).toHaveLength(1);
-  // …and that one value is the operator's, not a survivor in the stylesheet.
-  // "They all agree" and "they all agree with what was asked for" are different
-  // claims, and only the second one notices a hardcoded rhythm.
-  expect(distinct[0], `the payload asked for ${vm.rowGapPx}, got ${report}`).toBe(vm.rowGapPx);
-});
-
-// `row_gap_px` is the operator's (Settings → General) and 0 by default, which is
-// the combination that hides a break: an unpainted `--row-gap` and one painted
-// at the default render identically, so a preference that never left the payload
-// would appear to work for everyone who never changed it.
-//
-// Both ends of the range, because either alone proves less than it looks. At 0 a
-// stylesheet that ignored the payload outright still passes; at 16 so does one
-// that pinned every list to a constant 16. A separate test per value rather than
-// a loop, so each gets its own page — and its own CSP check.
-for (const px of [0, 16]) {
-  test(`the row spacing preference is what every list renders (${px}px)`, async ({ page, baseURL }) => {
-    const vm = await fixture(baseURL, "sample-cockpit.json");
-    vm.rowGapPx = px;
-    await stubPanels(page, baseURL, vm);
-    await gotoApp(page);
-    await page.evaluate(async () => { window.soladorDashboard.detailView = () => 'list'; await refreshPanels(); });
-  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
-    await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
-
-    for (const { panel, gaps } of await measureRowGaps(page)) {
-      expect(gaps.length, `${panel} rendered no adjacent row pair to measure`).toBeGreaterThan(0);
-      expect([...new Set(gaps)], `${panel} at rowGapPx:${px}`).toEqual([px]);
     }
-  });
+    return gaps;
+  }, { list, row });
+
+// A tile's Row spacing is its own (#647) and 0 by default, which is the
+// combination that hides a break: an unpainted `--row-gap` and one painted at
+// the default render identically, so a value that never reached the page would
+// appear to work for everyone who never changed it. Both ends of the range,
+// because either alone proves less than it looks: at 0 a stylesheet that
+// ignored the tile outright still passes; at 16 so does one that pinned every
+// list to a constant 16.
+for (const px of [0, 16]) {
+  for (const entry of ROW_LISTS) {
+    test(`a ${entry.source} tile's row spacing is what its Full view renders (${px}px)`, async ({ page, baseURL }) => {
+      const id = `full-${entry.source}`;
+      await gotoTileFull(page, baseURL, {
+        source: entry.source,
+        cockpit: await fixture(baseURL, "sample-cockpit.json"),
+        answers: { [entry.command]: await fixture(baseURL, entry.file) },
+        tileKeys: { [id]: { rowGapPx: px, ...entry.tile } },
+      });
+      await expect(page.locator(entry.list).first()).toBeVisible();
+      await expect.poll(async () => (await measureRowGaps(page, entry)).length, {
+        message: `${entry.source} rendered no adjacent row pair to measure`,
+      }).toBeGreaterThan(0);
+      const gaps = await measureRowGaps(page, entry);
+      expect([...new Set(gaps)], `${entry.source} at rowGapPx:${px}`).toEqual([px]);
+    });
+  }
 }
 
 test("the Runners list has no trailing gap inside its reserved viewport", async ({ page, baseURL }) => {
-  // List stays in one column at every width. A non-zero row gap must not
-  // leave extra space below the last row.
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  // Non-zero, for the same reason the rhythm test is: the trailing gap this
-  // catches is a `margin-bottom`, and at the shipped 0 there is no margin to
-  // leak. The bug would be undetectable at the default and arrive the moment an
-  // operator widened the spacing.
-  vm.rowGapPx = 10;
-  await stubPanels(page, baseURL, vm);
-  await gotoApp(page);
-  await page.evaluate(async () => { window.soladorDashboard.detailView = () => 'list'; await refreshPanels(); });
+  // List stays in one column at every width. A non-zero row gap must not leave
+  // extra space below the last row. Non-zero, because the trailing gap this
+  // catches is a `margin-bottom`, and at the default 0 there is no margin to
+  // leak: the bug would arrive the moment an operator widened the spacing.
+  await gotoTileFull(page, baseURL, {
+    source: "ghRunners",
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { runners: await fixture(baseURL, "sample-runners.json") },
+    tileKeys: { "full-ghRunners": { rowGapPx: 10, runnerFullView: "list" } },
+  });
   await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
 
-  for (const cols of [1]) {
-    const measured = await page.evaluate((n) => {
-      const list = document.querySelector("#runnersBody .gh-list");
-      // The same custom property `applyPanelColumns` publishes from Rust's
-      // count, set directly rather than resized into: the split is what is
-      // under test, not the width that produces it.
-      const panel = document.getElementById("runnersPanel");
-      const before = panel.style.getPropertyValue("--panel-cols");
-      panel.style.setProperty("--panel-cols", String(n));
-      void list.offsetHeight;
-      const rows = [...list.querySelectorAll(":scope > .gh-row")];
-      const lowest = Math.max(...rows.map((r) => r.getBoundingClientRect().bottom));
-      const columns = new Set(rows.map((r) => Math.round(r.getBoundingClientRect().left))).size;
-      // Include the list's compensating margin. The panel body now reserves
-      // a stable viewport even when status changes remove rows.
-      const px = list.getBoundingClientRect().bottom + parseFloat(getComputedStyle(list).marginBottom) - lowest;
-      if (before) panel.style.setProperty("--panel-cols", before);
-      else panel.style.removeProperty("--panel-cols");
-      return { px, columns };
-    }, cols);
-    expect(measured.columns, `the list stays in one column`).toBe(cols);
-    expect(measured.px, `dead space under the last row at ${cols} column(s)`).toBeLessThan(0.5);
-  }
+  const measured = await page.evaluate(() => {
+    const list = document.querySelector("#runnersBody .gh-list");
+    // The same custom property `applyPanelColumns` publishes from Rust's count,
+    // set directly rather than resized into: the split is what is under test,
+    // not the width that produces it.
+    const panel = document.getElementById("runnersPanel");
+    const before = panel.style.getPropertyValue("--panel-cols");
+    panel.style.setProperty("--panel-cols", "1");
+    void list.offsetHeight;
+    const rows = [...list.querySelectorAll(":scope > .gh-row")];
+    const lowest = Math.max(...rows.map((r) => r.getBoundingClientRect().bottom));
+    const columns = new Set(rows.map((r) => Math.round(r.getBoundingClientRect().left))).size;
+    // Include the list's compensating margin. The panel body reserves a stable
+    // viewport even when status changes remove rows.
+    const px = list.getBoundingClientRect().bottom + parseFloat(getComputedStyle(list).marginBottom) - lowest;
+    if (before) panel.style.setProperty("--panel-cols", before);
+    else panel.style.removeProperty("--panel-cols");
+    return { px, columns };
+  });
+  expect(measured.columns, "the list stays in one column").toBe(1);
+  expect(measured.px, "dead space under the last row").toBeLessThan(0.5);
 });

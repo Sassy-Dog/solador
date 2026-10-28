@@ -211,15 +211,15 @@ test('a disconnected detailed host hides old readings without moving its card or
   const down = await (await fetch(`${baseURL}/sample-unreachable.json`)).json();
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, live);
   await expect.poll(() => page.locator('.card').first().evaluate(el => parseFloat(el.style.minHeight) === el.getBoundingClientRect().height)).toBe(true);
-  // The Machines Full view hides every panel row, so `#panelRows` is empty
-  // here: its box is the grid's bottom edge, which moves if any card's height does.
-  const before = await bounds(page, '.card, #panelRows');
+  // `#cockpit` is the host grid: its box is the grid's bottom edge, which moves
+  // if any card's height does.
+  const before = await bounds(page, '.card, #cockpit');
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, down);
   await expect(page.locator('.card-down')).toBeVisible();
   await expect(page.locator('.cpuChart')).toBeHidden();
-  expect(await bounds(page, '.card, #panelRows')).toEqual(before);
+  expect(await bounds(page, '.card, #cockpit')).toEqual(before);
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, live);
-  expect(await bounds(page, '.card, #panelRows')).toEqual(before);
+  expect(await bounds(page, '.card, #cockpit')).toEqual(before);
 });
 
 test('a host first connecting after a cold failure keeps its card and the grid\'s bottom edge anchored', async ({ page, baseURL }) => {
@@ -235,11 +235,11 @@ test('a host first connecting after a cold failure keeps its card and the grid\'
     await refreshCockpit();
   }, down);
   await expect.poll(() => page.locator('.card').first().evaluate(el => parseFloat(el.style.minHeight) === el.getBoundingClientRect().height)).toBe(true);
-  // The Machines Full view hides every panel row, so `#panelRows` is empty
-  // here: its box is the grid's bottom edge, which moves if any card's height does.
-  const before = await bounds(page, '.card, #panelRows');
+  // `#cockpit` is the host grid: its box is the grid's bottom edge, which moves
+  // if any card's height does.
+  const before = await bounds(page, '.card, #cockpit');
   await page.evaluate(async live => { window.framesForTest.cockpit = live; await refreshCockpit(); }, live);
-  expect(await bounds(page, '.card, #panelRows')).toEqual(before);
+  expect(await bounds(page, '.card, #cockpit')).toEqual(before);
 });
 
 test('the Machines tile warns when every remote host is unreachable, and clears once one answers', async ({ page, baseURL }) => {
@@ -336,8 +336,7 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   expect(padding).toEqual(await page.locator('.db-tile').first().evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]));
   // Every source's Full view, as an operator reaches it. The fixture's overview
   // carries five of the nine sources, so the Full views come from one
-  // `all`-scoped tile per source: all nine panels with every row, which is what
-  // `?view=details` measured before #645.
+  // `all`-scoped tile per source: all nine panels with every row.
   const full = dashboardWithTiles(frames.dashboard_view, next.sources.map(s => s.id));
   full.layout.revision += 1;
   await page.evaluate(view => { window.framesForTest.dashboard_view = view; }, full);
@@ -346,7 +345,7 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
     await openTileFull(page, source);
     await expect(page.locator('#fullView')).not.toHaveAttribute('data-tile-loading');
     // `clipped` skips what has no box, so a body the Full view hid would pass unmeasured.
-    const body = source === 'hosts' ? '#cockpit .card' : '#fullView .panel[data-detail-active] .panel-body';
+    const body = source === 'hosts' ? '#cockpit .card' : '#fullView .panel[data-full-active] .panel-body';
     await expect(page.locator(body).first(), source).toBeVisible();
     await expect.poll(clipped, source).toEqual([]);
     await page.keyboard.press('Escape');

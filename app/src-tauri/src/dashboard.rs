@@ -1680,7 +1680,7 @@ fn labels() -> Value {
         ("removeNote", "Removing a tile keeps its connection and monitoring. Undo brings the tile back."),
         ("removed", "Tile removed. Its connection is still monitored. Undo restores the tile."),
         ("source", "Source"),
-        ("fullPanel", "Full view"),
+        ("fullView", "Full view"),
         // The panel commands' own refusal: a tile's Full view that loses its
         // tile says what they would.
         ("tileGone", crate::tile_scope::TILE_GONE),
