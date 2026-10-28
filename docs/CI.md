@@ -60,6 +60,7 @@ python3 -B -m unittest -v scripts.ci_changes_test
 
 `scripts/agent-guide-size-guard.sh` (with its negative control
 `agent-guide-size-guard-test.sh`) fails when any chain of tracked
-`AGENTS.md`/`CLAUDE.md` files exceeds 32,768 bytes, the org budget and Codex's default
-`project_doc_max_bytes`. It runs in the always-running **Secrets guard** job and
-in `./dev lint`; a docs-only PR, where the guide grows, therefore cannot skip it.
+`AGENTS.md`/`CLAUDE.md` files exceeds 32,768 bytes, the org budget and Codex's
+default `project_doc_max_bytes`. It runs in the always-running **Secrets guard**
+job and in `./dev lint`; a docs-only PR, where the guide grows, therefore cannot
+skip it.

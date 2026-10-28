@@ -4,11 +4,11 @@ set -euo pipefail
 # Fails when any chain of tracked AGENTS.md/CLAUDE.md files exceeds the org's
 # agent-guidance budget, 32,768 bytes (#638). A chain is the root AGENTS.md plus
 # every tracked AGENTS.md and CLAUDE.md in the directories down to one working
-# directory; the budget is
-# Codex's default `project_doc_max_bytes`. Codex reads the files root first, cuts
-# the one that crosses the budget at that byte with nothing above a log-level
-# warning, and drops every deeper file, so an over-budget guide is a silently
-# truncated one. Bytes are counted raw (`wc -c`), HTML comments included.
+# directory; the budget is Codex's default `project_doc_max_bytes`. Codex reads
+# the files root first, cuts the one that crosses the budget at that byte with
+# nothing above a log-level warning, and drops every deeper file, so an
+# over-budget guide is a silently truncated one. Bytes are counted raw
+# (`wc -c`), HTML comments included.
 #
 #   scripts/agent-guide-size-guard.sh
 #   REPO_DIR=/some/repo scripts/agent-guide-size-guard.sh   (the override is how
@@ -21,10 +21,10 @@ set -euo pipefail
 # `./dev lint`.
 #
 # Not measured: an AGENTS.override.md (Codex reads it in place of AGENTS.md) and
-# untracked files. A tracked CLAUDE.md is counted in its directory's chain beside
-# AGENTS.md (it should hold only the `@AGENTS.md` import, a few bytes): its own
-# bytes are counted, but `@path` imports are NOT followed, so an import of a
-# further file is not measured. Depth belongs in docs/*.md, named from
+# untracked files. A tracked CLAUDE.md is counted in its directory's chain
+# beside AGENTS.md (it should hold only the `@AGENTS.md` import, a few bytes):
+# its own bytes are counted, but `@path` imports are NOT followed, so an import
+# of a further file is not measured. Depth belongs in docs/*.md, named from
 # AGENTS.md by a "read before changing X" pointer, never behind an `@path`
 # import.
 

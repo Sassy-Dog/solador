@@ -144,11 +144,10 @@ else
     status=1
 fi
 
-# --- Every chain of AGENTS.md/CLAUDE.md files must stay within the org's 32 KiB guidance
-# budget (#638), and the negative control proving the guard refuses an
-# over-budget chain. Lists tracked paths from the index, measures them on
-# disk; see the header of
-# agent-guide-size-guard.sh for why it exists.
+# --- Every chain of AGENTS.md/CLAUDE.md files must stay within the org's 32 KiB
+# guidance budget (#638), and the negative control proving the guard refuses an
+# over-budget chain. Lists tracked paths from the index, measures them on disk;
+# see the header of agent-guide-size-guard.sh for why it exists.
 log_info "agent guide size budget…"
 if guide_out="$("$SCRIPT_DIR/agent-guide-size-guard.sh" 2>&1 && "$SCRIPT_DIR/agent-guide-size-guard-test.sh" 2>&1)"; then
     log_success "every AGENTS.md/CLAUDE.md chain is within 32768 bytes, and the guard's corpus behaves"
