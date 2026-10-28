@@ -493,8 +493,8 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
  * The two-column case, built by editing the payload rather than by picking a
  * dumped window size.
  *
- * No dumped cockpit gives Usage two content columns: it is authored a quarter,
- * so even at 2732pt it pairs with OpenClaw and lands at 675 — one column. The 2
+ * The dumped cockpit fixtures give Usage one content column (675pt at the dumped
+ * width, from when it shared a row on the retired span grid). The 2
  * arrives at >= 696pt (`PanelKind::ClaudeUsage::min_width` is 340) and that
  * derivation is pinned by the Rust tests; the payload is the contract, and what
  * this suite owns is the frontend honouring the count it is handed.

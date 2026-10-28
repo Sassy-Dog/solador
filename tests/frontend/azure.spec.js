@@ -159,11 +159,8 @@ test("both breakdown columns render, capped at five rows each", async ({ page, b
 });
 
 test("on a half-width card the breakdowns sit beside the costs, not under them", async ({ page, baseURL }) => {
-  // Azure Cost is authored half a row wide -- it gave its other two quarters to
-  // the Services and Sentry Crons panels -- and a half is still enough for
-  // `panel_columns` to afford it two content columns, though with far less
-  // headroom than the Three-quarters it used to have (2 * 400 + 16 = 816pt of a
-  // half, which needs a 1648pt cockpit rather than a 1094pt one). The split
+  // `panel_columns` affords Azure Cost two content columns once its width holds
+  // two of its `min_width` plus a gutter (2 * 400 + 16 = 816pt). The split
   // itself is CSS over `--panel-cols`, so this is about the frontend applying
   // Rust's count rather than deciding one. The fixture is dumped at 2732pt.
   const cockpit = await fixture(baseURL, "sample-cockpit.json");

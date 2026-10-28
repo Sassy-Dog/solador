@@ -39,8 +39,8 @@
 //! Only the vendor's name is interpolated. A transport error, a request URL, a
 //! response body, a service error document and a stack trace are all *detail*,
 //! and detail goes to the log — the panel gets the sentence. Sentences are
-//! short enough ([`MAX_MESSAGE_CHARS`]) to sit in a Half-width card's header
-//! without ellipsising.
+//! short enough ([`MAX_MESSAGE_CHARS`]) for one line of a panel header; the
+//! constant's doc records how the bound was sized.
 //!
 //! A vendor name may carry its article — `"the agent"`, `"the status page"`,
 //! `"that host"` — so every template has to read correctly with one. That is

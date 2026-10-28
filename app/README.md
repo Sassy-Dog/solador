@@ -346,7 +346,7 @@ label that matched, then your own, then GitHub's. A List row wraps them; a table
 cell keeps its row compact on one line, so a narrow cell gives up GitHub's
 labels first (the OS and Architecture columns already say them), and its
 tooltip names every label. The Labels column has a base width like every other
-column, so it does not push **Status** out of a half-width Full panel. A group opened in
+column, so it does not push **Status** out of a narrow Full view. A group opened in
 Detail or Full names what put its runners there: `matched by runner-large`, or
 for `other`, `carries none of your group labels` — with `· 2 not recorded`
 appended when some of its runners' labels were never recorded, and `labels not
@@ -1823,8 +1823,9 @@ one line the two competed for the width of a quarter-width card and *both* lost
 characters; stacked, each gets the whole card. That is what took this panel's
 `min_width` from 340 to **240** — measured by shrinking the dumped fixture until
 something that must not truncate does, which is now the cron summary rather than
-an agent row — and 240 is what lets OpenClaw sit in a quarter beside a
-three-quarter Containers on a ~1256pt cockpit. The extra line is free where this
+an agent row — and 240 is also the width one content column of it needs (history: it
+let OpenClaw sit in a quarter beside a three-quarter Containers on the retired
+span grid). The extra line is free where this
 panel lives: it shares a row with Containers and is the shorter card, so
 `align-items:stretch` was padding that space out anyway. If OpenClaw ever
 becomes the tallest panel in its row, revisit it.

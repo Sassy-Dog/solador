@@ -275,7 +275,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    several independently-polled sections, so its header carries ONE line holding
    all of their clocks, each named ("neon: as of 23h ago · sentry: as of 23h
    ago", `panel::merged_freshness`, #355). That grows with the number of
-   configured providers, and on a quarter-width card it is one of two
+   configured providers, and on a narrow card it is one of two
    variable-length messages sharing a line with about 130px left in it.
 
    So it takes the warning's factor exactly, and equal is the only split that

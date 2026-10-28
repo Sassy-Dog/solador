@@ -71,8 +71,8 @@ function sectionHeader(section) {
  *  Two lines rather than one because the alternative was truncation: at a
  *  quarter-width card the name and the model ref competed for ~300pt and both
  *  lost characters. Underneath, each gets the full width of the card, and the
- *  panel's `min_width` is set by the name line alone — which is what lets
- *  OpenClaw sit in a quarter beside a three-quarter Containers.
+ *  panel's `min_width` is set by the name line alone (on the retired span grid
+ *  that also let OpenClaw sit in a quarter beside a three-quarter Containers).
  *
  *  The extra line is free where this panel actually lives: it shares a row with
  *  Containers and is the shorter card, so `align-items:stretch` was padding

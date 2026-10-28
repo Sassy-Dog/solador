@@ -103,24 +103,27 @@ impl PanelKind {
     /// took it to 440 — 458 since READY joined the row — which is what lets it
     /// hold two columns on a display where it previously could not.
     ///
-    /// OpenClaw's and Usage's figures were inherited guesses until spans made
-    /// them load-bearing — a quarter-width panel is held to its minimum against
-    /// a quarter of the row, so an overstated one splits a row that reads fine.
-    /// Both are measured against their dumped fixtures, by shrinking the panel
-    /// until something that must not truncate does:
+    /// What the number decides today: [`panel_columns`] gives a panel a second
+    /// content column once its width (a tile's Full view is the window) holds
+    /// two of these plus a gutter, so an overstated figure keeps a panel in one
+    /// column on a window that could carry two, and an understated one splits a
+    /// list into columns too narrow to scan.
     ///
-    /// - **OpenClaw, 230pt.** Its agent rows put the name and the model ref on
-    ///   separate lines, so the two no longer compete for one line's width and
-    ///   the binding constraint is the cron summary. It was 340 while they
-    ///   shared a line, which is what kept it out of a quarter beside a
-    ///   three-quarter Containers on a ~1256pt cockpit.
-    /// - **Usage, 300pt.** Below that its labels and project names clip. The
-    ///   figure here is 340, deliberately above the measurement: every row is a
+    /// OpenClaw's and Usage's figures were inherited guesses until they were
+    /// measured against their dumped fixtures, by shrinking the panel until
+    /// something that must not truncate does:
+    ///
+    /// - **OpenClaw, 240pt (230 measured).** Its agent rows put the name and the
+    ///   model ref on separate lines, so the two no longer compete for one
+    ///   line's width and the binding constraint is the cron summary. It was 340
+    ///   while they shared a line. (History: the figure also decided how small a
+    ///   card OpenClaw could share a row with Containers on the retired span
+    ///   grid.)
+    /// - **Usage, 340pt (300 measured).** Below 300 its labels and project names
+    ///   clip. The figure is deliberately above the measurement: every row is a
     ///   label paired with a right-aligned value, and the fixture's longest
-    ///   label is not the longest a provider can produce. It is also the number
-    ///   that decides whether Containers keeps a whole row's worth of width at
-    ///   ~1256pt — drop it to 300 and the three-panel row re-forms there, with
-    ///   Containers back to a single content column.
+    ///   label is not the longest a provider can produce. It also sets where
+    ///   Usage reaches a second content column (two of it plus a gutter, 696pt).
     pub fn min_width(self) -> f64 {
         match self {
             PanelKind::Hosts => HOST_CARD_MIN_WIDTH,
@@ -134,15 +137,15 @@ impl PanelKind {
             // constraint is "Services Degraded" beside the longest vendor
             // name. 240 rather than the ~220 that measures, for the same
             // reason OpenClaw is 240: it is also the width *one content
-            // column* needs, and at 220 a quarter of an 1890pt cockpit would
-            // split five one-line rows into two columns — a split that buys a
+            // column* needs, and at 220 a window of 456pt would already split
+            // five one-line rows into two columns — a split that buys a
             // gutter and costs the scan.
             PanelKind::Services => 240.0,
             // Two-line rows: monitor slug plus its age, then `project/env` and
             // the state word. Same construction as OpenClaw's agent rows and the
             // same figure for the same reason — the binding constraint is a
-            // 240pt content column, and at less than that a quarter of an 1890pt
-            // cockpit would split a list of one-or-two failing monitors into two
+            // 240pt content column, and at less than that a narrow window
+            // would split a list of one-or-two failing monitors into two
             // columns. Splitting the name onto its own line is what keeps this at
             // 240 rather than the ~400 a single line of
             // `slug · platform/prd · error · 7d 22h` would need.
