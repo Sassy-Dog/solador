@@ -126,9 +126,10 @@
   any kind (the polling panels carry a `status_footer`; Hosts warns per card,
   via `sampler_stale` and unreachable).
 
-Rows are reflowed by `viewmodel::cockpit` for the measured width, and every card
-in a row is the same height. An in-app Settings surface over `crates/store`
-(hosts CRUD, portfolio, credentials, cockpit layout, general prefs; the
+Each panel is sized by `viewmodel::cockpit` for the window it fills in its tile's
+Full view (`panel_columns`; Machines also `host_columns`), and sibling host cards
+are the same height. An in-app Settings surface over `crates/store`
+(hosts CRUD, portfolio, credentials, general prefs; the
 container group rules are edited from a Containers tile's Configure, #613) applies changes without a restart. The main window also remembers
 its size, position and maximized state across normal launches through the
 Rust-only window-state module (logical points on macOS, the window-state plugin

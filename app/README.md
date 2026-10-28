@@ -5,17 +5,18 @@ compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Healt
 and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings in Detail, and Detail opens the tile's own
-**Full view** (see [Dashboard tiles](#dashboard-tiles)); the toolbar's **Full
-view** toggles between the overview and the full cockpit. Connections and credentials remain
+**Full view** (see [Dashboard tiles](#dashboard-tiles)); **Escape**
+returns from a Full view to the overview. Connections and credentials remain
 in **Settings**, backed by the OS credential store. Both views share a compact
 toolbar with the logo, app name and actions, without a background frame or
-divider. **Full view**, **Fit window to tiles**, **Edit dashboard** and
+divider. **Fit window to tiles**, **Edit dashboard** and
 **Settings** are outline icon buttons at the top right, with labels on hover or
 keyboard focus. **Fit window to tiles** sets the window's height to the current
 view's content and keeps its width (see Remembered window size and position). Edit
 dashboard stays highlighted while editing and its label becomes **Done editing**;
-**Add tile** and **Undo** also appear as icons with tooltips. Full view stays
-highlighted while showing full panels. Editing from Full returns to the overview.
+**Add tile** and **Undo** also appear as icons with tooltips. Editing from a
+tile's Full view returns to the overview with that tile's Configure open on its
+**Full view** page.
 Actions wrap when space is tight. Settings keeps space around its logo,
 heading and Done button.
 
@@ -53,7 +54,7 @@ immediately, with secondary fields on expansion. Expansion, table scroll positio
 and keyboard focus survive live reading updates, and collapsing a row releases the extra
 height. Detail's **Full view** button opens that tile's Full view (below).
 
-**A Needs Attention chip never opens Solador's Full view.** Rust decides where
+**A Needs Attention chip never opens a source-wide panel.** Rust decides where
 each chip leads (`target` on the chip in `dashboard_view`; `chip_target` in
 `dashboard.rs`). When exactly one visible tile of the source keeps every row
 needing attention (its scope and repository selection are applied to the same
@@ -91,14 +92,13 @@ machine never shows `No hosts configured`: that line counts the hosts configured
 not the cards kept. A tile scoped to everything gets the source's panel
 unchanged, with no note. Until the tile's own first reading arrives the body
 is hidden and Rust's `fullLoading` line stands in for it, so the rows the panel
-last held (Solador's Full view, another tile) never show under this tile's name;
+last held (another tile) never show under this tile's name;
 a reading that lands after Escape, or after another tile opened, is dropped
 (`callRust` in `app.js` compares a view counter, so no renderer does). A scope
 that keeps nothing says why with the tile's own overview sentence, carried on
 the reading as `tileEmpty` (`dashboard::scoped_empty`, the same `empty_state`
 as the tile's `empty`). A runner group selected in Detail
-carries in as the panel's filter. **Escape**, or the toolbar's **Full view**
-toggle, returns to the overview with focus on that tile's **View** button, and the
+carries in as the panel's filter. **Escape** returns to the overview with focus on that tile's **View** button, and the
 panel gets its own title back. A tile hidden or removed while its Full view is
 open sends the overview back within a second, with `That tile is no longer on the
 overview.`, and closes the Detail opened from it; it never leaves the source-wide
@@ -106,46 +106,35 @@ panel under the tile's name. **Full view** pressed in the Detail of a tile that
 has since left the overview answers with the same sentence and stays on the
 overview.
 
-**The overview and a tile's Full view no longer lean on Solador's Full view's
-behaviour (#646), but they still stand on its markup.** `#cockpitView` was
-*renamed* `#fullView`, not removed. It is the one host of every panel: a tile's
-Full view shows one section, Solador's Full view all of them, and the toolbar
-is moved into it while either is on screen. What the #647 cutover still has to
-cut or re-home, by id (built from `getElementById` and `$()` in `app.js`,
-`dashboard.js` and `settings.js`):
+**The overview and a tile's Full view stand on one page.** `#fullView` (formerly
+`#cockpitView`) hosts every panel's section; a tile's Full view shows exactly one
+of them and the toolbar is moved into it while it is on screen. There is no
+longer a Full view of Solador itself (no all-panels page, no `?view=details`, no
+`full` action, no `allPanels` icon, no top-bar Settings gear): the overview and a
+tile's Full view are the only two ways to see a panel, and Settings opens from
+the toolbar's button alone. By id (built from `getElementById` and `$()` in
+`app.js`, `dashboard.js` and `settings.js`):
 
-- `#fullView` itself: `dashboard.js` reads it once at load and then uses it
-  unguarded (visibility, `data-detail-source`, `data-tile-loading`, focus, the
-  load-failure notice). A tile's Full view *is* this element with one panel
-  showing, so the cutover renames or re-purposes it rather than deleting it.
-- `#settingsToggle`, inside `#fullView > .topbar`: the Settings gear.
-  `settings.js` binds `openSettings` to it at load, and `dashboard.js` moves that
-  same node into the toolbar. The overview's label and visibility come from
-  `labels.settings`; the top-bar copy is labelled by `cockpit`'s `settingsLabel`
-  only while there is no overview model. The cutover must create the button
-  where the toolbar is built and bind `openSettings` there.
-- `#cockpit`, `#hostsTitle`, `#hostTabs`, `#emptyMsg`, `#panelRows` and the
-  `#cardTpl` template: `renderCockpit` (the Machines Full view and Solador's
-  Full view) and `gridWidth` need them. `#panelRows` and the `panelRows` payload
-  are Solador's Full view's arrangement and go with it.
+- `#fullView` itself: `dashboard.js` reads it once at load and uses it unguarded
+  (visibility, `data-full-source`, `data-full-active`, `data-tile-loading`,
+  focus, the load-failure notice).
+- `#cockpit`, `#hostsTitle`, `#hostTabs` and the `#cardTpl` template: the
+  Machines tile's Full view (`renderCockpit`) and `gridWidth` need them.
 - Each panel's section and title ids (`containersPanel`/`containersTitle`,
   `reposPanel`, `runnersPanel`, `usagePanel`, `azurePanel`, `servicesPanel`,
-  `cronsPanel`, `openclawPanel`, and their `…Title`): `sourcePanels` and
+  `cronsPanel`, `openclawPanel`, and their `…Title`): `fullSections` and
   `sourceTitles` in `dashboard.js` map tiles to them, and each renderer writes to
   fixed ids inside.
 - `#settings` and its children (`settingsBody`, `settingsClose`, `settingsTabs`,
   `settingsTitle`, `settingsStatus`, `settingsConfirm`): Settings' own surface.
-  They do not depend on the host; Settings no longer touches it.
-- The `allPanels` icon, the `full` action, `mode === "details"` without a tile
-  and `?view=details`: Solador's Full view's own entry points, still wired.
 
-The cross-file JS seams #647 inherits (all globals or `window` members, since the
-scripts share one scope):
+The cross-file JS seams (all globals or `window` members, since the scripts share
+one scope):
 
 - `panelWanted(source)` (`app.js`): every renderer's read gate, and
   `refreshCockpit`'s (`"hosts"`). It asks `soladorDashboard.fullSource()`.
 - `applySpacing` (`app.js`), called by `renderCockpit` and by `dashboard.js`'s
-  `refresh`.
+  `refresh`; the gap it paints is the open Full view's own tile's `rowGapPx`.
 - `cockpitFailed`, `setCockpitFailed` and the `solador:cockpit` event (`app.js`);
   `dashboard.js` paints `labels.cockpitFailed` from them and, on the same event,
   repaints `#dashboardLoadError` when `overviewLoadFailed` first arrives.
@@ -154,33 +143,31 @@ scripts share one scope):
   boot read, `await pollReporting()` at the end of `app.js`, calls `cockpit`
   unconditionally. Gating that read (on `panelWanted`, say) leaves the notice
   showing raw IPC text.
-- `soladorDashboard` (`dashboard.js`): `fullSource`, `hasModel` (`renderCockpit`
-  skips the top-bar toggle once true), `tileGone`, `tileArgs`, `tileHeading`,
-  `tileResponse`, `fullGeneration` and `detailView`/`setDetailView`.
-  `callRust`'s `PANEL_READS` filter uses `fullGeneration` and `tileResponse`.
-- `refreshCockpit` and `refreshPanels` (`app.js`), called by `settings.js` on close
-  and by `dashboard.js`'s `fullPanel`; `settingsOpen` and `overviewOpen` are the
-  shared flags.
+- `soladorDashboard` (`dashboard.js`): `fullSource`, `tileGone`, `tileArgs`,
+  `tileHeading`, `tileResponse`, `fullGeneration`, `runnerFullView` /
+  `setRunnerFullView`. `callRust`'s `PANEL_READS` filter uses `fullGeneration`
+  and `tileResponse`.
+- `refreshCockpit` and `refreshPanels` (`app.js`), called by `settings.js` on
+  close; `settingsOpen` and `overviewOpen` are the shared flags.
 
 `overview-standalone.spec.js` runs the overview, Settings and a tile's Full view
-without the `allPanels` icon and without the Settings label or the spacing from
-`cockpit`; it does not (and cannot) run them without `#fullView`.
+with a `cockpit` that carries neither a Settings label nor spacing; it does not
+(and cannot) run them without `#fullView`.
 
 - **Settings** button: visible and labelled from `dashboard_view`
-  (`labels.settings`, `settings::OPEN_LABEL`), and moved into the toolbar by
-  `dashboard.js`. The `cockpit` payload's `settingsLabel` labels the one copy in
-  `#fullView`'s top bar only while there is no overview model (`renderCockpit`
-  skips it once there is one).
-  Opening and closing Settings fires `solador:settings`, and `dashboard.js` hides
-  whichever of the overview and `#fullView` is on screen, then puts it back (a
-  tile's Full view gets focus back, so its Escape still works).
+  (`labels.settings`, `settings::OPEN_LABEL`), and built into the toolbar by
+  `dashboard.js`; `settings.js` binds it by its action. Opening and closing
+  Settings fires `solador:settings`, and `dashboard.js` hides whichever of the
+  overview and `#fullView` is on screen, then puts it back (a tile's Full view
+  gets focus back, so its Escape still works). Closing Settings repaints the
+  open tile's Full view as well as the host cards.
 - **`cockpit` fails:** the overview stays up and says
   `labels.cockpitFailed` (`dashboard::COCKPIT_LOAD_FAILED`) beside the attention
-  bar. The call feeds only the Machines Full view's host cards; the overview
-  reads its own rows. It used to replace the whole page with
-  `failed to load cockpit`. While the last read failed, `cockpit` keeps being
-  retried even with the overview up, and the first success clears the
-  sentence. A read for a tile that has since left the overview is refused by
+  bar. A Machines tile's Full view whose `cockpit` read failed shows the same
+  Rust sentence in place of its loading line (#667), and the first success
+  clears it and shows the cards. The overview reads its own rows. While the
+  last read failed, `cockpit` keeps being retried even with the overview up. A
+  read for a tile that has since left the overview is refused by
   Rust and is not a `cockpit` failure: the frontend asks the dashboard whether
   the tile is gone (once, as the failure begins; it waits out any `dashboard_view` already in flight, then reads one of its own, and never goes by the refusal's wording), and
   the dashboard's own `That tile is no longer on the overview.` stands. Each
@@ -190,26 +177,22 @@ without the `allPanels` icon and without the Settings label or the spacing from
   of its own, so the notice is the `cockpit` payload's `overviewLoadFailed`
   (`dashboard::OVERVIEW_LOAD_FAILED`), and the failure's own text only when
   that has not arrived yet (a notice already up takes the sentence the moment it
-  arrives). It no longer points at Solador's Full view.
-- **Spacing:** `dashboard_view` carries `spacing` and `rowGapPx` (the same stored
-  values `cockpit` carries), and `app.js`'s `applySpacing` paints `--cockpit-gap`
-  and `--row-gap` from the first model, so a tile's Full view has its row gap
-  whether or not `cockpit` has answered. Solador's Full view still gets them from
-  `cockpit` too.
+  arrives).
+- **Spacing:** each tile carries its own `rowGapPx` (and `dashboard_view`
+  `spacing` is the shared gap between tiles); `app.js`'s `applySpacing` paints
+  `--cockpit-gap` and `--row-gap` from the first model, so a tile's Full view
+  has its row gap whether or not `cockpit` has answered.
 - **Polling:** each panel renderer asks `panelWanted(source)` (`app.js`) before
   it reads. Nothing reads while the overview is up; in a tile's Full view only
-  that tile's source does (`soladorDashboard.fullSource`); Solador's Full view
-  reads all of them. `cockpit` is read the same way (`panelWanted("hosts")`):
-  by a Machines tile's Full view (with its `tile`) and by Solador's Full view,
-  not by the overview or another source's Full view, apart from retrying a
-  failed read and the one read `app.js` makes at boot, before any view is open
-  (see the hidden dependency above).
+  that tile's source does (`soladorDashboard.fullSource`). `cockpit` is read the
+  same way (`panelWanted("hosts")`): by a Machines tile's Full view (with its
+  `tile`), not by the overview or another source's Full view, apart from
+  retrying a failed read and the one read `app.js` makes at boot, before any
+  view is open (see the hidden dependency above).
 - **Width:** `gridWidth` is `#cockpit`'s width, or the window's while the grid
   is not laid out.
 - **Focus:** opening a tile's Full view focuses `#fullView`; leaving it focuses
-  that tile's **View** button. Nothing on the overview or in a tile's Full view
-  needs the `allPanels` icon, which only Solador's Full view (and its focus on
-  open) still uses.
+  that tile's **View** button.
 
 **Machines** displays colored CPU and RAM utilization bars alongside the exact
 readings, with configurable green/amber/red utilization thresholds. Fractions
@@ -363,7 +346,7 @@ label that matched, then your own, then GitHub's. A List row wraps them; a table
 cell keeps its row compact on one line, so a narrow cell gives up GitHub's
 labels first (the OS and Architecture columns already say them), and its
 tooltip names every label. The Labels column has a base width like every other
-column, so it does not push **Status** out of a half-width Full panel. A group opened in
+column, so it does not push **Status** out of a narrow Full view. A group opened in
 Detail or Full names what put its runners there: `matched by runner-large`, or
 for `other`, `carries none of your group labels` — with `· 2 not recorded`
 appended when some of its runners' labels were never recorded, and `labels not
@@ -476,7 +459,7 @@ Removing or hiding a tile keeps its connections and monitoring. Layout and conne
 optional `dashboard` store field holds tile identities, scopes and order, plus a
 revision that rejects stale saves. Stores without it receive the default five
 tiles. An intentionally empty layout stays empty. Existing connections,
-credentials, preferences and the full-panel layout are retained.
+credentials and preferences are retained. Layout settings from before tile views (core rows, row spacing, host overflow, Table/List) are copied onto tiles once, on upgrade; a value with no tile to apply to is dropped.
 
 **Add tile** offers Remote machines, Repos needing attention and Linux runners
 as presets, followed by all sources. Each preset opens the same editable draft,
@@ -495,8 +478,9 @@ Rust's targets rather than recomputing them.
 `dashboard_save` validates and saves the whole layout, rolls memory back if the
 atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
-**Settings → Full view layout** applies to **Full view**; overview
-placement lives in **Edit dashboard**.
+How a tile's Full view is laid out (CPU core rows, row spacing, host
+overflow, Table/List) lives in that tile's **Configure** (**This tile** /
+**Detail** / **Full view**); overview placement lives in **Edit dashboard**.
 
 **Add tile** and **Duplicate tile** open an unsaved draft. Choose a name,
 scope, presentation, width and position against a preview of current cached
@@ -533,7 +517,7 @@ its name and scope note; Escape returns to it. Open connection settings, and con
 returns correctly. Click a **Needs Attention** chip for a source with one tile
 (its Detail, in that tile's scope), for one with no tile (the trouble panel and
 **Add tile**) and for one with two tiles (a link to each Detail); none opens
-Solador's Full view. The existing full-panel smoke checklist starts from the toolbar's
+a source-wide panel. The full-panel smoke checklist starts from a tile's **View** →
 **Full view**; the tile's Full view has its own row in the extras below. The macOS dashboard smoke
 passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
 credential service in the test build. It covered hide/restore, duplication and
@@ -563,7 +547,7 @@ looks where it acts:
 |---|---|---|
 | 1 | changes what a tile shows | that tile's **Configure** |
 | 2 | is about reaching a source (token, account, host, address, or the opt-in to read another program's sign-in) | **Settings → Connections**. The tile's Configure links there instead of copying the control. |
-| 3 | is app-wide, with no single tile behind it (crash reporting, updates, Full view layout) | **Settings** |
+| 3 | is app-wide, with no single tile behind it (crash reporting, updates) | **Settings** |
 | 4 | is shared by several places | can be edited from a tile's Configure, but the control **says it is shared** |
 
 In-place actions on an item, such as hiding a volume from the Disk strip or
@@ -589,11 +573,11 @@ does not fit it yet:
 | Runner group labels | Runners tile Configure, marked shared | rule 4 |
 | Container Group Rules | Containers tile Configure, marked shared (#613) | rule 4 |
 | Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
-| Crash reporting, updates, Full view layout | Settings | rule 3 |
+| Crash reporting, updates | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
 | Poll cadence of Containers, GitHub (Repos and Runners), Services, Usage (Claude rollups; metered providers; plan limits), Azure Cost and Scheduled Jobs | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
-| CPU core rows, Row spacing | Settings → Preferences | [#616](https://github.com/Sassy-Dog/solador/issues/616): Machines tile or Full view layout, to decide |
+| CPU core rows, Row spacing, host overflow, Detail / Full view Table-or-List | the tile's Configure → **Full view** / **Detail** page, per tile | rule 1 ([#647](https://github.com/Sassy-Dog/solador/issues/647)) |
 
 ### Settings and connections
 
@@ -678,8 +662,8 @@ host's edit form offers **Re-pair** — the same Check → compare → Trust flo
 replacing the pin on Save — and that, or `solador-app host pair --replace`
 (which likewise pins only what the app's own probe found), is the only way a
 pin changes: there is no one-click unpin, so going back to plain HTTP means deleting the host and adding
-it again. Preferences,
-Full view layout and About remain available in the side navigation.
+it again. Preferences
+and About remain available in the side navigation.
 
 Settings tests cover source routing, credential replacement, unsaved drafts,
 responsive layout and host edits with temporary stores. The macOS Settings
@@ -912,14 +896,12 @@ await window.__TAURI__.core.invoke("cockpit", { width: gridWidth });
 {
   "hosts": [ /* the local card, then one card per enabled host, each with its `id` */ ],
   "hostColumns": 2,        // viewmodel::cockpit::host_columns for `width`
-  "hostCardMinWidth": 900, // …and the numbers it used, so the frontend can't
-  "spacing": 16,           //    re-derive them and disagree
+  "hostCardMinWidth": 900, // …and the number it used, so the frontend can't
+                           //    re-derive it and disagree
   "hostTabs": null,        // or {"minHeight": 780, "tabs": [{"id", "label"}, …]}
-  "panels": [ /* the panel table: id, title, minWidth */ ],
-  "panelRows": [ /* the reflowed layout: who shares a row, in order, and the
-                    span/weight/width/columns each one gets */ ],
+  "volumeSlots": 2,        // volume tiles each side-by-side card reserves
+  "panelColumns": { "containers": 2, /* … */ },  // content columns each panel affords at the window's width
   "empty": null,           // or {"message": …} when no REMOTE host is configured
-  "settingsLabel": "Settings",  // the button that opens the Settings view, while no overview model labels it
   "overviewLoadFailed": "Could not load the overview."  // what the page says when dashboard_view fails
 }
 ```
@@ -932,7 +914,7 @@ frontend passes the grid's measured width and applies the answer.
 `hostTabs` is the **overflow mode**, and it is the same argument one layer down.
 Below the side-by-side breakpoint the cards stack — every host stays visible,
 which is the point of an always-on cockpit — unless the operator picks *Show as
-tabs* under Settings → General, and then one card shows at a time behind a bar.
+tabs* in the Machines tile's Configure (**Full view** page), and then one card shows at a time behind a bar.
 Which of those happens is `viewmodel::cockpit::host_tabs`, and its three
 conditions are `HostsPanel.content`'s: `columns <= 1`, more than one host, and
 the preference set. A `columns <= 1 && hosts > 1` written in JS would be that
@@ -948,58 +930,10 @@ down on every tab switch would lose its chart nodes and therefore its sparkline
 history, which is the one thing the card is worth looking at for; hidden cards
 keep recording and are current the moment they are shown.
 
-`panelRows` is the same argument for the panels *below* the grid:
-`CockpitLayout::hosts_forward()` reflowed for that width by
-`viewmodel::cockpit::reflow`. It is not a global `sm`/`md`/`lg` tier and it is
-not a CSS `auto-fit` — **every panel declares its own `min_width`**, and a row
-splits only when *its* panels stop fitting. The case that model exists for is
-visible at the 880pt window floor: Containers + OpenClaw still share a row at
-412pt each where Repos + Runners (932pt) must break apart. Rows naming a panel
-this frontend has no section for — `hosts`, which is the grid above — still
-travel; app.js skips them rather than Rust silently omitting a row it did
-produce.
-
-Each entry also carries a **span**: `full`, `threeQuarters`, `half` or
-`quarter`, plus the `weight` (4, 3, 2, 1) of quarter tracks the frontend gives
-that panel. So the shipped third row is Containers over two tracks beside
-OpenClaw and Usage over one each, and Azure Cost owns all four, which is what
-affords its two-column body (the top-resource breakdowns sit beside the costs
-rather than under them). A panel is held to its `min_width` against **the width
-its span gives it**, not against the row's sum of minimums: the sum let a hungry
-panel borrow width from a lean neighbour that it then never got, since the track
-it renders in is its span's share. `panel_widths` is the one place that
-arithmetic lives, and `width` in the payload is its answer — the same number
-`columns` was derived from.
-
-**Every row is the same four-quarter grid.** A quarter track is
-`(width − 3 × gap) / 4` and a span of `k` gets `k` tracks plus the `k − 1`
-gutters it swallows — the frontend paints exactly that, `repeat(4, minmax(0,1fr))`
-plus `grid-column: <start> / span k`, so it and `panel_widths` are one
-construction rather than two that can disagree. The denominator is a fixed four
-and not the row's own weight, which is a distinction that cost 8pt: dividing
-`width − (n−1) × gap` by the weights in *this* row makes the gutter total move
-with the panel count, so a `half` beside two `quarter`s came out half a gutter
-narrower than a `half` beside one `half`, and the card edge under Repos|Runners
-missed the one under Containers|OpenClaw directly below it.
-
-**A rendered row always adds up to four quarters**, so `span` is always one of
-those four words. Reflow can cut a row short — evict Usage from the quarter row
-and Containers + OpenClaw are left holding three quarters between them — and
-`fr` tracks would then stretch that pair to two thirds and one third: a width
-nobody authored, no picker offers, and a reader can only take for a bug. So
-`fill_row` widens the survivors first, by the distribution closest to their
-authored proportions (Half + Quarter → **ThreeQuarters + Quarter**; Quarter +
-Quarter → Half + Half, not a lopsided pair), and every candidate is checked
-against `min_width` at its *final* width, because filling shrinks whoever does
-not grow. A row with no legible filling is refused — which is exactly how reflow
-learns the panel does not fit there. The `span` a panel travels with is
-therefore the one it is **rendered** at, which can be wider than the one the
-user authored; the Settings editor reads the authored width from the store, not
-from this payload.
-
-Every card in a rendered row is **the same height** (`align-items:stretch`).
-Content stays top-aligned, so a short panel beside a long one carries trailing
-space inside its card rather than leaving a ragged edge in the row.
+The panels below the grid are not arranged by this payload any more (#647):
+a panel is laid out by its tile, and a tile's Full view fills the window with
+one panel. `panelColumns` is `viewmodel::cockpit::panel_columns` over the
+window's width for each panel, applied by `app.js` and never re-derived there.
 
 **Where a warning goes.** A panel's `footer` — `panel::status_footer`'s
 `{text, color}`, the amber `⚠ couldn't read runners … · last ok 2m ago` line —
@@ -1488,9 +1422,6 @@ flight across the forget can write the name back with its old clock — the
 window is one fetch, a second Forget wins it, and the age-out mops up
 regardless.
 
-Both panels now sit in whichever row `panelRows` puts them — side by side at
-≥932pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
-
 Two counts are deliberately not the same number: the rollup counts *every*
 container the runtimes reported, including the ones rules hid or collapsed (so
 cruft building up stays visible), while `· N missing` counts exactly what the
@@ -1892,11 +1823,12 @@ one line the two competed for the width of a quarter-width card and *both* lost
 characters; stacked, each gets the whole card. That is what took this panel's
 `min_width` from 340 to **240** — measured by shrinking the dumped fixture until
 something that must not truncate does, which is now the cron summary rather than
-an agent row — and 240 is what lets OpenClaw sit in a quarter beside a
-three-quarter Containers on a ~1256pt cockpit. The extra line is free where this
-panel lives: it shares a row with Containers and is the shorter card, so
-`align-items:stretch` was padding that space out anyway. If OpenClaw ever
-becomes the tallest panel in its row, revisit it.
+an agent row — and 240 is also the width one content column of it needs (history: it
+let OpenClaw sit in a quarter beside a three-quarter Containers on the retired
+span grid). On the retired span grid the extra line was free: OpenClaw shared
+a row with Containers and was the shorter card, so `align-items:stretch` was
+padding that space out anyway. In a tile's Full view it is the only panel, so
+the second line costs one line of height per agent.
 
 ```js
 await window.__TAURI__.core.invoke("openclaw");
@@ -2099,7 +2031,7 @@ hint, since its claim that every remote is unreachable would be false. It replac
 the Machines tile's subtitle in the same fixed-height line, so it moves no geometry,
 and it is recomputed from the
 payload on every frame with no state kept, so it clears the instant any
-remote host answers. The full detailed Hosts panel (`?view=details`) carries
+remote host answers. A Machines tile's Full view carries
 no such line — every card there already reads `Unreachable` on its own, which
 is what this signal sits beside rather than inside.
 
@@ -2191,8 +2123,8 @@ live. The gap is now this app's alone to close.
 
 ## Settings
 
-The **Settings** icon opens an in-app view with **Connections**, **Preferences**,
-**Full view layout** and **About**. Connections holds machine, GitHub account,
+The **Settings** icon opens an in-app view with **Connections**, **Preferences**
+and **About**. Connections holds machine, GitHub account,
 Azure Cost, Usage, Service Health and OpenClaw configuration. A GitHub token is
 an account's, org selection lives on each account, and every tracked repo sits
 on the card of the account that fetches it (with an Unattributed section for
@@ -2213,13 +2145,10 @@ capability](#the-one-granted-capability) for the single entry that does.
 | Command | What it does |
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
-| `settings_save_general` | core-row span, row spacing (the refresh interval left in [#615](https://github.com/Sassy-Dog/solador/issues/615)) |
 | `machine_save_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID), from the Machines tile's Configure. Null `thresholds` resets shared defaults or removes that machine's override. Validation (`store::machine_alerts`) and save failures preserve the previous effective values and reject with the sentence; success answers with the re-rendered dashboard |
 | `panel_interval_save` | one panel's poll cadence, by its `panel_intervals` key, from that source's tile Configure. **Refused, not clamped**: a value under the panel's floor writes nothing and rejects with `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose. Saves on the click; success wakes that panel's loop and answers with the re-rendered dashboard |
 | `panel_interval_clear` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
-| `settings_move_panel` / `settings_set_panel_span` / `settings_set_breakpoint_overflow` | the [cockpit layout](#the-layout-tab), inside one breakpoint named by `minWidth`: one panel a place along the order, one panel's width, or that band's host-overflow mode |
-| `settings_add_breakpoint` / `settings_remove_breakpoint` / `settings_reset_layout` | add a width band (seeded from the one it splits), drop one (never the last), or forget the arrangement entirely |
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
 | `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop on a save (check or uncheck); a refusal changes nothing and wakes nothing — the selection is what the runners half of the pass polls |
 | `settings_save_azure` | where the cost export lives: storage account + container. Its own command for the same reason, and it **wakes the Azure poll** — that loop runs on a four-hour rhythm, so without the nudge an operator who just fixed a typo waits until teatime to learn whether it worked |
@@ -2255,7 +2184,6 @@ a portfolio fetch on a credential it has no use for.
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |
-| the [layout](#the-layout-tab) — a move, a width, an overflow mode, a breakpoint added or removed, a reset | nothing: `cockpit` re-reads the bands and picks one by the measured width on every frame, so the change is on screen a second later (or the moment Settings closes, which repaints immediately) |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
 #### Waking up with the machine
@@ -2305,80 +2233,6 @@ state from the returned `settings`. (The machine-alert limits and hidden volumes
 are not Settings mutations any more: they answer with the re-rendered dashboard,
 like the runner group labels.)
 
-### The Layout tab
-
-Where each panel sits, how wide it is, and **at which window widths**. The
-arrangement persists as `store.json`'s `layout`: a list of **breakpoints**, each
-one an ordered list of `{panel, span}` slots plus its own `hostOverflow`.
-
-```jsonc
-"layout": [
-  { "min_width": 0,    "host_overflow": "tabs",  "slots": [ /* … */ ] },
-  { "min_width": 1816, "host_overflow": "stack", "slots": [ /* … */ ] }
-]
-```
-
-`cockpit` picks the widest band the measured width clears
-(`settings::breakpoint_for`) on **every frame**, so a cockpit parked in a third
-of a 4K display can tab its host cards while the same window maximised lays them
-side by side. Below every authored band the narrowest one still applies — there
-is always something to render. The mode is per band and not global for exactly
-that reason; `Settings.host_overflow_mode` survives in the store as the *seed* a
-pre-breakpoint layout is migrated from, and the General tab no longer offers it.
-
-Inside a band the arrangement is an **ordered list of slots**, not rows — rows
-are packed from it (`CockpitLayout::from_order`, four quarters to a row), so
-moving a panel is one operation wherever it sits and no editor has to ask where a
-row breaks. `reflow` still runs on top at render time, so a window too narrow for
-a band's rows splits them exactly as it always did: a breakpoint is the widest
-arrangement for its band, not a promise about every size inside it.
-
-Three rules make a stored layout always renderable, and all three live in
-`settings::normalized_order` — applied on the way in *and* on the way out, like
-`normalized_general`:
-
-- a slot naming a panel or span this build does not know is **dropped** (a file
-  from a newer build must not move someone's cockpit around by proxy);
-- a panel named twice keeps its **first** slot;
-- a panel named nowhere is **appended** with its default span.
-
-So every band always holds every panel exactly once. That is what makes a *new*
-panel appear for an existing user — in its default place — instead of vanishing
-because their saved layout predates it. `settings::breakpoints` does the same for
-the bands themselves: widths below zero clamp to 0, two bands claiming one width
-keep the first, and an empty list becomes the shipped default, so
-`breakpoint_for` can never come up empty.
-
-**Migration is a shape, not a version bump.** Before breakpoints, `layout` was a
-bare slot array. `store::layout::lenient_layout` still accepts that and reads it
-as one band at width 0 with an *empty* `host_overflow` — which
-`settings::breakpoints` then fills from the General preference that used to own
-the decision. Upgrading changes nothing on screen, and the first Layout edit
-writes the migrated shape back. The discriminator between the two shapes is
-`slots` being required on a profile and `panel` on a slot: without those, every
-field is optional and each shape would parse as a degenerate version of the
-other.
-
-`layout: null` (never configured) and a stored layout that happens to match the
-default are deliberately distinct: only the absent one follows a future change to
-`CockpitLayout::DEFAULT_ORDER`, which is what **Reset to default** stores — it
-*clears* the key rather than writing today's default into it. **Remove
-breakpoint** refuses to take the last band, because a cockpit with no arrangement
-is not a state the editor may produce; **Add breakpoint** seeds the new band from
-whatever already applied at that width, so adding one changes nothing until it is
-edited.
-
-Every edit names its band by `minWidth` rather than by index — adding a band
-re-sorts the list, and an index would then address the wrong one. Which band the
-editor is *showing* is frontend state (`S.band`), never persisted: the whole band
-list travels in the payload so switching is not a round trip.
-
-The tab's preview is Rust's packing, delivered as rows of cells carrying the `fr`
-weight each panel gets — the same numbers `panelRows` carries. A frontend
-deriving "what will this look like" from the spans would be a second
-implementation of the packer, free to promise an arrangement the cockpit then
-does not render.
-
 **The rules editor writes one field per call, and that is the whole of its
 concurrency story.** (It lives in a Containers tile's Configure now, #613; the
 commands are `container_rule_add` / `container_rule_set` / `container_rule_remove`
@@ -2412,7 +2266,7 @@ streak and its last-success time.
 
 Two things worth knowing about this surface:
 
-- **Both Apply-gated General preferences are consumed.** The shared Refresh
+- **No Apply-gated General preference is left to consume (#647).** The shared Refresh
   Interval that used to be the first is gone
   ([#615](https://github.com/Sassy-Dog/solador/issues/615)): it drove two
   unrelated loops (`github_loop`, with the Services pass inside it, and
@@ -2444,26 +2298,18 @@ Two things worth knowing about this surface:
   because a limit an operator only meets by being refused is indistinguishable
   from the control being broken. There is still no
   control for the 1 Hz host poll or the 10s agent-health poll: neither has a
-  `PanelInterval` to name it, deliberately. The **core row span** reaches the
-  host cards through `align_core_ladders`, which is the only place that has seen
-  every card — `host_card` cannot read a preference, which is why the stored
-  value went unread for as long as it did
-  (`the_core_row_span_preference_reaches_the_block`). **Row spacing**
-  (`row_gap_px`, 0–16, default **0**) is the third: it is the gap between two
-  rows of the *same list inside a panel* — the containers on a host, the repos,
-  the runners — and it rides the **cockpit** and **dashboard_view** payloads as
-  `rowGapPx` rather than the settings one, because the settings payload is only
-  fetched while that surface is open and this value has to be on the page from
-  the first frame (`dashboard_view` is the one a tile's Full view can count on:
-  it needs no `cockpit` answer, #646).
-  `app/ui/app.js` paints it as `--row-gap`, over the pre-payload value
-  `app/ui/app.css` still declares. It needs no wake: `cockpit_with` re-reads the
-  store every frame, so a change lands on the next 1s tick. It moves that one
-  axis and no other — the gap *between* panels is `viewmodel::cockpit::SPACING`
-  and the grids that separate a panel's sections are a third, both fixed.
-  `host_overflow_mode` left this tab for the
-  [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
-  stored field remains only as that migration's seed.
+  `PanelInterval` to name it, deliberately. Since #647 the **core row span**, **row spacing**,
+  **host overflow mode** and the Runners / Detail Table-or-List choices are
+  per-tile fields (`coreRowSpan`, `rowGapPx`, `hostOverflow`, `detailView`,
+  `runnerFullView` on the overview's tile), edited in that tile's Configure
+  (**This tile** / **Detail** / **Full view**, built from Rust's `TILE_VIEWS`)
+  and validated per tile by `dashboard_save`. The old global values (Settings →
+  Preferences' rows, the Layout tab's first breakpoint and `detailViews`) are
+  read once at load by `StoreData::carry_view_settings_onto_tiles`, copied onto
+  the tiles they applied to, and dropped by the next save; nothing writes them.
+  The core row span reaches the host cards through `align_core_ladders` (from
+  the open Machines tile's own `HostLook`), and the row gap rides the tile in
+  `dashboard_view` as `rowGapPx`; `app/ui/app.js` paints it as `--row-gap`.
 - **About's version is the git-derived CalVer, and `—` when there is not one.**
   `settings::VERSION` is `option_env!("SOLADOR_MARKETING_VERSION")`, published by
   `app/src-tauri/build.rs` — two lines calling `crates/buildversion`, which
@@ -3053,7 +2899,7 @@ beside it. `npm run fixtures:showcase` writes them as `app/ui/sample-showcase-*.
 and `npm run screenshots` renders them into `site/assets/screenshots/`. Its stub
 refuses a cockpit request at any other width rather than paint a layout computed
 for a different one — answering every width with one payload is how
-`cockpit-narrow.png` once showed overlapping host cards.
+the narrow shot once showed overlapping host cards.
 
 ## Manual IPC smoke test
 
@@ -3198,9 +3044,9 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
 | the rules editor (`container_rule_add` / `_set` / `_remove`, #613) | **Edit dashboard** → the Containers tile's **Configure** → **Container Group Rules**: press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern, saved on the click before **Apply**; switching to Hide drops the group-label and expected-count fields; **Delete** removes it. Settings → Connections → This machine has no rules editor at all. A rule that survives a relaunch with Apply never pressed is the intended behaviour; one that needs Apply is the defect |
-| the tabs mode, per breakpoint | with two hosts configured, set Settings → **Full view layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
-| `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Full view layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
-| `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Full view layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
+| Configure's three pages (`dashboard_save`, `TILE_VIEWS`, #647) | **Edit dashboard** → the Machines tile's **Configure**: the switch at the top reads **This tile** / **Detail** / **Full view**. On **Full view** set *CPU core rows* to `3`, *Host overflow* to **Show as tabs** and *Row spacing* to `8`, then **Apply** from that page; open a Runners tile's Configure and check its **Detail** and **Full view** pages each offer Table / List | one **Apply** saves all three pages. The Machines tile's Full view (View menu → **Full view**) shows three core rows and, with two hosts and a narrow window, a tab bar; list rows sit 8px apart. A value outside a field's range (*CPU core rows* `9`) is refused by the field before anything is saved, and pressing **Apply** from **This tile** with that value left on **Full view** switches back to **Full view** with the field focused (Rust refuses the same value on `dashboard_save`; it is clamped, not refused, only when read from a hand-edited `store.json`) |
+| Edit from a Full view | open any tile's **Full view** (tile **View** menu), then press **Edit** in the toolbar. Then press Escape, and press **Edit** on the overview | from the Full view, the overview opens with that tile's **Configure** on its **Full view** page; from the overview, **Configure** opens on **This tile** |
+| a failed `cockpit` read in a Machines tile's Full view (`dashboard::COCKPIT_LOAD_FAILED`, #667) | open a Machines tile's Full view while the `cockpit` command is failing (for example with the app's IPC unavailable, or a host list the read cannot build), then let it recover | the Full view shows Rust's sentence in the loading line's place, never a plain "loading"; when the next read succeeds the sentence goes and the host cards show |
 | `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press **Apply cadence**; then set it to `30` and **Apply cadence**; then press **Use default** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | `panel_interval_save` (GitHub) | **Edit dashboard** → a Runners tile's **Configure** → **Poll cadence**: set it to `300` and **Apply cadence**; then open a GitHub Repos tile's **Configure** | the Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
@@ -3571,7 +3417,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | `No hosts configured. Add one in Settings.` and no card at all.                                | A malformed `SOLADOR_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
 | The window opens and stays up, but the `cockpit: first frontend request …` line never prints.  | The boundary is broken and the window is hiding it. This is the definitive terminal-side failure: `invoke` never reached Rust. Verified as a real discriminator on 2026-07-31 by renaming the command in `app.js` — the app still launched and still held a window, and the line stayed absent. |
 | The cards paint, but clicking **Settings** does nothing and `settings: first frontend request …` never prints. | The cockpit half of the boundary is fine and the settings half is not: an unregistered `settings_view`, or a script error in `settings.js` that stopped it before it wired the button. Check the webview console. |
-| Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or the dashboard labels carry no `settings` (and, with no overview model, the cockpit payload no `settingsLabel`). Regenerate the fixtures and check the payload shape, not the ACL. |
+| Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or the dashboard labels carry no `settings`. Regenerate the fixtures and check the payload shape, not the ACL. |
 | The cards paint but there is no **Containers / VMs** panel at all, and `containers: first frontend request …` never prints. | The containers half of the boundary is broken: an unregistered `containers` command, or a script error in `containers.js`. The panel stays hidden until a payload arrives — deliberately, so a broken boundary cannot masquerade as an idle machine. Check the webview console. |
 | The panel renders but every section says `no containers` on a machine that is definitely running some. | The boundary is fine; the *discovery* is not. The tools are resolved by absolute path (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) — a docker installed anywhere else is invisible. A failing tool would instead name itself in the footer (`⚠ couldn't read docker`). |
 | The **Repos** or **GitHub Runners** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `repos`/`runners` command, or a script error in `github.js`. Both panels stay hidden until a payload arrives, so this cannot be mistaken for "no token configured" — that state renders a visible panel with one sentence in it. Check the webview console. |

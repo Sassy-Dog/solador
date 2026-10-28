@@ -5,7 +5,7 @@ This file provides context for coding agents (Codex, and Claude Code through `CL
 ## Project Overview
 
 Solador is a cross-platform desktop cockpit that watches development
-infrastructure at a glance, rendered as a grid of panels. It is a Rust
+infrastructure at a glance, rendered as an overview of tiles, each opening to its panel. It is a Rust
 workspace (`crates/*`) plus a Tauri v2 app (`app/`), macOS/Windows-portable.
 
 It has three parts:
@@ -140,9 +140,11 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   Configure and read after every pass; a below-floor value is refused with its
   reason, not clamped (`set_panel_interval_secs` / `panel_interval_secs` still
   clamp, because a hand-edited `store.json` never reaches the refusal).
-- **Responsive layout is CSS `auto-fit` math in `crates/viewmodel/src/cockpit.rs`**:
-  per-panel `min_width`, spans on one fixed four-quarter grid, every row sums to
-  four quarters.
+- **Layout is decided in Rust, never re-derived in JS** (`crates/viewmodel/src/cockpit.rs`):
+  host columns, host tabs, per-panel `min_width` and `panel_columns`. A tile owns
+  its own view settings (`coreRowSpan`, `hostOverflow`, `rowGapPx`, `detailView`,
+  `runnerFullView`), edited in its Configure; there is no global layout, and no
+  Full view of Solador itself (#647).
 - **Where a setting lives**: tile-specific in its Configure, source credentials
   in Settings → Connections, app-wide in Settings (`app/README.md`).
 - **The Tauri IPC boundary is deliberately not automated** (#123 closed on it:
@@ -189,7 +191,10 @@ Deploy, CSP and screenshot detail: `docs/WEBSITE.md`.
 ### Adding a New Cockpit Panel
 1. Add the data source as a crate under `crates/` (or a module in an existing one).
 2. Add a `PanelKind` case — **including its `min_width`** — in
-   `crates/viewmodel/src/cockpit.rs`. The layout tests fail if you skip it.
+   `crates/viewmodel/src/cockpit.rs`. Skipping it does not compile (the `match`
+   is exhaustive), and `every_panel_kind_declares_a_positive_min_width` fails on
+   a zero. Add the kind to `PanelKind::ALL` too; nothing enforces that, and the
+   tests that iterate `ALL` never see a kind left out.
 3. Add the Tauri command in `app/src-tauri/src/`.
 4. Add the frontend renderer in `app/ui/`.
 

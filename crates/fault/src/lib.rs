@@ -39,8 +39,8 @@
 //! Only the vendor's name is interpolated. A transport error, a request URL, a
 //! response body, a service error document and a stack trace are all *detail*,
 //! and detail goes to the log — the panel gets the sentence. Sentences are
-//! short enough ([`MAX_MESSAGE_CHARS`]) to sit in a Half-width card's header
-//! without ellipsising.
+//! short enough ([`MAX_MESSAGE_CHARS`]) for one line of a panel header; the
+//! constant's doc records how the bound was sized.
 //!
 //! A vendor name may carry its article — `"the agent"`, `"the status page"`,
 //! `"that host"` — so every template has to read correctly with one. That is
@@ -165,10 +165,10 @@ pub enum Fault {
 
 /// The longest a stock sentence may be, in characters.
 ///
-/// A panel header is one line beside two clocks, and the narrowest card a
-/// panel can be placed in is a Quarter of a four-quarter grid — but the
-/// containment budget this is sized against is a **Half**, the width at which
-/// the screenshot in #352 wrapped a Neon warning to six lines. #351 makes an
+/// A panel header is one line beside two clocks. The bound was sized against
+/// the width of a half-width card on the grid Solador's Full view used to lay
+/// panels on (gone, #647), where the screenshot in #352 wrapped a Neon warning
+/// to six lines. The bound was not changed when that grid went. #351 makes an
 /// over-long message survivable at the rendering layer; this bound is what
 /// makes it comfortable rather than merely survivable.
 ///

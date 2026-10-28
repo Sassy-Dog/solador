@@ -67,7 +67,7 @@ test("the OpenClaw panel is headed by its tile's name and paints Rust's trailing
   await expect(rows.locator(".oc-name")).toHaveText(agents.rows.map((r) => r.name));
 
   // The model ref sits on its own line UNDER the name rather than beside it, so
-  // neither has to give up characters on a quarter-width card. It starts on the
+  // neither has to give up characters on a narrow card. It starts on the
   // next line, and its TEXT is indented past the status light (the indent is
   // padding, so the box itself still starts at the card's left edge).
   const withDetail = agents.rows.findIndex((r) => r.detail);

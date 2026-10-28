@@ -30,9 +30,6 @@ const S = {
   status: "",
   /** Host id -> its last Test result line. Survives a re-render. */
   tests: new Map(),
-  /** Which Layout breakpoint the editor is showing, by its `minWidth`. `null`
-   *  means "the first one" — see `selectedBand`. */
-  band: null,
   /** The last `settings_probe_status_vendor` answer, or `null` before anything
    *  has been probed. Held here like `tests` is: which host you last probed is
    *  a *view* state, not something the store remembers.
@@ -166,8 +163,8 @@ function group(heading) {
   return box;
 }
 
-/** Whole numbers only: `coreRowSpan`, `rowGapPx` and the
- *  Sentry quota are integers in Rust, and a NaN is not even JSON. */
+/** Whole numbers only: the Sentry quota is an integer in Rust, and a NaN is
+ *  not even JSON. */
 const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
 
 // MARK: talking to Rust
@@ -348,23 +345,6 @@ function generalTab(g) {
   // Where the shared Refresh Interval went (#615): Rust says, this paints.
   box.append(help(g.cadenceNote));
 
-  const span = numberInput(g.coreRowSpan.value, g.coreRowSpan.min, g.coreRowSpan.max);
-  box.append(field("general-core-rows", g.coreRowSpan.label, span), help(g.coreRowSpan.help));
-
-  const gap = numberInput(g.rowGapPx.value, g.rowGapPx.min, g.rowGapPx.max);
-  box.append(field("general-row-gap", g.rowGapPx.label, gap), help(g.rowGapPx.help));
-
-  // No host-overflow picker here: it is per breakpoint now (the Layout tab),
-  // because one global switch could not say "tabs in a narrow column, side by
-  // side when wide".
-  const apply = button(g.saveLabel, "apply");
-  apply.addEventListener("click", () =>
-    mutate("settings_save_general", {
-      coreRowSpan: int(span.value),
-      rowGapPx: int(gap.value),
-    })
-  );
-  box.appendChild(actionRow(apply));
   return [box, crashReportingGroup(g.crashReporting)];
 }
 
@@ -412,173 +392,6 @@ function planUsageGroup(plans, provider) {
   box.appendChild(node("p", "help plan-status", p.status));
   box.appendChild(help(p.help));
   return box;
-}
-
-/** One panel's row in the Layout editor: its title, a width picker, and the
- *  two buttons that walk it along the order.
- *
- *  Every control saves immediately, like the Portfolio tab's checkbox — there
- *  is no Apply here. The re-render then comes from what Rust persisted, so the
- *  list can never show an order that failed to save, and `canMoveUp` /
- *  `canMoveDown` are Rust's answers rather than an index comparison here.
- *
- *  Every mutation names the breakpoint it edits by `minWidth`, never by index:
- *  adding one re-sorts the list, and an index would then address the wrong
- *  band. */
-function layoutRow(t, band, panel) {
-  const row = node("div", "layout-row");
-  row.dataset.panel = panel.id;
-  row.append(node("span", "layout-name", panel.title), node("span", "grow"));
-
-  const span = select(t.spanOptions, panel.span, { saveOnChange: true });
-  span.addEventListener("change", () =>
-    mutate("settings_set_panel_span", {
-      minWidth: band.minWidth,
-      panel: panel.id,
-      span: span.value,
-    })
-  );
-  row.appendChild(field(`layout-span-${panel.id}`, t.spanLabel, span));
-
-  for (const [label, direction, enabled] of [
-    [t.upLabel, "up", panel.canMoveUp],
-    [t.downLabel, "down", panel.canMoveDown],
-  ]) {
-    const move = button(label, "move");
-    move.dataset.direction = direction;
-    move.disabled = !enabled;
-    move.addEventListener("click", () =>
-      mutate("settings_move_panel", { minWidth: band.minWidth, panel: panel.id, direction })
-    );
-    row.appendChild(move);
-  }
-  return row;
-}
-
-/** The rows this order packs into, drawn at their real proportions.
- *
- *  The packing is Rust's (`CockpitLayout::from_order`) and arrives as rows of
- *  cells carrying the `weight` — the quarters — each panel gets. Re-deriving
- *  "what will this look like" from the spans here would be a second
- *  implementation of the packer, free to promise an arrangement the cockpit
- *  then does not render.
- *
- *  Placed on the same four-quarter grid `applyPanelRows` uses, for the same
- *  reason: a per-row track list sized by that row's own weights draws a half
- *  beside two quarters narrower than a half beside one half, so the preview
- *  would promise proportions the cockpit does not paint. */
-function layoutPreview(preview) {
-  const box = group(preview.label);
-  for (const row of preview.rows) {
-    const line = node("div", "layout-preview-row");
-    let start = 1;
-    for (const cell of row) {
-      const weight = Math.min(4, Math.max(1, Number(cell.weight) | 0));
-      const tile = node("div", "layout-tile");
-      // CSSOM, never a `style=""` attribute -- `style-src 'self'`. Same setter
-      // and the same spans app.js puts on a real panel.
-      tile.style.gridColumn = `${start} / span ${weight}`;
-      start += weight;
-      tile.append(node("span", "layout-tile-name", cell.title));
-      tile.append(node("span", "layout-tile-span", cell.spanLabel));
-      line.appendChild(tile);
-    }
-    box.appendChild(line);
-  }
-  return box;
-}
-
-/** The band the editor is showing.
- *
- *  Held here rather than in the payload because it is a *view* state: which
- *  arrangement you are editing is not something the cockpit renders or the
- *  store remembers. A selection that no longer exists (its band was removed,
- *  or Reset collapsed them all) falls back to the first — never to nothing. */
-function selectedBand(t) {
-  return t.breakpoints.find((b) => b.minWidth === S.band) || t.breakpoints[0];
-}
-
-/** The breakpoint switcher: one button per band, plus the width form that adds
- *  another. Same `.tab` control the Settings tab bar uses, so the two read as
- *  the same kind of choice. */
-function breakpointBar(t, current) {
-  const box = group(null);
-  const bar = node("div", "tabs");
-  for (const band of t.breakpoints) {
-    const b = button(band.label, "tab");
-    b.dataset.band = String(band.minWidth);
-    if (band.minWidth === current.minWidth) b.dataset.active = "true";
-    b.addEventListener("click", () => {
-      S.band = band.minWidth;
-      render();
-    });
-    bar.appendChild(b);
-  }
-  box.appendChild(bar);
-
-  const width = numberInput("", 0);
-  const add = button(t.add.buttonLabel, "add");
-  const submit = () => {
-    const value = int(width.value);
-    // Reset at submit, like the Add Host form: a submitted field must not ride
-    // the re-render as an unapplied edit.
-    width.value = "";
-    // Select what is about to be created, so the new band is what the editor
-    // shows when Rust answers.
-    S.band = value;
-    mutate("settings_add_breakpoint", { minWidth: value });
-  };
-  add.addEventListener("click", submit);
-  width.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submit();
-  });
-  box.append(field("layout-add-width", t.add.widthLabel, width), actionRow(add), help(t.add.help));
-  return box;
-}
-
-function layoutTab(t) {
-  const current = selectedBand(t);
-  const list = group(t.heading);
-  list.appendChild(help(t.help));
-
-  const overflow = select(t.overflowOptions, current.hostOverflow, { saveOnChange: true });
-  overflow.addEventListener("change", () =>
-    mutate("settings_set_breakpoint_overflow", {
-      minWidth: current.minWidth,
-      hostOverflowMode: overflow.value,
-    })
-  );
-  list.append(field("layout-overflow", t.overflowLabel, overflow), help(t.overflowHelp));
-
-  for (const panel of current.rows) list.appendChild(layoutRow(t, current, panel));
-
-  const remove = button(t.removeLabel, "delete");
-  // The last band standing cannot go — Rust's `canRemove`, not a length
-  // compared here.
-  remove.disabled = !current.canRemove;
-  remove.addEventListener("click", () => {
-    S.band = null;
-    mutate("settings_remove_breakpoint", { minWidth: current.minWidth });
-  });
-
-  const reset = group(null);
-  const button_ = button(t.resetLabel, "delete");
-  // A store that has never carried a layout has nothing to reset. Whether that
-  // is the case is Rust's `isDefault`, not "do these rows look default to me".
-  button_.disabled = t.isDefault;
-  button_.addEventListener("click", () => {
-    S.band = null;
-    mutate("settings_reset_layout", {});
-  });
-  reset.append(actionRow(button_), help(t.resetHelp));
-
-  return [
-    breakpointBar(t, current),
-    list,
-    layoutPreview(current.preview),
-    actionRow(remove),
-    reset,
-  ];
 }
 
 /**
@@ -1970,7 +1783,6 @@ function renderBody() {
   }
   const build = {
     general: generalTab,
-    layout: layoutTab,
     accounts: accountsTab,
     hosts: hostsTab,
     azure: azureTab,
@@ -2080,7 +1892,11 @@ function closeSettings() {
   navigate(finishCloseSettings);
 }
 
-$s("settingsToggle").addEventListener("click", openSettings);
+// The toolbar's Settings button is the overview's (dashboard.js builds it), so
+// it is found by its action rather than bound at load.
+document.addEventListener("click", (event) => {
+  if (event.target.closest('.db-chrome [data-action="settings"]')) openSettings();
+});
 $s("settingsClose").addEventListener("click", closeSettings);
 
 window.soladorSettings = { open: openSettings };

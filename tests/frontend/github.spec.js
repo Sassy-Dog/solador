@@ -742,8 +742,8 @@ async function gotoWithVerdict(page, baseURL, availability) {
 }
 
 test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
-  // One shared element would be orphaned when reflow splits the two panels
-  // onto separate rows, which is why the verdict travels on both payloads.
+  // One shared element would be orphaned when the two panels are shown
+  // apart (each in its own tile's Full view), which is why the verdict travels on both payloads.
   const { repos } = await gotoWithVerdict(page, baseURL, chip("Operational", "#1c6b41"));
   for (const [chipId, titleId, panel] of [
     ["#reposAvailability", "#reposTitle", "repos"],
@@ -868,8 +868,7 @@ test("a wide panel splits Repos and keeps Runners in one aligned table", async (
   // each — past both breakpoints (Repos needs 1136, Runners 816).
   const { repos, runners } = await gotoWithFixtures(page, baseURL, {}, "repos");
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  const cols = (id) =>
-    cockpit.panelRows.flat().find((p) => p.id === id).columns;
+  const cols = (id) => cockpit.panelColumns[id];
   expect(cols("ghWorkflows"), "fixture must be wide enough for 2").toBe(2);
   expect(cols("ghRunners")).toBe(2);
 
@@ -901,7 +900,7 @@ test("a wide panel splits Repos and keeps Runners in one aligned table", async (
 test("a narrow panel keeps every list in one column", async ({ page, baseURL }) => {
   // Same panels, same rows — only the width Rust computed them for differs.
   const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
-  expect(narrow.panelRows.flat().find((p) => p.id === "ghRunners").columns).toBe(1);
+  expect(narrow.panelColumns.ghRunners).toBe(1);
   const repos = await fixture(baseURL, "sample-repos.json");
   const runners = await fixture(baseURL, "sample-runners.json");
   await gotoPanel(page, baseURL, { cockpit: narrow, repos, runners }, "repos");

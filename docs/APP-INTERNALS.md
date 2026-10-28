@@ -438,46 +438,58 @@
   container-scoped SAS per poll by shelling out to the Azure CLI (`az`, signed
   in as the operator).
 
-### Responsive layout (breakpoints)
-- `crates/viewmodel/src/cockpit.rs` holds the responsive math. Pure values, no UI.
+### Responsive layout (a tile's Full view)
+- `crates/viewmodel/src/cockpit.rs` holds the sizing math. Pure values, no UI:
+  it decides column counts, never how anything is drawn. There is no
+  arrangement of panels to decide any more: a tile's Full view is one panel
+  across the window (Solador's Full view, which arranged all of them, is gone,
+  #647).
 - The model is CSS `repeat(auto-fit, minmax(<min>, 1fr))`, **not** global
-  `sm/md/lg` tiers: every panel declares its own `PanelKind::min_width`, and
-  `reflow()` splits a row only when *its* panels stop fitting.
-- **Spans, not even splits**: each placement carries a `PanelSpan` —
-  `Full` / `ThreeQuarters` / `Half` / `Quarter`, weights 4/3/2/1 — and
-  `panel_widths()` gives each panel its share of **one four-quarter grid**. The
-  frontend paints the identical construction, `repeat(4, minmax(0,1fr))` plus
-  `grid-column: <start> / span k`, so the two cannot drift.
-- **The grid is the same on every row, so a span means one thing.** The
-  denominator is a fixed four, *not* the weight of the panels in this row —
-  which looks equivalent and is not: dividing by the row's own weight makes the
-  subtracted gutter total depend on how many panels happen to share the row. A
-  Half came out half a gutter narrower beside two Quarters than beside one Half.
-- **Every rendered row is exactly four quarters.** When reflow cuts a row short
-  its remaining panels are *widened* to fill it (`fill_row`). The fill is the
-  distribution closest to the authored proportions by least squared error, and
-  every candidate is checked against `min_width` at its *final* width. A row
-  with no legible filling is refused, and that refusal is what reflow reads as
-  "this panel does not fit here".
-- **The arrangement is the user's, per width band**: Settings → **Layout** edits
-  a list of *breakpoints*, each an ordered list of `{panel, span}` slots plus its
-  own host-overflow mode, persisted as `store.json`'s `layout`.
-  `settings::normalized_order` drops unknown or duplicate slots and appends
-  missing panels from `DEFAULT_ORDER`, so a stored layout always renders every
-  panel exactly once — including one added by a later build. `layout: null`
-  means "never configured".
-- Unknown width (0) means "not in a cockpit", and every fallback picks the
-  layout that can't be unreadable. Assuming wide is what let a dead measurement
-  pass for a deliberate layout.
+  `sm/md/lg` tiers: every panel declares its own `PanelKind::min_width` and
+  breaks only when *its* content stops fitting. A new kind that omits it fails
+  to compile (the `match` is exhaustive), and
+  `every_panel_kind_declares_a_positive_min_width` fails on a zero.
+- **`panel_columns(kind, width, spacing)`** is how many content columns one
+  panel affords at the width it is given: the same `auto-fit` arithmetic over
+  that panel's own `min_width`, capped at `PANEL_MAX_COLUMNS` (two). The
+  `cockpit` payload carries one figure per panel (`panelColumns`) and the
+  frontend applies it; it never derives a column count itself.
+- **`host_columns`** is how many host cards sit side by side in a Machines
+  tile's Full view (`hostColumns`), over `HOST_CARD_MIN_WIDTH`
+  (`hostCardMinWidth`). **`host_tabs`** collapses the cards into a tab bar
+  (`host_tab_bar`) only when the tile's `hostOverflow` is `tabs`, the cards have
+  stacked to one column and there is more than one host; stacking stays the
+  default so an unset preference keeps every host visible.
+- **`volume_slots`** (`app/src-tauri/src/main.rs`) is the longest visible volume
+  list across the cards when they are side by side, `0` when they stack or tab,
+  so sibling cards reserve the same number of slots and their volume blocks
+  align by construction. It is re-derived after the operator's hidden volumes
+  are filtered out.
+- All of it is sized from the window inside the Full view. The tile's own
+  `coreRowSpan`, `hostOverflow` and `rowGapPx` reach it through `HostLook`; the
+  tile owns the settings, the window owns the width.
+- **Unknown width (`<= 0` or NaN) stacks**: `host_columns` and `panel_columns`
+  both answer 1, because stacking can never be unreadable. Assuming wide is what
+  let a dead measurement pass for a deliberate layout.
 - The per-core CPU grid picks its columns from `core_column_ladder`, which obeys
   the same two invariants `core_columns` documents: divide the core count
   evenly, stay at or below `CORE_MAX_COLUMNS`, and leave **at least two rows**.
   Until the one-row fix it offered every divisor, including the count itself,
   rendering a 10-core M1 Max as one row of ten stretched cells while
   `core_columns` was answering 5 × 2 and passing all of its own tests.
+  `aligned_core_ladders` aligns sibling cards' rungs so cards in a row share one
+  core-block height.
+- The retired `layout` key (and the global `core_row_span`, `row_gap_px` and
+  `host_overflow_mode`) is read once, by `lenient_layout_overflow`
+  (`crates/store/src/lib.rs`) and its siblings, for the upgrade copy onto tiles,
+  and is never written (#647). A value with no tile to apply to is dropped, not
+  kept: a configured overview with no Machines tile (core rows, host overflow),
+  an overview with no tiles, or a `detailViews` entry for a source no tile shows.
+  Solador's Full view, the only other place they applied, is gone, and the next
+  save writes none of the legacy keys (`carry_view_settings_onto_tiles`).
 
 ### UI Design
-- Dark mode optimized; glanceable grid of cockpit panels.
+- Dark mode optimized; glanceable tiles on an overview, each opening into a Full view of its panel.
 - Status indicated by color: green (good), orange (warning), red (error).
 - Designed for persistent full-screen display on a second monitor.
 - Overview Machines has numeric CPU/RAM meters, GPU and GPU-memory meters below
@@ -541,7 +553,8 @@
   tied to a tile (items, links to each tile's Detail, **Add tile** with no
   visible tile). A hidden tile is never a target and no chip opens Solador's Full
   view. Detail defaults to compact
-  tables, with a Table/List choice persisted per source in `detailViews`.
+  tables, with a Table/List choice persisted per tile (`detailView`, and
+  `runnerFullView` for a Runners tile's Full view).
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
   group identity each runner row carries (`groupId`, label split included);
@@ -579,8 +592,8 @@
   and repaints nothing there but the tile's heading: `updateView` runs on a
   forced render, so the open panel is not rebuilt every second. Detail from an
   attention chip carries its tile like any other, so its Full view is that
-  tile's. (The `full` action, Solador's Full view for a whole source, is no
-  longer reachable from a chip; #639's cutover removes it.) A trouble panel
+  tile's. (The `full` action, a whole source's panel, is gone with Solador's Full
+  view, #647.) A trouble panel
   closes when Rust stops reporting its source's trouble.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
@@ -601,8 +614,7 @@
   beside Needs Attention. About puts update controls above naturally flowing
   status/help/notes without nested scrolling. Notes format headings, lists,
   emphasis and code through DOM nodes; HTML stays text, and URLs stay selectable.
-  Settings calls the full cockpit arrangement **Full view layout** and keeps a 12px vertical/
-  16px horizontal header inset.
+  Settings keeps a 12px vertical/16px horizontal header inset.
 
 ### Error vocabulary (`crates/fault`)
 

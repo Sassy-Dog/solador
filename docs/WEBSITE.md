@@ -57,7 +57,8 @@ from `tests/frontend/og-card.html`. The nine `panel-*.png` are a tile's **Full
 view** (View, then Full view) of the showcase readings, in a window sized to the
 panel's old card (908pt for the half-width panels, 462pt for the quarter-width
 ones, 900pt for Hosts), so each image keeps the shape `site/index.html` lays
-out; `cockpit.png` and `cockpit-narrow.png` still come from Solador's Full view.
+out. There are no other cockpit shots: `cockpit.png` and `cockpit-narrow.png`
+went with Solador's Full view (#647).
 Its cockpit stub refuses any grid width it has no dump for, rather than paint a
 layout computed for another one; each viewport has its own `--width` dump in
 `fixtures:showcase`.

@@ -17,11 +17,11 @@
      `.card`, `.panel` and `.group`, which separate their own children by 10 —
      and the panel that renders 21+ rows got taller for it, which the cockpit
      cannot afford on a screen whose whole job is fitting rows in. So the number
-     is the OPERATOR's now (`row_gap_px`, Settings → General), and the answer
-     shipped in an untouched store is 0: flush.
+     is the OPERATOR's now (each tile's `row_gap_px`, in its Configure), and the
+     answer shipped in an untouched store is 0: flush.
 
-     The value therefore ARRIVES FROM RUST, as `rowGapPx` on the cockpit
-     payload, exactly like `--cockpit-gap` — which is a reversal, and the reason
+     The value therefore ARRIVES FROM RUST, as `rowGapPx` on the tile in
+     `dashboard_view`, exactly like `--cockpit-gap` — which is a reversal, and the reason
      is that the number stopped being the frontend's. It was authored here while
      spacing inside a list was a thing nothing but this stylesheet had an opinion
      about; a preference is not that. What is left here is the value the page
@@ -153,8 +153,8 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .plot svg { display:block; width:100%; height:100%; }
 .foot { display:flex; font-size:10px; color:var(--muted); }
 
-/* The grid's own wrapper is the query container, so each card reflows against
-   ITS width, not the viewport's — what CockpitBreakpoints.reflow() does by hand. */
+/* The grid's own wrapper is the query container, so each card lays out against
+   ITS width, not the viewport's. */
 .cores-wrap {
   container-type: inline-size; container-name: cores;
   /* Height lives on .cores, not here: container queries can't style their
@@ -275,7 +275,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    several independently-polled sections, so its header carries ONE line holding
    all of their clocks, each named ("neon: as of 23h ago · sentry: as of 23h
    ago", `panel::merged_freshness`, #355). That grows with the number of
-   configured providers, and on a quarter-width card it is one of two
+   configured providers, and on a narrow card it is one of two
    variable-length messages sharing a line with about 130px left in it.
 
    So it takes the warning's factor exactly, and equal is the only split that
@@ -318,7 +318,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 /* Whole host groups sit side by side once Rust says the panel is wide enough
    (`--panel-cols`, from `panel_columns`). A group is already the right grid
    item, so this is the entire two-column implementation for this panel -- and
-   because it is pure CSS, a resize reflows it without waiting out the panel's
+   because it is pure CSS, a resize re-splits it without waiting out the panel's
    own 10s poll. `align-items:start` keeps a short group short instead of
    stretching it to match a long neighbour. */
 #containersBody {
@@ -459,32 +459,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   cursor:pointer; white-space:nowrap; }
 .ctx-item:hover, .ctx-item:focus-visible { background:var(--line); }
 
-/* ---- Panel rows ---------------------------------------------------------
-   Which panels share a row is `viewmodel::cockpit::reflow`'s answer and how
-   wide each one sits is its `PanelSpan`'s weight — both applied by app.js, NOT
-   a CSS `repeat(auto-fit, minmax(…))`, which would be a second implementation
-   of every panel's own `min_width` and free to disagree with the tested one.
-   Every row is the same four quarter tracks and a panel claims its span's worth
-   with `grid-column`, assigned via CSSOM by app.js. Four here rather than a
-   per-row track list (`2fr 1fr 1fr` for a half beside two quarters) because
-   `fr` divides what is left after *that row's* gutters: the same Half came out
-   `(W-g)/2` beside one Half and `(W-2g)/2` beside two Quarters, so the edge
-   between Repos and Runners missed the edge between Containers and OpenClaw
-   below it by half a gutter. One grid, one set of gridlines, on every row.
-   `minmax(0,1fr)` so a long resource name can never push its column past its
-   share.
-
-   `align-items:stretch` (the grid default, spelled out because this rule used
-   to say `start`): every card in a row is as tall as the tallest, so a row
-   reads as one band instead of a ragged edge. Cards are flex columns whose
-   content stays top-aligned, so the extra height is trailing space inside the
-   card, never stretched rows. Panels that must NOT stretch their own content to
-   match a neighbour keep their inner `align-items:start` (see #containersBody,
-   #reposBody, #azureBody). */
-.panel-rows { display:flex; flex-direction:column; }
-.panel-row { display:grid; gap:var(--cockpit-gap, 16px); align-items:stretch;
-  grid-template-columns: repeat(4, minmax(0, 1fr)); }
-
 /* ---- Services -----------------------------------------------------------
    One-line rows: dot, vendor, state word. No `--panel-cols` split — the list is
    short (the five built-ins this stack derives, plus whatever status pages the
@@ -576,8 +550,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    section it came from. Neither may come back to the body: the header is the
    only place a line that comes and goes costs no height. */
 
-/* Usage is authored a quarter, but reflow leaves it alone on a full-width row
-   at every width below the four-across one — so at `--panel-cols: 2` (from
+/* Usage fills the width a tile's Full view gives it, so at `--panel-cols: 2` (from
    `panel_columns`, the same source as Containers' and Runners' splits) the
    provider sections move BESIDE Claude's rollups instead of running one airy
    column across the whole card: two grid items, the Claude block and the
@@ -671,7 +644,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 
    Both strings keep their ellipsis: stacking buys each of them the whole card
    width, which is enough at every width this panel is authored for, but a card
-   narrower than its `min_width` (a lone panel reflow refused to split) must
+   narrower than its `min_width` (a lone panel the window cannot split) must
    still degrade rather than overflow. */
 .oc-agent { display:flex; flex-direction:column; gap:1px; min-width:0; }
 .oc-name { font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden;
@@ -844,33 +817,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .pairing { gap:8px; }
 .pair-trusted { color:var(--green); }
 .hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
-/* The Layout editor: one row per panel — name, width picker, and the two move
-   buttons — laid out on one line rather than the stacked shape `.host-row` and
-   `.repo-row` use, because a row here carries three short controls and no
-   sub-form. The `.field` label sits above its select, so the row aligns on the
-   BOTTOM edge and the buttons line up with the picker rather than its label. */
-.layout-row { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap;
-  padding:6px 0; border-top:1px solid var(--line); }
-.layout-row:first-of-type { border-top:0; }
-.layout-name { font-size:13px; font-weight:700; }
-.layout-row .input { max-width:160px; }
-/* The preview: the rows this order packs into, at the proportions the cockpit
-   will paint. Four quarter tracks and a `grid-column` span per tile — the same
-   grid, and the same setter, `.panel-row` uses, so what this shows cannot drift
-   from what the cockpit renders. A per-row track list would drift, and by
-   exactly the amount the cockpit's used to: `fr` divides what is left after
-   that row's own gutters, so it draws a half beside two quarters narrower than
-   a half beside one half. A row the order leaves short of four quarters shows
-   the unassigned track as a gap rather than stretching its tiles over it. */
-.layout-preview-row { display:grid; gap:6px;
-  grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.layout-tile { display:flex; align-items:baseline; gap:6px; min-width:0;
-  padding:6px 8px; background:var(--panelAlt); border:1px solid var(--line);
-  border-radius:6px; }
-.layout-tile-name { font-size:11px; font-weight:700; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
-.layout-tile-span { font-size:9px; color:var(--muted); margin-left:auto;
-  white-space:nowrap; }
 /* The Configure repos… modal — the app's second floating layer (.ctx-menu at
    z-index:10 is the first, so this sits one up). The scrim owns dismissal:
    a click that lands on it, and not on the panel, closes the picker. */

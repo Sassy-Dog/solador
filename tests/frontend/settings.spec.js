@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { stubTileIpc, openTileFull } from "./tile-full.js";
 
 // Same CSP guard as layout.spec.js: the page is served under the app's real
 // policy (csp_server.py), and a blocked style or script surfaces as a console
@@ -19,6 +20,9 @@ test.afterEach(async ({ page }) => {
 });
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
+
+// The overview's toolbar button: the only way into Settings (#647).
+const SETTINGS_BUTTON = '.db-chrome [data-action="settings"]';
 
 const TEST_RESULT = "✓ ubu-01 · agent v0.4.0";
 
@@ -41,6 +45,8 @@ async function stubIpc(page, cockpit, settings, probe, updates, discover) {
           invoke: async (command, args) => {
             window.__CALLS__.push({ command, args });
             if (command === "cockpit") return cockpit;
+            // The overview the page boots on, and the button that opens Settings.
+            if (command === "dashboard_view") return (await fetch("/sample-dashboard.json")).json();
             if (command === "settings_view") return settings;
             if (command === "settings_test_host") return { id: args.id, result: testResult };
             // The probe answers in its own shape, not `{status, settings}`: a
@@ -77,9 +83,9 @@ async function openSettings(page, baseURL, probe, updates, discover) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
   await stubIpc(page, cockpit, settings, probe, updates, discover);
-  await page.goto("/index.html?view=details");
-  await expect(page.locator("#settingsToggle")).toBeVisible();
-  await page.locator("#settingsToggle").click();
+  await page.goto("/index.html");
+  await expect(page.locator(SETTINGS_BUTTON)).toBeVisible();
+  await page.locator(SETTINGS_BUTTON).click();
   await expect(page.locator("#settings")).toBeVisible();
   return settings;
 }
@@ -97,7 +103,7 @@ async function addConnection(page, kind) {
 
 // Exercise the visible route into the editor, including catalog-only providers.
 const tab = (page, id) => ({ click: async () => {
-  if (["connections", "general", "layout", "about"].includes(id)) {
+  if (["connections", "general", "about"].includes(id)) {
     await page.locator(`.tab[data-tab="${id}"]`).click();
     return;
   }
@@ -144,25 +150,12 @@ test("leaving or closing an editor protects typed fields and explicitly discards
   await page.locator("#settingsConfirm .discard").click();
   await expect(page.locator("#settings")).toBeHidden();
   await expect(page.locator('#settings input[type="password"]')).toHaveCount(0);
-  await page.locator("#settingsToggle").click();
+  await page.locator(SETTINGS_BUTTON).click();
   await tab(page, "usage").click();
   await expect(page.locator("#secret-neon")).toHaveValue("");
   await expect(page.locator("#neon-org-id")).not.toHaveValue("draft-org");
   expect(await calls(page, "settings_save_secret")).toEqual([]);
   expect(await calls(page, "settings_save_providers")).toEqual([]);
-});
-
-test("an unapplied preference selection is protected when navigating", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  await tab(page, "general").click();
-  const rows = settings.general.coreRowSpan;
-  const other = rows.value === rows.max ? rows.min : rows.max;
-  await page.locator("#general-core-rows").fill(String(other));
-  await tab(page, "connections").click();
-  await expect(page.locator("#settingsConfirm")).toBeVisible();
-  await page.locator("#settingsConfirm .primary").click();
-  await expect(page.locator("#general-core-rows")).toHaveValue(String(other));
-  expect(await calls(page, "settings_save_general")).toEqual([]);
 });
 
 test("host edits retain the saved identity and replace the token only explicitly", async ({ page, baseURL }) => {
@@ -225,52 +218,51 @@ test("Connections and its editor fit a narrow window without clipped controls", 
 /**
  * Panels keep their own timers and skip the work while Settings is up, so a
  * setting saved a second ago used to leave its panel displaying the setup
- * instruction that asked for it — for a full slow-cadence tick, ten seconds on
+ * instruction that asked for it -- for a full slow-cadence tick, ten seconds on
  * the Azure panel. `refreshCockpit` did not help: it repaints the host cards,
- * and the panels are separate.
+ * and the panels are separate. Only a tile's Full view has a panel on screen
+ * (#647), so each source's tile is opened, Settings opened over it and closed.
  */
-test("closing Settings brings the panels current, not just the host cards", async ({ page, baseURL }) => {
-  await openSettings(page, baseURL);
-  // Everything asked for during startup is noise for this assertion; what
-  // matters is what happens on close.
-  await page.evaluate(() => {
-    window.__CALLS__.length = 0;
+test("closing Settings brings a tile's Full view current, not just the host cards", async ({ page, baseURL }) => {
+  const sources = [
+    ["hosts", "cockpit"],
+    ["ghWorkflows", "repos"],
+    ["ghRunners", "runners"],
+    ["containers", "containers"],
+    ["services", "services"],
+    ["sentryCrons", "crons"],
+    ["claudeUsage", "usage"],
+    ["azureCost", "azure_cost"],
+    ["openclawAgents", "openclaw"],
+  ];
+  await stubTileIpc(page, baseURL, {
+    sources: sources.map(([source]) => source),
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { settings_view: await fixture(baseURL, "sample-settings.json") },
   });
-
-  await page.locator("#settingsClose").click();
-  await expect(page.locator("#settings")).toBeHidden();
-
-  // Every panel, not one: the registry exists so a single close brings them
-  // all current, and a panel that quietly stopped registering would still pass
-  // a test that only checked its neighbour.
-  for (const command of ["azure_cost", "crons", "containers", "repos", "services", "usage"]) {
+  await page.goto("/index.html");
+  for (const [source, command] of sources) {
+    await openTileFull(page, source);
+    await page.locator(SETTINGS_BUTTON).click();
+    await expect(page.locator("#settings")).toBeVisible();
+    // Everything asked for so far is noise; what matters is what close does.
+    await page.evaluate(() => {
+      window.__CALLS__.length = 0;
+    });
+    await page.locator("#settingsClose").click();
+    await expect(page.locator("#settings")).toBeHidden();
+    await expect(page.locator("#fullView")).toBeVisible();
+    // The tile's own source, on every source: a panel that quietly stopped
+    // registering a refresher would still pass a test that checked its neighbour.
     await expect
       .poll(async () => (await calls(page, command)).length, {
         timeout: 3000,
-        message: `${command} was not re-requested when Settings closed`,
+        message: `${command} was not re-requested when Settings closed over ${source}'s Full view`,
       })
       .toBeGreaterThan(0);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#dashboardOverview")).toBeVisible();
   }
-});
-
-test("the Settings button, title and every tab come from Rust", async ({ page, baseURL }) => {
-  const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  const settings = await openSettings(page, baseURL);
-
-  // The button's label rides in on the cockpit payload, because it has to
-  // exist before anything has asked for the settings payload.
-  await expect(page.locator("#settingsToggle")).toHaveText(cockpit.settingsLabel);
-  await expect(page.locator("#settingsTitle")).toHaveText(settings.title);
-  await expect(page.locator("#settingsClose")).toHaveText(settings.closeLabel);
-  await expect(page.locator("#settingsTabs .tab")).toHaveCount(settings.tabs.length);
-  for (const t of settings.tabs) await expect(page.locator(`#settingsTabs [data-tab="${t.id}"]`)).toContainText(t.title);
-
-  // The cockpit is out of the way while Settings is up, and comes back on
-  // close -- with a fresh poll rather than a stale, zero-width layout.
-  await expect(page.locator("#fullView")).toBeHidden();
-  await page.locator("#settingsClose").click();
-  await expect(page.locator("#fullView")).toBeVisible();
-  await expect(page.locator("#settings")).toBeHidden();
 });
 
 /**
@@ -310,9 +302,8 @@ test("every text and password field in Settings opts out of system capitalizatio
 
   let checked = 0;
 
-  // The three plain tabs (Preferences carries number fields; Detailed
-  // layout carries the add-breakpoint width; About carries none).
-  for (const id of ["general", "layout", "about"]) {
+  // The two plain tabs (Preferences and About carry no text fields now).
+  for (const id of ["general", "about"]) {
     await tab(page, id).click();
     checked += await expectOptedOut();
   }
@@ -364,39 +355,24 @@ test("every text and password field in Settings opts out of system capitalizatio
   expect(checked).toBeGreaterThan(10);
 });
 
-test("General shows the stored values and applies them in one command", async ({ page, baseURL }) => {
+test("General holds no view settings: they moved to each tile's Configure (#647)", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "general").click();
   const g = settings.general;
 
-  await expect(page.locator("#general-core-rows")).toHaveValue(String(g.coreRowSpan.value));
-  // The fixture's row gap is off the shipped 0 on purpose, so this asserts the
-  // field paints the STORED value rather than a constant that agrees with the
-  // default.
-  await expect(page.locator("#general-row-gap")).toHaveValue(String(g.rowGapPx.value));
-  expect(g.rowGapPx.value, "the fixture must carry a non-default gap").not.toBe(0);
+  // CPU core rows and Row spacing are per tile now; nothing here edits them.
+  expect(g.coreRowSpan).toBeUndefined();
+  expect(g.rowGapPx).toBeUndefined();
+  await expect(page.locator("#general-core-rows")).toHaveCount(0);
+  await expect(page.locator("#general-row-gap")).toHaveCount(0);
+  await expect(page.locator("#general-overflow")).toHaveCount(0);
+  // Nothing in this tab is saved with Apply, so there is no Apply to press.
+  await expect(page.locator(".btn.apply")).toHaveCount(0);
   // The shared Refresh Interval left this tab (#615): no picker, and a note
   // from Rust saying where the cadences went.
   await expect(page.locator("#general-interval")).toHaveCount(0);
   expect(g.refreshInterval).toBeUndefined();
   await expect(page.getByText(g.cadenceNote)).toBeVisible();
-  // The host-overflow picker left this tab: it is per breakpoint now.
-  await expect(page.locator("#general-overflow")).toHaveCount(0);
-
-  await page.locator("#general-core-rows").fill("4");
-  await page.locator("#general-row-gap").fill("0");
-  await page.locator(".btn.apply").click();
-
-  // One command for both, and `0` travels in it. A field that dropped a
-  // zero — the shape `Number(raw) || fallback` produces — would look like the
-  // operator never touched the row spacing.
-  expect(await calls(page, "settings_save_general")).toEqual([
-    {
-      command: "settings_save_general",
-      args: { coreRowSpan: 4, rowGapPx: 0 },
-    },
-  ]);
-  await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
 });
 
 test("Settings no longer carries the panel poll cadences (#614)", async ({ page, baseURL }) => {
@@ -478,194 +454,6 @@ test("each plan opt-in is off in a fresh store, saves on the spot, and paints Ru
       window.__CALLS__ = [];
     });
   }
-});
-
-/** The Layout tab, showing the band the editor has selected. */
-async function openLayout(page, baseURL) {
-  const settings = await openSettings(page, baseURL);
-  await tab(page, "layout").click();
-  // The dumped fixture carries two bands on purpose — a narrow one that tabs
-  // its host cards and a wide one that does not — so the switcher, the
-  // per-band overflow and the removable band are all reachable here.
-  expect(settings.layout.breakpoints.length).toBeGreaterThan(1);
-  return settings.layout;
-}
-
-test("Layout lists every panel in the stored order, with Rust's move bounds", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-  const band = t.breakpoints[0];
-
-  const rows = page.locator(".layout-row");
-  await expect(rows).toHaveCount(band.rows.length);
-  await expect(rows.locator(".layout-name")).toHaveText(band.rows.map((r) => r.title));
-  for (const [i, panel] of band.rows.entries()) {
-    const row = rows.nth(i);
-    await expect(row).toHaveAttribute("data-panel", panel.id);
-    await expect(row.locator("select")).toHaveValue(panel.span);
-    // Whether a move can do anything is Rust's answer, not an index compared
-    // here — the ends of the list are where a second implementation shows up.
-    expect(await row.locator('.btn[data-direction="up"]').isDisabled()).toBe(!panel.canMoveUp);
-    expect(await row.locator('.btn[data-direction="down"]').isDisabled()).toBe(!panel.canMoveDown);
-  }
-  // The picker offers exactly the widths Rust offers.
-  await expect(rows.first().locator("select option")).toHaveText(
-    t.spanOptions.map((o) => o.label)
-  );
-  // …and the band's own overflow mode, which is the whole feature.
-  await expect(page.locator("#layout-overflow")).toHaveValue(band.hostOverflow);
-});
-
-test("the breakpoint switcher shows one band at a time and edits address it", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-  const [narrow, wide] = t.breakpoints;
-
-  // One button per band, labelled by Rust, with the first selected.
-  const bar = page.locator(".tabs .tab[data-band]");
-  await expect(bar).toHaveText(t.breakpoints.map((b) => b.label));
-  await expect(bar.first()).toHaveAttribute("data-active", "true");
-  await expect(page.locator("#layout-overflow")).toHaveValue(narrow.hostOverflow);
-
-  // Switching bands is a local view change — no command, and the rows and
-  // overflow are the other band's.
-  await bar.nth(1).click();
-  await expect(bar.nth(1)).toHaveAttribute("data-active", "true");
-  await expect(page.locator("#layout-overflow")).toHaveValue(wide.hostOverflow);
-  expect(wide.hostOverflow).not.toBe(narrow.hostOverflow);
-  await expect(page.locator(".layout-row").first()).toHaveAttribute(
-    "data-panel",
-    wide.rows[0].id
-  );
-  expect(await calls(page, "settings_move_panel")).toEqual([]);
-
-  // …and every edit now names THAT band by its width, never by index.
-  await page.locator(`#layout-span-${wide.rows[1].id}`).selectOption("quarter");
-  expect(await calls(page, "settings_set_panel_span")).toEqual([
-    {
-      command: "settings_set_panel_span",
-      args: { minWidth: wide.minWidth, panel: wide.rows[1].id, span: "quarter" },
-    },
-  ]);
-});
-
-test("moving a panel and changing its width each save one command", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-  const band = t.breakpoints[0];
-  const second = band.rows[1];
-
-  await page.locator(`.layout-row[data-panel="${second.id}"] .btn[data-direction="up"]`).click();
-  expect(await calls(page, "settings_move_panel")).toEqual([
-    {
-      command: "settings_move_panel",
-      args: { minWidth: band.minWidth, panel: second.id, direction: "up" },
-    },
-  ]);
-
-  await page.locator(`#layout-span-${second.id}`).selectOption("quarter");
-  expect(await calls(page, "settings_set_panel_span")).toEqual([
-    {
-      command: "settings_set_panel_span",
-      args: { minWidth: band.minWidth, panel: second.id, span: "quarter" },
-    },
-  ]);
-  // No Apply button in this tab: each control persists on its own, and the
-  // status line is the proof it reached Rust.
-  await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
-  // The IPC double returns the original persisted width. An immediate-save
-  // picker must follow that response, rather than preserve it as a draft.
-  await expect(page.locator(`#layout-span-${second.id}`)).toHaveValue(second.span);
-  await tab(page, "connections").click();
-  await expect(page.locator("#settingsConfirm")).toBeHidden();
-  await expect(page.locator(".connection-list")).toBeVisible();
-});
-
-test("the host-overflow mode is saved per breakpoint", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-  const band = t.breakpoints[0];
-  const other = t.overflowOptions.find((o) => o.value !== band.hostOverflow);
-
-  await page.locator("#layout-overflow").selectOption(other.value);
-  expect(await calls(page, "settings_set_breakpoint_overflow")).toEqual([
-    {
-      command: "settings_set_breakpoint_overflow",
-      args: { minWidth: band.minWidth, hostOverflowMode: other.value },
-    },
-  ]);
-});
-
-test("a breakpoint can be added by width and removed unless it is the last", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-
-  await page.locator("#layout-add-width").fill("2400");
-  await page.locator(".btn.add").click();
-  expect(await calls(page, "settings_add_breakpoint")).toEqual([
-    { command: "settings_add_breakpoint", args: { minWidth: 2400 } },
-  ]);
-
-  const remove = page.locator(".btn.delete", { hasText: t.removeLabel });
-  await remove.click();
-  expect(await calls(page, "settings_remove_breakpoint")).toEqual([
-    { command: "settings_remove_breakpoint", args: { minWidth: t.breakpoints[0].minWidth } },
-  ]);
-
-  // With one band left there is nothing to remove, and `canRemove` is Rust's
-  // answer rather than a length compared here.
-  const only = JSON.parse(JSON.stringify(t));
-  only.breakpoints = [{ ...t.breakpoints[0], canRemove: false }];
-  const settings = await fixture(baseURL, "sample-settings.json");
-  settings.layout = only;
-  await stubIpc(page, await fixture(baseURL, "sample-cockpit.json"), settings);
-  await page.goto("/index.html?view=details");
-  await page.locator("#settingsToggle").click();
-  await tab(page, "layout").click();
-  await expect(page.locator(".btn.delete", { hasText: t.removeLabel })).toBeDisabled();
-});
-
-test("the Layout preview draws Rust's rows at Rust's proportions", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-  const preview = t.breakpoints[0].preview;
-
-  const lines = page.locator(".layout-preview-row");
-  await expect(lines).toHaveCount(preview.rows.length);
-  for (const [i, row] of preview.rows.entries()) {
-    const line = lines.nth(i);
-    await expect(line.locator(".layout-tile-name")).toHaveText(row.map((c) => c.title));
-    // Placed on the same four-quarter grid the cockpit is — each tile spans its
-    // weight in quarters, starting where the tiles before it left off — so the
-    // preview cannot promise an arrangement the cockpit would not render.
-    const placed = await line.evaluate((el) =>
-      [...el.children].map((c) => {
-        const s = getComputedStyle(c);
-        return [s.gridColumnStart.trim(), s.gridColumnEnd.trim()];
-      })
-    );
-    let start = 1;
-    for (const [j, cell] of row.entries()) {
-      expect(placed[j], `tile ${j} of row ${i}`).toEqual([`${start}`, `span ${cell.weight}`]);
-      start += cell.weight;
-    }
-    expect(start, "a row never claims more than four quarters").toBeLessThanOrEqual(5);
-  }
-});
-
-test("Reset is offered on a customised layout and disabled on the default", async ({ page, baseURL }) => {
-  const t = await openLayout(page, baseURL);
-  // The dumped fixture carries a customised layout, so the button is live.
-  expect(t.isDefault).toBe(false);
-  const reset = page.locator(".btn.delete", { hasText: t.resetLabel });
-  await reset.click();
-  expect(await calls(page, "settings_reset_layout")).toEqual([
-    { command: "settings_reset_layout", args: {} },
-  ]);
-
-  // …and a store that never carried one has nothing to reset. `isDefault` is
-  // Rust's, so this drives the other branch through the payload.
-  const settings = await fixture(baseURL, "sample-settings.json");
-  settings.layout.isDefault = true;
-  await stubIpc(page, await fixture(baseURL, "sample-cockpit.json"), settings);
-  await page.goto("/index.html?view=details");
-  await page.locator("#settingsToggle").click();
-  await tab(page, "layout").click();
-  await expect(page.locator(".btn.delete", { hasText: t.resetLabel })).toBeDisabled();
 });
 
 test("the Hosts tab lists every host with its endpoint and token badge", async ({ page, baseURL }) => {
@@ -1018,8 +806,8 @@ test("the repo modal checkboxes the grants and two-steps a costly untrack", asyn
     reason: null,
   };
   await stubIpc(page, cockpit, settings, null, null, discover);
-  await page.goto("/index.html?view=details");
-  await page.locator("#settingsToggle").click();
+  await page.goto("/index.html");
+  await page.locator(SETTINGS_BUTTON).click();
   await tab(page, "accounts").click();
 
   const card = page.locator(`.group[data-account="${owning.id}"]`);
@@ -1556,9 +1344,8 @@ test("release notes render readable structure while keeping remote content inert
   await expect(rendered).toContainText('PR #567 (https://github.com/Sassy-Dog/solador/pull/567)');
   await expect(rendered.locator('img, script, a, iframe')).toHaveCount(0);
   expect(await page.evaluate(() => window.NOTES_EXECUTED)).toBeUndefined();
-  await tab(page, 'layout').click();
-  await expect(page.locator('#settings .tab[data-tab="layout"]')).toHaveText('Full view layout');
-  await expect(page.locator('#settingsBody h2').first()).toHaveText('Full view layout');
+  // The tab list has no Layout tab: Solador's Full view is gone (#647).
+  await expect(page.locator('#settings .tab[data-tab="layout"]')).toHaveCount(0);
 });
 
 /**
@@ -2046,8 +1833,8 @@ test("a pinned host that is fine offers no Re-pair until Test finds its certific
   const host = settings.hosts.rows.find((h) => h.pinned);
   host.certificateChanged = false;
   await stubIpc(page, cockpit, settings);
-  await page.goto("/index.html?view=details");
-  await page.locator("#settingsToggle").click();
+  await page.goto("/index.html");
+  await page.locator(SETTINGS_BUTTON).click();
   await openConnection(page, `host:${host.id}`);
 
   await expect(page.locator(".pinned-fingerprint")).toHaveText(host.fingerprint);
@@ -2082,8 +1869,8 @@ test("an unpaired host the cockpit refuses to dial over plain HTTP says so, and 
   const host = settings.hosts.rows.find((h) => !h.pinned);
   host.plainRefused = true;
   await stubIpc(page, cockpit, settings);
-  await page.goto("/index.html?view=details");
-  await page.locator("#settingsToggle").click();
+  await page.goto("/index.html");
+  await page.locator(SETTINGS_BUTTON).click();
   await openConnection(page, `host:${host.id}`);
 
   // Why it is not polled, above the step that fixes it -- and no Re-pair, which

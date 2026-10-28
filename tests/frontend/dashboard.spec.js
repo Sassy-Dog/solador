@@ -271,6 +271,12 @@ const action = (page, name) =>
   page.locator(`#dashboardOverview [data-action="${name}"]`);
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const viewButton = (page, source) => tile(page, source).getByRole("button", { name: "View", exact: true });
+// A tile's Full view the way an operator enters it: View, then Full view.
+async function openFull(page, source) {
+  await viewButton(page, source).click();
+  await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
+  await expect(page.locator("#fullView")).toBeVisible();
+}
 async function openDetail(page, source) {
   await viewButton(page, source).click();
   await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
@@ -422,7 +428,9 @@ test('critical attention stays visible with a saved acknowledgement in table and
 test("dashboard toolbar icons keep accessible labels and keyboard tooltips through editing", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const toolbar = page.locator(".db-chrome");
-  for (const name of ["Full view", "Fit window to tiles", "Edit dashboard", "Settings"]) {
+  // There is no toolbar button for Solador's own Full view any more (#647).
+  await expect(toolbar.getByRole("button", { name: "Full view", exact: true })).toHaveCount(0);
+  for (const name of ["Fit window to tiles", "Edit dashboard", "Settings"]) {
     const button = toolbar.getByRole("button", { name, exact: true });
     await expect(button).toBeVisible();
     await button.focus();
@@ -441,19 +449,17 @@ test("dashboard toolbar icons keep accessible labels and keyboard tooltips throu
   await edit.press("Enter");
   await expect(edit).toHaveAccessibleName("Edit dashboard");
   await expect(edit).toHaveAttribute("aria-pressed", "false");
-  await toolbar.getByRole("button", { name: "Full view", exact: true }).click();
-  await expect(page.locator("#fullView")).toBeVisible();
+  await openFull(page, "hosts");
   await expect(toolbar.getByRole("heading", {name:"Solador", exact:true})).toBeVisible();
-  await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "true");
   await expect(toolbar.getByRole("button", {name:"Settings", exact:true}).locator("svg")).toHaveCount(1);
   await toolbar.getByRole("button", {name:"Settings", exact:true}).click();
   await page.locator('#settingsClose').click();
   await expect(page.locator('#fullView')).toBeVisible();
+  // Edit in a tile's Full view goes to that tile's Configure on the overview.
   await edit.focus();
   await edit.press('Enter');
-  await expect(edit).toBeFocused();
+  await expect(page.locator('#dashboardOverview')).toBeVisible();
   await expect(edit).toHaveAccessibleName('Done editing');
-  await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "false");
   await toolbar.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.locator("#settings")).toBeVisible();
 });
@@ -477,8 +483,7 @@ test("Fit window to tiles sends the measured content height from either view, an
   expect(overview.viewportHeight).toBe(3000);
   expect(await fits()).toEqual([overview]);
 
-  await toolbar.getByRole("button", { name: "Full view", exact: true }).click();
-  await expect(page.locator("#fullView")).toBeVisible();
+  await openFull(page, "hosts");
   await fit.click();
   expect((await fits())[1]).toEqual(await measured());
 
@@ -502,13 +507,21 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
   const list = panel.getByRole('button', {name:'List', exact:true});
   await list.click();
   await expect(list).toHaveAttribute('aria-pressed', 'true');
-  expect((await savedLayout(page)).detailViews.ghRunners).toBe('list');
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  // The Full view's choice is the tile's own, and Detail's is separate.
+  const runnersTile = async () => (await savedLayout(page)).tiles.find(t => t.id === 'overview-ghRunners');
+  expect(await runnersTile()).toMatchObject({runnerFullView:'list', detailView:'table'});
+  await page.keyboard.press('Escape');
   await openDetail(page, 'ghRunners');
-  await expect(page.getByRole('button',{name:'List',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(page.getByRole('button',{name:'Table',exact:true})).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'List',exact:true}).click();
+  await expect.poll(async () => (await runnersTile()).detailView).toBe('list');
+  expect((await runnersTile()).runnerFullView).toBe('list');
   await page.getByRole('button',{name:'Table',exact:true}).click();
+  await expect.poll(async () => (await runnersTile()).detailView).toBe('table');
   await tile(page,'ghRunners').getByRole('button',{name:/MACOS · ARM64/}).click();
   await action(page, 'tileFull').click();
+  await expect(panel.locator('.db-detail-table')).toHaveCount(0);
+  await panel.getByRole('button',{name:'Table',exact:true}).click();
   await expect(panel.locator('.db-detail-table')).toBeVisible();
   for (const width of [375,1200]) {
     await page.setViewportSize({width,height:900});
@@ -527,10 +540,10 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
     expect(await status.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
 });
 
-test('a half-width Full runners table keeps Status in view, labels on one line', async ({page, baseURL}) => {
+test("a Runners tile's Full table keeps Status in view, labels on one line", async ({page, baseURL}) => {
   await page.setViewportSize({width:1800, height:1200});
   await openDashboard(page, baseURL, true);
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await openFull(page, "ghRunners");
   const panel = page.locator('#runnersPanel');
   await expect(panel.locator('.db-detail-table')).toBeVisible();
   const edge = await panel.evaluate(el => el.getBoundingClientRect().right);
@@ -770,7 +783,7 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   await expect.poll(async () => (await page.locator('.db-inspector-body').boundingBox()).height).toBeLessThan(expandedHeight);
 });
 
-test("Detail Table/List choice persists per source and failed saves keep the selected view", async ({ page, baseURL }) => {
+test("Detail Table/List choice persists per tile and failed saves keep the selected view", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await openDetail(page, 'ghWorkflows');
   const table = page.locator('#dashboardOverview').getByRole('button', {name:'Table', exact:true});
@@ -784,7 +797,7 @@ test("Detail Table/List choice persists per source and failed saves keep the sel
   await list.click();
   await expect(list).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.db-detail-grid details')).toHaveCount(6);
-  expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('list');
+  expect((await savedLayout(page)).tiles.find(t => t.id === 'overview-ghWorkflows').detailView).toBe('list');
   await page.reload();
   await openDetail(page, 'ghWorkflows');
   await expect(list).toHaveAttribute('aria-pressed', 'true');
@@ -793,7 +806,7 @@ test("Detail Table/List choice persists per source and failed saves keep the sel
   await openDetail(page, 'ghWorkflows');
   await table.click();
   await expect(table).toHaveAttribute('aria-pressed', 'true');
-  expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('table');
+  expect((await savedLayout(page)).tiles.find(t => t.id === 'overview-ghWorkflows').detailView).toBe('table');
 });
 
 test("delayed Detail view saves preserve keyboard focus without stealing it after navigation", async ({ page, baseURL }) => {
@@ -871,7 +884,7 @@ test("the Runners Configure lists group labels with counts and the shared note",
   await expect(row).toContainText("runner-large");
   await expect(row).toContainText(editor.rows[0].carriers);
   await expect(section).toContainText(editor.firstMatch);
-  await expect(section).toContainText("Shared · saved immediately · applies everywhere runners appear: every Runners tile and the Full view.");
+  await expect(section).toContainText("Shared · saved immediately · applies everywhere runners appear: every Runners tile and its Full view.");
   await expect(section.locator('[data-action="group-label-seen"]')).toHaveText(editor.seen);  // The labels decide Detail's and Full's groups too, so a list tile shows them.
   await page.getByLabel("Runner view", { exact: true }).selectOption("list");
   await expect(section).toBeVisible();
@@ -984,7 +997,7 @@ test("the Containers Configure lists every rule field, Collapse-only ones only f
   const section = await configureContainers(page);
   await expect(section.locator("legend")).toHaveText(t.heading);
   await expect(section).toContainText(t.firstMatch);
-  await expect(section).toContainText("Shared \u00b7 saved immediately \u00b7 applies everywhere containers appear: every Containers tile and the Full view.");
+  await expect(section).toContainText("Shared \u00b7 saved immediately \u00b7 applies everywhere containers appear: every Containers tile and its Full view.");
   const rows = section.locator("[data-container-rule]");
   await expect(rows).toHaveCount(t.rows.length);
   for (const rule of t.rows) {
@@ -1073,7 +1086,7 @@ test("the Machines Configure edits the shared limits, every machine's override a
   const editor = hosts.machineAlerts;
   const section = await configureMachines(page);
   await expect(section.locator("legend")).toHaveText(editor.heading);
-  await expect(section).toContainText("Shared · saved immediately · applies to every Machines tile, Detail and the Full view.");
+  await expect(section).toContainText("Shared · saved immediately · applies to every Machines tile, its Detail and its Full view.");
   const shared = machine(section, "defaults");
   for (const field of editor.defaults.fields)
     await expect(limit(shared, field.label)).toHaveValue(String(field.value));
@@ -1527,7 +1540,7 @@ test("runner group Full view preserves the filter, tracks membership, and clears
   await page.getByRole('button', {name:'All runners', exact:true}).click();
   await expect(runners).toHaveCount(6);
   await expect(page.locator('#runnersTitle')).toBeFocused();
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
   await expect(page.locator('#dashboardOverview')).toBeVisible();
 });
 
@@ -1641,7 +1654,7 @@ test("Full runners table and list show labels", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, true);
   const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
   const mac = payload.rows.find(r => r.name === "mac-s1");
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await openFull(page, "ghRunners");
   const panel = page.locator("#runnersPanel");
   await expect(panel.locator("thead th")).toContainText(["Labels"]);
   const cell = panel.locator(`tr[data-runner='${JSON.stringify(["acme", "mac-s1"])}'] .db-label-chip`);
@@ -1663,7 +1676,8 @@ test("Full filtered to a group says what matched", async ({ page, baseURL }) => 
   await action(page, "tileFull").click();
   await page.evaluate(() => refreshPanels());
   await expect(page.locator("#runnersBody .gh-group-match")).toHaveText("matched by runner-large");
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
   await tile(page, "ghRunners").getByRole("button", { name: /MACOS · ARM64/ }).click();
   await action(page, "tileFull").click();
   await expect(page.locator("#runnersBody .gh-runner-filter")).toContainText("MACOS · ARM64");
@@ -2281,8 +2295,7 @@ test("details reach the tile's Full view and the source's connection settings", 
   await expect(page.locator("#reposPanel")).toBeHidden();
   await expect.poll(() => page.evaluate(() => window.__CALLS__.filter(c => c.command === "cockpit").at(-1).args))
     .toEqual({ width: expect.any(Number), tile: "overview-hosts" });
-  // The toolbar's Full view toggle leaves a tile's Full view as it leaves Solador's.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await action(page, "close").click();
   await openDetail(page, "ghWorkflows");
@@ -2296,10 +2309,6 @@ test("details reach the tile's Full view and the source's connection settings", 
   await page.locator("#settingsClose").click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await expect(page.locator("#fullView")).toBeHidden();
-  await action(page, "allPanels").click();
-  await expect(page.locator("#fullView")).toBeVisible();
-  await expect(page.locator("#reposPanel")).toBeVisible();
-  await expect(page.locator("#containersPanel")).toBeVisible();
 });
 
 // The Repos tile scoped to Healthy repos; Rust's note for it, word for word.
@@ -2323,7 +2332,7 @@ test("Detail's Full view opens the tile's own scoped panel", async ({ page, base
   await openDetail(page, "ghWorkflows");
   await detailFull(page).click();
   await expect(page.locator("#dashboardOverview")).toBeHidden();
-  await expect(page.locator("#fullView")).toHaveAttribute("data-detail-source", "ghWorkflows");
+  await expect(page.locator("#fullView")).toHaveAttribute("data-full-source", "ghWorkflows");
   await expect(page.locator("#reposPanel")).toBeVisible();
   await expect(page.locator("#runnersPanel")).toBeHidden();
   expect(await page.evaluate(() => window.__CALLS__)).toContainEqual({ command: "repos", args: { tile: "overview-ghWorkflows" } });
@@ -2357,11 +2366,6 @@ test("Escape returns to the overview and restores the panel", async ({ page, bas
     await expect(page.locator(".db-full-note")).toHaveCount(0);
     await expect(back).toBeFocused();
   }
-  // Solador's own Full view has no tile to leave; Escape there changes nothing.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
-  await expect(page.locator("#fullView")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.locator("#fullView")).toBeVisible();
 });
 
 // A distinctive repo, so a reading painted where it should not be is findable.
@@ -2375,11 +2379,11 @@ const holdRepos = (page) => page.evaluate(async (name) => {
 
 test("a tile's Full view shows a loading line, never the rows the panel last held (#640)", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, healthyRepos);
-  // Solador's own Full view leaves source-wide repo rows in the panel.
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  // An earlier Full view of the same source leaves its rows in the panel.
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
   await expect(page.locator("#reposBody")).toBeVisible();
   await expect(page.locator("#reposBody")).not.toBeEmpty();
-  await page.locator('.db-chrome [data-action="allPanels"]').click();
+  await page.keyboard.press("Escape");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await page.evaluate(() => { window.__HOLD_TILE__ = "repos"; });
   await openTileFullViaDetail(page, "overview-ghWorkflows");
@@ -3255,4 +3259,200 @@ test("the View menu of a bottom-row tile stays inside a fitted window and adds n
     expect(box.bottom).toBeLessThanOrEqual(viewport.height);
   }
   expect(await scrollHeight()).toBe(before);
+});
+
+// --- A tile's Configure configures every view (#647) -------------------------
+
+const editTile = async (page, id) => {
+  await page.locator('#dashboardOverview [data-action="edit"]').click();
+  await page.locator(`[data-tile="${id}"] [data-action="configure"]`).click();
+};
+const pageButton = (page, label) => page.locator(".db-config-switch").getByRole("button", { name: label, exact: true });
+const configPage = (page, id) => page.locator(`.db-config-page[data-page="${id}"]`);
+const savedTile = async (page, id) => (await savedLayout(page)).tiles.find((t) => t.id === id);
+
+test("Configure's switch lists This tile and every view Rust names, one page each", async ({ page, baseURL }) => {
+  // A view Rust adds appears in the switch and gets its page without the
+  // frontend changing: the payload grows a third view here.
+  const model = await openDashboard(page, baseURL, false, (view) => {
+    view.configure.pages.push({ id: "extra", label: "Extra view" });
+    view.configure.pageFields.extra = [{ field: "rowGapPx", sources: null }];
+  });
+  await editTile(page, "overview-hosts");
+  const labels = model.configure.pages.map((p) => p.label);
+  expect(labels.slice(0, 3)).toEqual(["This tile", "Detail", "Full view"]);
+  await expect(page.locator(".db-config-switch")).toHaveAttribute("aria-label", model.configure.switchLabel);
+  await expect(page.locator(".db-config-switch button")).toHaveText(labels);
+  // Settings for every view sit above the switch, not on a page.
+  const above = page.locator(".db-every-view");
+  await expect(above.getByLabel("Tile name")).toBeVisible();
+  await expect(above.getByLabel("Show", { exact: true })).toBeVisible();
+  await expect(page.locator(".db-config-switch").getByLabel("Tile name")).toHaveCount(0);
+  // This tile is first and showing; the others are not.
+  await expect(pageButton(page, "This tile")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "tile")).toBeVisible();
+  await expect(configPage(page, "detail")).toBeHidden();
+  await expect(configPage(page, "tile").getByLabel("Presentation")).toBeVisible();
+  // Detail: the Table/List choice.
+  await pageButton(page, "Detail").click();
+  await expect(pageButton(page, "Detail")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "detail")).toBeVisible();
+  await expect(configPage(page, "tile")).toBeHidden();
+  await expect(configPage(page, "detail").getByLabel(model.configure.detailView.label)).toBeVisible();
+  // Full view: a Machines tile's core rows, overflow and row spacing.
+  await pageButton(page, "Full view").click();
+  const full = configPage(page, "full");
+  await expect(full).toBeVisible();
+  for (const field of ["coreRowSpan", "hostOverflow", "rowGapPx"])
+    await expect(full.getByLabel(model.configure[field].label)).toBeVisible();
+  await expect(full.getByLabel(model.configure.runnerFullView.label)).toHaveCount(0);
+  await expect(full.getByText(model.configure.coreRowSpan.help)).toBeVisible();
+  // The added view's page.
+  await pageButton(page, "Extra view").click();
+  await expect(configPage(page, "extra").locator('[data-field="rowGapPx"]')).toBeVisible();
+  await expect(full).toBeHidden();
+});
+
+test("each source's Full view page holds only the settings that apply to it", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await editTile(page, "overview-ghRunners");
+  await pageButton(page, "Full view").click();
+  const full = configPage(page, "full");
+  await expect(full.getByLabel(model.configure.runnerFullView.label)).toBeVisible();
+  await expect(full.getByLabel(model.configure.rowGapPx.label)).toBeVisible();
+  await expect(full.getByLabel(model.configure.coreRowSpan.label)).toHaveCount(0);
+  await expect(full.getByLabel(model.configure.hostOverflow.label)).toHaveCount(0);
+  await page.locator('#dashboardOverview [data-action="close"]').click();
+  await page.locator('[data-tile="overview-ghWorkflows"] [data-action="configure"]').click();
+  await pageButton(page, "Full view").click();
+  await expect(full.getByLabel(model.configure.rowGapPx.label)).toBeVisible();
+  await expect(full.getByLabel(model.configure.runnerFullView.label)).toHaveCount(0);
+  await expect(full.getByLabel(model.configure.coreRowSpan.label)).toHaveCount(0);
+});
+
+test("Apply saves the tile's own settings from any page", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await editTile(page, "overview-hosts");
+  await pageButton(page, "Full view").click();
+  const full = configPage(page, "full");
+  await full.getByLabel(model.configure.coreRowSpan.label).fill("3");
+  await full.getByLabel(model.configure.hostOverflow.label).selectOption("tabs");
+  await full.getByLabel(model.configure.rowGapPx.label).fill("4");
+  await pageButton(page, "Detail").click();
+  await configPage(page, "detail").getByLabel(model.configure.detailView.label).selectOption("list");
+  // Apply on the Detail page saves the Full view page's values too.
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect.poll(() => savedTile(page, "overview-hosts")).toMatchObject({
+    coreRowSpan: 3, hostOverflow: "tabs", rowGapPx: 4, detailView: "list",
+  });
+  // Other tiles are untouched.
+  expect(await savedTile(page, "overview-ghRunners")).toMatchObject({ coreRowSpan: 2, hostOverflow: "stack", rowGapPx: 0, detailView: "table" });
+});
+
+test("a Runners tile's Full view and Detail choices save separately", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await editTile(page, "overview-ghRunners");
+  await pageButton(page, "Full view").click();
+  await configPage(page, "full").getByLabel(model.configure.runnerFullView.label).selectOption("list");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect.poll(() => savedTile(page, "overview-ghRunners")).toMatchObject({ runnerFullView: "list", detailView: "table" });
+});
+
+// The browser enforces the `min`/`max` Rust authors into the field; the IPC
+// stub never runs Rust, so Rust's own refusal (`layout_from_ipc`) is covered by
+// `an_out_of_range_view_setting_over_ipc_is_refused_not_clamped`, not here.
+test("an out-of-range view setting is stopped by the field's Rust-authored min/max and nothing is saved", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await editTile(page, "overview-hosts");
+  await pageButton(page, "Full view").click();
+  const input = configPage(page, "full").getByLabel(model.configure.coreRowSpan.label);
+  await expect(input).toHaveAttribute("min", String(model.configure.coreRowSpan.min));
+  await expect(input).toHaveAttribute("max", String(model.configure.coreRowSpan.max));
+  await input.fill(String(model.configure.coreRowSpan.max + 1));
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(input).toBeFocused();
+  // Nothing may have been sent; give a wrongly sent save time to arrive first.
+  await expect.poll(() => commandArgs(page, "dashboard_save"), { timeout: 1000 }).toEqual([]);
+  await page.waitForTimeout(300);
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("Apply with an invalid value on another page switches to that page instead of failing silently", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await editTile(page, "overview-hosts");
+  await pageButton(page, "Full view").click();
+  const input = configPage(page, "full").getByLabel(model.configure.coreRowSpan.label);
+  await input.fill(String(model.configure.coreRowSpan.max + 1));
+  await pageButton(page, "This tile").click();
+  await expect(configPage(page, "full")).toBeHidden();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  // The page that owns the invalid control is shown, with that control focused.
+  await expect(configPage(page, "full")).toBeVisible();
+  await expect(configPage(page, "tile")).toBeHidden();
+  await expect(pageButton(page, "Full view")).toHaveAttribute("aria-pressed", "true");
+  await expect(input).toBeFocused();
+  expect(await input.evaluate((el) => el.validity.valid)).toBe(false);
+  await page.waitForTimeout(300);
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("Configure reads the page Edit-from-a-Full-view opens from Rust's payload", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, (view) => {
+    view.configure.editFromFullPage = "detail";
+  });
+  await tile(page, "ghRunners").getByRole("button", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
+  await page.locator('.db-chrome [data-action="edit"]').click();
+  await expect(pageButton(page, "Detail")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "detail")).toBeVisible();
+  await expect(configPage(page, "full")).toBeHidden();
+});
+
+test("Configure reads which page holds the tile's own fields from Rust's payload", async ({ page, baseURL }) => {
+  // The own page is not first here: a frontend that assumes pages[0] puts the
+  // tile's own fields on the wrong page.
+  await openDashboard(page, baseURL, false, (view) => {
+    const own = view.configure.pages.find((p) => p.id === view.configure.ownPage);
+    view.configure.pages = [...view.configure.pages.filter((p) => p !== own), own];
+  });
+  await editTile(page, "overview-hosts");
+  await expect(pageButton(page, "This tile")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "tile").locator('[data-field="width"]')).toBeVisible();
+  await expect(configPage(page, "detail").locator('[data-field="width"]')).toHaveCount(0);
+});
+
+test("Edit inside a tile's Full view opens that tile's Configure on its Full view page", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await tile(page, "ghRunners").getByRole("button", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
+  await expect(page.locator("#fullView")).toBeVisible();
+  await page.locator('.db-chrome [data-action="edit"]').click();
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await expect(page.locator("#dashboardForm")).toBeVisible();
+  await expect(page.locator("#dashboard-title")).toHaveValue("Runners");
+  await expect(pageButton(page, "Full view")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "full")).toBeVisible();
+  await expect(configPage(page, "tile")).toBeHidden();
+});
+
+test("Edit on the overview still opens Configure on This tile", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await editTile(page, "overview-ghRunners");
+  await expect(pageButton(page, "This tile")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "tile")).toBeVisible();
+});
+
+test("a tile's Detail follows its own Table/List and the in-Detail toggle writes that value", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, (view) => {
+    view.layout.tiles.find((t) => t.id === "overview-ghWorkflows").detailView = "list";
+  });
+  await openDetail(page, "ghWorkflows");
+  await expect(page.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await expect.poll(() => savedTile(page, "overview-ghWorkflows")).toMatchObject({ detailView: "table" });
+  // Another source's tile never read it.
+  await page.locator('#dashboardOverview [data-action="close"]').click();
+  await openDetail(page, "hosts");
+  await expect(page.getByRole("button", { name: "Table", exact: true })).toHaveAttribute("aria-pressed", "true");
+  expect(await savedTile(page, "overview-hosts")).toMatchObject({ detailView: "table" });
 });

@@ -493,17 +493,15 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
  * The two-column case, built by editing the payload rather than by picking a
  * dumped window size.
  *
- * No dumped cockpit gives Usage two content columns: it is authored a quarter,
- * so even at 2732pt it pairs with OpenClaw and lands at 675 — one column. The 2
- * arrives at >= 696pt (`PanelKind::ClaudeUsage::min_width` is 340) and that
- * derivation is pinned by the Rust tests; the payload is the contract, and what
+ * Every dumped cockpit fixture is at least 700pt wide, so all of them give Usage
+ * two content columns (the second arrives at 696pt, since
+ * `PanelKind::ClaudeUsage::min_width` is 340). That is why this suite builds the
+ * one-column and two-column cases by editing the payload. That derivation is pinned by the Rust tests; the payload is the contract, and what
  * this suite owns is the frontend honouring the count it is handed.
  */
 async function gotoWithColumns(page, baseURL, columns, mutate) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  for (const panel of cockpit.panelRows.flat()) {
-    if (panel.id === "claudeUsage") panel.columns = columns;
-  }
+  cockpit.panelColumns.claudeUsage = columns;
   const usage = await fixture(baseURL, "sample-usage.json");
   if (mutate) mutate(usage);
   await gotoUsagePanel(page, baseURL, { cockpit, usage });
@@ -539,10 +537,7 @@ test("on a full-width card the providers sit beside the rollups, not under them"
 
 test("a narrow card stacks the providers under the rollups, dividers and all", async ({ page, baseURL }) => {
   // Same panel, same DOM — only the column count Rust derived differs.
-  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
-  expect(narrow.panelRows.flat().find((p) => p.id === "claudeUsage").columns).toBe(1);
-  const usage = await fixture(baseURL, "sample-usage.json");
-  await gotoUsagePanel(page, baseURL, { cockpit: narrow, usage });
+  const usage = await gotoWithColumns(page, baseURL, 1);
 
   const claude = await page.locator("#usageBody .usage-main").boundingBox();
   const providers = await page.locator("#usageBody .usage-providers").boundingBox();

@@ -174,11 +174,11 @@ mod tests {
     #[test]
     fn malformed_stored_limits_fall_back_without_losing_other_settings() {
         let settings: crate::Settings = serde_json::from_value(json!({
-            "core_row_span": 4,
+            "github_org": "acme",
             "machine_alerts": {"defaults": {"ramWarning": -1}}
         }))
         .unwrap();
-        assert_eq!(settings.core_row_span, 4);
+        assert_eq!(settings.github_org, "acme");
         assert_eq!(
             settings.machine_alerts.defaults,
             MachineThresholds::default()

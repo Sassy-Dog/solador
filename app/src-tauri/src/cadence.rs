@@ -1,7 +1,7 @@
 //! The poll cadence controls in a tile's Configure (#614, #615).
 //!
 //! A cadence belongs to the source, not to a tile, so the control is shared by
-//! every tile of that source and the Full view. A source can feed more than one
+//! every tile of that source, and its Detail and Full view. A source can feed more than one
 //! kind of tile: GitHub's single poll fills Repos and Runners alike, so its one
 //! cadence is offered, identically, in both tiles' Configure. It says so, and saves on the
 //! click through `panel_interval_save` / `panel_interval_clear`, outside the
@@ -97,7 +97,7 @@ pub fn section(settings: &Settings, panel: PanelInterval, titles: &[&str]) -> Va
     json!({
         "id": spec.key,
         "heading": "Poll cadence",
-        "shared": format!("Shared \u{b7} saved immediately \u{b7} applies to {} and the Full view.", tiles_sentence(titles)),
+        "shared": format!("Shared \u{b7} saved immediately \u{b7} applies to {} and their Full views.", tiles_sentence(titles)),
         "label": format!("{} (seconds)", spec.label),
         "value": secs,
         // The input's own floor, so the browser marks a refusable value. It is a
@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(sections[0]["value"], json!(300));
         assert_eq!(
             sections[0]["shared"],
-            json!("Shared \u{b7} saved immediately \u{b7} applies to every GitHub Repos tile and every Runners tile and the Full view.")
+            json!("Shared \u{b7} saved immediately \u{b7} applies to every GitHub Repos tile and every Runners tile and their Full views.")
         );
     }
 

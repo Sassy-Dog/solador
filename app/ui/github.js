@@ -354,7 +354,7 @@ function runnerViewControls(payload) {
         const focused = document.activeElement === button;
         runnerViewSaving = true;
         runnerViewControls(lastRunners);
-        const saved = await window.soladorDashboard?.setDetailView('ghRunners', view);
+        const saved = await window.soladorDashboard?.setRunnerFullView(view);
         runnerViewSaving = false;
         renderRunners(lastRunners);
         $g('runnersViewStatus').textContent = saved ? '' : payload.detailLabels.failed;
@@ -369,7 +369,7 @@ function runnerViewControls(payload) {
     status.setAttribute('role','status');
     $g('runnersPanel').append(status);
   }
-  const view = window.soladorDashboard?.detailView('ghRunners') || 'table';
+  const view = window.soladorDashboard?.runnerFullView?.() || 'table';
   for (const button of controls.children) {
     button.setAttribute('aria-pressed', String(button.dataset.view === view));
     button.disabled = runnerViewSaving;

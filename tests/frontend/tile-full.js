@@ -24,8 +24,10 @@ export function dashboardWithTiles(dashboard, sources) {
   const view = structuredClone(dashboard);
   const [template] = view.tiles.filter((t) => t.source === "ghWorkflows");
   const [layoutTemplate] = view.layout.tiles.filter((t) => t.source === "ghWorkflows");
-  view.tiles = sources.map((source) => ({
-    ...template, id: tileIdFor(source), source, title: view.sources.find((s) => s.id === source).title,
+  // A source may be `{ source, id }` for a second tile of one source.
+  const entries = sources.map((entry) => (typeof entry === "string" ? { source: entry, id: tileIdFor(entry) } : entry));
+  view.tiles = entries.map(({ source, id }) => ({
+    ...template, id, source, title: view.sources.find((s) => s.id === source).title,
     scopeLabel: "All resources", rows: [], moreCount: 0, moreLabel: "", footer: "", warnings: [],
   }));
   view.layout.tiles = view.tiles.map(({ id, source, title }) => ({ ...layoutTemplate, id, source, title, scope: "all" }));
@@ -47,13 +49,17 @@ export function dashboardWithTiles(dashboard, sources) {
  * about a panel never has to think about them. A spec about a failed
  * `cockpit` passes `{ __throw }` as `cockpit`; the overview survives it (#646).
  */
-export async function stubTileIpc(page, baseURL, { source, sources = [source], cockpit, answers, dashboardKeys = {} }) {
+export async function stubTileIpc(page, baseURL, { source, sources = [source], cockpit, answers, dashboardKeys = {}, tileKeys = {} }) {
   // `dashboardKeys` are top-level keys of the `dashboard_view` payload a spec
-  // sets itself (the operator's `rowGapPx`, say), over the fixture's.
+  // sets itself (the card `spacing`, say), over the fixture's.
   const dashboard = {
     ...dashboardWithTiles(await (await fetch(`${baseURL}/sample-dashboard.json`)).json(), sources),
     ...dashboardKeys,
   };
+  // `tileKeys` maps a tile id to keys a spec sets on that tile (its `rowGapPx`,
+  // `coreRowSpan`, `detailView`...), on the tile and on its stored layout entry.
+  for (const list of [dashboard.tiles, dashboard.layout.tiles])
+    for (const t of list) Object.assign(t, tileKeys[t.id] ?? {});
   await page.addInitScript(
     ({ answers, cockpit, dashboard }) => {
       window.__CALLS__ = [];
@@ -69,6 +75,8 @@ export async function stubTileIpc(page, baseURL, { source, sources = [source], c
             if (answer && typeof answer === "object" && "__frames" in answer) {
               answer = answer.__frames[(window.__FRAME__ ||= {})[command] ?? 0];
             }
+            // `{ __byTile: { <tile id>: payload } }` answers the tile the command was asked for.
+            if (answer && typeof answer === "object" && "__byTile" in answer) answer = answer.__byTile[args?.tile] ?? null;
             if (answer && typeof answer === "object" && "__throw" in answer) throw answer.__throw;
             return answer;
           },
@@ -85,7 +93,7 @@ export async function openTileFull(page, source, tileId = tileIdFor(source)) {
   await tile.getByRole("button", { name: "View", exact: true }).click();
   await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
   await expect(page.locator("#fullView")).toBeVisible();
-  await expect(page.locator("#fullView")).toHaveAttribute("data-detail-source", source);
+  await expect(page.locator("#fullView")).toHaveAttribute("data-full-source", source);
 }
 
 /**

@@ -132,8 +132,8 @@ fn persist(store: &mut store::Store, previous: MachineAlerts) -> Result<(), Stri
 /// The Machines tile's Configure section: the shared defaults, and one
 /// override editor per machine on the payload's cards.
 ///
-/// The limits are not the tile's. They judge every Machines tile, Detail and
-/// the Full view, so the section says it is shared and every edit saves on the
+/// The limits are not the tile's. They judge every Machines tile, its Detail and
+/// its Full view, so the section says it is shared and every edit saves on the
 /// click through `machine_save_alerts`, never with the tile's Apply. Attached to
 /// the Hosts payload by both `dashboard_view` and the `--dump-dashboard`
 /// fixture, so the two cannot differ.
@@ -147,7 +147,7 @@ pub fn attach(payload: &mut Value, alerts: &MachineAlerts) {
         .collect();
     payload["machineAlerts"] = json!({
         "heading": "Machine alerts",
-        "shared": "Shared · saved immediately · applies to every Machines tile, Detail and the Full view.",
+        "shared": "Shared · saved immediately · applies to every Machines tile, its Detail and its Full view.",
         "defaults": settings(alerts, None),
         "byHost": by_host,
     });

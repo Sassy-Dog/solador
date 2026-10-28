@@ -235,7 +235,8 @@ fn no_payload_carrying_variant_can_put_a_url_in_a_panel() {
     }
 }
 
-/// The stock half of every panel message fits a Half-width card. Only the stock
+/// The stock half of every panel message fits the bound (`MAX_MESSAGE_CHARS`,
+/// sized against a half-width card). Only the stock
 /// half: an arm that appends the Settings tab or a reset instant is past the
 /// bound on purpose, and #351 is what makes that survivable at the rendering
 /// layer.

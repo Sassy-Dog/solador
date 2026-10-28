@@ -14,9 +14,7 @@ use store::{
 use tauri_plugin_notification::NotificationExt;
 use uuid::Uuid;
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
-use viewmodel::cockpit::{
-    host_columns, panel_table, CockpitLayout, PanelKind, PanelSpan, HOST_CARD_MIN_WIDTH, SPACING,
-};
+use viewmodel::cockpit::{host_columns, HOST_CARD_MIN_WIDTH, SPACING};
 use viewmodel::color;
 
 mod azure;
@@ -616,28 +614,67 @@ fn align_core_ladders(cards: &mut [Value], columns: usize, row_span: usize) {
     }
 }
 
-/// The payload shape, over already-rendered cards. Split from
-/// [`cockpit_cards`] so the tests can drive it without locks.
+/// How a Machines tile's Full view lays its host cards out: the two per-tile
+/// settings that shape them (#647). `Default` is what a read that names no tile
+/// uses: the overview's rows and the boot read never paint the cards' core
+/// ladders, so they take the defaults rather than any one tile's choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HostLook {
+    /// What the cards do when they no longer fit side by side.
+    overflow: HostOverflowMode,
+    /// How many grid rows tall each card's per-core CPU chart is.
+    core_row_span: usize,
+}
+
+impl Default for HostLook {
+    fn default() -> Self {
+        HostLook {
+            overflow: HostOverflowMode::default(),
+            core_row_span: usize::from(store::settings::DEFAULT_CORE_ROW_SPAN),
+        }
+    }
+}
+
+impl From<&store::DashboardTile> for HostLook {
+    fn from(tile: &store::DashboardTile) -> Self {
+        HostLook {
+            overflow: tile.host_overflow,
+            core_row_span: usize::from(tile.core_row_span),
+        }
+    }
+}
+
+/// Everything [`cockpit_payload`] reads, as one value: the cards already
+/// rendered, how many hosts are monitored, the width they are sized from and
+/// how the tile wants them laid out.
 ///
 /// `remote_count` is deliberately separate from `cards.len()`: the local card is
 /// always there, so "is anything configured" is a question about *monitored*
 /// hosts and counting cards would answer it wrong forever.
-fn cockpit_payload(
+struct CockpitInput {
     cards: Vec<Value>,
     remote_count: usize,
+    /// The window's width, which a tile's Full view is sized from.
     available: f64,
-    overflow: HostOverflowMode,
-    core_row_span: usize,
-    row_gap_px: u8,
-    layout: &CockpitLayout,
-) -> Value {
-    let mut cards = cards;
+    look: HostLook,
+}
+
+/// The payload shape, over already-rendered cards. Split from
+/// [`cockpit_cards`] so the tests can drive it without locks.
+fn cockpit_payload(input: CockpitInput) -> Value {
+    let CockpitInput {
+        mut cards,
+        remote_count,
+        available,
+        look,
+    } = input;
     let columns = host_columns(available, cards.len(), HOST_CARD_MIN_WIDTH, SPACING);
-    let tabs = host_tab_bar(&cards, columns, overflow);
-    align_core_ladders(&mut cards, columns, core_row_span);
+    let tabs = host_tab_bar(&cards, columns, look.overflow);
+    align_core_ladders(&mut cards, columns, look.core_row_span);
     // A cockpit with no monitored host says so in words made here, like every
     // other string the frontend paints -- the local card alone would read as a
-    // finished setup rather than an untouched one.
+    // finished setup rather than an untouched one. The overview's Machines tile
+    // reads it (`dashboard::source_view`); a tile's Full view paints no copy.
     let empty = if remote_count == 0 {
         json!({ "message": "No hosts configured. Add one in Settings." })
     } else {
@@ -647,95 +684,28 @@ fn cockpit_payload(
         "hosts": cards,
         "hostColumns": columns,
         "hostCardMinWidth": HOST_CARD_MIN_WIDTH,
-        "spacing": SPACING,
-        // The operator's row spacing, painted as `--row-gap`. It rides the
-        // cockpit payload rather than the settings one because the settings
-        // payload is only fetched while that surface is open, and this value has
-        // to be on the page from the first frame. Beside `spacing` because the
-        // two are the same kind of number in different places: this one separates
-        // rows inside a card, that one separates the cards.
-        "rowGapPx": row_gap_px,
         // Null unless the cards actually collapse. A tab bar the frontend has
         // to decide the visibility of would be `host_tabs` re-implemented in
         // JS, free to disagree with the tested one -- the same argument
-        // `hostColumns` and `panelRows` are here for.
+        // `hostColumns` is here for.
         "hostTabs": tabs,
         // How many volume tiles each card reserves. Cross-card, so it belongs
         // here beside `hostColumns` rather than inside a card that can only see
         // itself.
         "volumeSlots": volume_slots(&cards, columns),
-        "panels": panel_table(),
-        "panelRows": panel_rows(layout, available),
+        // The content columns each panel affords at this width. A panel's Full
+        // view fills the window, so this is `panel_columns` over the window's
+        // width; it travels as data for the reason `hostColumns` does.
+        "panelColumns": viewmodel::cockpit::PanelKind::ALL
+            .iter()
+            .map(|kind| (kind.id().to_owned(), json!(viewmodel::cockpit::panel_columns(*kind, available, SPACING))))
+            .collect::<serde_json::Map<String, Value>>(),
         "empty": empty,
-        // The Settings surface is opened from the cockpit, so its button's
-        // label has to arrive before anything has asked for the settings
-        // payload. Same rule as every other string on the page: made in Rust,
-        // and in exactly one place -- `settings::OPEN_LABEL` is what the
-        // Settings view itself renders too.
-        "settingsLabel": settings::OPEN_LABEL,
         // What the overview says when `dashboard_view` fails. A failed call has no
         // words of its own, and this is the other command the page is already
-        // polling, so the sentence is made here, in one place, like the label above.
+        // polling, so the sentence is made here, in one place.
         "overviewLoadFailed": dashboard::OVERVIEW_LOAD_FAILED,
     })
-}
-
-/// One arrangement, reflowed for `available` — which row each panel sits in,
-/// how wide its span makes it, and the content columns that width affords.
-///
-/// The *arrangement* is the user's (`settings::effective_layout`, which is
-/// `CockpitLayout::hosts_forward()` until someone edits the Layout tab), the
-/// *packing* is `viewmodel::cockpit::reflow` and the *tracks* are
-/// `viewmodel::cockpit::panel_widths`, all three already tested there. It travels
-/// as data for exactly the reason `hostColumns` does: a CSS `auto-fit` over the
-/// panels would be a second implementation of `PanelKind::min_width`, free to
-/// disagree with the tested one — and the case that matters (OpenClaw + Usage
-/// still sharing a row at a width where Repos + Runners must split) is precisely
-/// the case a global breakpoint tier gets wrong.
-///
-/// Rows the frontend has no section for (`hosts`, which it renders above this
-/// block) still travel: a row silently dropped here would be indistinguishable
-/// from one this function never produced.
-fn panel_rows(layout: &CockpitLayout, available: f64) -> Value {
-    Value::Array(
-        viewmodel::cockpit::reflow(&layout.rows, available, SPACING)
-            .into_iter()
-            .map(|row| {
-                // Per panel, not per row: the tracks of one row differ once its
-                // spans do.
-                let widths = viewmodel::cockpit::panel_widths(&row, available, SPACING);
-                Value::Array(
-                    row.iter()
-                        .zip(widths)
-                        .map(|(placement, width)| {
-                            json!({
-                                "id": placement.kind.id(),
-                                "title": placement.kind.title(),
-                                "minWidth": placement.kind.min_width(),
-                                "span": placement.span.as_str(),
-                                // The row's track sizes, as the `fr` numbers the
-                                // frontend paints: a name alone would make it
-                                // re-derive "how much is a quarter" in CSS.
-                                "weight": placement.span.weight(),
-                                // The width this panel actually gets, and the
-                                // content columns that fit in it. Both travel
-                                // for the reason `hostColumns` does: the answer
-                                // plus the input it was derived from, so the
-                                // frontend applies a decision it cannot
-                                // re-derive differently.
-                                "width": width,
-                                "columns": viewmodel::cockpit::panel_columns(
-                                    placement.kind,
-                                    width,
-                                    SPACING,
-                                ),
-                            })
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
 }
 
 /// The write side of the poll loop, pulled out of the spawned task for the
@@ -2853,7 +2823,6 @@ fn settings_payload(app: &App) -> Value {
             settings: store.settings(),
             hosts: store.hosts(),
             repos: store.repos(),
-            layout: store.layout(),
             vendors: store.status_vendors(),
             accounts: store.accounts(),
             certificate_changed: &certificate_changed,
@@ -2960,19 +2929,7 @@ fn dashboard_view_in(width: f64, app: &App) -> Value {
         openclaw_unscoped(app),
     ];
     cadence::attach(&mut payloads, &settings);
-    let mut view = dashboard::view(&layout, &payloads);
-    stamp_spacing(&mut view, settings.row_gap_px);
-    view
-}
-
-/// The operator's spacing on a dashboard view: the gap between cards and the
-/// one between rows inside a card, the same two numbers `cockpit` carries. The
-/// overview reads this payload from its first frame whatever `cockpit` is doing,
-/// so a tile's Full view has its row gap before any `cockpit` response and
-/// without Solador's Full view being loaded.
-fn stamp_spacing(view: &mut Value, row_gap_px: u8) {
-    view["spacing"] = json!(SPACING);
-    view["rowGapPx"] = json!(row_gap_px);
+    dashboard::view(&layout, &payloads)
 }
 
 fn persist_dashboard(
@@ -2996,11 +2953,14 @@ fn persist_dashboard(
 
 #[tauri::command]
 fn dashboard_save(
-    layout: store::DashboardLayout,
+    layout: Value,
     expected_revision: u64,
     width: f64,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
+    // Raw JSON, not `DashboardLayout`: the typed read clamps view settings, and an
+    // edit over IPC is refused when out of range instead.
+    let layout = dashboard::layout_from_ipc(layout)?;
     persist_dashboard(
         &mut state.store.lock().expect("store poisoned"),
         layout,
@@ -3054,10 +3014,11 @@ fn cockpit(
 fn cockpit_for_tile(width: f64, app: &App, id: &str) -> Result<Value, String> {
     let tile = tile_from_store(app, id, "hosts")?;
     let frame = cockpit_frame(app);
-    let payload = frame.payload(width, None);
+    let look = HostLook::from(&tile);
+    let payload = frame.payload(width, None, look);
     let empty = dashboard::scoped_empty(&tile, &payload);
     let mut scoped = match kept_hosts(&tile, &payload) {
-        Some(keep) => frame.payload(width, Some(&keep)),
+        Some(keep) => frame.payload(width, Some(&keep), look),
         None => payload,
     };
     tile_scope::stamp_empty(&mut scoped, empty);
@@ -3114,9 +3075,6 @@ struct CockpitFrame {
     /// Counted before a scope drops any card: whether hosts are configured is a
     /// question about the store, never about which cards a tile kept.
     configured_remotes: usize,
-    bands: Vec<settings::Breakpoint>,
-    core_row_span: usize,
-    row_gap_px: u8,
     alerts: store::machine_alerts::MachineAlerts,
     hidden: volumes::Hidden,
 }
@@ -3126,14 +3084,12 @@ impl CockpitFrame {
     /// layout, so the columns, core ladders, volume slots and tab bar see only
     /// the kept ones. `None` keeps every card.
     ///
-    /// **The width picks the arrangement.** `breakpoint_for` takes the widest
-    /// band the measured cockpit clears, and that band carries both the panel
-    /// order and the host-overflow mode, so resizing the window changes the
-    /// layout on the next 1s frame, with no preference to toggle. Both are
-    /// laundered on the way out as well as on the way in (`breakpoints`), so a
-    /// store hand-edited to name a panel this build does not have still renders
-    /// every panel it does.
-    fn payload(&self, width: f64, keep: Option<&BTreeSet<String>>) -> Value {
+    /// **The tile picks the look.** A Machines tile's Full view is sized from
+    /// the window and takes the tile's own core rows and overflow mode
+    /// (`look`); the overview's rows and the boot read name no tile and take
+    /// `HostLook::default()`. Hand-edited stores are laundered on read
+    /// (`DashboardTile`'s clamps), not here.
+    fn payload(&self, width: f64, keep: Option<&BTreeSet<String>>, look: HostLook) -> Value {
         let cards = self
             .cards
             .iter()
@@ -3142,16 +3098,12 @@ impl CockpitFrame {
             })
             .cloned()
             .collect();
-        let band = settings::breakpoint_for(&self.bands, width);
-        let mut payload = cockpit_payload(
+        let mut payload = cockpit_payload(CockpitInput {
             cards,
-            self.configured_remotes,
-            width,
-            band.host_overflow,
-            self.core_row_span,
-            self.row_gap_px,
-            &band.layout(),
-        );
+            remote_count: self.configured_remotes,
+            available: width,
+            look,
+        });
         apply_machine_preferences(&mut payload, &self.hidden, &self.alerts);
         payload
     }
@@ -3174,23 +3126,16 @@ fn cockpit_frame(state: &App) -> CockpitFrame {
     // the GitHub loop re-reads its token: that is what makes a Settings edit
     // apply without a relaunch. The store lock is taken after the poll set's is
     // released, matching `poll_containers`'s sequence, and is held for one read.
-    let (bands, core_row_span, row_gap_px, alerts, hidden) = {
+    let (alerts, hidden) = {
         let store = state.store.lock().expect("store poisoned");
-        let settings = store.settings();
         (
-            settings::breakpoints(store.layout(), settings.host_overflow_mode),
-            settings.core_row_span as usize,
-            settings.row_gap_px,
-            settings.machine_alerts.clone(),
+            store.settings().machine_alerts.clone(),
             volumes::Hidden::from_store(&store),
         )
     };
     CockpitFrame {
         cards: cockpit_cards(Some(local), &hosts),
         configured_remotes: hosts.len(),
-        bands,
-        core_row_span,
-        row_gap_px,
         alerts,
         hidden,
     }
@@ -3198,7 +3143,7 @@ fn cockpit_frame(state: &App) -> CockpitFrame {
 
 /// [`CockpitFrame::payload`] over a fresh [`cockpit_frame`].
 fn cockpit_with(width: f64, state: &App, keep: Option<&BTreeSet<String>>) -> Value {
-    cockpit_frame(state).payload(width, keep)
+    cockpit_frame(state).payload(width, keep, HostLook::default())
 }
 
 /// The operator's per-machine choices, applied to the cockpit payload before
@@ -4263,28 +4208,6 @@ fn settings_view(
     payload
 }
 
-#[tauri::command]
-fn settings_save_general(
-    core_row_span: u8,
-    row_gap_px: u8,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        let general = settings::normalized_general(core_row_span, row_gap_px);
-        let current = store.settings_mut();
-        current.core_row_span = general.core_row_span;
-        current.row_gap_px = general.row_gap_px;
-        save_status(&store, "Saved.")
-    };
-    // Neither field needs a wake. They are read out of the store by
-    // `cockpit_with` on every frame, so they paint on the next 1s tick whether
-    // anything is woken or not. (The shared Refresh Interval that used to need
-    // waking here is three per-source cadences now, edited in the tiles'
-    // Configure, whose save wakes exactly the loop it moved: `wake_panel`.)
-    settings_response(&state, status)
-}
-
 /// Saves the shared CPU/RAM limits (`host_id` null) or one machine's override
 /// from the Machines tile's Configure, and answers with the re-rendered
 /// dashboard. Saved on the click and outside the dashboard's undo history:
@@ -4725,152 +4648,6 @@ fn apply_plan_usage(
         .plan_mut(provider)
         .reset();
     status
-}
-
-/// The shared half of every Layout-tab mutation: read every band, let `edit`
-/// change them, write them all back.
-///
-/// Read-modify-write over the *normalised* bands rather than over the stored
-/// profiles, which is what makes each of these commands total: whatever is on
-/// disk, `breakpoints` hands back at least one band holding every panel exactly
-/// once, so an edit can never operate on a layout with a hole in it — and what
-/// gets written back is therefore always complete and always renderable.
-///
-/// It is also the migration's one write path. The bands it hands `edit` already
-/// have the legacy General overflow folded in, so the first Layout edit of an
-/// upgraded store persists that mode into the profile rather than losing it.
-///
-/// `edit` returning `false` means the request addressed nothing (an unknown
-/// panel or band, a move off the end); nothing is written and the status says
-/// so, the same shape `apply_rule_edit`'s caller uses.
-fn edit_layout(
-    app: &App,
-    edit: impl FnOnce(&mut Vec<settings::Breakpoint>) -> bool,
-) -> Option<String> {
-    let mut store = app.store.lock().expect("store poisoned");
-    let seed = store.settings().host_overflow_mode;
-    let mut bands = settings::breakpoints(store.layout(), seed);
-    if !edit(&mut bands) {
-        return Some("Skipped — unknown breakpoint or panel.".to_owned());
-    }
-    store.set_layout(settings::store_profiles(&bands));
-    save_status(&store, "Saved.")
-}
-
-/// Applies `edit` to the panel order of the band at `min_width`.
-fn edit_band_order(
-    app: &App,
-    min_width: f64,
-    edit: impl FnOnce(&mut Vec<(PanelKind, PanelSpan)>) -> bool,
-) -> Option<String> {
-    edit_layout(app, |bands| {
-        settings::band_mut(bands, min_width).is_some_and(|band| edit(&mut band.order))
-    })
-}
-
-#[tauri::command]
-fn settings_move_panel(
-    min_width: f64,
-    panel: String,
-    direction: String,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let Some(kind) = PanelKind::parse(&panel) else {
-        return settings_response(&state, Some("Skipped — unknown panel.".into()));
-    };
-    let Some(direction) = settings::PanelMove::parse(&direction) else {
-        return settings_response(&state, Some("Skipped — unknown direction.".into()));
-    };
-    let status = edit_band_order(&state, min_width, |order| {
-        settings::move_panel(order, kind, direction)
-    });
-    // No wake: the cockpit re-reads the layout on its own next frame (one
-    // second), and closing Settings repaints it immediately.
-    settings_response(&state, status)
-}
-
-#[tauri::command]
-fn settings_set_panel_span(
-    min_width: f64,
-    panel: String,
-    span: String,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let Some(kind) = PanelKind::parse(&panel) else {
-        return settings_response(&state, Some("Skipped — unknown panel.".into()));
-    };
-    let Some(span) = PanelSpan::parse(&span) else {
-        return settings_response(&state, Some("Skipped — unknown width.".into()));
-    };
-    let status = edit_band_order(&state, min_width, |order| {
-        settings::set_panel_span(order, kind, span)
-    });
-    settings_response(&state, status)
-}
-
-#[tauri::command]
-fn settings_set_breakpoint_overflow(
-    min_width: f64,
-    host_overflow_mode: String,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    // Parsed strictly here rather than through `HostOverflowMode::from`, which
-    // reads an unknown string as `Stack`: that tolerance is right for a *file*
-    // written by another build and wrong for a command, where an unrecognised
-    // mode means the caller sent something no picker can produce.
-    let Some(mode) = [HostOverflowMode::Stack, HostOverflowMode::Tabs]
-        .into_iter()
-        .find(|candidate| candidate.as_str() == host_overflow_mode)
-    else {
-        return settings_response(&state, Some("Skipped — unknown overflow mode.".into()));
-    };
-    let status = edit_layout(&state, |bands| {
-        settings::band_mut(bands, min_width).is_some_and(|band| {
-            band.host_overflow = mode;
-            true
-        })
-    });
-    settings_response(&state, status)
-}
-
-#[tauri::command]
-fn settings_add_breakpoint(min_width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = edit_layout(&state, |bands| settings::add_breakpoint(bands, min_width));
-    settings_response(
-        &state,
-        status.map(|line| {
-            // The one failure a user can hit by typing: two bands cannot claim
-            // the same width, and the generic "unknown breakpoint" would read
-            // as a bug rather than as an answer.
-            if line.starts_with("Skipped") {
-                "Skipped — that width already has a breakpoint.".to_owned()
-            } else {
-                line
-            }
-        }),
-    )
-}
-
-#[tauri::command]
-fn settings_remove_breakpoint(min_width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = edit_layout(&state, |bands| {
-        settings::remove_breakpoint(bands, min_width)
-    });
-    settings_response(&state, status)
-}
-
-#[tauri::command]
-fn settings_reset_layout(state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        // Cleared, not overwritten with the current default: a store that
-        // carries no layout is the one that follows a future change to
-        // `DEFAULT_ORDER`, which is what "reset to default" should mean a year
-        // from now as well as today.
-        store.clear_layout();
-        save_status(&store, "Layout reset.")
-    };
-    settings_response(&state, status)
 }
 
 /// Where the Azure cost export lives.
@@ -6276,30 +6053,27 @@ fn unreachable_message() -> String {
 fn dump_pending(pending: &Pending) -> Value {
     let mut card = pending_card("ubu-01", pending);
     card["id"] = json!("ubu-01");
-    cockpit_payload(
-        vec![card],
-        1,
-        1000.0,
-        HostOverflowMode::Stack,
-        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-        store::settings::DEFAULT_ROW_GAP_PX,
-        &CockpitLayout::hosts_forward(),
-    )
+    cockpit_payload(CockpitInput {
+        cards: vec![card],
+        remote_count: 1,
+        available: 1000.0,
+        look: HostLook {
+            overflow: HostOverflowMode::Stack,
+            core_row_span: viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        },
+    })
 }
 
 fn dump_single(connection: &Connection) -> Value {
-    cockpit_payload(
-        vec![dump_card("ubu-01", connection)],
-        1,
-        1000.0,
-        HostOverflowMode::Stack,
-        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-        store::settings::DEFAULT_ROW_GAP_PX,
-        // The shipped arrangement: the fixtures are what the Playwright suite
-        // renders, and a dump carrying someone's edited layout would make the
-        // suite depend on a store this repo does not have.
-        &CockpitLayout::hosts_forward(),
-    )
+    cockpit_payload(CockpitInput {
+        cards: vec![dump_card("ubu-01", connection)],
+        remote_count: 1,
+        available: 1000.0,
+        look: HostLook {
+            overflow: HostOverflowMode::Stack,
+            core_row_span: viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        },
+    })
 }
 
 /// This machine's card as a fixture — hand-made, at a fixed shape, so the file
@@ -6511,15 +6285,15 @@ fn showcase_remote_card() -> Value {
 /// The showcase Hosts payload: this machine and one healthy remote host — the
 /// solo developer's desk and the box under it.
 fn dump_showcase_cockpit(available: f64) -> Value {
-    cockpit_payload(
-        vec![showcase_local_card(), showcase_remote_card()],
-        1,
+    cockpit_payload(CockpitInput {
+        cards: vec![showcase_local_card(), showcase_remote_card()],
+        remote_count: 1,
         available,
-        HostOverflowMode::Stack,
-        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-        store::settings::DEFAULT_ROW_GAP_PX,
-        &CockpitLayout::hosts_forward(),
-    )
+        look: HostLook {
+            overflow: HostOverflowMode::Stack,
+            core_row_span: viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        },
+    })
 }
 
 /// The Usage quota the showcase passes: the fixture's 9,400 events land at 38%
@@ -6610,15 +6384,15 @@ fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Val
     ];
     let remote: Vec<Value> = cards.into_iter().take(hosts).collect();
     let remote_count = remote.len();
-    cockpit_payload(
-        std::iter::once(dump_local_card()).chain(remote).collect(),
+    cockpit_payload(CockpitInput {
+        cards: std::iter::once(dump_local_card()).chain(remote).collect(),
         remote_count,
         available,
-        overflow,
-        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-        store::settings::DEFAULT_ROW_GAP_PX,
-        &CockpitLayout::hosts_forward(),
-    )
+        look: HostLook {
+            overflow,
+            core_row_span: viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        },
+    })
 }
 
 /// The Usage and Azure Cost panels as fixtures, at a fixed `now` for the same
@@ -6768,10 +6542,6 @@ fn dump_settings() -> Value {
         // show. The default itself is asserted in `crates/store`, where it
         // belongs, and again in the view tests below.
         crash_reporting_enabled: true,
-        // Off the shipped 0 for the same reason: a fixture whose row gap equals
-        // the default cannot tell "the field paints the stored value" apart from
-        // "the field paints a constant that happens to match".
-        row_gap_px: 6,
         // Exactly one panel configured, for the same reason: the cadence rows
         // render two ways — an override (whose **Use default** button is live)
         // and a panel nobody has ever set — and a fixture carrying only one of
@@ -6781,31 +6551,6 @@ fn dump_settings() -> Value {
         ..settings
     };
     let facts = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
-    // A *customised* layout at TWO breakpoints, not the default: the fixture
-    // has to carry the Reset button in its enabled state, a removable band, a
-    // narrow band that tabs its host cards and a wide one that does not, and a
-    // preview whose rows are not the shipped ones — otherwise the Playwright
-    // suite only ever sees half the tab.
-    let layout = vec![
-        store::LayoutProfile::new(
-            0.0,
-            HostOverflowMode::Tabs.as_str(),
-            settings::layout_slots(&[
-                (PanelKind::Hosts, PanelSpan::Full),
-                (PanelKind::AzureCost, PanelSpan::Half),
-                (PanelKind::ClaudeUsage, PanelSpan::Half),
-                (PanelKind::GhWorkflows, PanelSpan::Half),
-                (PanelKind::GhRunners, PanelSpan::Quarter),
-                (PanelKind::OpenclawAgents, PanelSpan::Quarter),
-                (PanelKind::Containers, PanelSpan::Full),
-            ]),
-        ),
-        store::LayoutProfile::new(
-            1816.0,
-            HostOverflowMode::Stack.as_str(),
-            settings::layout_slots(&CockpitLayout::DEFAULT_ORDER),
-        ),
-    ];
     // Two, and one of them disabled, so the Services tab's row renders in both
     // of its states. Fixed uuids for the same reason the hosts have them: a
     // fixture that changes on every dump is one no test can assert an id
@@ -6837,7 +6582,6 @@ fn dump_settings() -> Value {
                 },
                 store::TrackedRepo::new("acme/pipe-fitting"),
             ],
-            layout: Some(&layout),
             vendors: &vendors,
             certificate_changed: &certificate_changed,
             plain_refused: &[],
@@ -7079,9 +6823,7 @@ fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
         dump_openclaw(openclaw::Fixture::Connected),
     ];
     cadence::attach(&mut payloads, &cadences);
-    let mut view = dashboard::view(layout, &payloads);
-    stamp_spacing(&mut view, store::settings::DEFAULT_ROW_GAP_PX);
-    view
+    dashboard::view(layout, &payloads)
 }
 
 /// The layout behind `sample-dashboard-chips.json`: one source per way an
@@ -7756,7 +7498,6 @@ fn main() {
             update_check,
             update_install,
             settings_view,
-            settings_save_general,
             machine_save_alerts,
             machine_acknowledge_warning,
             machine_set_volume_hidden,
@@ -7767,12 +7508,6 @@ fn main() {
             panel_interval_clear,
             settings_set_crash_reporting,
             settings_set_plan_usage,
-            settings_move_panel,
-            settings_set_panel_span,
-            settings_set_breakpoint_overflow,
-            settings_add_breakpoint,
-            settings_remove_breakpoint,
-            settings_reset_layout,
             settings_save_azure,
             settings_save_providers,
             settings_add_host,
@@ -8650,66 +8385,46 @@ mod tests {
     }
 
     /// [`cockpit_cards`] / [`cockpit_payload`] / [`dump_cockpit`] with the
-    /// **default** (stacking) overflow preference and the **shipped** layout —
-    /// what every test that is not about the tab bar or the Layout tab wants.
-    /// The tab-bar tests call the real functions with `HostOverflowMode::Tabs`;
-    /// the layout tests pass an arrangement of their own.
+    /// **default** look (stacking, the default core rows) — what every test
+    /// that is not about the tab bar or the core rows wants. The tab-bar tests
+    /// call the real functions with `HostOverflowMode::Tabs`.
     fn stacked_view(
         local: Option<Value>,
         hosts: &[Arc<Mutex<HostState>>],
         available: f64,
     ) -> Value {
-        cockpit_payload(
-            cockpit_cards(local, hosts),
-            hosts.len(),
+        cockpit_payload(CockpitInput {
+            cards: cockpit_cards(local, hosts),
+            remote_count: hosts.len(),
             available,
-            HostOverflowMode::Stack,
-            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-            store::settings::DEFAULT_ROW_GAP_PX,
-            &CockpitLayout::hosts_forward(),
-        )
+            look: HostLook {
+                overflow: HostOverflowMode::Stack,
+                core_row_span: viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+            },
+        })
     }
 
     fn stacked_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
-        layout_payload(
+        cockpit_payload(CockpitInput {
             cards,
             remote_count,
             available,
-            &CockpitLayout::hosts_forward(),
-        )
-    }
-
-    /// [`stacked_payload`] over an arrangement the caller chose — the Layout
-    /// tab's half of the cockpit contract.
-    fn layout_payload(
-        cards: Vec<Value>,
-        remote_count: usize,
-        available: f64,
-        layout: &CockpitLayout,
-    ) -> Value {
-        cockpit_payload(
-            cards,
-            remote_count,
-            available,
-            HostOverflowMode::Stack,
-            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-            store::settings::DEFAULT_ROW_GAP_PX,
-            layout,
-        )
+            look: HostLook::default(),
+        })
     }
 
     /// The tabbed twin of [`stacked_payload`] — the core row span defaults
     /// here too, so a test that is about tabs says nothing about core grids.
     fn tabbed_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
-        cockpit_payload(
+        cockpit_payload(CockpitInput {
             cards,
             remote_count,
             available,
-            HostOverflowMode::Tabs,
-            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-            store::settings::DEFAULT_ROW_GAP_PX,
-            &CockpitLayout::hosts_forward(),
-        )
+            look: HostLook {
+                overflow: HostOverflowMode::Tabs,
+                core_row_span: viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+            },
+        })
     }
 
     fn stacked_dump(available: f64, hosts: usize) -> Value {
@@ -9146,23 +8861,75 @@ mod tests {
         assert_eq!(rows.len(), 2, "this machine and the remote");
     }
 
-    /// The overview reads the operator's spacing from `dashboard_view`, so a
-    /// tile's Full view has its row gap before any `cockpit` response (#646).
-    /// Zero travels as a value: the frontend only paints a finite key.
+    /// A tile's row gap is the tile's own, carried on `dashboard_view`, so a
+    /// tile's Full view has it before any `cockpit` response (#646, #647). Zero
+    /// travels as a value: the frontend only paints a finite key. Two tiles of
+    /// one source carry two gaps, and the gap between cards stays the constant.
     #[test]
-    fn dashboard_view_carries_the_operators_spacing() {
+    fn dashboard_view_carries_each_tiles_own_row_gap() {
         let (_dir, _rt, app) = app_with_remotes(0);
         let flush = dashboard_view_in(1400.0, &app);
-        assert_eq!(flush["rowGapPx"], 0);
         assert_eq!(flush["spacing"], SPACING);
-        app.store.lock().unwrap().settings_mut().row_gap_px = 10;
+        for tile in flush["tiles"].as_array().unwrap() {
+            assert_eq!(tile["rowGapPx"], 0, "{}", tile["id"]);
+        }
+        let mut layout = dashboard::default_layout();
+        layout.tiles[0].row_gap_px = 10;
+        layout.tiles[1].row_gap_px = 4;
+        app.store.lock().unwrap().save_dashboard(layout).unwrap();
         let widened = dashboard_view_in(1400.0, &app);
-        assert_eq!(widened["rowGapPx"], 10);
-        assert_eq!(
-            widened["rowGapPx"],
-            cockpit_with(1400.0, &app, None)["rowGapPx"],
-            "the two payloads paint one number"
+        let gap = |i: usize| widened["tiles"][i]["rowGapPx"].clone();
+        assert_eq!((gap(0), gap(1), gap(2)), (json!(10), json!(4), json!(0)));
+    }
+
+    /// Two Machines tiles with different CPU core rows and overflow modes lay
+    /// their Full views out differently, and the read that names no tile takes
+    /// the defaults: nothing reads a global (#647).
+    #[test]
+    fn each_machines_tile_lays_its_full_view_out_by_its_own_settings() {
+        let (_dir, _rt, app) = app_with_remotes(1);
+        tile_in(&app, "t-tall", "hosts", "all", false);
+        tile_in(&app, "t-tabs", "hosts", "all", false);
+        let mut layout = app.store.lock().unwrap().dashboard().cloned().unwrap();
+        for tile in &mut layout.tiles {
+            match tile.id.as_str() {
+                "t-tall" => tile.core_row_span = 4,
+                "t-tabs" => tile.host_overflow = HostOverflowMode::Tabs,
+                _ => {}
+            }
+        }
+        app.store.lock().unwrap().save_dashboard(layout).unwrap();
+        // 1000pt: two hosts stack, so tabs have something to collapse.
+        let tall = cockpit_for_tile(1000.0, &app, "t-tall").unwrap();
+        let tabs = cockpit_for_tile(1000.0, &app, "t-tabs").unwrap();
+        let plain = cockpit_with(1000.0, &app, None);
+        assert!(tall["hostTabs"].is_null() && plain["hostTabs"].is_null());
+        assert!(
+            !tabs["hostTabs"].is_null(),
+            "the tabs tile collapses its cards"
         );
+        let block = |v: &Value| v["hosts"][0]["coreBlockHeight"].clone();
+        assert_eq!(block(&plain), json!(220.0), "the default is two rows");
+        assert_eq!(block(&tall), json!(440.0), "four rows of the core unit");
+        assert_eq!(block(&tabs), block(&plain));
+    }
+
+    /// A panel's Full view fills the window, so the columns it affords come from
+    /// `panel_columns` over the window's width and ride the payload as data:
+    /// narrow is one column, wide is the panel's maximum.
+    #[test]
+    fn the_cockpit_payload_carries_each_panels_columns_for_the_window() {
+        let (_dir, _rt, app) = app_with_remotes(0);
+        let narrow = cockpit_with(400.0, &app, None);
+        let wide = cockpit_with(3000.0, &app, None);
+        for kind in viewmodel::cockpit::PanelKind::ALL {
+            assert_eq!(narrow["panelColumns"][kind.id()], json!(1), "{kind:?}");
+            assert_eq!(
+                wide["panelColumns"][kind.id()],
+                json!(viewmodel::cockpit::PANEL_MAX_COLUMNS),
+                "{kind:?}"
+            );
+        }
     }
 
     /// Every sentence the page shows when one of its two reads fails is Rust's:
@@ -10291,20 +10058,20 @@ mod tests {
         assert_eq!(block_at(&payload, 899.0), vec![334.0, 334.0]);
     }
 
-    /// `coreRowSpan` was persisted and editable in Settings but never reached
-    /// the card — `host_card` hardcoded the default. It arrives through the
-    /// same rewrite that carries the shared height.
+    /// The core row span was persisted and editable but never reached the card
+    /// — `host_card` hardcoded the default. It arrives through the same rewrite
+    /// that carries the shared height, from the tile's `look`.
     #[test]
     fn the_core_row_span_preference_reaches_the_block() {
-        let payload = cockpit_payload(
-            core_cards(&[8]),
-            0,
-            1000.0,
-            HostOverflowMode::Stack,
-            3, // three section-rows rather than the default two
-            store::settings::DEFAULT_ROW_GAP_PX,
-            &CockpitLayout::hosts_forward(),
-        );
+        let payload = cockpit_payload(CockpitInput {
+            cards: core_cards(&[8]),
+            remote_count: 0,
+            available: 1000.0,
+            look: HostLook {
+                overflow: HostOverflowMode::Stack,
+                core_row_span: 3,
+            },
+        });
         let card = &payload["hosts"][0];
         assert_eq!(card["coreBlockHeight"], 330.0, "3 * CORE_ROW_UNIT");
         let tallest = card["coreLadder"]
@@ -10316,38 +10083,6 @@ mod tests {
         assert!(
             tallest >= 330.0,
             "the span raises the block, not just the base"
-        );
-    }
-
-    /// The row gap is `row_gap_px`, not a constant the frontend keeps.
-    ///
-    /// Exactly [`the_core_row_span_preference_reaches_the_block`]'s defect in
-    /// the other panel half: that one was persisted and editable in Settings and
-    /// never reached the card, because the renderer had a default of its own. A
-    /// gap the operator sets and the stylesheet ignores would be the same bug
-    /// with a different symptom, and the frontend cannot notice — an unset
-    /// `--row-gap` and one set to the shipped 0 paint identically.
-    #[test]
-    fn the_row_gap_preference_reaches_the_payload() {
-        let widened = cockpit_payload(
-            core_cards(&[8]),
-            0,
-            1000.0,
-            HostOverflowMode::Stack,
-            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
-            10,
-            &CockpitLayout::hosts_forward(),
-        );
-        assert_eq!(widened["rowGapPx"], 10);
-
-        // And zero travels as a value rather than as an omission: `app.js` only
-        // paints the key when it is finite, so a payload that dropped it would
-        // leave the stylesheet's value standing instead of the operator's.
-        let flush = stacked_payload(core_cards(&[8]), 0, 1000.0);
-        assert_eq!(flush["rowGapPx"], 0);
-        assert!(
-            flush.get("rowGapPx").is_some(),
-            "the key must ship even at the default"
         );
     }
 
@@ -10435,206 +10170,32 @@ mod tests {
     }
 
     #[test]
-    fn the_payload_carries_the_grid_constants_and_the_panel_table() {
+    fn the_payload_carries_the_card_sizing_and_none_of_the_arrangement() {
         let vm = stacked_payload(vec![], 0, 1000.0);
         assert_eq!(vm["hostCardMinWidth"], 900.0);
-        assert_eq!(vm["spacing"], 16.0);
-        let panels = vm["panels"].as_array().expect("panel table");
-        assert_eq!(panels[0]["id"], "hosts");
-        assert_eq!(panels[0]["title"], "Hosts");
-    }
-
-    /// Rows as ids — what the assertions below are about.
-    fn row_ids(vm: &Value) -> Vec<Vec<String>> {
-        vm["panelRows"]
-            .as_array()
-            .expect("panelRows")
-            .iter()
-            .map(|row| {
-                row.as_array()
-                    .expect("row")
-                    .iter()
-                    .map(|p| p["id"].as_str().expect("id").to_owned())
-                    .collect()
-            })
-            .collect()
-    }
-
-    /// One rendered row's spans, as the payload carries them — the widths a
-    /// reader can name.
-    fn vm_spans(vm: &Value, row: usize) -> Vec<String> {
-        vm["panelRows"][row]
-            .as_array()
-            .expect("row")
-            .iter()
-            .map(|p| p["span"].as_str().expect("span").to_owned())
-            .collect()
-    }
-
-    /// The payload carries the *reflowed* arrangement, not the authored one, and
-    /// carries it as data. A frontend re-deriving these rows from `minWidth`
-    /// would be a second implementation of `PanelKind::min_width`.
-    #[test]
-    fn the_payload_carries_the_reflowed_panel_rows() {
-        // Wide enough for every authored row.
-        let wide = row_ids(&stacked_payload(vec![], 0, 3000.0));
+        // Nothing arranges panels any more (#647), and the gaps are the
+        // dashboard's. The payload is exactly the host cards' sizing, the
+        // columns each panel affords the window, the overview's empty line and
+        // its load-failure sentence.
+        let mut keys: Vec<&str> = vm
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
         assert_eq!(
-            wide,
-            vec![
-                vec!["hosts"],
-                vec!["ghWorkflows", "ghRunners"],
-                vec!["containers", "openclawAgents", "claudeUsage"],
-                vec!["azureCost", "services", "sentryCrons"],
+            keys,
+            [
+                "empty",
+                "hostCardMinWidth",
+                "hostColumns",
+                "hostTabs",
+                "hosts",
+                "overviewLoadFailed",
+                "panelColumns",
+                "volumeSlots",
             ]
-        );
-
-        // The case the whole per-panel breakpoint model exists for: at 840pt
-        // every authored row breaks apart except one pair — Containers keeps
-        // OpenClaw, because widening the two of them from Half + Quarter to two
-        // halves puts both on 412pt tracks and above their minimums. A global
-        // sm/md/lg tier cannot express that.
-        let narrow = row_ids(&stacked_payload(vec![], 0, 840.0));
-        assert_eq!(narrow[3], ["containers", "openclawAgents"]);
-        assert_eq!(
-            vm_spans(&stacked_payload(vec![], 0, 840.0), 3),
-            ["half", "half"],
-            "a rendered row is always whole quarters, never two thirds and a third"
-        );
-        assert_eq!(
-            narrow.len(),
-            7,
-            "the halves and the quarters both split, and so does the last row"
-        );
-
-        // Every panel still travels, exactly once, at any width — a row silently
-        // dropped here is a panel the frontend can never render.
-        for width in [0.0, 100.0, 840.0, 976.0, 3000.0] {
-            let mut flat: Vec<String> = row_ids(&stacked_payload(vec![], 0, width))
-                .into_iter()
-                .flatten()
-                .collect();
-            flat.sort();
-            let mut expected: Vec<String> = viewmodel::cockpit::PanelKind::ALL
-                .iter()
-                .map(|k| k.id().to_owned())
-                .collect();
-            expected.sort();
-            assert_eq!(flat, expected, "at {width}pt");
-        }
-    }
-
-    /// Each entry carries what the frontend needs to place, size and title it —
-    /// including the span's `weight`, which is the `fr` track the frontend paints
-    /// rather than a name it would have to translate into a fraction in CSS.
-    #[test]
-    fn every_panel_row_entry_carries_its_id_title_min_width_and_span() {
-        let vm = stacked_payload(vec![], 0, 3000.0);
-        let first = &vm["panelRows"][0][0];
-        assert_eq!(first["id"], "hosts");
-        assert_eq!(first["title"], "Hosts");
-        assert_eq!(first["minWidth"], 900.0);
-        assert_eq!(first["span"], "full");
-        assert_eq!(first["weight"], 4);
-        // The renamed panel travels under the same id it always had.
-        assert_eq!(vm["panelRows"][1][0]["id"], "ghWorkflows");
-        assert_eq!(vm["panelRows"][1][0]["title"], "GitHub Repos");
-        // The quarter row: a half and two quarters, in that order.
-        assert_eq!(vm["panelRows"][2][0]["span"], "half");
-        assert_eq!(vm["panelRows"][2][0]["weight"], 2);
-        assert_eq!(vm["panelRows"][2][2]["id"], "claudeUsage");
-        assert_eq!(vm["panelRows"][2][2]["span"], "quarter");
-        assert_eq!(vm["panelRows"][2][2]["weight"], 1);
-        assert_eq!(vm["panelRows"][3][0]["id"], "azureCost");
-        assert_eq!(vm["panelRows"][3][0]["title"], "Azure Cost");
-        // The width each panel actually gets, and the content columns that fit
-        // in it — a lone Hosts row takes the whole 3000.
-        assert_eq!(first["width"], 3000.0);
-        assert_eq!(first["columns"], 2);
-    }
-
-    /// The configuration actually shipped on a 1890pt display: every half at
-    /// 937pt whichever row it is in — Azure Cost included — the quarters at
-    /// 460.5, and the content columns each of those affords.
-    ///
-    /// Repos clears its split by 5pt (932 of 937) and only because its numeric
-    /// columns are sized to their labels — READY joined the row on points PRS,
-    /// LOCAL and JOBS held past their widest text; the same panel with the
-    /// original originals needed 1136 and stayed single-column on this display.
-    #[test]
-    fn a_1890pt_cockpit_gives_every_list_panel_two_columns() {
-        let vm = stacked_payload(vec![], 0, 1890.0);
-        let mut seen = std::collections::BTreeMap::new();
-        for row in vm["panelRows"].as_array().expect("rows") {
-            for panel in row.as_array().expect("row") {
-                seen.insert(
-                    panel["id"].as_str().expect("id").to_owned(),
-                    (panel["width"].clone(), panel["columns"].clone()),
-                );
-            }
-        }
-        assert_eq!(seen["ghRunners"], (json!(937.0), json!(2)));
-        assert_eq!(
-            seen["ghWorkflows"],
-            (json!(937.0), json!(2)),
-            "Repos pairs at 932pt; widening a column past that costs it the split"
-        );
-        assert_eq!(
-            seen["containers"],
-            (json!(937.0), json!(2)),
-            "the same half as the row above it — one grid, one gridline"
-        );
-        assert_eq!(
-            seen["azureCost"],
-            (json!(937.0), json!(2)),
-            "a half still buys the breakdowns their column beside the costs — by \
-             121pt now that Sentry Crons shares its row, where three quarters had 597"
-        );
-        assert_eq!(seen["openclawAgents"], (json!(460.5), json!(1)));
-        assert_eq!(seen["claudeUsage"], (json!(460.5), json!(1)));
-        assert_eq!(seen["services"], (json!(460.5), json!(1)));
-        assert_eq!(seen["sentryCrons"], (json!(460.5), json!(1)));
-    }
-
-    /// The Layout tab's whole point, at the payload: the rows are the *stored*
-    /// arrangement, not the shipped one, and the tracks are the spans the user
-    /// chose. The completing rule shows here too — three named panels, seven
-    /// rendered.
-    #[test]
-    fn a_stored_layout_is_what_the_panel_rows_carry() {
-        let stored = vec![store::LayoutProfile::new(
-            0.0,
-            HostOverflowMode::Stack.as_str(),
-            settings::layout_slots(&[
-                (PanelKind::ClaudeUsage, PanelSpan::Quarter),
-                (PanelKind::AzureCost, PanelSpan::Quarter),
-                (PanelKind::Hosts, PanelSpan::Half),
-            ]),
-        )];
-        let bands = settings::breakpoints(Some(&stored), HostOverflowMode::Stack);
-        let vm = layout_payload(
-            vec![],
-            0,
-            3000.0,
-            &settings::breakpoint_for(&bands, 3000.0).layout(),
-        );
-        assert_eq!(
-            row_ids(&vm),
-            vec![
-                // The user's three, packed into one row (1 + 1 + 2 quarters)…
-                vec!["claudeUsage", "azureCost", "hosts"],
-                // …then the five the layout never named, in default order.
-                vec!["ghWorkflows", "ghRunners"],
-                vec!["containers", "openclawAgents", "services"],
-                vec!["sentryCrons"],
-            ]
-        );
-        let first = &vm["panelRows"][0];
-        assert_eq!(first[0]["span"], "quarter");
-        assert_eq!(first[0]["width"], 738.0, "(3000 - 3 * 16) / 4");
-        assert_eq!(first[2]["id"], "hosts");
-        assert_eq!(
-            first[2]["width"], 1492.0,
-            "two of those tracks plus the gutter a half spans"
         );
     }
 
