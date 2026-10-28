@@ -551,7 +551,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    only place a line that comes and goes costs no height. */
 
 /* Usage fills the width a tile's Full view gives it, so at `--panel-cols: 2` (from
-   `panel_columns`, the same source as Containers' and Runners' splits) the
+   `panel_columns`, the same source as Containers' split) the
    provider sections move BESIDE Claude's rollups instead of running one airy
    column across the whole card: two grid items, the Claude block and the
    providers. Pure CSS, so a resize re-splits it without waiting out the panel's
@@ -593,7 +593,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .az-columns { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap:16px; }
 /* Azure Cost is a full-width card, so at `--panel-cols: 2` (from
-   `panel_columns`, same source as Containers' and Runners' splits) the
+   `panel_columns`, same source as Containers' split) the
    breakdowns move BESIDE the costs instead of under them: two grid items, the
    cost stack and the top-N lists. Pure CSS, so a resize re-splits it without
    waiting out the panel's own 10s poll, and the DOM is identical either way.

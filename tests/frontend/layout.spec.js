@@ -963,8 +963,8 @@ const ROW_LISTS = [
  * Every measurable gap between two adjacent rows of the same list.
  *
  * MEASURED, never read off `getComputedStyle`: these lists reach their spacing
- * by two different mechanisms -- a flex `gap` everywhere else, a child
- * `margin-bottom` in the multicol Runners list -- so comparing declarations would
+ * by more than one mechanism -- a flex `gap` on `.gh-list` (one flex column,
+ * spaced by `gap`) and on the other lists -- so comparing declarations would
  * compare things that are not comparable, and a `gap:10px` on `.gh-list` would
  * read as a pass while rendering 0.
  */
@@ -978,9 +978,10 @@ const measureRowGaps = (page, { list, row }) =>
         if (!prev.matches(row) || !next.matches(row)) continue;
         const a = prev.getBoundingClientRect();
         const b = next.getBoundingClientRect();
-        // Runners is multi-column: the pair that straddles a column break is
-        // not a row gap at all -- the second row starts back at the TOP of the
-        // next column, well above the first row's bottom edge.
+        // A pair whose second row starts above the first row's bottom edge is
+        // not a row gap at all (e.g. a list laid out in more than one column,
+        // where the next column starts back at the TOP). The Runners list is
+        // one flex column, so this skips nothing there.
         if (b.top < a.bottom - 0.5) continue;
         gaps.push(Math.round((b.top - a.bottom) * 100) / 100);
       }
@@ -1031,8 +1032,9 @@ test("the Runners list has no trailing gap inside its reserved viewport", async 
   const measured = await page.evaluate(() => {
     const list = document.querySelector("#runnersBody .gh-list");
     // The same custom property `applyPanelColumns` publishes from Rust's count,
-    // set directly rather than resized into: the split is what is under test,
-    // not the width that produces it.
+    // set directly rather than resized into. The Runners list is one flex
+    // column and nothing reads `--panel-cols` there, so forcing 1 is a control:
+    // it must change nothing about the spacing measured below.
     const panel = document.getElementById("runnersPanel");
     const before = panel.style.getPropertyValue("--panel-cols");
     panel.style.setProperty("--panel-cols", "1");
