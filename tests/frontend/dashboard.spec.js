@@ -1456,7 +1456,7 @@ test('runner groups open the shared inline Detail panel like machines', async ({
   await inspector.getByRole('button', {name:'Close', exact:true}).click();
   await expect(inspector).toBeHidden();
   await openDetail(page, 'ghRunners');
-  await expect(inspector.getByRole('heading')).toHaveText('Runners');
+  await expect(inspector.getByRole('heading')).toHaveText('GitHub Runners');
   await expect(inspector.locator('.db-detail-resource')).toHaveCount(6);
 });
 
@@ -1746,7 +1746,7 @@ test("hidden library previews the saved scope and restores the original slot", a
   await expect(page.locator(".db-hidden-library img")).toHaveCount(0);
   await page.locator('.db-hidden-list [data-id="overview-ghRunners"]').click();
   await expect(page.locator('.db-hidden-list [data-id="overview-ghRunners"]')).toBeFocused();
-  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText("Runners");
+  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText("GitHub Runners");
   await page.locator('.db-hidden-list [data-id="overview-hosts"]').click();
   await action(page, "restore").focus();
   const reads = await page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_view").length);
@@ -1889,7 +1889,7 @@ test("tile placement previews an insertion without moving saved tiles, then pers
   await page.locator("#dashboard-title").fill("Build machines");
   await page.locator("#dashboard-width").selectOption("wide");
   await expect(page.locator('.db-placement-tile[aria-current="true"]')).toHaveAttribute("data-width", "wide");
-  const order = ["Machines", "GitHub Repos", "Build machines", "Runners", "Service Health", "Scheduled Jobs"];
+  const order = ["Machines", "GitHub Repos", "Build machines", "GitHub Runners", "Service Health", "Sentry Crons"];
   await expect(page.locator(".db-placement-title")).toHaveText(order);
   await expect(page.locator(".db-grid .db-tile-title")).toHaveText(original.tiles.map(t => t.title));
   expect(await savedLayout(page)).toBeNull();
@@ -2444,7 +2444,7 @@ test("a scope that keeps nothing shows the tile's own sentence in its Full view 
 // layout built so each source's chip leads somewhere different (`chips_layout`
 // in main.rs): Machines has two tiles that keep every row, Repos one tile
 // scoped `healthy` (it misses the failing repos), Runners only a hidden tile,
-// Services and Scheduled Jobs one covering tile each, and the rest no tile.
+// Service Health and Sentry Crons one covering tile each, and the rest no tile.
 const chip = (page, text) => action(page, "attention").filter({ hasText: text });
 const inspector = (page) => page.locator("#dashboardInspector");
 const chipTarget = (model, source) => model.attention.find((a) => a.source === source).target;
@@ -2452,7 +2452,7 @@ const chipTarget = (model, source) => model.attention.find((a) => a.source === s
 test("a chip fully covered by one visible tile opens that tile's Detail, filtered to its scope", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL, "chips");
   expect(chipTarget(model, "sentryCrons")).toEqual({ tile: "overview-sentryCrons" });
-  await chip(page, "Scheduled Jobs").click();
+  await chip(page, "Sentry Crons").click();
   await expect(inspector(page)).toHaveAttribute("data-kind", "details");
   const rows = model.sources.find((s) => s.id === "sentryCrons").rows;
   const scoped = rows.filter((r) => r.scopes.includes("active"));
@@ -2525,7 +2525,7 @@ test("a hidden tile is never a chip's target", async ({ page, baseURL }) => {
   const hidden = model.layout.tiles.find((t) => t.source === "ghRunners");
   expect(hidden.hidden).toBe(true);
   const { trouble } = chipTarget(model, "ghRunners");
-  await chip(page, "Runners").click();
+  await chip(page, "GitHub Runners").click();
   await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
   await expect(inspector(page).getByRole("button", { name: trouble.add.label, exact: true })).toBeVisible();
   await expect(inspector(page).locator(`[data-id="${hidden.id}"]`)).toHaveCount(0);
@@ -2708,7 +2708,7 @@ test("the overview's read leaves a tile's Full view in place", async ({ page, ba
     window.__RUNNER_NODE__.isConnected &&
     document.querySelector("#runnersBody .gh-runner-name") === window.__RUNNER_NODE__)).toBe(true);
   // The tick still paints the tile's heading.
-  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
+  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
 });
 
 test("two tiles of one source each open their own scope", async ({ page, baseURL }) => {
@@ -2742,7 +2742,7 @@ test("a runner group carries into the tile's Full view", async ({ page, baseURL 
   await expect.poll(() => lastArgs(page, "runners")).toEqual({ tile: "overview-ghRunners" });
   await expect(page.locator("#runnersBody .gh-runner-filter")).toContainText("LINUX · ARM64");
   await expect(page.locator("#runnersBody .gh-runner-name")).toHaveText(["ubu-01", "ubu-1", "ubu-spare"]);
-  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
+  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
   // The group filter repaints the panel before the tile's name is painted;
   // leaving still restores the panel's own title.
   await page.keyboard.press("Escape");
@@ -3029,7 +3029,7 @@ test("one GitHub cadence is on both of its tiles, and a save from either moves b
   const [repos] = cadencesOf(model, "ghWorkflows");
   const [runners] = cadencesOf(model, "ghRunners");
   expect(runners).toEqual(repos);
-  expect(repos.shared).toContain("every GitHub Repos tile and every Runners tile");
+  expect(repos.shared).toContain("every GitHub Repos tile and every GitHub Runners tile");
   for (const [saveIn, readIn] of [["ghWorkflows", "ghRunners"], ["ghRunners", "ghWorkflows"]]) {
     await page.goto(baseURL);
     const section = await configureCadence(page, saveIn, "github");
@@ -3429,7 +3429,7 @@ test("Edit inside a tile's Full view opens that tile's Configure on its Full vie
   await page.locator('.db-chrome [data-action="edit"]').click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await expect(page.locator("#dashboardForm")).toBeVisible();
-  await expect(page.locator("#dashboard-title")).toHaveValue("Runners");
+  await expect(page.locator("#dashboard-title")).toHaveValue("GitHub Runners");
   await expect(pageButton(page, "Full view")).toHaveAttribute("aria-pressed", "true");
   await expect(configPage(page, "full")).toBeVisible();
   await expect(configPage(page, "tile")).toBeHidden();
@@ -3455,4 +3455,38 @@ test("a tile's Detail follows its own Table/List and the in-Detail toggle writes
   await openDetail(page, "hosts");
   await expect(page.getByRole("button", { name: "Table", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(await savedTile(page, "overview-hosts")).toMatchObject({ detailView: "table" });
+});
+
+// The operator's settled names (#665): GitHub Runners, Service Health, Sentry
+// Crons. They head the default tiles, the Add-tile picker and an added tile's
+// starting title, and "GitHub Runners" is the longest of them, so it must
+// survive a small tile and the Full view heading with every character.
+const untruncated = (locator) =>
+  locator.evaluate((el) => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width));
+
+test("the settled panel names head the overview tiles, the Add-tile picker and an added tile (#665)", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 900, height: 900 });
+  await openDashboard(page, baseURL);
+  const runnersTitle = tile(page, "ghRunners").locator(".db-tile-title");
+  await expect(runnersTitle).toHaveText("GitHub Runners");
+  await expect(tile(page, "services").locator(".db-tile-title")).toHaveText("Service Health");
+  await expect(tile(page, "sentryCrons").locator(".db-tile-title")).toHaveText("Sentry Crons");
+  expect(await untruncated(runnersTitle), "a small tile keeps every character of its title").toBe(true);
+
+  await action(page, "edit").click();
+  await action(page, "catalog").click();
+  for (const [id, name] of [["ghRunners", "GitHub Runners"], ["services", "Service Health"], ["sentryCrons", "Sentry Crons"]]) {
+    await expect(page.locator(`[data-action="add"][data-id="${id}"] strong`)).toHaveText(name);
+  }
+  await page.locator('[data-action="add"][data-id="ghRunners"]').click();
+  await expect(page.locator("#dashboard-title")).toHaveValue("GitHub Runners");
+});
+
+test("a Runners tile's Full view is headed by the whole name 'GitHub Runners' (#665)", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 900, height: 900 });
+  await openDashboard(page, baseURL);
+  await openFull(page, "ghRunners");
+  const title = page.locator("#runnersTitle");
+  await expect(title).toHaveText("GitHub Runners");
+  expect(await untruncated(title), "the Full view heading is not ellipsised").toBe(true);
 });

@@ -50,7 +50,7 @@ test("the panel paints one row per failing environment, in Rust's order", async 
   await expect(page.locator("#cronsPanel")).toBeVisible();
   // A tile's Full view is headed by the tile's own name (#640), not the
   // payload's `title`; this tile is named for its source.
-  await expect(page.locator("#cronsTitle")).toHaveText("Scheduled Jobs");
+  await expect(page.locator("#cronsTitle")).toHaveText("Sentry Crons");
   await expect(page.locator("#cronsTrailing")).toHaveText(vm.trailing);
 
   // Order is Rust's: oldest first, with the entries nobody can put a number on

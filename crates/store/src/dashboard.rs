@@ -147,9 +147,9 @@ pub struct DashboardLayout {
 pub const SHIPPED_TILES: [(&str, &str); 5] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
-    ("ghRunners", "Runners"),
+    ("ghRunners", "GitHub Runners"),
     ("services", "Service Health"),
-    ("sentryCrons", "Scheduled Jobs"),
+    ("sentryCrons", "Sentry Crons"),
 ];
 
 impl DashboardLayout {

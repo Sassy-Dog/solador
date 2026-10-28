@@ -327,7 +327,7 @@ test("the Runners panel paints Rust's stats, chips and trailing label", async ({
 
   // A tile's Full view is headed by the tile's own name (#640), not the
   // payload's `title`; this tile is named for its source.
-  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
+  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
   await expect(page.locator("#runnersTrailing")).toHaveText(runners.trailing);
   expect(runners.trailing, "the fixture must exercise the missing count").toContain("missing");
 
@@ -592,7 +592,7 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
   // the warning appeared. The message is what ellipsises now, not the label.
   const title = page.locator("#runnersTitle");
   // The tile's own name heads its Full view (#640), not the payload's title.
-  await expect(title).toHaveText("Runners");
+  await expect(title).toHaveText("GitHub Runners");
   const [titled, staled] = await Promise.all([title.boundingBox(), page.locator("#runnersStale").boundingBox()]);
   expect(titled.width, "the panel keeps its name when it degrades").toBeGreaterThan(0);
   expect(
@@ -827,7 +827,7 @@ test("the verdict costs no height and does not truncate", async ({ page, baseURL
     "the verdict is never the element that ellipsises"
   ).toBe(true);
   // The tile's own name heads its Full view (#640), not the payload's title.
-  await expect(page.locator("#runnersTitle")).toHaveText("Runners");
+  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
 });
 
 // MARK: - Injection

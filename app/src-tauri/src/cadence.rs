@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(sections[0]["value"], json!(300));
         assert_eq!(
             sections[0]["shared"],
-            json!("Shared \u{b7} saved immediately \u{b7} applies to every GitHub Repos tile and every Runners tile and their Full views.")
+            json!("Shared \u{b7} saved immediately \u{b7} applies to every GitHub Repos tile and every GitHub Runners tile and their Full views.")
         );
     }
 

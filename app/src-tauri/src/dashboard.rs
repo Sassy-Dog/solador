@@ -24,9 +24,9 @@ pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the 
 pub const SOURCES: [(&str, &str); 9] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
-    ("ghRunners", "Runners"),
+    ("ghRunners", "GitHub Runners"),
     ("services", "Service Health"),
-    ("sentryCrons", "Scheduled Jobs"),
+    ("sentryCrons", "Sentry Crons"),
     ("containers", "Containers / VMs"),
     ("claudeUsage", "Usage"),
     ("azureCost", "Azure Cost"),
@@ -2210,6 +2210,35 @@ mod tests {
         assert!(list(&source, "detailColumns")
             .iter()
             .any(|c| c["label"] == "Labels"));
+    }
+
+    #[test]
+    fn the_default_tile_names_are_the_operators_settled_names() {
+        let titles: Vec<_> = SOURCES.iter().map(|(_, t)| *t).collect();
+        assert_eq!(
+            titles,
+            [
+                "Machines",
+                "GitHub Repos",
+                "GitHub Runners",
+                "Service Health",
+                "Sentry Crons",
+                "Containers / VMs",
+                "Usage",
+                "Azure Cost",
+                "OpenClaw",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_saved_tile_titled_with_an_old_default_keeps_that_title() {
+        let payload = crate::dump_github(false, true);
+        let source = source_view("ghRunners", "GitHub Runners", &payload);
+        for (kind, old) in [("ghRunners", "Runners"), ("sentryCrons", "Scheduled Jobs")] {
+            let tile = DashboardTile::new("saved", kind, old, "all");
+            assert_eq!(tile_view(&tile, &source)["title"], old);
+        }
     }
 
     #[test]
