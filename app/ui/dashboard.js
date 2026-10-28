@@ -170,6 +170,17 @@
     fullView.removeAttribute("data-tile-loading");
     paintTileHeading();
   }
+  // A read for tile `tileId` was refused (app.js's callRust), under the view it
+  // was asked for. Machines shows its own failure sentence already; any other
+  // source's renderer paints the failure, which the loading rule would hide, so
+  // lift the rule and drop the loading line (#656).
+  function tileFailed(tileId) {
+    if (fullTile?.id !== tileId || fullTile.loaded || fullTile.source === "hosts") return;
+    fullTile.loaded = true;
+    fullTile.empty = null;
+    fullView.removeAttribute("data-tile-loading");
+    paintTileHeading();
+  }
   // The tile whose row gap is on the page: the open Full view's, if any.
   function spacingTile(m) {
     return fullTile ? m.tiles.find((t) => t.id === fullTile.id) : undefined;
@@ -2713,6 +2724,7 @@
     tileHeading: fullTileTitle,
     fullGeneration: () => fullGeneration,
     tileResponse,
+    tileFailed,
     // Whether tile `id` has left the overview, asked after a read for it was
     // refused: a fresh model decides, so a refusal for a tile that is still
     // here stays a failure and one for a tile that is gone is the dashboard's

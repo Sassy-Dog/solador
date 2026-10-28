@@ -1325,7 +1325,14 @@ pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<Stri
     if !matching_rows(tile, &source).is_empty() {
         return None;
     }
-    Some(empty_state(tile, &source, true).0.to_owned())
+    // Only the sentences that are about the tile's scope (they offer to
+    // `configure` it). The loading line and the source's own message (which
+    // offer nothing, or to `manage` the connection) are what the panel body
+    // already paints, so repeating them would show the message twice.
+    match empty_state(tile, &source, true) {
+        (sentence, Some("configure")) => Some(sentence.to_owned()),
+        _ => None,
+    }
 }
 
 /// Says a tile's Full view is narrowed. `None` exactly when `scoped_row_ids` is.
@@ -3265,6 +3272,21 @@ mod tile_scope_ids_tests {
             None
         );
         assert_eq!(scoped_empty(&tile("ghWorkflows", "all"), &payload), None);
+    }
+
+    /// A filtering scope that is not `item:` over a source with no rows reaches
+    /// `empty_state`'s source-derived branches (the loading line, the source's
+    /// own message, the stock "no readings"). The panel body paints those, so
+    /// the tile adds nothing (#656).
+    #[test]
+    fn a_scope_leaves_the_sources_own_message_to_the_panel() {
+        let attention = tile("ghWorkflows", "attention");
+        let loading = json!({"loading":true,"columns":[],"rows":[]});
+        assert_eq!(scoped_empty(&attention, &loading), None, "loading");
+        let setup = json!({"message":"Add a token in Settings","columns":[],"rows":[]});
+        assert_eq!(scoped_empty(&attention, &setup), None, "source message");
+        let bare = json!({"columns":[],"rows":[]});
+        assert_eq!(scoped_empty(&attention, &bare), None, "no message");
     }
 
     /// Machines has no totals to cover, so its note is the scope alone.

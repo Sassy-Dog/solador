@@ -97,12 +97,16 @@ machine never shows `No hosts configured`: that line counts the hosts configured
 not the cards kept. A tile scoped to everything gets the source's panel
 unchanged, with no note. Until the tile's own first reading arrives the body
 is hidden and Rust's `fullLoading` line stands in for it, so the rows the panel
-last held (another tile) never show under this tile's name;
+last held (another tile) never show under this tile's name (Machines' host
+tabs too); a read the backend refuses lifts the loading line, so the panel's own
+failure shows rather than a hidden body (`tileFailed`, #656);
 a reading that lands after Escape, or after another tile opened, is dropped
 (`callRust` in `app.js` compares a view counter, so no renderer does). A scope
 that keeps nothing says why with the tile's own overview sentence, carried on
 the reading as `tileEmpty` (`dashboard::scoped_empty`, the same `empty_state`
-as the tile's `empty`). A runner group selected in Detail
+as the tile's `empty`). Only a sentence about the scope is carried: when the
+source has no rows to filter, its loading line or own message is left to the
+panel body, so the Full view never says it twice (#656). A runner group selected in Detail
 carries in as the panel's filter. **Escape** returns to the overview with focus on that tile's **View** button, and the
 panel gets its own title back. A tile hidden or removed while its Full view is
 open sends the overview back within a second, with `That tile is no longer on the
@@ -3075,6 +3079,8 @@ and that immediacy is itself the check on the corresponding wake:
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
 | `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
+| a tile's Full view: a scope that keeps nothing (`tileEmpty`, #656) | add a **Repos** tile scoped to a repository that is not in the list (or an *Attention* scope while every repo is healthy), then open its **Full view** | the tile's own sentence (`This resource has no current reading…` / `No attention items in available readings.`) shows once under the title row, never the source's setup or loading message twice |
+| a tile's Full view: no previous rows when switching from tile to tile (#640, #656) | open one Repos tile's **Full view**, **Escape**, then open a second Repos tile's (a different scope) | the second view shows its loading line, not the first tile's rows, until its own reading lands; a reading that arrives after the switch never paints |
 | a tile's Full view: the panel commands' `tile` argument (`cockpit` here; the other eight take it the same way) | with the seeded host from step 2: **Edit dashboard** → **Add tile** → **Machines**, set **Show** to *This machine*, **Add tile**, **Done editing**; open that tile's **View** → **Full view** (or **View** → **Detail**, then **Full view**), then **Escape** | the host grid holds only this machine's card, titled with the tile's name, with `Scope: This machine.` under the title row and no `No hosts configured` line. Escape returns to the overview with focus on the tile's **View** button. The seeded host's card in that view, or a refusal sentence on screen, is the defect this row exists to catch |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |

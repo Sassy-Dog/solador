@@ -583,10 +583,13 @@
   titled with the tile's name, with Rust's `fullNote` under the header row when
   the scope filters (`Scope: …`, plus the totals clause on every source but
   Machines, which has no totals). Until the tile's own first reading lands the
-  body is hidden under Rust's `fullLoading` line, and a reading that returns
+  body (and Machines' host tabs) is hidden under Rust's `fullLoading` line, a
+  read the backend refuses lifts that line (`tileFailed`, #656), and a reading that returns
   after Escape or a switch to another tile is dropped in `callRust`
   (`app.js`), once for every renderer; a scope that keeps nothing shows the
-  tile's own `empty` sentence, carried as `tileEmpty` (`scoped_empty`, #640).
+  tile's own `empty` sentence, carried as `tileEmpty` (`scoped_empty`, #640);
+  the sentences that are the source's (its loading line, its own message) are
+  left to the panel body (#656).
   It keeps the selected group, and Full's
   All runners clears that filter. Escape or the toolbar toggle returns to the
   overview, focused on that tile's View button; a tile hidden or removed meanwhile sends the
