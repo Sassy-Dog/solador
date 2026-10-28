@@ -1276,10 +1276,15 @@
     for (const link of t.tiles) actions.append(button(link.label, "details", link.id));
     if (t.add) actions.append(button(t.add.label, "add", t.add.source, "db-primary"));
     body.replaceChildren(items, actions);
-    if (focused?.action)
-      [...body.querySelectorAll("button[data-action]")]
-        .find((b) => b.dataset.action === focused.action && b.dataset.id === focused.id)
-        ?.focus({ preventScroll: true });
+    // Focus that was inside the body stays inside the panel: the matching
+    // button if it survived, else the first remaining action, else Close.
+    if (focused) {
+      const buttons = [...body.querySelectorAll("button[data-action]")];
+      const same = focused.action
+        ? buttons.find((b) => b.dataset.action === focused.action && b.dataset.id === focused.id)
+        : null;
+      (same || buttons[0] || box.querySelector('[data-action="close"]'))?.focus({ preventScroll: true });
+    }
   }
   function openInspector(next, auto = false) {
     // A reading that re-opens a chip (`auto`) is not the user acting: it keeps the

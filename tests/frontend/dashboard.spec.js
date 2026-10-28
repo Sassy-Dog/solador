@@ -2568,6 +2568,77 @@ test("an open trouble panel follows the next reading", async ({ page, baseURL })
   await expect(inspector(page)).toContainText("vm-renamed");
 });
 
+// A reading repaints the open trouble panel; focus that was inside it must stay
+// inside it. `reshape` edits the trouble of the chip's source in a copy of the
+// model's attention.
+async function readingKeepsFocusInPanel(page, model, { chipText, source, ready, focus, reshape, expected }) {
+  await chip(page, chipText).click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  // Readings reach the page on its next poll: wait for the one this scenario starts from.
+  if (ready) await ready(inspector(page));
+  await focus(inspector(page)).focus();
+  const next = structuredClone(model.attention);
+  reshape(next.find((a) => a.source === source).target.trouble);
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), next);
+  await expect(expected(inspector(page))).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+}
+
+test("a trouble panel keeps focus inside when its focused tile link leaves the reading", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const { tiles } = chipTarget(model, "hosts").trouble;
+  expect(tiles.length).toBeGreaterThan(1);
+  await readingKeepsFocusInPanel(page, model, {
+    chipText: "Machines", source: "hosts",
+    focus: (i) => i.locator(`[data-action="details"][data-id="${tiles[0].id}"]`),
+    reshape: (t) => { t.tiles = t.tiles.slice(1); },
+    expected: (i) => i.locator(`[data-action="details"][data-id="${tiles[1].id}"]`),
+  });
+});
+
+test("a trouble panel keeps focus inside when its focused Add button leaves the reading", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  const { trouble } = chipTarget(model, "containers");
+  expect(trouble.add).toBeTruthy();
+  // The sample reading has no tile link beside Add; give the first reading one.
+  const link = chipTarget(model, "hosts").trouble.tiles[0];
+  const first = structuredClone(model.attention);
+  first.find((a) => a.source === "containers").target.trouble.tiles = [link];
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), first);
+  await readingKeepsFocusInPanel(page, { attention: first }, {
+    chipText: "Containers", source: "containers",
+    ready: (i) => expect(i.locator('[data-action="details"]')).toHaveCount(1),
+    focus: (i) => i.locator('[data-action="add"]'),
+    reshape: (t) => { t.add = null; },
+    expected: (i) => i.locator(`[data-action="details"][data-id="${link.id}"]`),
+  });
+});
+
+test("a trouble panel with no action left puts focus on Close", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  expect(chipTarget(model, "containers").trouble.add).toBeTruthy();
+  await readingKeepsFocusInPanel(page, model, {
+    chipText: "Containers", source: "containers",
+    focus: (i) => i.locator('[data-action="add"]'),
+    reshape: (t) => { t.add = null; t.tiles = []; },
+    expected: (i) => i.locator('[data-action="close"]'),
+  });
+});
+
+test("a reading that repaints a trouble panel does not move focus from outside it", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, "chips");
+  await chip(page, "Containers").click();
+  const grid = viewButton(page, "hosts");
+  await grid.focus();
+  const next = structuredClone(model.attention);
+  const t = next.find((a) => a.source === "containers").target.trouble;
+  t.add = null;
+  t.tiles = [];
+  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), next);
+  await expect(inspector(page).locator('[data-action="add"]')).toHaveCount(0);
+  await expect(grid).toBeFocused();
+});
+
 test("an open chip flips between a tile's Detail and the trouble panel with the next reading", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL, "chips");
   // Rust's own view of the default layout: the Repos chip there leads to its tile.
