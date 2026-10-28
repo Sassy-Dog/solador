@@ -72,7 +72,9 @@ still read every source, even one without a tile. Clicking an active chip again
 closes its panel; clicking a different chip switches sources. The active chip
 is highlighted. An open chip follows the next reading: if its tile is hidden or
 re-scoped it becomes the trouble panel, if the trouble panel's source gains a
-covering tile it becomes that Detail, and the trouble panel's items refresh. When
+covering tile it becomes that Detail, and the trouble panel's items refresh (if the
+focused tile link or Add button is gone from the new reading, focus moves to the
+panel's first remaining action, or its Close button when none is left). When
 Rust stops reporting the source's trouble (its chip leaves the bar), an open
 trouble panel closes, with focus moved to the Edit button if it was inside the
 panel; the panel paints no sentence of its own for this. A chip's tile Detail
