@@ -3358,7 +3358,10 @@ test("a Runners tile's Full view and Detail choices save separately", async ({ p
   await expect.poll(() => savedTile(page, "overview-ghRunners")).toMatchObject({ runnerFullView: "list", detailView: "table" });
 });
 
-test("a mistyped view setting is refused by Rust's range and nothing is saved", async ({ page, baseURL }) => {
+// The browser enforces the `min`/`max` Rust authors into the field; the IPC
+// stub never runs Rust, so Rust's own refusal (`layout_from_ipc`) is covered by
+// `an_out_of_range_view_setting_over_ipc_is_refused_not_clamped`, not here.
+test("an out-of-range view setting is stopped by the field's Rust-authored min/max and nothing is saved", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
   await editTile(page, "overview-hosts");
   await pageButton(page, "Full view").click();
@@ -3367,7 +3370,55 @@ test("a mistyped view setting is refused by Rust's range and nothing is saved", 
   await expect(input).toHaveAttribute("max", String(model.configure.coreRowSpan.max));
   await input.fill(String(model.configure.coreRowSpan.max + 1));
   await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(input).toBeFocused();
+  // Nothing may have been sent; give a wrongly sent save time to arrive first.
+  await expect.poll(() => commandArgs(page, "dashboard_save"), { timeout: 1000 }).toEqual([]);
+  await page.waitForTimeout(300);
   expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("Apply with an invalid value on another page switches to that page instead of failing silently", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await editTile(page, "overview-hosts");
+  await pageButton(page, "Full view").click();
+  const input = configPage(page, "full").getByLabel(model.configure.coreRowSpan.label);
+  await input.fill(String(model.configure.coreRowSpan.max + 1));
+  await pageButton(page, "This tile").click();
+  await expect(configPage(page, "full")).toBeHidden();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  // The page that owns the invalid control is shown, with that control focused.
+  await expect(configPage(page, "full")).toBeVisible();
+  await expect(configPage(page, "tile")).toBeHidden();
+  await expect(pageButton(page, "Full view")).toHaveAttribute("aria-pressed", "true");
+  await expect(input).toBeFocused();
+  expect(await input.evaluate((el) => el.validity.valid)).toBe(false);
+  await page.waitForTimeout(300);
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("Configure reads the page Edit-from-a-Full-view opens from Rust's payload", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, (view) => {
+    view.configure.editFromFullPage = "detail";
+  });
+  await tile(page, "ghRunners").getByRole("button", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Full view", exact: true }).click();
+  await page.locator('.db-chrome [data-action="edit"]').click();
+  await expect(pageButton(page, "Detail")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "detail")).toBeVisible();
+  await expect(configPage(page, "full")).toBeHidden();
+});
+
+test("Configure reads which page holds the tile's own fields from Rust's payload", async ({ page, baseURL }) => {
+  // The own page is not first here: a frontend that assumes pages[0] puts the
+  // tile's own fields on the wrong page.
+  await openDashboard(page, baseURL, false, (view) => {
+    const own = view.configure.pages.find((p) => p.id === view.configure.ownPage);
+    view.configure.pages = [...view.configure.pages.filter((p) => p !== own), own];
+  });
+  await editTile(page, "overview-hosts");
+  await expect(pageButton(page, "This tile")).toHaveAttribute("aria-pressed", "true");
+  await expect(configPage(page, "tile").locator('[data-field="width"]')).toBeVisible();
+  await expect(configPage(page, "detail").locator('[data-field="width"]')).toHaveCount(0);
 });
 
 test("Edit inside a tile's Full view opens that tile's Configure on its Full view page", async ({ page, baseURL }) => {

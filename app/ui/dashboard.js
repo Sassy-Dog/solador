@@ -1358,7 +1358,7 @@
       // View menu's list behind "This tile"). Every page is in the form, so
       // Apply saves the tile's own settings whichever page is showing.
       const cfg = model.configure || { pages: [], pageFields: {} };
-      const pageId = cfg.pages.some((p) => p.id === next.page) ? next.page : cfg.pages[0]?.id;
+      const pageId = cfg.pages.some((p) => p.id === next.page) ? next.page : cfg.ownPage;
       const switcher = node("div", "db-view-switch db-config-switch");
       switcher.setAttribute("role", "group");
       switcher.setAttribute("aria-label", cfg.switchLabel);
@@ -1372,7 +1372,7 @@
         const body = node("div", "db-fields db-config-page");
         body.dataset.page = page.id;
         body.hidden = page.id !== pageId;
-        if (page.id === cfg.pages[0].id) {
+        if (page.id === cfg.ownPage) {
           body.append(
             selectField("presentation", L("presentation"), ["summary", "detailed"].map((v) => ({ value: v, label: L(v) })), t.presentation),
             selectField("width", L("width"), ["small", "medium", "wide"].map((v) => ({ value: v, label: L(v) })), t.width),
@@ -2132,12 +2132,27 @@
     }
     return saved;
   }
+  // Shows one page of the open Configure and marks its button pressed.
+  function showConfigurePage(id) {
+    if (active?.kind !== "configure") return;
+    active.page = id;
+    for (const choose of q(".db-config-switch")?.children || [])
+      choose.setAttribute("aria-pressed", String(choose.dataset.id === id));
+    for (const page of q(".db-config-pages")?.children || []) page.hidden = page.dataset.page !== id;
+  }
   function copyLayout() {
     return structuredClone(model.layout);
   }
   async function apply() {
     const form = q("#dashboardForm");
-    if (!form || !form.reportValidity() || busy) return;
+    if (!form || busy) return;
+    // Every Configure page is in the form, the others hidden. A hidden control
+    // cannot show its bubble, so the page that owns the first invalid one is
+    // shown before the check reports.
+    const invalid = form.querySelector(":invalid");
+    const invalidPage = invalid?.closest(".db-config-page")?.dataset.page;
+    if (invalidPage) showConfigurePage(invalidPage);
+    if (!form.reportValidity()) return;
     const draft = formTile();
     if (!draft) {
       status(L("missingScope"), true);
@@ -2410,7 +2425,7 @@
         editing = true;
         if (opened && tile(opened)) {
           render(true);
-          openInspector({ kind: "configure", id: opened, page: "full" });
+          openInspector({ kind: "configure", id: opened, page: model.configure?.editFromFullPage });
           return;
         }
       }
@@ -2442,11 +2457,7 @@
       return;
     }
     if (action === "configure-page") {
-      if (active?.kind !== "configure") return;
-      active.page = id;
-      for (const choose of b.parentElement.children)
-        choose.setAttribute("aria-pressed", String(choose === b));
-      for (const page of q(".db-config-pages").children) page.hidden = page.dataset.page !== id;
+      showConfigurePage(id);
       return;
     }
     if (action === "configure") {

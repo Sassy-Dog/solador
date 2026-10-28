@@ -127,17 +127,13 @@ fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
     if !CORE_ROW_SPAN_RANGE.contains(&tile.core_row_span)
         || (!hosts && tile.core_row_span != DEFAULT_CORE_ROW_SPAN)
     {
-        return Err("Choose between 1 and 4 CPU core rows, on a Machines tile.".into());
+        return Err(core_rows_refusal());
     }
     if !hosts && tile.host_overflow != HostOverflowMode::Stack {
         return Err("Only a Machines tile chooses how host cards overflow.".into());
     }
     if !ROW_GAP_PX_RANGE.contains(&tile.row_gap_px) {
-        return Err(format!(
-            "Choose a row spacing between {} and {} px.",
-            ROW_GAP_PX_RANGE.start(),
-            ROW_GAP_PX_RANGE.end()
-        ));
+        return Err(row_gap_refusal());
     }
     let table_or_list = |value: &str| ["table", "list"].contains(&value);
     if !table_or_list(&tile.detail_view) || !table_or_list(&tile.runner_full_view) {
@@ -147,6 +143,59 @@ fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
         return Err("Only a Runners tile has a Full view of its own to lay out.".into());
     }
     Ok(())
+}
+
+/// The tile "Add tile" starts from for `source`: `DashboardTile::new`'s defaults,
+/// the scope the source opens on, and Machines one width wider. One source of
+/// every default, so a field added to the tile cannot be forgotten here.
+fn default_tile(source: &str, title: &str) -> Value {
+    let scope = if source == "sentryCrons" {
+        "active"
+    } else {
+        "all"
+    };
+    let mut tile = DashboardTile::new("draft", source, title, scope);
+    if source == "hosts" {
+        tile.width = "medium".into();
+    }
+    serde_json::to_value(&tile).expect("a tile serialises")
+}
+
+fn core_rows_refusal() -> String {
+    "Choose between 1 and 4 CPU core rows, on a Machines tile.".into()
+}
+
+fn row_gap_refusal() -> String {
+    format!(
+        "Choose a row spacing between {} and {} px.",
+        ROW_GAP_PX_RANGE.start(),
+        ROW_GAP_PX_RANGE.end()
+    )
+}
+
+/// Reads a layout arriving over IPC (`dashboard_save`). `DashboardTile` clamps
+/// `coreRowSpan` and `rowGapPx` as it deserialises, which is right for a
+/// hand-edited `store.json` and wrong here: a request no picker can produce would
+/// be silently rewritten (9 rows becoming 4) instead of refused. So the raw
+/// numbers are checked against the same ranges first, and only then is the layout
+/// built and left to [`validate`] for the rest.
+pub fn layout_from_ipc(raw: Value) -> Result<DashboardLayout, String> {
+    for tile in raw["tiles"].as_array().into_iter().flatten() {
+        let outside = |key: &str, range: std::ops::RangeInclusive<u8>| {
+            tile.get(key).is_some_and(|v| {
+                !v.is_null()
+                    && v.as_u64()
+                        .is_none_or(|n| !range.contains(&(n.min(255) as u8)))
+            })
+        };
+        if outside("coreRowSpan", CORE_ROW_SPAN_RANGE) {
+            return Err(core_rows_refusal());
+        }
+        if outside("rowGapPx", ROW_GAP_PX_RANGE) {
+            return Err(row_gap_refusal());
+        }
+    }
+    serde_json::from_value(raw).map_err(|_| "That dashboard edit could not be read.".to_string())
 }
 
 fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
@@ -906,9 +955,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         _ => "",
     };
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
-        "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false,
-        "runnerView":if id=="ghRunners" {"grouped"} else {"list"},
-        "coreRowSpan":DEFAULT_CORE_ROW_SPAN,"hostOverflow":"stack","rowGapPx":0,"detailView":"table","runnerFullView":"table"}});
+        "defaultTile":default_tile(id, title)});
     if id == "hosts" {
         // The shared limits editor (#612): shared by every Machines tile, so
         // it rides on the source, never on a tile.
@@ -1017,6 +1064,51 @@ mod detail_table_tests {
         assert_eq!(rows[0]["value"], "/boot at 95%");
     }
 
+    /// The IPC payload as the frontend sends it: camelCase JSON. Goes through
+    /// `layout_from_ipc` and then the save path, as `dashboard_save` does.
+    #[test]
+    fn an_out_of_range_view_setting_over_ipc_is_refused_not_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store::Store::open_in(dir.path(), false).unwrap();
+        let saved = crate::persist_dashboard(&mut store, default_layout(), 0).unwrap();
+        let original = std::fs::read(store.path()).unwrap();
+        for (key, value, reason) in [
+            ("coreRowSpan", json!(9), core_rows_refusal()),
+            ("coreRowSpan", json!(0), core_rows_refusal()),
+            ("coreRowSpan", json!(300), core_rows_refusal()),
+            ("coreRowSpan", json!(-1), core_rows_refusal()),
+            ("rowGapPx", json!(40), row_gap_refusal()),
+            ("rowGapPx", json!(17), row_gap_refusal()),
+            ("rowGapPx", json!("8"), row_gap_refusal()),
+        ] {
+            let mut payload = serde_json::to_value(&saved).unwrap();
+            payload["tiles"][0][key] = value.clone();
+            let refused = layout_from_ipc(payload)
+                .and_then(|layout| crate::persist_dashboard(&mut store, layout, 1).map(|_| ()))
+                .unwrap_err();
+            assert_eq!(refused, reason, "{key} = {value}");
+            assert_eq!(
+                std::fs::read(store.path()).unwrap(),
+                original,
+                "{key} = {value}"
+            );
+            assert_eq!(store.dashboard(), Some(&saved));
+        }
+        // In range, the same path saves it.
+        let mut payload = serde_json::to_value(&saved).unwrap();
+        payload["tiles"][0]["coreRowSpan"] = json!(4);
+        payload["tiles"][0]["rowGapPx"] = json!(16);
+        let layout = layout_from_ipc(payload).unwrap();
+        let persisted = crate::persist_dashboard(&mut store, layout, 1).unwrap();
+        assert_eq!(
+            (
+                persisted.tiles[0].core_row_span,
+                persisted.tiles[0].row_gap_px
+            ),
+            (4, 16)
+        );
+    }
+
     #[test]
     fn view_settings_default_and_are_validated_per_tile() {
         let ok = |edit: &dyn Fn(&mut DashboardTile)| {
@@ -1119,6 +1211,12 @@ mod detail_table_tests {
             .chain(TILE_VIEWS.iter().map(|(id, _)| *id))
             .collect();
         assert_eq!(ids, want);
+        // The two pages the frontend must not hard-code are named, and are pages.
+        assert_eq!(configure["ownPage"], "tile");
+        assert_eq!(configure["editFromFullPage"], "full");
+        for key in ["ownPage", "editFromFullPage"] {
+            assert!(ids.contains(&configure[key].as_str().unwrap()), "{key}");
+        }
         // Every page that holds settings is a page, and names a field with words.
         for (page, fields) in configure["pageFields"].as_object().unwrap() {
             assert!(ids.contains(&page.as_str()), "{page}");
@@ -1164,8 +1262,15 @@ mod detail_table_tests {
 /// What a tile's Full view says until the tile's own first reading arrives.
 pub(crate) const FULL_LOADING: &str = "Waiting for this tile\u{2019}s first reading\u{2026}";
 
+/// The page of a tile's Configure that holds the tile's own settings (#647). It
+/// is not a view, so it is not in [`TILE_VIEWS`]; the switch lists it first.
+pub(crate) const OWN_PAGE: &str = "tile";
+
+/// The view whose Configure page Edit opens from inside a tile's Full view.
+pub(crate) const FULL_VIEW: &str = "full";
+
 /// The views a tile can open, in the order they are offered.
-pub(crate) const TILE_VIEWS: [(&str, &str); 2] = [("detail", "Detail"), ("full", "Full view")];
+pub(crate) const TILE_VIEWS: [(&str, &str); 2] = [("detail", "Detail"), (FULL_VIEW, "Full view")];
 
 /// The source rows a tile keeps: its scope and repository selection, applied
 /// before sorting, grouping and the row limit.
@@ -1532,7 +1637,7 @@ fn presets() -> Value {
 /// tile**, so a view added there appears in the View menu and here together;
 /// the frontend lays out what this hands it and composes no sentence.
 fn configure() -> Value {
-    let mut pages = vec![json!({"id":"tile","label":"This tile"})];
+    let mut pages = vec![json!({"id":OWN_PAGE,"label":"This tile"})];
     pages.extend(
         TILE_VIEWS
             .iter()
@@ -1544,6 +1649,10 @@ fn configure() -> Value {
         "everyViewHeading": "Every view of this tile",
         "applyNote": "Apply saves this tile\u{2019}s settings from any page. Settings marked shared save when you click them.",
         "pages": pages,
+        // The page that holds the tile's own fields, and the page Edit opens
+        // from inside a tile's Full view. Both name an entry of `pages`.
+        "ownPage": OWN_PAGE,
+        "editFromFullPage": FULL_VIEW,
         // Which settings each view page holds. `sources` is null for every
         // source. `This tile` holds the settings the editor already shows.
         "pageFields": {
@@ -1813,6 +1922,19 @@ mod tests {
             };
             assert_eq!(draft.runner_view, want, "{}", source["id"]);
             assert_eq!(source["defaultTile"]["runnerView"], want);
+            // Every default comes from `DashboardTile::new`; only the scope the
+            // source opens on and Machines' wider width differ.
+            let id = source["id"].as_str().unwrap();
+            let mut expected = DashboardTile::new(
+                "draft",
+                id,
+                source["title"].as_str().unwrap(),
+                if id == "sentryCrons" { "active" } else { "all" },
+            );
+            if id == "hosts" {
+                expected.width = "medium".into();
+            }
+            assert_eq!(draft, expected, "{id}");
             assert!(validate(&DashboardLayout {
                 revision: 0,
                 legacy_detail_views: Default::default(),

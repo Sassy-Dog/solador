@@ -2953,11 +2953,14 @@ fn persist_dashboard(
 
 #[tauri::command]
 fn dashboard_save(
-    layout: store::DashboardLayout,
+    layout: Value,
     expected_revision: u64,
     width: f64,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
+    // Raw JSON, not `DashboardLayout`: the typed read clamps view settings, and an
+    // edit over IPC is refused when out of range instead.
+    let layout = dashboard::layout_from_ipc(layout)?;
     persist_dashboard(
         &mut state.store.lock().expect("store poisoned"),
         layout,
