@@ -69,17 +69,6 @@ impl PanelKind {
         }
     }
 
-    /// Parses an id a *stored layout* or an editor sent, strictly.
-    ///
-    /// Unknown means unknown: a panel this build has never heard of is a file
-    /// written by a newer one, and inventing a substitute would silently move
-    /// someone's cockpit around. The caller decides what to do about it (the
-    /// app drops the slot and fills the gap from the default order).
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        PanelKind::ALL.into_iter().find(|kind| kind.id() == raw)
-    }
-
     pub fn title(self) -> &'static str {
         match self {
             PanelKind::Hosts => "Hosts",
