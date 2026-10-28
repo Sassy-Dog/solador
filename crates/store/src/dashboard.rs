@@ -132,7 +132,8 @@ pub struct DashboardTile {
     pub show_disk: bool,
     /// Machines tiles only: how many grid rows the per-host CPU core chart
     /// spans in this tile's Full view. Within `CORE_ROW_SPAN_RANGE`; an
-    /// out-of-range value read from disk is clamped, since the intent survives.
+    /// out-of-range whole number up to 255 read from disk is clamped, since
+    /// the intent survives (see `read_ranged`).
     #[serde(
         default = "default_core_row_span",
         deserialize_with = "de_core_row_span"

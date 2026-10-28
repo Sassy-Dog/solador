@@ -2312,11 +2312,13 @@ Two things worth knowing about this surface:
   (`coreRowSpan`, `rowGapPx`) are described by `crates/store`'s
   `TileRangeField::spec()`, which maps each key to its range and default: the
   `CORE_ROW_SPAN_RANGE` / `DEFAULT_CORE_ROW_SPAN` and `ROW_GAP_PX_RANGE` /
-  `DEFAULT_ROW_GAP_PX` constants in `settings.rs`, which
-  `validate_view_settings` and `TILE_VIEWS` also read directly. Each field's
+  `DEFAULT_ROW_GAP_PX` constants in `settings.rs`. Other code reads those
+  constants directly too, among them `validate_view_settings`, Configure's
+  field limits (`configure()`) and `DashboardTile::new`. Each field's
   deserialiser and serde default read `spec()`, so a hand-edited `store.json`
-  clamps on read: a whole number up to 255 is clamped into the range, and
-  anything else fails the store's parse (`StoreError::Parse`).
+  clamps on read: `null` reads the default, a whole number up to 255 is
+  clamped into the range, and anything else (300, -1, 3.5, `"2"`) fails the
+  store's parse (`StoreError::Parse`).
   `RANGE_BOUNDED_TILE_FIELDS` lists the same fields for the strict
   `DashboardLayout::from_ipc_value`, which `dashboard_save` reads through (via
   `layout_from_ipc`, where the shell only words the refusal); a field missing
