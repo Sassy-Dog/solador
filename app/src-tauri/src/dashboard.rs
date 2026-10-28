@@ -121,8 +121,8 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
 }
 
 /// The per-view options a tile carries (#647). Refused rather than clamped, so
-/// an edit no picker can produce is told so. In a hand-edited `store.json` an
-/// integer up to 255 (no decimal point) is clamped into range on read instead
+/// an edit no picker can produce is told so. In a hand-edited `store.json` a
+/// value serde reads as a `u8` is clamped into range on read instead
 /// (`DashboardTile`), `null` reads the default, and anything else fails the
 /// store's parse.
 fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
