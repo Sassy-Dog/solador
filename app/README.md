@@ -2308,9 +2308,25 @@ Two things worth knowing about this surface:
   per-tile fields (`coreRowSpan`, `rowGapPx`, `hostOverflow`, `detailView`,
   `runnerFullView` on the overview's tile), edited in that tile's Configure
   (**This tile** / **Detail** / **Full view**, built from Rust's `TILE_VIEWS`)
-  and validated per tile by `dashboard_save`. The old global values (Settings →
-  Preferences' rows, the Layout tab's first breakpoint and `detailViews`) are
-  read once at load by `StoreData::carry_view_settings_onto_tiles`, copied onto
+  and validated per tile by `dashboard_save`. The range-bounded two
+  (`coreRowSpan`, `rowGapPx`) are described by `crates/store`'s
+  `TileRangeField::spec()`, which maps each key to its range and default: the
+  `CORE_ROW_SPAN_RANGE` / `DEFAULT_CORE_ROW_SPAN` and `ROW_GAP_PX_RANGE` /
+  `DEFAULT_ROW_GAP_PX` constants in `settings.rs`. Other code reads those
+  constants directly too, among them `validate_view_settings`, Configure's
+  field limits (`configure()`) and `DashboardTile::new`. Each field's
+  deserialiser and serde default read `spec()`, so a hand-edited `store.json`
+  clamps on read: `null` reads the default, a value serde reads as a `u8` is
+  clamped into the range, and anything else (300, -1, 3.5, `4.0`, `1e0`,
+  `"2"`) fails the store's parse (`StoreError::Parse`).
+  `RANGE_BOUNDED_TILE_FIELDS` lists the same fields for the strict
+  `DashboardLayout::from_ipc_value`, which `dashboard_save` reads through (via
+  `layout_from_ipc`, where the shell only words the refusal); a field missing
+  from that list is not refused over IPC, and the store's probe test fails on
+  it. `validate_view_settings` still checks the typed tile (its ranges and the
+  Machines-only rule). The old global values (Settings → Preferences' rows,
+  the Layout tab's first breakpoint and `detailViews`) are read once at load
+  by `StoreData::carry_view_settings_onto_tiles`, copied onto
   the tiles they applied to, and dropped by the next save; nothing writes them.
   The core row span reaches the host cards through `align_core_ladders` (from
   the open Machines tile's own `HostLook`), and the row gap rides the tile in
