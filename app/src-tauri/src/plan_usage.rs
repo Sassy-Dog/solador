@@ -99,7 +99,7 @@ pub struct PlanSource {
     not_before: Option<u64>,
     /// The kind of the last read's failure, or `None` after a success (or a
     /// reset). The memory the failure-transition log line is decided against.
-    last_failure: Option<&'static str>,
+    last_failure: Option<String>,
     /// Bumped by every reset, so a read that was in flight when the operator
     /// turned the provider off cannot land its result afterwards.
     generation: u64,
@@ -134,9 +134,11 @@ impl PlanSource {
 
 /// A name for a failure kind that is safe to write to the log: a fixed word per
 /// variant, never the `Unreachable` / `Undecodable` detail (which can carry
-/// transport text) and never a header, a URL or a token.
-const fn kind_label(kind: &PlanErrorKind) -> &'static str {
-    match kind {
+/// transport text) and never a header, a URL or a token. `Http` carries its
+/// status code (a `u16` from a fixed field, not server text), so a 401 turning
+/// into a 503 is a different kind.
+fn kind_label(kind: &PlanErrorKind) -> String {
+    let word = match kind {
         PlanErrorKind::NotSignedIn => "not-signed-in",
         PlanErrorKind::NoSubscription => "no-subscription",
         PlanErrorKind::KeychainRefused => "keychain-refused",
@@ -144,16 +146,18 @@ const fn kind_label(kind: &PlanErrorKind) -> &'static str {
         PlanErrorKind::SignInExpired => "sign-in-expired",
         PlanErrorKind::MissingScope => "missing-scope",
         PlanErrorKind::RateLimited { .. } => "rate-limited",
-        PlanErrorKind::Http { .. } => "http-status",
+        PlanErrorKind::Http { status } => return format!("http-status {status}"),
         PlanErrorKind::Unreachable(_) => "unreachable",
         PlanErrorKind::Undecodable(_) => "undecodable",
-    }
+    };
+    word.to_owned()
 }
 
 /// Records one read's outcome on `source` and returns the log lines it earns:
 /// one when the failure kind changes (ok to failed, failed to a different
 /// kind, failed to ok), one when this outcome parks the provider, and one when
-/// it defers the next read by a `Retry-After`. Polls the gate skips never get
+/// it defers the next read past the cadence by a `Retry-After` (a shorter one
+/// moves nothing, so it is not news). Polls the gate skips never get
 /// here, so a parked or waiting provider logs nothing more. The lines name the
 /// provider and fixed words only.
 fn record_outcome(
@@ -161,12 +165,13 @@ fn record_outcome(
     provider: Provider,
     failure: Option<&PlanUsageError>,
     now: u64,
+    cadence_secs: u64,
 ) -> Vec<String> {
     let id = section_id(provider);
     let mut lines = Vec::new();
     let label = failure.map(|error| kind_label(&error.kind));
     if label != source.last_failure {
-        match (source.last_failure, label) {
+        match (source.last_failure.as_deref(), label.as_deref()) {
             (None, Some(new)) => lines.push(format!("plan usage: {id} read failed ({new})")),
             (Some(old), Some(new)) => {
                 lines.push(format!("plan usage: {id} failure changed ({old} -> {new})"));
@@ -188,8 +193,14 @@ fn record_outcome(
         source.not_before = error
             .retry_after_secs()
             .map(|secs| now.saturating_add(secs));
-        if let Some(secs) = error.retry_after_secs() {
-            lines.push(format!("plan usage: {id} retry-after {secs}s"));
+        // The cadence's own due time, as `gate` computes it.
+        let cadence_due = source
+            .last_attempt
+            .map_or(now, |at| at.saturating_add(cadence_secs));
+        if let (Some(secs), Some(not_before)) = (error.retry_after_secs(), source.not_before) {
+            if not_before > cadence_due {
+                lines.push(format!("plan usage: {id} retry-after {secs}s"));
+            }
         }
     } else {
         source.not_before = None;
@@ -244,7 +255,7 @@ pub fn gate(enabled: bool, source: &PlanSource, now: u64, cadence_secs: u64) -> 
 /// the whole pass would let Codex be read after the operator had turned it off
 /// during that wait, which is the one thing the opt-in promises cannot happen.
 ///
-/// Returns the gate this pass acted on.
+/// Returns the gate this pass acted on. The log lines go to stderr.
 pub async fn poll<T, E, R, RF, F, FF>(
     usage: &Mutex<UsageState>,
     provider: Provider,
@@ -255,6 +266,41 @@ pub async fn poll<T, E, R, RF, F, FF>(
     fetch: F,
 ) -> Gate
 where
+    E: FnOnce() -> bool,
+    R: FnOnce() -> RF,
+    RF: Future<Output = Result<T, PlanErrorKind>>,
+    F: FnOnce(T) -> FF,
+    FF: Future<Output = Result<PlanUsage, PlanUsageError>>,
+{
+    poll_logged(
+        usage,
+        provider,
+        enabled,
+        now,
+        cadence_secs,
+        read,
+        fetch,
+        |line| eprintln!("{line}"),
+    )
+    .await
+}
+
+/// [`poll`] with the log sink as a parameter, so a test can read the lines.
+/// `log` is called after the usage lock is released: `eprintln!` panics on a
+/// broken stderr pipe, and a panic under the lock would poison `UsageState`.
+#[allow(clippy::too_many_arguments)]
+pub async fn poll_logged<T, E, R, RF, F, FF, L>(
+    usage: &Mutex<UsageState>,
+    provider: Provider,
+    enabled: E,
+    now: u64,
+    cadence_secs: u64,
+    read: R,
+    fetch: F,
+    mut log: L,
+) -> Gate
+where
+    L: FnMut(&str),
     E: FnOnce() -> bool,
     R: FnOnce() -> RF,
     RF: Future<Output = Result<T, PlanErrorKind>>,
@@ -300,19 +346,20 @@ where
     }
     let lines = match outcome {
         Ok(reading) => {
-            let lines = record_outcome(source, provider, None, now);
+            let lines = record_outcome(source, provider, None, now, cadence_secs);
             let note = reading.is_empty().then(|| NO_WINDOWS_MESSAGE.to_owned());
             source.state.succeeded(reading, now, note);
             lines
         }
         Err(error) => {
-            let lines = record_outcome(source, provider, Some(&error), now);
+            let lines = record_outcome(source, provider, Some(&error), now, cadence_secs);
             source.state.failed(error.user_message());
             lines
         }
     };
+    drop(state);
     for line in lines {
-        eprintln!("{line}");
+        log(&line);
     }
     Gate::Due
 }
@@ -559,70 +606,217 @@ mod tests {
         let mut source = PlanSource::default();
         let p = Provider::Claude;
         let expired = failure(PlanErrorKind::SignInExpired);
-        let first = record_outcome(&mut source, p, Some(&expired), NOW);
+        let first = record_outcome(&mut source, p, Some(&expired), NOW, CADENCE);
         assert_eq!(
             first,
             ["plan usage: claude-plan read failed (sign-in-expired)"]
         );
         assert!(
-            record_outcome(&mut source, p, Some(&expired), NOW + 1).is_empty(),
+            record_outcome(&mut source, p, Some(&expired), NOW + 1, CADENCE).is_empty(),
             "the same kind again is not news"
         );
         let other = failure(PlanErrorKind::Http { status: 503 });
         assert_eq!(
-            record_outcome(&mut source, p, Some(&other), NOW + 2),
-            ["plan usage: claude-plan failure changed (sign-in-expired -> http-status)"]
+            record_outcome(&mut source, p, Some(&other), NOW + 2, CADENCE),
+            ["plan usage: claude-plan failure changed (sign-in-expired -> http-status 503)"]
         );
         assert_eq!(
-            record_outcome(&mut source, p, None, NOW + 3),
-            ["plan usage: claude-plan read ok again (was http-status)"]
+            record_outcome(&mut source, p, None, NOW + 3, CADENCE),
+            ["plan usage: claude-plan read ok again (was http-status 503)"]
         );
-        assert!(record_outcome(&mut source, p, None, NOW + 4).is_empty());
+        assert!(record_outcome(&mut source, p, None, NOW + 4, CADENCE).is_empty());
+    }
+
+    /// Negative control: label `Http` as a bare `http-status` and the
+    /// 401-to-503 change below logs nothing, and the first line loses its code.
+    #[test]
+    fn an_http_failure_carries_its_status_and_a_changed_status_is_a_changed_kind() {
+        let mut source = PlanSource::default();
+        let p = Provider::Codex;
+        let unauthorized = failure(PlanErrorKind::Http { status: 401 });
+        let unavailable = failure(PlanErrorKind::Http { status: 503 });
+        assert_eq!(
+            record_outcome(&mut source, p, Some(&unauthorized), NOW, CADENCE),
+            ["plan usage: codex-plan read failed (http-status 401)"]
+        );
+        assert!(record_outcome(&mut source, p, Some(&unauthorized), NOW + 1, CADENCE).is_empty());
+        assert_eq!(
+            record_outcome(&mut source, p, Some(&unavailable), NOW + 2, CADENCE),
+            ["plan usage: codex-plan failure changed (http-status 401 -> http-status 503)"]
+        );
     }
 
     #[test]
-    fn a_park_and_a_retry_after_log_once_each_and_carry_no_detail() {
+    fn a_park_logs_once_and_parks() {
         let mut source = PlanSource::default();
-        let p = Provider::Codex;
         let refused = failure(PlanErrorKind::KeychainRefused);
-        let lines = record_outcome(&mut source, p, Some(&refused), NOW);
+        let lines = record_outcome(&mut source, Provider::Codex, Some(&refused), NOW, CADENCE);
         assert_eq!(
             lines.iter().filter(|l| l.contains("parked")).count(),
             1,
             "{lines:?}"
         );
         assert!(source.parked);
+    }
 
+    /// Negative control for "once": delete the `label != last_failure` guard
+    /// and the second call returns a `read failed` line again.
+    #[test]
+    fn a_failure_repeated_logs_its_read_failed_line_once_and_carries_no_detail() {
+        let p = Provider::Codex;
         let mut source = PlanSource::default();
-        let throttled = failure(PlanErrorKind::RateLimited {
-            retry_after_secs: Some(90),
-        });
-        let lines = record_outcome(&mut source, p, Some(&throttled), NOW);
-        assert_eq!(
-            lines,
-            [
-                "plan usage: codex-plan read failed (rate-limited)",
-                "plan usage: codex-plan retry-after 90s"
-            ]
+        let down = failure(PlanErrorKind::Http { status: 503 });
+        let first = record_outcome(&mut source, p, Some(&down), NOW, CADENCE);
+        assert!(first.iter().any(|l| l.contains("read failed")), "{first:?}");
+        let second = record_outcome(&mut source, p, Some(&down), NOW + 1, CADENCE);
+        assert!(
+            second.is_empty(),
+            "the same failure twice logged twice: {second:?}"
         );
-        assert_eq!(source.not_before, Some(NOW + 90));
 
         let leaky = failure(PlanErrorKind::Unreachable(
             "https://example.test/?token=SECRET".into(),
         ));
-        let lines = record_outcome(&mut PlanSource::default(), p, Some(&leaky), NOW);
+        let lines = record_outcome(&mut PlanSource::default(), p, Some(&leaky), NOW, CADENCE);
         assert_eq!(lines, ["plan usage: codex-plan read failed (unreachable)"]);
+    }
+
+    /// Negative control: log the `retry-after` line unconditionally and the
+    /// short-Retry-After half fails.
+    #[test]
+    fn a_retry_after_logs_only_when_it_defers_past_the_cadence() {
+        let p = Provider::Codex;
+        let throttled = |secs| {
+            failure(PlanErrorKind::RateLimited {
+                retry_after_secs: Some(secs),
+            })
+        };
+        // Read started at NOW; the cadence is due again at NOW + CADENCE.
+        let mut source = PlanSource {
+            last_attempt: Some(NOW),
+            ..PlanSource::default()
+        };
+        let lines = record_outcome(&mut source, p, Some(&throttled(60)), NOW, CADENCE);
+        assert_eq!(lines, ["plan usage: codex-plan read failed (rate-limited)"]);
+        assert_eq!(source.not_before, Some(NOW + 60), "still recorded");
+
+        // Exactly the cadence: due at the same instant either way, so a
+        // deferral that changes nothing is not news. Negative control: `>=`.
+        let mut source = PlanSource {
+            last_attempt: Some(NOW),
+            ..PlanSource::default()
+        };
+        let lines = record_outcome(&mut source, p, Some(&throttled(CADENCE)), NOW, CADENCE);
+        assert_eq!(lines, ["plan usage: codex-plan read failed (rate-limited)"]);
+        assert_eq!(source.not_before, Some(NOW + CADENCE), "still recorded");
+
+        let mut source = PlanSource {
+            last_attempt: Some(NOW),
+            ..PlanSource::default()
+        };
+        let lines = record_outcome(&mut source, p, Some(&throttled(CADENCE + 90)), NOW, CADENCE);
+        assert_eq!(
+            lines,
+            [
+                "plan usage: codex-plan read failed (rate-limited)",
+                &format!("plan usage: codex-plan retry-after {}s", CADENCE + 90)
+            ]
+        );
+        assert_eq!(source.not_before, Some(NOW + CADENCE + 90));
     }
 
     #[test]
     fn a_reset_forgets_the_last_failure_so_the_next_one_logs_again() {
         let mut source = PlanSource::default();
         let expired = failure(PlanErrorKind::SignInExpired);
-        record_outcome(&mut source, Provider::Claude, Some(&expired), NOW);
+        record_outcome(&mut source, Provider::Claude, Some(&expired), NOW, CADENCE);
         source.reset();
         assert_eq!(
-            record_outcome(&mut source, Provider::Claude, Some(&expired), NOW).len(),
+            record_outcome(&mut source, Provider::Claude, Some(&expired), NOW, CADENCE).len(),
             1
+        );
+    }
+
+    /// Runs `poll_logged` for Claude with a read that succeeds and a fetch of
+    /// `fetched`; returns the lines the sink saw and whether the usage mutex
+    /// was free while each was written.
+    async fn logged_pass(
+        usage: &Mutex<UsageState>,
+        now: u64,
+        fetched: Result<PlanUsage, PlanErrorKind>,
+    ) -> (Vec<String>, Vec<bool>) {
+        let mut lines = Vec::new();
+        let mut free = Vec::new();
+        poll_logged(
+            usage,
+            Provider::Claude,
+            || true,
+            now,
+            CADENCE,
+            || async { Ok("token") },
+            |_| async { fetched.map_err(|kind| PlanUsageError::new(Provider::Claude, kind)) },
+            |line| {
+                free.push(usage.try_lock().is_ok());
+                lines.push(line.to_owned());
+            },
+        )
+        .await;
+        (lines, free)
+    }
+
+    /// Negative controls: delete the sink loop and `lines` is empty; drop
+    /// `record_outcome` from the `Err` arm and the line is missing; hold the
+    /// `state` guard through the loop and `free` holds a `false`.
+    #[tokio::test]
+    async fn poll_logs_a_failure_transition_without_holding_the_usage_lock() {
+        let usage = Mutex::new(UsageState::new());
+        let (lines, free) = logged_pass(&usage, NOW, Err(PlanErrorKind::SignInExpired)).await;
+        assert_eq!(
+            lines,
+            ["plan usage: claude-plan read failed (sign-in-expired)"]
+        );
+        assert_eq!(free, [true], "a line was written under the usage mutex");
+
+        // Recovery is the second line `poll` can write; this one needs the
+        // cadence to have passed.
+        let (lines, free) = logged_pass(&usage, NOW + CADENCE, Ok(reading())).await;
+        assert_eq!(
+            lines,
+            ["plan usage: claude-plan read ok again (was sign-in-expired)"]
+        );
+        assert_eq!(free, [true]);
+    }
+
+    /// A reading that lands after `reset()` is stale: no line, and
+    /// `last_failure` is not touched. Negative controls: moving
+    /// `record_outcome` above the generation check trips only the
+    /// `last_failure` assertion (the stale path still returns before the sink
+    /// loop); deleting the generation check entirely trips `lines.is_empty()`.
+    #[tokio::test]
+    async fn a_failure_that_lands_after_a_reset_logs_nothing_and_leaves_last_failure() {
+        let usage = Mutex::new(UsageState::new());
+        let mut lines = Vec::new();
+        poll_logged(
+            &usage,
+            Provider::Claude,
+            || true,
+            NOW,
+            CADENCE,
+            || async { Ok("token") },
+            |_| async {
+                usage.lock().unwrap().plan_mut(Provider::Claude).reset();
+                Err(PlanUsageError::new(
+                    Provider::Claude,
+                    PlanErrorKind::SignInExpired,
+                ))
+            },
+            |line: &str| lines.push(line.to_owned()),
+        )
+        .await;
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(
+            usage.lock().unwrap().plan(Provider::Claude).last_failure,
+            None
         );
     }
 

@@ -4602,9 +4602,40 @@ fn settings_set_plan_usage(
     enabled: bool,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
-    let status = apply_plan_usage(&state.store, &state.usage, &provider, enabled);
-    state.plan_usage_wake.notify_one();
+    let status = set_plan_usage(&state, &provider, enabled);
     settings_response(&state, status)
+}
+
+/// [`apply_plan_usage`], then a wake for the plan loop unless the provider was
+/// unknown: a refused toggle changed nothing, so there is nothing to re-read.
+fn set_plan_usage(app: &App, provider: &str, enabled: bool) -> Option<String> {
+    match apply_plan_usage(&app.store, &app.usage, provider, enabled) {
+        PlanApply::Skipped(message) => Some(message),
+        PlanApply::Applied(status) => {
+            app.plan_usage_wake.notify_one();
+            status
+        }
+    }
+}
+
+/// What [`apply_plan_usage`] did.
+#[derive(Debug)]
+enum PlanApply {
+    /// The provider name was not one of ours; nothing changed.
+    Skipped(String),
+    /// The toggle was applied; the save status, if any.
+    Applied(Option<String>),
+}
+
+impl PlanApply {
+    /// The status sentence, whichever way it went.
+    #[cfg(test)]
+    fn status(self) -> Option<String> {
+        match self {
+            PlanApply::Skipped(message) => Some(message),
+            PlanApply::Applied(status) => status,
+        }
+    }
 }
 
 /// The store-mutate-and-reset step of [`settings_set_plan_usage`], apart from
@@ -4615,11 +4646,11 @@ fn apply_plan_usage(
     usage: &Mutex<UsageState>,
     provider: &str,
     enabled: bool,
-) -> Option<String> {
+) -> PlanApply {
     let provider = match provider {
         "claude" => subscription::Provider::Claude,
         "codex" => subscription::Provider::Codex,
-        _ => return Some("Skipped — unknown provider.".into()),
+        _ => return PlanApply::Skipped("Skipped — unknown provider.".into()),
     };
     let set = |store: &mut Store, on: bool| {
         let settings = store.settings_mut();
@@ -4651,7 +4682,7 @@ fn apply_plan_usage(
         .expect("usage state poisoned")
         .plan_mut(provider)
         .reset();
-    status
+    PlanApply::Applied(status)
 }
 
 /// Where the Azure cost export lives.
@@ -7569,7 +7600,9 @@ mod tests {
         // Make the save fail: its directory becomes a file.
         std::fs::remove_dir_all(dir.path()).unwrap();
         std::fs::write(dir.path(), b"not a directory").unwrap();
-        let status = apply_plan_usage(&store, &usage, "claude", true).unwrap();
+        let status = apply_plan_usage(&store, &usage, "claude", true)
+            .status()
+            .unwrap();
         assert!(status.starts_with("Failed"), "{status}");
         assert!(
             !store.lock().unwrap().settings().claude_plan_usage_enabled,
@@ -7579,10 +7612,25 @@ mod tests {
         std::fs::create_dir(dir.path()).unwrap();
     }
 
+    /// An unknown provider changed nothing, so it wakes nothing; a known one
+    /// wakes the plan loop. Negative control: notify before the `Skipped` arm
+    /// and the first assertion fails.
+    #[test]
+    fn an_unknown_plan_provider_does_not_wake_the_loop_but_a_known_one_does() {
+        let (_dir, _rt, app) = test_app();
+        let status = set_plan_usage(&app, "gemini", true).unwrap();
+        assert!(status.starts_with("Skipped"), "{status}");
+        assert!(!woken(&app.plan_usage_wake), "an unknown provider woke it");
+        set_plan_usage(&app, "codex", false);
+        assert!(woken(&app.plan_usage_wake), "a known provider did not");
+    }
+
     #[test]
     fn a_plan_enable_that_saves_stays_on_and_reads_the_right_provider() {
         let (_dir, store, usage) = plan_fixture();
-        apply_plan_usage(&store, &usage, "codex", true).unwrap();
+        apply_plan_usage(&store, &usage, "codex", true)
+            .status()
+            .unwrap();
         let guard = store.lock().unwrap();
         assert!(guard.settings().codex_plan_usage_enabled);
         assert!(!guard.settings().claude_plan_usage_enabled);
@@ -7596,7 +7644,9 @@ mod tests {
             .unwrap()
             .plan_mut(subscription::Provider::Claude)
             .park_for_test();
-        let status = apply_plan_usage(&store, &usage, "gemini", true).unwrap();
+        let status = apply_plan_usage(&store, &usage, "gemini", true)
+            .status()
+            .unwrap();
         assert!(status.starts_with("Skipped"), "{status}");
         let guard = store.lock().unwrap();
         assert!(!guard.settings().claude_plan_usage_enabled);
@@ -7621,11 +7671,17 @@ mod tests {
         let gate = |usage: &Mutex<UsageState>| {
             plan_usage::gate(true, usage.lock().unwrap().plan(provider), 0, 900)
         };
-        apply_plan_usage(&store, &usage, "claude", true).unwrap();
+        apply_plan_usage(&store, &usage, "claude", true)
+            .status()
+            .unwrap();
         usage.lock().unwrap().plan_mut(provider).park_for_test();
         assert_eq!(gate(&usage), plan_usage::Gate::Parked);
-        apply_plan_usage(&store, &usage, "claude", false).unwrap();
-        apply_plan_usage(&store, &usage, "claude", true).unwrap();
+        apply_plan_usage(&store, &usage, "claude", false)
+            .status()
+            .unwrap();
+        apply_plan_usage(&store, &usage, "claude", true)
+            .status()
+            .unwrap();
         assert_eq!(gate(&usage), plan_usage::Gate::Due);
     }
 
