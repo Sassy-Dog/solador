@@ -2316,9 +2316,9 @@ Two things worth knowing about this surface:
   constants directly too, among them `validate_view_settings`, Configure's
   field limits (`configure()`) and `DashboardTile::new`. Each field's
   deserialiser and serde default read `spec()`, so a hand-edited `store.json`
-  clamps on read: `null` reads the default, a whole number up to 255 is
-  clamped into the range, and anything else (300, -1, 3.5, `"2"`) fails the
-  store's parse (`StoreError::Parse`).
+  clamps on read: `null` reads the default, an integer up to 255 written
+  without a decimal point is clamped into the range, and anything else (300,
+  -1, 3.5, `4.0`, `"2"`) fails the store's parse (`StoreError::Parse`).
   `RANGE_BOUNDED_TILE_FIELDS` lists the same fields for the strict
   `DashboardLayout::from_ipc_value`, which `dashboard_save` reads through (via
   `layout_from_ipc`, where the shell only words the refusal); a field missing

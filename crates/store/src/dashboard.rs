@@ -96,8 +96,8 @@ impl DashboardLayout {
 }
 
 /// The shared read of a range-bounded field: `null` is the default, a `u8` is
-/// clamped into the range, and anything else (300, -1, 3.5, "2") fails the
-/// read.
+/// clamped into the range, and anything else (300, -1, 3.5, 4.0, "2") fails
+/// the read.
 fn read_ranged<'de, D: Deserializer<'de>>(d: D, field: TileRangeField) -> Result<u8, D::Error> {
     let f = field.spec();
     Ok(Option::<u8>::deserialize(d)?
@@ -132,8 +132,8 @@ pub struct DashboardTile {
     pub show_disk: bool,
     /// Machines tiles only: how many grid rows the per-host CPU core chart
     /// spans in this tile's Full view. Within `CORE_ROW_SPAN_RANGE`; an
-    /// out-of-range whole number up to 255 read from disk is clamped, since
-    /// the intent survives (see `read_ranged`).
+    /// out-of-range integer up to 255 (no decimal point) read from disk is
+    /// clamped, since the intent survives (see `read_ranged`).
     #[serde(
         default = "default_core_row_span",
         deserialize_with = "de_core_row_span"
