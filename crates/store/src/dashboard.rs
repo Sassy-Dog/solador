@@ -10,8 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::ops::RangeInclusive;
 
-/// A tile field whose value must lie in a range. [`TileRangeField::spec`] is
-/// its one definition and [`RANGE_BOUNDED_TILE_FIELDS`] the one list of them.
+/// A tile field whose value must lie in a range. [`TileRangeField::spec`] maps
+/// it to its key and to its range and default constants in `settings`, and
+/// [`RANGE_BOUNDED_TILE_FIELDS`] is the one list of them.
 /// The clamp on read and the refusal over IPC both read `spec`; only the
 /// refusal walks the list (#669).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

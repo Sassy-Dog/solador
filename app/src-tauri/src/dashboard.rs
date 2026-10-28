@@ -121,8 +121,9 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
 }
 
 /// The per-view options a tile carries (#647). Refused rather than clamped, so
-/// an edit no picker can produce is told so; an out-of-range value in a
-/// hand-edited `store.json` is clamped on read instead (`DashboardTile`).
+/// an edit no picker can produce is told so; an out-of-range whole number up
+/// to 255 in a hand-edited `store.json` is clamped on read instead
+/// (`DashboardTile`), and anything else fails the store's parse.
 fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
     let hosts = tile.source == "hosts";
     if !CORE_ROW_SPAN_RANGE.contains(&tile.core_row_span)
