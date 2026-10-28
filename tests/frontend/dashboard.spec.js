@@ -2571,16 +2571,17 @@ test("an open trouble panel follows the next reading", async ({ page, baseURL })
 // A reading repaints the open trouble panel; focus that was inside it must stay
 // inside it. `reshape` edits the trouble of the chip's source in a copy of the
 // model's attention.
-async function readingKeepsFocusInPanel(page, model, { chipText, source, focus, reshape, expected }) {
+async function readingKeepsFocusInPanel(page, model, { chipText, source, ready, focus, reshape, expected }) {
   await chip(page, chipText).click();
   await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  // Readings reach the page on its next poll: wait for the one this scenario starts from.
+  if (ready) await ready(inspector(page));
   await focus(inspector(page)).focus();
   const next = structuredClone(model.attention);
   reshape(next.find((a) => a.source === source).target.trouble);
   await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), next);
-  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
-  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
   await expect(expected(inspector(page))).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
 }
 
 test("a trouble panel keeps focus inside when its focused tile link leaves the reading", async ({ page, baseURL }) => {
@@ -2606,6 +2607,7 @@ test("a trouble panel keeps focus inside when its focused Add button leaves the 
   await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), first);
   await readingKeepsFocusInPanel(page, { attention: first }, {
     chipText: "Containers", source: "containers",
+    ready: (i) => expect(i.locator('[data-action="details"]')).toHaveCount(1),
     focus: (i) => i.locator('[data-action="add"]'),
     reshape: (t) => { t.add = null; },
     expected: (i) => i.locator(`[data-action="details"][data-id="${link.id}"]`),
