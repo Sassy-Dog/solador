@@ -262,6 +262,31 @@ fn a_second_load_of_an_unsaved_store_carries_the_same_values() {
     let first = Store::open_in(dir.path(), false).expect("open");
     let second = Store::open_in(dir.path(), false).expect("open again");
     assert_eq!(first.data(), second.data());
+    assert_eq!(
+        fs::read_to_string(dir.path().join(STORE_FILE_NAME)).expect("read"),
+        stored.to_string(),
+        "loading never writes the store: the old keys leave only on the next save"
+    );
+}
+
+#[test]
+fn the_copy_is_spent_by_its_first_pass() {
+    let stored = old_store(
+        json!({"host_overflow_mode": "tabs"}),
+        Some(tabs_layout()),
+        json!({"ghRunners": "list"}),
+    );
+    let mut data: StoreData = serde_json::from_value(stored).expect("parse");
+    assert!(
+        data.carry_view_settings_onto_tiles(),
+        "the first pass carries"
+    );
+    let after_first = data.clone();
+    assert!(
+        !data.carry_view_settings_onto_tiles(),
+        "a second pass has nothing left to carry"
+    );
+    assert_eq!(data, after_first, "a second pass changes nothing");
 }
 
 #[test]
