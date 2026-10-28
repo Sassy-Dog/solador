@@ -315,6 +315,28 @@ test.describe("the coding-agent prompt", () => {
   });
 });
 
+/**
+ * Every screenshot `site/index.html` declares a size for is that size (#672).
+ * `npm run screenshots` rewrites the images and nothing rewrites the markup, so
+ * a Full-view layout change once left two of them declaring shapes the files no
+ * longer had. Read from the PNG header (IHDR), so it needs no browser.
+ */
+test("every screenshot's declared width and height is its file's pixel size", () => {
+  const html = fs.readFileSync(path.join(SITE, "index.html"), "utf8");
+  const imgs = [
+    ...html.matchAll(/<img src="(\/assets\/screenshots\/[^"]+\.png)"[^>]*? width="(\d+)" height="(\d+)"/g),
+  ];
+  expect(imgs.length).toBeGreaterThanOrEqual(9);
+  for (const [, src, width, height] of imgs) {
+    const png = fs.readFileSync(path.join(SITE, src));
+    expect({ src, w: png.readUInt32BE(16), h: png.readUInt32BE(20) }).toEqual({
+      src,
+      w: Number(width),
+      h: Number(height),
+    });
+  }
+});
+
 test.describe("every page", () => {
   for (const urlPath of PAGES) {
     test(`${urlPath} raises no CSP violation and every local link and asset exists`, async ({ page }) => {

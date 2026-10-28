@@ -54,15 +54,21 @@ const PAYLOADS = {
  * narrow shot once showed overlapping host cards: a layout computed for 2732px
  * painted into a 900px window. So each viewport below has its own dump, and a
  * width with none is refused, never approximated. The widths are what those
- * viewports measure (1024, 908, 900 and 462 wide, less the page padding); a CSS change that moves them fails here loudly, and the
- * fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
+ * viewports measure (1024, 908, 900 and 462 wide, less the page padding; a tile's Full view asks
+ * at the window's own width too, which is why 900 has a dump); a CSS change that
+ * moves them fails here loudly, and the fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
  */
 const COCKPITS = {
   992: "sample-showcase-cockpit-992.json",
   876: "sample-showcase-cockpit-876.json",
   868: "sample-showcase-cockpit-868.json",
+  900: "sample-showcase-cockpit-900.json",
   430: "sample-showcase-cockpit-430.json",
 };
+
+/** The box `.tile-shot img` crops each panel image into on solador.app (site.css, 311x195 at the 3-up layout). */
+const SHOT_W = 311;
+const SHOT_H = 195;
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
@@ -118,6 +124,24 @@ async function loadTileFull(page, baseURL, source) {
   await expectNoMisses(page);
 }
 
+/**
+ * The Containers card says "on this machine and on a remote host", so the crop
+ * the site shows must include a remote host's section, not only this machine's.
+ * The image is scaled to cover the card box, anchored top left: whatever lies
+ * past the covered region is cut.
+ */
+async function expectRemoteHostInCrop(panel) {
+  const box = await panel.boundingBox();
+  const sections = panel.locator(".cont-section");
+  expect(await sections.count()).toBeGreaterThan(1);
+  const remote = await sections.last().boundingBox();
+  const scale = Math.max(SHOT_W / box.width, SHOT_H / box.height);
+  const visibleW = SHOT_W / scale;
+  const visibleH = SHOT_H / scale;
+  expect(remote.y - box.y + remote.height).toBeLessThanOrEqual(visibleH);
+  expect(remote.x - box.x).toBeLessThan(visibleW / 2);
+}
+
 test.beforeAll(async () => {
   await fs.mkdir(OUT, { recursive: true });
 });
@@ -141,20 +165,26 @@ test.describe("at 2x: the shots people look at", () => {
   });
 
   // [selector, file name, viewport width, tile source]. A tile's Full view gives
-  // its panel the whole window, so the window is sized to the panel: 908 for the
-  // panels that were half a cockpit wide (876), 462 for the quarter-wide ones
-  // (430), keeping each image the shape the site and README lay out. Hosts is
-  // one card — this machine's — at the narrow width: the whole host grid at 1800
-  // wide and 2x is a 3500px image for a tile that shows a few hundred.
+  // its panel the whole window and lays it out in columns, so the window is sized
+  // to the shape each image needs, not to the old card: `site/index.html` crops
+  // every image into a 311x195 box with `object-fit: cover`, so the
+  // image's shape decides what the card shows (#672). 908 for the panels whose
+  // two-column rows read as a card (repos, runners), 462 for the rest, where a
+  // panel stacks as it did in its old card: Containers keeps the remote host
+  // under this machine's, Azure Cost keeps the prior month, projection and
+  // resource groups. Hosts is one card — this machine's — at 900: the whole host
+  // grid at 1800 wide and 2x is a 3500px image for a tile that shows a few
+  // hundred. Hosts asks Rust for the cockpit at the window's own width (900) as
+  // well as the overview's (868), so both have a dump.
   for (const [selector, name, width, source] of [
     ["#cockpit > .card >> nth=0", "hosts", 900, "hosts"],
     ["#reposPanel", "repos", 908, "ghWorkflows"],
     ["#runnersPanel", "runners", 908, "ghRunners"],
-    ["#containersPanel", "containers", 908, "containers"],
+    ["#containersPanel", "containers", 462, "containers"],
     ["#usagePanel", "usage", 462, "claudeUsage"],
     ["#cronsPanel", "crons", 462, "sentryCrons"],
     ["#servicesPanel", "services", 462, "services"],
-    ["#azurePanel", "azure-cost", 908, "azureCost"],
+    ["#azurePanel", "azure-cost", 462, "azureCost"],
     ["#openclawPanel", "openclaw", 462, "openclawAgents"],
   ]) {
     test(`panel: ${name}`, async ({ page, baseURL }) => {
@@ -162,6 +192,7 @@ test.describe("at 2x: the shots people look at", () => {
       await loadTileFull(page, baseURL, source);
       const panel = page.locator(selector);
       await expect(panel).toBeVisible();
+      if (name === "containers") await expectRemoteHostInCrop(panel);
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });
     });
   }
