@@ -45,8 +45,8 @@ const callRust = async (command, args, fixture) => {
   try {
     payload = await callRaw(command, args, fixture);
   } catch (e) {
-    // A refused tile read would leave the loading line over a hidden body.
-    if (args?.tile !== undefined && dashboard?.fullGeneration?.() === view) dashboard.tileFailed(args.tile);
+    // A refused tile read says so in place of the loading line; the body stays hidden.
+    if (dashboard && args?.tile !== undefined && dashboard.fullGeneration() === view) dashboard.tileFailed(args.tile);
     throw e;
   }
   if (!dashboard?.fullGeneration) return payload;

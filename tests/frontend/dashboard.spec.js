@@ -253,6 +253,14 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               let scoped = fixtures[command];
               if (window.__TILE_EMPTY__) scoped = { ...scoped, rows: [], tileEmpty: window.__TILE_EMPTY__ };
               if (window.__REJECT_TILE__ === command) throw "The reading failed.";
+              // Every read of this command parks until released, so a poll cannot
+              // land between the hold and the assertion (#656).
+              if (window.__HOLD_ALL_TILE__ === command) {
+                return await new Promise(resolve => {
+                  (window.__RELEASE_ALL__ ||= []).push(() => resolve(scoped));
+                  window.__TILE_PARKED__ = true;
+                });
+              }
               if (window.__HOLD_TILE__ === command) {
                 window.__HOLD_TILE__ = null;
                 scoped = window.__HELD_PAYLOAD__ ?? scoped;
@@ -2441,25 +2449,43 @@ test("a tile's reading that lands after Escape, or after another tile opens, pai
   }
 });
 
-test("a refused tile read lifts the loading line instead of hiding the body under it (#656)", async ({ page, baseURL }) => {
+test("a refused tile read keeps the body hidden and says so in Rust's words (#656)", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false, healthyRepos);
+  // An earlier Full view of the same source leaves its rows in the panel.
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await expect(page.locator("#reposBody")).not.toBeEmpty();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  const words = await page.evaluate(async () => (await (await fetch("/sample-dashboard.json")).json()).labels.tileReadFailed);
+  expect(words).toBeTruthy();
   await page.evaluate(() => { window.__REJECT_TILE__ = "repos"; });
   await openTileFullViaDetail(page, "overview-ghWorkflows");
-  await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
-  await expect(page.locator("#fullView")).not.toHaveAttribute("data-tile-loading", /.*/);
+  await expect(page.locator("#reposPanel .db-full-state")).toHaveText(words);
+  // The loading rule stays: those rows must not show under this tile's name.
+  await expect(page.locator("#fullView")).toHaveAttribute("data-tile-loading", "");
+  await expect(page.locator("#reposBody")).toBeHidden();
+  // A later success clears the sentence and shows the rows.
+  await page.evaluate(async () => { window.__REJECT_TILE__ = null; await window.__SOLADOR_GITHUB_TEST__.refresh(); });
+  await expect(page.locator("#reposBody")).toBeVisible();
   await expect(page.locator(".db-full-state")).toHaveCount(0);
 });
 
 test("a Machines tile's Full view hides the host tabs until its first reading lands (#656)", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, false);
   // The previous view's tab bar, left standing.
-  await page.evaluate(() => { window.__TILE_PARKED__ = false; window.__HOLD_TILE__ = "cockpit"; const bar = document.getElementById("hostTabs"); bar.innerHTML = '<button class="tab">previous</button>'; bar.hidden = false; });  await openTileFullViaDetail(page, "overview-hosts");
+  await page.evaluate(() => {
+    window.__TILE_PARKED__ = false;
+    window.__HOLD_ALL_TILE__ = "cockpit";
+    const bar = document.getElementById("hostTabs");
+    bar.innerHTML = '<button class="tab">previous</button>';
+    bar.hidden = false;
+  });
+  await openTileFullViaDetail(page, "overview-hosts");
   await heldReadParked(page);
   await expect(page.locator("#fullView")).toHaveAttribute("data-tile-loading", "");
-  // Read once, not retried: a later poll's render would hide the bar by itself
-  // and let a retrying assertion pass without the loading rule.
+  // Every `cockpit` read is parked, so no poll can hide the bar for the rule.
   expect(await page.evaluate(() => getComputedStyle(document.getElementById("hostTabs")).display)).toBe("none");
-  await page.evaluate(() => window.__RELEASE_TILE__());
+  await page.evaluate(() => { window.__HOLD_ALL_TILE__ = null; window.__RELEASE_ALL__.forEach((release) => release()); });
   await expect(page.locator("#fullView")).not.toHaveAttribute("data-tile-loading", /.*/);
 });
 

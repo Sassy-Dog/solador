@@ -520,30 +520,35 @@ mod tests {
             ("azureCost", "item:budget"),
             ("openclawAgents", "attention"),
         ] {
-            // Rows to filter are absent, so the scope keeps nothing. A scope on
-            // one `item:` is the tile's own claim and says so (`tileEmpty`); any
-            // other scope leaves the source's setup or error state to its
-            // panel, and the payload comes back exactly as it went in, with no
-            // `tileEmpty` key (#656). Both are compared whole.
-            let sentence = scope.starts_with("item:").then(|| {
-                json!("This resource has no current reading. Review its connection or choose another scope.")
-            });
-            let expect = |p: &Value| {
+            // Rows to filter are absent, so the scope keeps nothing. What the
+            // tile adds is `tileEmpty`, compared whole: a scope on one `item:`
+            // is the tile's own claim and says so; any other scope leaves a
+            // source's own message to its panel (key absent), and carries the
+            // stock sentence only when there is no message to paint (#656).
+            let item = "This resource has no current reading. Review its connection or choose another scope.";
+            let stock = "No readings are available yet.";
+            let expect = |p: &Value, has_message: bool| {
                 let mut p = p.clone();
-                if let Some(sentence) = &sentence {
+                let sentence = match (scope.starts_with("item:"), has_message) {
+                    (true, _) => Some(item),
+                    (false, true) => None,
+                    (false, false) => Some(stock),
+                };
+                if let Some(sentence) = sentence {
                     p.as_object_mut()
                         .unwrap()
-                        .insert("tileEmpty".into(), sentence.clone());
+                        .insert("tileEmpty".into(), json!(sentence));
                 }
                 p
             };
-            let absent = json!({"message":"Add a token in Settings","footer":{"text":"f"}});
+            let absent =
+                json!({"message":{"text":"Add a token in Settings"},"footer":{"text":"f"}});
             let scoped = scope_payload(&tile(source, scope), absent.clone());
-            assert_eq!(scoped, expect(&absent), "{source} {scope}: absent");
+            assert_eq!(scoped, expect(&absent, true), "{source} {scope}: absent");
             let null = json!({"rows":null,"sections":null,"runtimes":null,"windows":null,
                 "plans":null,"providers":null,"stats":null});
             let scoped = scope_payload(&tile(source, scope), null.clone());
-            assert_eq!(scoped, expect(&null), "{source} {scope}: null");
+            assert_eq!(scoped, expect(&null, false), "{source} {scope}: null");
         }
     }
 

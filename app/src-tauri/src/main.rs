@@ -9054,10 +9054,15 @@ mod tests {
             view["labels"]["cockpitFailed"],
             dashboard::COCKPIT_LOAD_FAILED
         );
+        assert_eq!(
+            view["labels"]["tileReadFailed"],
+            dashboard::TILE_READ_FAILED
+        );
         assert_eq!(view["labels"]["settings"], settings::OPEN_LABEL);
         for words in [
             dashboard::OVERVIEW_LOAD_FAILED,
             dashboard::COCKPIT_LOAD_FAILED,
+            dashboard::TILE_READ_FAILED,
         ] {
             assert!(
                 !words.to_lowercase().contains("below"),

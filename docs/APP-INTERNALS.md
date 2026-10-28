@@ -584,7 +584,9 @@
   the scope filters (`Scope: …`, plus the totals clause on every source but
   Machines, which has no totals). Until the tile's own first reading lands the
   body (and Machines' host tabs) is hidden under Rust's `fullLoading` line, a
-  read the backend refuses lifts that line (`tileFailed`, #656), and a reading that returns
+  read the backend refuses keeps the body hidden and swaps that line for
+  `labels.tileReadFailed` (`tileFailed`, #656; Machines swaps it for
+  `cockpitFailed`), and a reading that returns
   after Escape or a switch to another tile is dropped in `callRust`
   (`app.js`), once for every renderer; a scope that keeps nothing shows the
   tile's own `empty` sentence, carried as `tileEmpty` (`scoped_empty`, #640);
