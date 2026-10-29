@@ -657,9 +657,7 @@ test("a failed fetch keeps the last-good rows and surfaces the error in the head
 
 /**
  * The reason the warning moved into the header at all. It used to be a `<p>`
- * after `.panel-body`, so a panel grew a line the moment it degraded — and
- * because `.panel-row` stretches every card in a row to the tallest, Repos
- * beside it grew too. A token losing a scope moved half the cockpit.
+ * after `.panel-body`, so a panel grew a line the moment it degraded.
  */
 test("a Runners error does not make the card taller", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-runners.json");

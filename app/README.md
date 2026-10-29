@@ -752,7 +752,7 @@ app/
 │   │                     #   "The one granted capability")
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
-    ├── app.js            # the cockpit (host grid + the panel-row layout)
+    ├── app.js            # the cockpit (host grid, host tabs, panel columns)
     ├── dashboard.js      # overview and persisted tile editing
     ├── settings.js       # the Settings view
     ├── containers.js     # the Containers/VMs panel

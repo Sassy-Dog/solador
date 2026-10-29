@@ -231,8 +231,7 @@ test("a stale reading is dimmed and dated, on its own line beside the footer", a
 test("a warning costs the card no height, however long it is", async ({ page, baseURL }) => {
   // The same assertion the Repos panel carries in `github.spec.js` and the
   // Usage panel in `usage.spec.js`: a message must never make its own card
-  // taller, because `.panel-row` stretches every other card in the row to match
-  // and the rows below then move down.
+  // taller.
   const healthy = await gotoWithAzure(page, baseURL);
   expect(healthy.footer, "the healthy fixture warns about nothing").toBeNull();
   const before = await page.locator("#azurePanel").boundingBox();

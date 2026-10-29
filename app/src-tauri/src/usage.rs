@@ -38,11 +38,9 @@
 //! from.
 //!
 //! **Nothing a section can say may live under the section** (#351). A warning in
-//! the body makes the card a line taller the moment it fires, `.panel-row`
-//! stretches every other card in the row to match, and the rows below are pushed
-//! down: one Neon read going stale rearranged the cockpit. The header is always
-//! rendered, so a warning there costs no height at all. That is also why the
-//! attribution is load-bearing rather than decorative — the hoisted lines are
+//! the body makes the card a line taller the moment it fires. The header is
+//! always rendered, so a warning there costs no height at all. That is also why
+//! the attribution is load-bearing rather than decorative — the hoisted lines are
 //! byte-identical without it, and `⚠ stale · updated 23h ago` twice over says
 //! the same thing twice and identifies neither section.
 //!

@@ -215,9 +215,7 @@ fn footer_line(
 /// one header, and the header is the only place a warning costs no height —
 /// which is the whole point (`.panel-stale` in `app.css`, and
 /// [#351](https://github.com/Sassy-Dog/solador/issues/351)). A warning rendered
-/// beside its section instead makes the card a line taller the moment it fires,
-/// `.panel-row` stretches every other card in the row to match, and one Neon
-/// read going stale rearranges the cockpit.
+/// beside its section instead makes the card a line taller the moment it fires.
 ///
 /// Order is the caller's, and should be the order the sections themselves render
 /// in, so the line reads down the card.

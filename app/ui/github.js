@@ -508,8 +508,7 @@ function renderRunners(payload) {
   // A healthy, fresh panel renders no warning at all — the cockpit stays
   // glanceable, and a warning means something when it appears. It sits in the
   // header rather than under the body because a line below the content makes
-  // the card taller, and `.panel-row` stretches its neighbours to match: the
-  // panel that degraded would move the panel that did not. Ellipsised in a
+  // the card taller the moment it degrades. Ellipsised in a
   // narrow panel, so `title` keeps the whole message reachable.
   const stale = $g("runnersStale");
   stale.textContent = payload.footer ? payload.footer.text : "";
