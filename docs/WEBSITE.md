@@ -57,16 +57,27 @@ from `tests/frontend/og-card.html`. The nine `panel-*.png` are a tile's **Full
 view** (View, then Full view) of the showcase readings. Full view lays a panel out
 in columns across the whole window, so the window is sized per panel in
 `tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
-crops each image into a 311x195 box with `object-fit: cover`, anchored top left,
-so the image's shape decides what the card shows. 908pt for Repos and Runners,
-462pt for the panels that stack (Containers, Azure Cost, Usage, Crons, Services,
+crops each image into a 311x195 box (330x195 at 2-up, 328x195 at 1-up) with
+`object-fit: cover`, so the image's shape decides what the card shows. Every card
+is anchored top left except Usage, which `.tile-shot-bottom` anchors bottom left:
+its panel is a stack of independent sections, its top-left (the Claude rollups)
+is already claimed under "Useful before you configure anything", and its card
+text names the Neon, Sentry and Vercel consumption at the bottom. The Claude and
+Codex plan limits therefore do not appear on the home page; they stay on
+`/setup/` and in the README. The showcase Usage payload is
+`usage::Fixture::Showcase`: the measured fixture plus a Vercel reading, which the
+e2e suite's `Measured` deliberately lacks. 908pt for Repos and Runners, 462pt for
+the panels that stack (Containers, Azure Cost, Usage, Crons, Services,
 OpenClaw), 900pt for Hosts. Containers keeps the remote host under this machine's
-(the generator asserts it is inside the crop), and every screenshot's
+(the generator asserts it is inside the crop), the generator asserts that Usage's
+Neon, Sentry and Vercel sections sit inside its bottom-anchored crop at all three
+boxes with the panel's full width (a two-column Usage at 908pt fails it), and
+`site.spec.js` asserts only Usage's image is anchored bottom, which ties the CSS
+to that assumption. Every screenshot's
 `width`/`height` in `site/index.html` is the file's pixel size (`site.spec.js`
-compares them; `mark.svg`'s sizes are not checked). The Usage card's alt text
-names Neon, Sentry and Vercel consumption, but at the 3-up 311x195 crop the
-image ends at the Codex plan rows, and the showcase Usage payload carries no
-Vercel reading at all, so the crop does not yet match that caption. Azure
+compares them; `mark.svg`'s sizes are not checked). The wide end of the 2-up and
+1-up layouts (near 960 and 640px) shows less of every tall card, Usage's Neon
+rows included; 1280, 800 and 390 are the checked widths. Azure
 Cost's "Azure Database for PostgreSQL" is still cut by the panel's own ellipsis at
 462pt. There are no other cockpit shots: `cockpit.png` and `cockpit-narrow.png`
 went with Solador's Full view (#647).

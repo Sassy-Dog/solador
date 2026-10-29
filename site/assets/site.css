@@ -411,7 +411,11 @@ pre code {
 
 /* A window onto each panel's top-left corner, where its names and first
    readings sit. `cover` keeps every crop at a legible scale whatever its
-   aspect: a wide panel is cut on the right, a tall one at the bottom. */
+   aspect: a wide panel is cut on the right, a tall one at the bottom. The one
+   exception is the Usage card (.tile-shot-bottom, below): its panel is a stack
+   of independent sections, and its top-left (the Claude rollups) is already
+   claimed on the home page, so the card anchors bottom left to show the Neon,
+   Sentry and Vercel consumption its text names. */
 .tile-shot {
   height: 210px;
   padding: 14px 14px 0;
@@ -426,6 +430,10 @@ pre code {
   border-radius: 8px 8px 0 0;
   object-fit: cover;
   object-position: left top;
+}
+
+.tile-shot-bottom img {
+  object-position: left bottom;
 }
 
 .tile-body {
