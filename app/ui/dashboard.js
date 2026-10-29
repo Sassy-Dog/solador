@@ -37,7 +37,7 @@
   let mode = "overview";
   // The open tile of a tile's Full view, whose id its source's command is
   // sent. Set exactly while mode is "full".
-  let fullTile = null; // {id, source, loaded, empty}
+  let fullTile = null; // {id, source, loaded, failed, empty}
   // Bumped whenever a tile's Full view opens or closes; app.js's callRust drops
   // a panel reading that comes back under another value than it was asked at.
   let fullGeneration = 0;
@@ -2229,7 +2229,7 @@
     const title = document.getElementById(sourceTitles[t.source]);
     coveredTitle = title && { el: title, text: title.textContent };
     fullGeneration++;
-    fullTile = { id: t.id, source: t.source, loaded: false, empty: null };
+    fullTile = { id: t.id, source: t.source, loaded: false, failed: false, empty: null };
     // The panel still holds the rows it last painted, for another tile. They
     // stay hidden until this tile's own reading replaces them.
     fullView.dataset.tileLoading = "";
