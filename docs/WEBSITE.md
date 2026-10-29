@@ -58,8 +58,8 @@ view** (View, then Full view) of the showcase readings. Full view lays a panel o
 in columns across the whole window, so the window is sized per panel in
 `tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
 crops each image into a box that keeps the 3-up aspect, 311:195, at every width
-(311x195 at 3-up, about 330x207 at 2-up, about 328x206 at 1-up; `aspect-ratio` on
-the image, #699) with `object-fit: cover`, so the image's shape decides what the
+(311x195 at 1280, about 330x207 at 800, about 328x206 at 390; `aspect-ratio`
+on the image, #699) with `object-fit: cover`, so the image's shape decides what the
 card shows, and every card shows the same crop at all three layouts. 908pt for
 Repos and Runners, 462pt for the panels that stack (Containers, Azure Cost,
 Crons, Services, OpenClaw), 466pt for Usage, 900pt for Hosts. Every card is

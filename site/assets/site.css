@@ -418,13 +418,13 @@ pre code {
    Sentry and Vercel consumption its text names.
 
    The image box keeps one aspect, 311:195 (its 3-up size), at every width, so
-   every card shows the same crop at 3-up, 2-up and 1-up (#699). The scale is
-   set by the box's width, so a box with a fixed height and a width that
-   changes moved the crop's top edge by about 31 image rows, and at 2-up and
-   1-up it fell inside the Usage panel's Codex 5H row. At this aspect the
-   Usage crop starts just above the Codex section's divider: both Codex rows
-   show whole, then Neon, Sentry and Vercel. The 2-up and 1-up boxes are about 330x207 and
-   328x206. */
+   every card shows the same crop at 3-up, 2-up and 1-up (#699). Usage's
+   image is taller than 311:195, so its scale is set by the box's width, and
+   a box with a fixed height and a width that changes moved the crop's top
+   edge by about 31 image rows; at 2-up and 1-up it fell inside the Codex 5H
+   row. At this aspect the Usage crop starts just above the Codex section's
+   divider: both Codex rows show whole, then Neon, Sentry and Vercel. The
+   box is 311x195 at 1280, about 330x207 at 800 and about 328x206 at 390. */
 .tile-shot {
   padding: 14px 14px 0;
   border-bottom: 1px solid var(--line);

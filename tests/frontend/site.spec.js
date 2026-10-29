@@ -364,9 +364,10 @@ test("only the Usage card's screenshot is anchored bottom left", async ({ page }
 
 /**
  * Every card's image box keeps the 3-up aspect, 311:195, at every width (#699),
- * so each card shows the same crop at 3-up, 2-up and 1-up. The scale of an
- * `object-fit: cover` crop is set by the box's width, so a box whose height was
- * fixed moved the Usage crop's top edge into the Codex 5H row at 2-up and 1-up.
+ * so each card shows the same crop at 3-up, 2-up and 1-up. Usage's image is
+ * taller than 311:195, so its `object-fit: cover` scale is set by the box's
+ * width, and a box whose height was fixed moved its crop's top edge into the
+ * Codex 5H row at 2-up and 1-up.
  * The boxes are measured, not computed: 1280 is 3-up (311 wide), 800 is 2-up
  * (about 330) and 390 is 1-up (about 328).
  */
