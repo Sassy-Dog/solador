@@ -161,7 +161,18 @@ prints one `cleared <device>: attached on <image> right after hdiutil create
 wrote it` line per device, the `--probe-die` child's included; a listing it
 cannot read, or a device that will not detach, fails the run instead. The
 suite's two `make_dmg` cases build their images through `make_dmg`'s own
-create, the one the release path runs, and that create is not covered. `diskutil image attach`, the
+create, the one the release path runs. **`make_dmg` clears its own create's
+leftover too (#690), but not with an empty keep list:** the release image's
+path repeats across builds and an operator's Finder mount of the previous build
+stands on it. It reads the devices on the path before `rm -f` (an unreadable
+listing exits before anything is deleted), and after the create releases only
+those not in that snapshot through `release_dmg_image`, logging each by device
+and image, on a failed create as well as a successful one (best effort there:
+the create's own failure is still what exits). Stub cases cover the unreadable
+listing before the create, after it, a leftover that will not detach, and a
+failed create that left a device. The main stub case lists `/dev/disk87` from the start and has the fake
+create add `/dev/disk88`: exactly `disk88` is detached and `disk87` is
+kept. Snapshotting after the create, or an empty keep list, fails it. `diskutil image attach`, the
 replacement macOS 27 names, is deliberately not used: it works there but
 returns bare `diskN` entries, has no `-noverify` and is unmeasured on the 14.0 floor and the runner,
 so one `hdiutil` path serves the runner and the 14.0 floor. macOS only,

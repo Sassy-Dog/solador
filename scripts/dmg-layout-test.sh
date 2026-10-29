@@ -107,7 +107,7 @@ trap 'exit 130' INT TERM
 # mutated revision of one function.
 build_sh="${BUILD_SH:-$SCRIPT_DIR/build.sh}"
 lift() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$1"; }
-helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image warn_kept_dmg_devices dmg_attach_diag"
+helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image release_dmg_create_leftover warn_kept_dmg_devices dmg_attach_diag"
 {
     for fn in $helpers; do
         lift "$SCRIPT_DIR/build.sh" "$fn"
@@ -905,6 +905,95 @@ else
         *) fail "make_dmg without the link failed for the wrong reason: $(cat "$work/err")" ;;
     esac
 fi
+
+# #690: make_dmg releases only the devices its own create added to the image
+# path. A stub hdiutil lists /dev/disk87 on the target from the start (an
+# operator's earlier mount) and /dev/disk88 once the fake create has run, until
+# it is detached. FAKE_MODE `ok` is that; `junk` is an unreadable listing,
+# `junk-after` one unreadable only once the create has run, `stuck` keeps disk88
+# listed whatever is detached, `create-fails` fails the create after it added it.
+# assert_dmg_layout and codesign are overridden. Nothing real is touched.
+cat > "$work/make-dmg-hdiutil.sh" <<'EOF'
+entry() {
+    printf '<dict><key>image-path</key><string>%s</string><key>system-entities</key><array><dict><key>dev-entry</key><string>%s</string></dict></array></dict>' "$1" "$2"
+}
+hdiutil() {
+    case "$1" in
+        create) echo create >> "$FAKE_EVENTS"; : > "$FAKE_CREATED"; [[ "$FAKE_MODE" != create-fails ]] ;;
+        info)
+            if [[ "$FAKE_MODE" == junk ]]; then echo "not a plist"; return 0; fi
+            if [[ "$FAKE_MODE" == junk-after && -e "$FAKE_CREATED" ]]; then echo "not a plist"; return 0; fi
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array>'
+            if ! grep -qx 'detach /dev/disk87' "$FAKE_EVENTS"; then entry "$FAKE_DMG" /dev/disk87; fi
+            if [[ -e "$FAKE_CREATED" ]] && { [[ "$FAKE_MODE" == stuck ]] || ! grep -qx 'detach /dev/disk88' "$FAKE_EVENTS"; }; then
+                entry "$FAKE_DMG" /dev/disk88
+            fi
+            printf '</array></dict></plist>\n' ;;
+        detach) echo "$*" >> "$FAKE_EVENTS" ;;
+    esac
+}
+rm() { echo "rm $*" >> "$FAKE_EVENTS"; command rm "$@"; }
+assert_dmg_layout() { echo assert >> "$FAKE_EVENTS"; }
+codesign() { :; }
+sleep() { :; }
+EOF
+# make_dmg_run <mode>: make_dmg under the stub, in a subshell. Events land in
+# fake-events, stdout in fake-out, stderr in err; the status in $dmg_status.
+make_dmg_run() {
+    : > "$work/fake-events"; command rm -f "$work/fake-created"
+    dmg_status=0
+    (
+        export FAKE_MODE="$1" FAKE_EVENTS="$work/fake-events" FAKE_CREATED="$work/fake-created" FAKE_DMG="$work/stub.dmg"
+        # shellcheck source=/dev/null
+        source "$work/make-dmg-hdiutil.sh"
+        make_dmg "$app" "$work/stub.dmg" "stub identity"
+    ) >"$work/fake-out" 2>"$work/err" || dmg_status=$?
+}
+make_dmg_run ok
+if [[ "$dmg_status" == 0 ]] && [[ "$(grep -c '^detach ' "$work/fake-events")" == 1 ]] \
+    && grep -qx 'detach /dev/disk88' "$work/fake-events"; then
+    pass "make_dmg detaches exactly the device its create left, and not the operator's earlier mount"
+else
+    fail "make_dmg detaches exactly the device its create left (status $dmg_status; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
+fi
+if [[ "$(grep -c 'releasing' "$work/fake-out")" == 1 ]] && ! grep -q 'disk87' "$work/fake-out" \
+    && grep -qF "releasing /dev/disk88, left attached on $work/stub.dmg by hdiutil create" "$work/fake-out"; then
+    pass "make_dmg names the released device and the image on one line"
+else
+    fail "make_dmg names the released device and the image ($(cat "$work/fake-out"))"
+fi
+make_dmg_run junk
+if [[ "$dmg_status" != 0 ]] && grep -qF "$work/stub.dmg" "$work/err" \
+    && ! grep -qE '^(rm|create|detach)' "$work/fake-events"; then
+    pass "make_dmg with an unreadable listing exits non-zero naming the image, before any rm, create or detach"
+else
+    fail "make_dmg with an unreadable listing (status $dmg_status; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
+fi
+# The post-create exits must stop the build: no layout assertion behind them.
+make_dmg_run junk-after
+if [[ "$dmg_status" != 0 ]] && grep -qF "could not read 'hdiutil info' after creating $work/stub.dmg" "$work/err" \
+    && ! grep -qx assert "$work/fake-events"; then
+    pass "make_dmg with a listing unreadable after the create exits non-zero and never asserts the layout"
+else
+    fail "make_dmg with a listing unreadable after the create (status $dmg_status; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
+fi
+make_dmg_run stuck
+if [[ "$dmg_status" != 0 ]] && grep -qF "could not release the devices hdiutil create left on $work/stub.dmg" "$work/err" \
+    && ! grep -qx assert "$work/fake-events"; then
+    pass "make_dmg with a leftover that will not detach exits non-zero and never asserts the layout"
+else
+    fail "make_dmg with a leftover that will not detach (status $dmg_status; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
+fi
+# A create that fails after adding a device still releases it (and only it).
+make_dmg_run create-fails
+if [[ "$dmg_status" != 0 ]] && grep -qF "hdiutil failed to build the disk image" "$work/err" \
+    && [[ "$(grep -c '^detach ' "$work/fake-events")" == 1 ]] && grep -qx 'detach /dev/disk88' "$work/fake-events" \
+    && ! grep -qx assert "$work/fake-events"; then
+    pass "make_dmg releases the device a FAILED create left, keeps the operator's mount, and still fails"
+else
+    fail "make_dmg after a failed create (status $dmg_status; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
+fi
+command rm -f "$work/stub.dmg"
 
 # Last: nothing this run attached is still attached (#629).
 left_attached=""
