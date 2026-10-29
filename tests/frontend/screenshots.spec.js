@@ -156,16 +156,20 @@ async function expectRemoteHostInCrop(panel) {
 
 /**
  * The Hosts card's alt names only the CPU section ("overall and per-core CPU
- * sparklines", #692), because that is all every layout's crop shows. So the
- * overall CPU chart and every core sparkline must lie wholly inside the
- * top-left `cover` crop of every box in SHOT_BOXES. Memory, disk and network sit
- * lower and are not claimed.
+ * sparklines", #692), because the CPU section is the only part every layout's
+ * crop shows: at 1280, 800 and 390 the crop also shows most of Memory and
+ * Graphics, which the wide ends of the 2-up and 1-up layouts cut, and disk and
+ * network sit below every crop. So the overall CPU chart and every core
+ * sparkline must lie wholly inside the top-left `cover` crop of every box in
+ * SHOT_BOXES. The width bound cannot fail at these boxes (the scale is set by
+ * the width, so `visibleW` equals the panel's width); it guards a future box.
  */
 async function expectCpuSectionInCrop(panel) {
   const box = await panel.boundingBox();
+  await expect(panel.locator(".cpuChart"), "the overall CPU chart the alt names").toHaveCount(1);
   const charts = panel.locator(".cpuChart, .cores .core .plot");
   const count = await charts.count();
-  expect(count, "the overall chart and at least one core sparkline").toBeGreaterThan(1);
+  expect(await panel.locator(".cores .core .plot").count(), "per-core sparklines the alt names").toBeGreaterThan(0);
   for (const [w, h] of SHOT_BOXES) {
     const scale = Math.max(w / box.width, h / box.height);
     const visibleW = w / scale;
