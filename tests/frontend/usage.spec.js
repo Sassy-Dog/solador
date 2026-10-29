@@ -496,8 +496,8 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
  * Every cockpit fixture the `fixtures` script dumps is at least 700pt wide, so
  * all of them give Usage two content columns (the second arrives at 696pt,
  * since `PanelKind::ClaudeUsage::min_width` is 340). `fixtures:showcase` is the
- * exception: its `sample-showcase-cockpit-430.json` (`--width 430`) gives
- * `panelColumns.claudeUsage = 1` (floor(446 / 356)), and it is the dump
+ * exception: its `sample-showcase-cockpit-434.json` (`--width 434`) gives
+ * `panelColumns.claudeUsage = 1` (floor(450 / 356)), and it is the dump
  * `screenshots.spec.js` shoots the site's Usage panel from. That is why this
  * suite builds the one-column and two-column cases by editing the payload. The
  * Rust tests pin Usage's cap but not its 696pt breakpoint; the payload is the

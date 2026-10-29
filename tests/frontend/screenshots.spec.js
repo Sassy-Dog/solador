@@ -73,8 +73,8 @@ const SHOT_H = 195;
 /**
  * Every box the card is seen in, as [width, height]. `.tile-shot img` keeps one
  * aspect, 311:195 (site.css, #699), at every width, so the crop is the same at
- * 3-up (1280: 311 wide), 2-up (800: about 330) and 1-up (390: about 328): the
- * scale is set by the width, so only the aspect decides what is cut. One entry,
+ * 3-up (1280: 311 wide), 2-up (800: about 330) and 1-up (390: about 328): with
+ * the aspect fixed, only the aspect decides what is cut. One entry,
  * not three; `site.spec.js` measures the real boxes at those widths.
  */
 const SHOT_BOXES = [[SHOT_W, SHOT_H]];
@@ -154,7 +154,7 @@ async function expectRemoteHostInCrop(panel) {
 /**
  * The Hosts card's alt names only the CPU section ("overall and per-core CPU
  * sparklines", #692), because the CPU section is the one part of the card that
- * every layout's crop shows at least some of. So the overall CPU chart and every
+ * the crop is certain to show. So the overall CPU chart and every
  * core sparkline must lie wholly inside the top-left `cover` crop of every box
  * in SHOT_BOXES. The width bound cannot fail at these boxes (the scale is set by
  * the width, so `visibleW` equals the panel's width); it guards a future box.

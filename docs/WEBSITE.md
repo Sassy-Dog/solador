@@ -62,8 +62,8 @@ crops each image into a box that keeps the 3-up aspect, 311:195, at every width
 the image, #699) with `object-fit: cover`, so the image's shape decides what the
 card shows, and every card shows the same crop at all three layouts. 908pt for
 Repos and Runners, 462pt for the panels that stack (Containers, Azure Cost,
-Crons, Services, OpenClaw), 466pt for Usage, 900pt for Hosts. Every card is anchored top
-left except Usage, which `.tile-shot-bottom` anchors bottom left: its panel is a
+Crons, Services, OpenClaw), 466pt for Usage, 900pt for Hosts. Every card is
+anchored top left except Usage, which `.tile-shot-bottom` anchors bottom left: its panel is a
 stack of independent sections, its top-left (the Claude rollups) is already
 claimed under "Useful before you configure anything", and its card text names
 the Neon, Sentry and Vercel consumption at the bottom. The card's words no
@@ -82,13 +82,13 @@ with the panel's full width (a two-column Usage at 908pt fails it), and
 `site.spec.js` asserts only Usage's image is anchored bottom, which ties the CSS
 to that assumption. The Hosts alt names only the CPU section ("overall and
 per-core CPU sparklines"), because the CPU section is the one part of the card
-that every layout's crop shows at least some of. The generator asserts that the
-whole CPU section (the overall chart and every core sparkline) lies inside the
-crop (the one 311:195 aspect, which `site.spec.js` measures at 1280, 800 and 390). Every screenshot's
-`width`/`height` in `site/index.html` is the file's pixel size (`site.spec.js`
-compares them; `mark.svg`'s sizes are not checked). The wide end of the 2-up and
-1-up layouts (near 960 and 640px) shows less of every tall card, Usage's Neon
-rows included; 1280, 800 and 390 are the checked widths. Azure
+that the crop is certain to show. The generator asserts that the whole CPU
+section (the overall chart and every core sparkline) lies inside the crop (the
+one 311:195 aspect, which `site.spec.js` measures at 1280, 800 and 390). Every
+screenshot's `width`/`height` in `site/index.html` is the file's pixel size
+(`site.spec.js` compares them; `mark.svg`'s sizes are not checked). The box
+keeps its aspect at every width, so 1280, 800 and 390 are samples of 3-up,
+2-up and 1-up, not the only widths where the crop holds. Azure
 Cost's "Azure Database for PostgreSQL" is still cut by the panel's own ellipsis at
 462pt. There are no other cockpit shots: `cockpit.png` and `cockpit-narrow.png`
 went with Solador's Full view (#647).
