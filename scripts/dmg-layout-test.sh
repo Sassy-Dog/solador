@@ -869,7 +869,7 @@ else
     else
         reap_seen=" could not read 'hdiutil info'"
     fi
-    fail "the reaper detaches a leaked fixture device and leaves a live one (leak_dev=$leak_dev leak_st=$leak_st live_dev=$live_dev live_st=$live_st; reaper stdout: $(cat "$work/reap-out"); reaper stderr: $(cat "$work/reap-err"); attached under $root:$reap_seen)"
+    fail "the reaper detaches a leaked fixture device and leaves a live one (leak_dev=$leak_dev leak_st=$leak_st live_dev=$live_dev live_st=$live_st; reaper stdout: $(cat "$work/reap-out"); reaper stderr: $(cat "$work/reap-err"); attached under $root (listed after the states):$reap_seen)"
 fi
 detach_dmg_device "$leak_dev" "$leak_img" || true
 detach_dmg_device "$live_dev" "$live_img" || true
