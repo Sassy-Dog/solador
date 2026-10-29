@@ -157,10 +157,12 @@ clear_create_leftovers() {
 }
 
 # make_image <name> <stage dir>: real hdiutil, same flags as build.sh, then
-# clear whatever the create left attached on the new fixture. The only place
-# the suite creates a fixture.
+# clear whatever the create left attached on the new fixture. Every fixture the
+# suite creates with its own `hdiutil create` goes through here; the two
+# make_dmg cases' images come from build.sh's make_dmg, which this does not
+# cover. A failed create is the status, whatever the clear would have found.
 make_image() {
-    hdiutil create -volname Solador -srcfolder "$2" -ov -format UDZO "$work/$1.dmg" >/dev/null 2>&1
+    hdiutil create -volname Solador -srcfolder "$2" -ov -format UDZO "$work/$1.dmg" >/dev/null 2>&1 || return
     clear_create_leftovers "$work/$1.dmg"
 }
 
@@ -403,7 +405,10 @@ fi
 # #683: `hdiutil create` can leave a device attached on the fixture it just
 # wrote, and the attach that follows used to keep it as pre-existing and give
 # up. A fake listing holds that leftover beside an operator's image and another
-# run's fixture; while the leftover is listed, every attach fails EAGAIN.
+# run's fixture of the same name; while the leftover is listed, every attach
+# fails EAGAIN. FAKE_LISTING picks the case: `leftover` (a detach clears it),
+# `stuck` (it stays listed whatever is detached), `create-fails` (the create
+# itself fails, the leftover still listed) or `junk` (an unreadable listing).
 # Nothing real is created, attached or detached.
 cat > "$work/create-hdiutil.sh" <<'EOF'
 entry() {
@@ -411,7 +416,7 @@ entry() {
 }
 hdiutil() {
     case "$1" in
-        create) : ;;
+        create) [[ "$FAKE_LISTING" != create-fails ]] ;;
         attach)
             echo x >> "$FAKE_ATTACHES"
             if ! grep -q disk88 "$FAKE_DETACHES"; then
@@ -422,7 +427,9 @@ hdiutil() {
         info)
             if [[ "$FAKE_LISTING" == junk ]]; then echo "not a plist"; return 0; fi
             printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array>'
-            grep -q disk88 "$FAKE_DETACHES" || entry "$FAKE_DMG" /dev/disk88
+            if [[ "$FAKE_LISTING" == stuck ]] || ! grep -q disk88 "$FAKE_DETACHES"; then
+                entry "$FAKE_DMG" /dev/disk88
+            fi
             entry /elsewhere/OPERATORS-IMAGE.dmg /dev/disk90
             entry "$FAKE_OTHER_RUN" /dev/disk91
             printf '</array></dict></plist>\n' ;;
@@ -436,7 +443,7 @@ EOF
 # status 10 is make_image failing, 11 the attach.
 create_run() {
     local status=0 other_run
-    other_run="$(dirname "$work")/tmp.Other/good.dmg"
+    other_run="$(dirname "$work")/tmp.Other/leftover.dmg"
     : > "$work/fake-detaches"; : > "$work/fake-attaches"
     (
         export FAKE_LISTING="$1" FAKE_DETACHES="$work/fake-detaches" FAKE_ATTACHES="$work/fake-attaches" \
@@ -473,6 +480,20 @@ if [[ "$result" == "10 0 0" ]] && grep -qF "could not read 'hdiutil info' after 
     pass "an unreadable listing after a create fails make_image, and no detach is sent on it"
 else
     fail "an unreadable listing after a create fails make_image, and no detach is sent on it (status, attaches, detaches: $result; $(cat "$work/err"))"
+fi
+result="$(create_run stuck)"
+if [[ "$result" == "10 0 "* ]] && grep -q disk88 "$work/fake-detaches" && ! grep -qv disk88 "$work/fake-detaches" \
+    && grep -qF "could not clear what hdiutil create left attached on $work/leftover.dmg" "$work/err" \
+    && ! grep -q '^cleared ' "$work/fake-out"; then
+    pass "a create's leftover that will not detach fails make_image, and nothing is reported cleared"
+else
+    fail "a create's leftover that will not detach fails make_image, and nothing is reported cleared (status, attaches, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"); $(cat "$work/fake-out"); $(cat "$work/err"))"
+fi
+result="$(create_run create-fails)"
+if [[ "$result" == "10 0 0" ]]; then
+    pass "a failed create fails make_image even when the clear after it would succeed"
+else
+    fail "a failed create fails make_image even when the clear after it would succeed (status, attaches, detaches: $result; $(cat "$work/fake-out"); $(cat "$work/err"))"
 fi
 
 # #629: a failed attach or detach must not leave a device attached. The stub
@@ -771,6 +792,8 @@ probe_status=0
 probe="$("${BASH:-bash}" "${BASH_SOURCE[0]}" --probe-die 2>"$work/probe-err")" || probe_status=$?
 probe_work=""; probe_dev=""
 read -r _ probe_work probe_dev <<< "$(printf '%s\n' "$probe" | grep '^PROBE ' || true)"
+# The child's make_image says what it cleared on its own stdout, captured here.
+printf '%s\n' "$probe" | grep '^cleared ' || true
 # 1 = that device is no longer attached as the probe's image (2 = unreadable).
 probe_state() { local st=0; dmg_device_state "$probe_dev" "$probe_work/good.dmg" || st=$?; echo "$st"; }
 if [[ "$probe_status" == 3 && -n "$probe_dev" && ! -e "$probe_work" ]] && [[ "$(probe_state)" == 1 ]]; then
