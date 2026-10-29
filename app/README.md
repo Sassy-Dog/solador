@@ -968,9 +968,10 @@ scope moved half the cockpit. The header is always rendered, so the warning now
 costs no height at all. It ellipsises rather than wrapping — a second header
 line would be the growth this exists to prevent. The warning is what gives way
 (`.panel-stale`'s `flex-shrink:100`, or on the Runners header its
-`flex:1 1 0` in `dashboard.css`, which leaves the warning only the space left
-over); the panel title is `flex-shrink:0` and keeps its characters, the opposite of the host card, where `.stale` is protected
-and the CPU model gives way. The full text is on the element's `title`.
+`flex:1 1 0` in `dashboard.css`, which leaves the warning only a share of the
+space left over); the panel title is `flex-shrink:0` and keeps its characters,
+the opposite of the host card, where `.stale` is protected and the CPU model
+gives way. The full text is on the element's `title`.
 
 **Every panel's warning, including Usage's per-section ones**
 ([#351](https://github.com/Sassy-Dog/solador/issues/351)). The Usage panel used
