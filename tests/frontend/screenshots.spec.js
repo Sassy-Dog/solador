@@ -69,6 +69,18 @@ const COCKPITS = {
 /** The box `.tile-shot img` crops each panel image into on solador.app (site.css, 311x195 at the 3-up layout). */
 const SHOT_W = 311;
 const SHOT_H = 195;
+/**
+ * Every box the card is seen in, as [width, height] (site.css, #685): `.tile-shot`
+ * is 210 tall with 14px of padding above and a 1px bottom border, so the image
+ * box is 195 high (border-box); `.tiles` is 3-up at 1280 (311 wide), 2-up at 800
+ * (330) and 1-up at 390 (328), inside `.wrap` (1120 max, a clamp(16px, 4vw, 32px)
+ * gutter, a 16px gap). 311x195 is SHOT_W x SHOT_H above.
+ */
+const SHOT_BOXES = [
+  [SHOT_W, SHOT_H],
+  [330, 195],
+  [328, 195],
+];
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
@@ -142,6 +154,33 @@ async function expectRemoteHostInCrop(panel) {
   expect(remote.x - box.x).toBeLessThan(visibleW / 2);
 }
 
+/**
+ * The Usage card says "Neon, Sentry and Vercel consumption", so each of those
+ * three sections must lie wholly inside the crop the site shows. Usage is the
+ * one card anchored bottom left (`.tile-shot-bottom`): `cover` scales the image
+ * to fill the box, and what lies above the bottom `visibleH` rows is cut. The
+ * crop must also keep the panel's full width, or a two-column panel (a wider
+ * window than 462pt) would cut the providers' values on the right.
+ */
+async function expectProvidersInBottomCrop(panel) {
+  const box = await panel.boundingBox();
+  for (const id of ["neon", "sentry", "vercel"]) {
+    await expect(panel.locator(`.pv-section[data-provider="${id}"]`)).toHaveCount(1);
+  }
+  for (const [w, h] of SHOT_BOXES) {
+    const scale = Math.max(w / box.width, h / box.height);
+    const visibleW = w / scale;
+    const visibleH = h / scale;
+    expect(visibleW, `${w}x${h} shows the panel's full width`).toBeGreaterThanOrEqual(box.width - 0.5);
+    for (const id of ["neon", "sentry", "vercel"]) {
+      const section = await panel.locator(`.pv-section[data-provider="${id}"]`).boundingBox();
+      const top = section.y - box.y;
+      expect(top, `${id} starts inside the ${w}x${h} crop`).toBeGreaterThanOrEqual(box.height - visibleH);
+      expect(top + section.height, `${id} ends inside the ${w}x${h} crop`).toBeLessThanOrEqual(box.height + 0.5);
+    }
+  }
+}
+
 test.beforeAll(async () => {
   await fs.mkdir(OUT, { recursive: true });
 });
@@ -193,6 +232,7 @@ test.describe("at 2x: the shots people look at", () => {
       const panel = page.locator(selector);
       await expect(panel).toBeVisible();
       if (name === "containers") await expectRemoteHostInCrop(panel);
+      if (name === "usage") await expectProvidersInBottomCrop(panel);
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });
     });
   }

@@ -888,6 +888,11 @@ pub enum Fixture {
     /// Everything measured: Claude content, both plans' windows (well inside
     /// their limits), Neon figures + last invoice, Sentry count + bar.
     Measured,
+    /// [`Fixture::Measured`] plus a Vercel reading, for the website's Usage
+    /// card and the README's full image (#685). Kept apart from `Measured` so
+    /// the e2e suite's fixture stays at two providers; the reading goes through
+    /// the same `ProviderState` and section a poll fills.
+    Showcase,
     /// Both providers configured and answering, neither measuring anything —
     /// the em-dash path, with the quota set and the bar therefore suppressed.
     Unmeasured,
@@ -917,7 +922,7 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
         Fixture::Empty => {
             state.apply_claude(None, claude_at, Some(NO_LOG_ROOT_MESSAGE.to_owned()));
         }
-        Fixture::Measured => {
+        Fixture::Measured | Fixture::Showcase => {
             state.apply_claude(Some(fixture_summary()), claude_at, None);
             // Read at the providers' clock, reset times from the render's: a
             // stale dump moves only when the plans were read, so its rows and
@@ -950,6 +955,34 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
                 at,
                 None,
             );
+            if kind == Fixture::Showcase {
+                // The figures are the real capture's service names
+                // (`crates/usage/tests/fixtures/vercel_charges.jsonl`); `Pro`
+                // is the plan's ~$1.29/day over the 14 days the fixture clock
+                // has reached.
+                state.vercel.succeeded(
+                    VercelUsageSummary::Measured {
+                        effective_usd: 21.37,
+                        billed_usd: 0.02,
+                        top_services: vec![
+                            usage::vercel::ServiceSpend {
+                                name: "Pro".into(),
+                                effective_usd: 18.06,
+                            },
+                            usage::vercel::ServiceSpend {
+                                name: "Function Invocations".into(),
+                                effective_usd: 1.84,
+                            },
+                            usage::vercel::ServiceSpend {
+                                name: "Fluid Active CPU".into(),
+                                effective_usd: 0.97,
+                            },
+                        ],
+                    },
+                    at,
+                    None,
+                );
+            }
         }
         Fixture::Unmeasured => {
             state.apply_claude(Some(fixture_summary()), claude_at, None);
@@ -1922,6 +1955,52 @@ mod tests {
     }
 
     // MARK: the fixtures
+
+    /// The showcase is `Measured` plus a Vercel reading (#685): the website's
+    /// Usage card is framed on the three providers.
+    #[test]
+    fn the_showcase_fixture_is_measured_plus_a_vercel_reading() {
+        let measured = view(
+            &fixture_state(Fixture::Measured, NOW, NOW),
+            QUOTA,
+            RATES,
+            CADENCE,
+            NOW,
+        );
+        let showcase = view(
+            &fixture_state(Fixture::Showcase, NOW, NOW),
+            QUOTA,
+            RATES,
+            CADENCE,
+            NOW,
+        );
+        let ids: Vec<&str> = showcase["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["neon", "sentry", "vercel"]);
+        for id in ["neon", "sentry"] {
+            assert_eq!(section(&showcase, id), section(&measured, id), "{id}");
+        }
+        let rows = section(&showcase, "vercel").expect("vercel")["rows"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(rows[0]["label"], "VERCEL SPEND (MTD)");
+        assert_eq!(rows[1]["label"], "VERCEL BEYOND PLAN");
+        assert_eq!(rows.len(), 5, "two totals then three service rows");
+        let labels: Vec<&str> = rows[2..]
+            .iter()
+            .map(|r| r["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["PRO", "FUNCTION INVOCATIONS", "FLUID ACTIVE CPU"]);
+        for row in &rows {
+            let value = row["value"].as_str().expect("a string value");
+            assert!(value.starts_with('$'), "{row}");
+        }
+    }
 
     /// The Playwright suite renders these payloads, so a fixture that quietly
     /// lost the case it claims to exercise would leave that suite green while

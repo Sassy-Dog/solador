@@ -338,6 +338,30 @@ test("every screenshot's declared width and height is its file's pixel size", ()
   }
 });
 
+/**
+ * The Usage card is the one card anchored bottom left (#685): its text names
+ * Neon, Sentry and Vercel consumption, which sit at the bottom of the panel.
+ * Every other card is a window onto the panel's top-left. This is what ties
+ * `site.css` to the bottom-crop assumption `screenshots.spec.js` checks.
+ */
+test("only the Usage card's screenshot is anchored bottom left", async ({ page }) => {
+  await openSite(page, "/");
+  const anchors = await page.$$eval(".tile-shot img", (imgs) =>
+    imgs.map((img) => ({
+      src: new URL(img.src).pathname,
+      position: getComputedStyle(img).objectPosition,
+    })),
+  );
+  expect(anchors.length).toBeGreaterThan(1);
+  for (const { src, position } of anchors) {
+    expect({ src, position }).toEqual({
+      src,
+      position: src === "/assets/screenshots/panel-usage.png" ? "0% 100%" : "0% 0%",
+    });
+  }
+  expect(anchors.filter((a) => a.src === "/assets/screenshots/panel-usage.png")).toHaveLength(1);
+});
+
 test.describe("every page", () => {
   for (const urlPath of PAGES) {
     test(`${urlPath} raises no CSP violation and every local link and asset exists`, async ({ page }) => {

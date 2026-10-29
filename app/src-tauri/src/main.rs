@@ -6351,7 +6351,7 @@ fn dump_showcase_dashboard() -> Value {
             dump_containers_showcase(),
             services::view(&services::showcase_statuses()),
             dump_crons(crons::Fixture::Healthy, false),
-            dump_usage(usage::Fixture::Measured, false, SHOWCASE_USAGE_QUOTA),
+            dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA),
             dump_azure(azure::Fixture::Measured, false, SHOWCASE_AZURE_BUDGET),
             dump_openclaw(openclaw::Fixture::Showcase),
         ],
@@ -6455,7 +6455,7 @@ fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
     // comparing two different bodies. Every other dump renders the panel as a
     // store starts, both plans off, which puts the setup line in front of the
     // browser suite.
-    let plans = if kind == usage::Fixture::Measured {
+    let plans = if matches!(kind, usage::Fixture::Measured | usage::Fixture::Showcase) {
         usage::FIXTURE_PLANS
     } else {
         plan_usage::PlanInputs::OFF
@@ -7035,6 +7035,8 @@ fn run_dump(args: &[String]) -> bool {
             usage::Fixture::Empty
         } else if args.iter().any(|arg| arg == "--unmeasured") {
             usage::Fixture::Unmeasured
+        } else if showcase {
+            usage::Fixture::Showcase
         } else {
             usage::Fixture::Measured
         };
@@ -11736,6 +11738,16 @@ mod tests {
     fn the_local_fixture_card_does_not_vary_per_run() {
         assert_eq!(dump_local_card(), dump_local_card());
         assert_eq!(dump_local_card()["hostName"], "mac-studio");
+    }
+
+    /// The showcase Usage payload keeps both plan sections and carries the
+    /// Vercel reading (#685): the plan condition in `dump_usage` must hold for
+    /// `Showcase`, or the README's full image silently loses its plan rows.
+    #[test]
+    fn the_showcase_usage_dump_has_both_plans_and_three_providers() {
+        let dump = dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA);
+        assert_eq!(dump["plans"].as_array().expect("plans").len(), 2);
+        assert_eq!(dump["providers"].as_array().expect("providers").len(), 3);
     }
 
     /// The showcase is what solador.app and the README show, and its claim is
