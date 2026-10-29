@@ -287,9 +287,9 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    element at zero width does not render an ellipsis; it renders nothing, which
    is a clause silently disappearing rather than a message being cut.
 
-   The title is safe either way: 1 against 100x a message's length is a
-   rounding error, which is what keeps "Usage" from being eaten the way
-   "GitHub Runners" was. */
+   The title is safe either way because it is `flex-shrink:0`
+   (`.panel-hdr .panel-title`, below), which is what keeps "Usage" from being
+   eaten the way "GitHub Runners" was. */
 .panel-asof.merged { flex-shrink:100; }
 /* GitHub's availability folded with our fleet -- the "is it us?" verdict, on
    both the Repos and Runners headers. `flex:none` because it is short, fixed

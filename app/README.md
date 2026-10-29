@@ -967,8 +967,9 @@ degraded; combined with the equal-height panel rows of the time (removed in
 scope moved half the cockpit. The header is always rendered, so the warning now
 costs no height at all. It ellipsises rather than wrapping — a second header
 line would be the growth this exists to prevent. The warning is what gives way
-(`.panel-stale`'s `flex-shrink:100`); the panel title is `flex-shrink:0` and
-keeps its characters, the opposite of the host card, where `.stale` is protected
+(`.panel-stale`'s `flex-shrink:100`, or on the Runners header its
+`flex:1 1 0` in `dashboard.css`, which leaves the warning only the space left
+over); the panel title is `flex-shrink:0` and keeps its characters, the opposite of the host card, where `.stale` is protected
 and the CPU model gives way. The full text is on the element's `title`.
 
 **Every panel's warning, including Usage's per-section ones**
@@ -1016,8 +1017,9 @@ only split that works when two variable-length messages share one line. At an
 equal factor they give up the same *fraction* of their length and ellipsise
 together; lopsided either way, one of them flexes to a width of zero, which
 renders no ellipsis and no characters and so reads as a clause that vanished
-rather than one that was cut. The panel title is unaffected either way — `1`
-against `100 ×` a message's length is a rounding error.
+rather than one that was cut. The panel title is unaffected either way: it is
+`flex-shrink:0` (`.panel-hdr .panel-title`), so neither message can take
+anything from it.
 
 `empty` keys on the count of *monitored* hosts, not on the number of cards: the
 local card is always there, so counting cards would answer "is anything
