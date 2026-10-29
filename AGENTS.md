@@ -66,7 +66,7 @@ remain full validation.
   every shell source, and the repo's guards (secrets, `.claude` tracking,
   pin guards, agent-deps, and the agent-guide size budget).
   `./scripts/install-hooks.sh` (one-time) wires it to a pre-push hook.
-- `./dev format`, `./dev clean` (`--over-budget` for tidy-repo).
+- `./dev format`, `./dev clean` (`--over-budget` only above the `target/` budget).
 - `./dev publish` **pushes a real tag** and builds a signed, notarized
   `.dmg`; `--skip-mint` skips the tag, `--agent` mints the agent's own
   `agent-v*` tag. Never run a signed or notarized build casually.
