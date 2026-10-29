@@ -229,10 +229,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    `.stale` is protected and `.hdr .title` (a CPU model) is the designated give.
    Here the title is the panel's name -- the thing that says which card you are
    looking at -- and the warning is the variable-length text, so the warning
-   yields ~100x faster and the title keeps its characters. Copying the card's
-   rule verbatim ate "GitHub Runners" down to nothing at half width. Both
-   ellipsise rather than wrap: a second header line would be the growth this
-   rule exists to stop. */
+   yields first and the title, `flex-shrink:0` (below), keeps its characters.
+   Copying the card's rule verbatim ate "GitHub Runners" down to nothing at
+   half width. Both ellipsise rather than wrap: a second header line would be
+   the growth this rule exists to stop. */
 /* `.panel-asof` is the freshness line ("as of 23h ago") on every slow-cadence
    panel -- Azure Cost, Sentry Crons and Usage, all three in the header -- which
    shares this typography and nothing else: it dates the figure on the card,
@@ -283,13 +283,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    together, and neither reaches zero until there is no room for either. The
    two lopsided alternatives both fail the same way -- at 0 this line keeps
    every character and starves the warning to a width of nothing, at 1 the
-   warning is destroyed instead and this line then eats into the title. An
-   element at zero width does not render an ellipsis; it renders nothing, which
-   is a clause silently disappearing rather than a message being cut.
+   warning is destroyed instead. An element at zero width does not render an
+   ellipsis; it renders nothing, which is a clause silently disappearing rather
+   than a message being cut.
 
-   The title is safe either way: 1 against 100x a message's length is a
-   rounding error, which is what keeps "Usage" from being eaten the way
-   "GitHub Runners" was. */
+   The title is safe either way because it is `flex-shrink:0`
+   (`.panel-hdr .panel-title`, below), which is what keeps "Usage" from being
+   eaten the way "GitHub Runners" was. */
 .panel-asof.merged { flex-shrink:100; }
 /* GitHub's availability folded with our fleet -- the "is it us?" verdict, on
    both the Repos and Runners headers. `flex:none` because it is short, fixed
