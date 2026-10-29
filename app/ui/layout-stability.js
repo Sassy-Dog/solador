@@ -6,7 +6,7 @@
   let frame = 0;
   const configuration = element => {
     // A tile's Full view keeps no floor measured outside it: the key carries
-    // the Full view's source, so opening, switching or closing one releases it.
+    // the Full view's source and tile, so opening, switching or closing one releases it.
     const full = element.closest('#fullView');
     if (full) return `full|${full.dataset.fullSource || ''}|${full.dataset.fullTile || ''}|${element.dataset.detailState || ''}`;
     const tile = element.closest('.db-tile, .db-preview-tile') || element.querySelector('.db-preview-tile');

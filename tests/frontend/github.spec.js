@@ -285,7 +285,9 @@ test("a floor measured by the boot frame is not carried into the Repos Full view
   // Opening the Full view released the boot frame's floor: the body is its
   // natural height, and keeps no inline floor taller than that.
   // Same width as the boot frame, so the release below is the key's doing and
-  // not the width rule's: without the key change this test fails.
+  // not the width rule's: without the `#fullView` key added for #691 (measured
+  // against main) this test fails. The tile part of that key is guarded by the
+  // two-tile test below.
   const fullWidth = await body.evaluate((el) => el.getBoundingClientRect().width);
   expect(Math.abs(fullWidth - bootWidth)).toBeLessThanOrEqual(1);
   await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
@@ -326,6 +328,8 @@ test("a second Repos tile's Full view does not inherit the first tile's floor", 
   // The release happens on the next animation frame, so poll for it.
   await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).not.toBe(floorA);
   await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(floorA);
+  // …and it is B's natural height, not some smaller stale floor.
+  await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
 });
 
 // MARK: - Repos: tap to open
