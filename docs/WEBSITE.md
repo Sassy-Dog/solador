@@ -58,17 +58,18 @@ view** (View, then Full view) of the showcase readings. Full view lays a panel o
 in columns across the whole window, so the window is sized per panel in
 `tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
 crops each image into a 311x195 box (330x195 at 2-up, 328x195 at 1-up) with
-`object-fit: cover`, so the image's shape decides what the card shows. Every card
-is anchored top left except Usage, which `.tile-shot-bottom` anchors bottom left:
-its panel is a stack of independent sections, its top-left (the Claude rollups)
-is already claimed under "Useful before you configure anything", and its card
-text names the Neon, Sentry and Vercel consumption at the bottom. The Claude and
-Codex plan limits therefore do not appear on the home page; they stay on
-`/setup/` and in the README. The showcase Usage payload is
-`usage::Fixture::Showcase`: the measured fixture plus a Vercel reading, which the
-e2e suite's `Measured` deliberately lacks. 908pt for Repos and Runners, 462pt for
-the panels that stack (Containers, Azure Cost, Usage, Crons, Services,
-OpenClaw), 900pt for Hosts. Containers keeps the remote host under this machine's
+`object-fit: cover`, so the image's shape decides what the card shows. 908pt for
+Repos and Runners, 462pt for the panels that stack (Containers, Azure Cost,
+Usage, Crons, Services, OpenClaw), 900pt for Hosts. Every card is anchored top
+left except Usage, which `.tile-shot-bottom` anchors bottom left: its panel is a
+stack of independent sections, its top-left (the Claude rollups) is already
+claimed under "Useful before you configure anything", and its card text names
+the Neon, Sentry and Vercel consumption at the bottom. The card's words no
+longer name the Claude and Codex plan limits; the Codex plan rows still show,
+unnamed, at the top edge of the crop. The limits are claimed on `/setup/` and in
+the README. The showcase Usage payload is `usage::Fixture::Showcase`: the
+measured fixture plus a Vercel reading, which the e2e suite's `Measured`
+deliberately lacks. Containers keeps the remote host under this machine's
 (the generator asserts it is inside the crop), the generator asserts that Usage's
 Neon, Sentry and Vercel sections sit inside its bottom-anchored crop at all three
 boxes with the panel's full width (a two-column Usage at 908pt fails it), and

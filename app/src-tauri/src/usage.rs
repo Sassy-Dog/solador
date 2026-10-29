@@ -1956,9 +1956,8 @@ mod tests {
 
     // MARK: the fixtures
 
-    /// The Playwright suite renders these payloads, so a fixture that quietly
-    /// lost the case it claims to exercise would leave that suite green while
-    /// covering nothing. Asserted here, where a Rust test can see it.
+    /// The showcase is `Measured` plus a Vercel reading (#685): the website's
+    /// Usage card is framed on the three providers.
     #[test]
     fn the_showcase_fixture_is_measured_plus_a_vercel_reading() {
         let measured = view(
@@ -1991,13 +1990,21 @@ mod tests {
             .clone();
         assert_eq!(rows[0]["label"], "VERCEL SPEND (MTD)");
         assert_eq!(rows[1]["label"], "VERCEL BEYOND PLAN");
-        for row in &rows[..2] {
+        assert_eq!(rows.len(), 5, "two totals then three service rows");
+        let labels: Vec<&str> = rows[2..]
+            .iter()
+            .map(|r| r["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["PRO", "FUNCTION INVOCATIONS", "FLUID ACTIVE CPU"]);
+        for row in &rows {
             let value = row["value"].as_str().expect("a string value");
             assert!(value.starts_with('$'), "{row}");
         }
-        assert_eq!(rows.len(), 5, "two totals then three service rows");
     }
 
+    /// The Playwright suite renders these payloads, so a fixture that quietly
+    /// lost the case it claims to exercise would leave that suite green while
+    /// covering nothing. Asserted here, where a Rust test can see it.
     #[test]
     fn the_fixtures_cover_every_rendering_the_panel_has() {
         let measured = view(
