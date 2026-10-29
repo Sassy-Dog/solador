@@ -208,9 +208,8 @@ function renderUsage(payload) {
   // ONE warning line for the whole panel, in the header — Claude's own and
   // every metered section's, already folded together and already attributed by
   // Rust (`⚠ neon: stale · updated 23h ago`). A line under the body makes the
-  // card taller and `.panel-row` stretches its neighbours to match, so a stale
-  // rollup — or one stale Neon read — moved OpenClaw beside it and every row
-  // below. Nothing is composed here: the join, the separator and each provider's
+  // card taller the moment a rollup — or one Neon read — goes stale.
+  // Nothing is composed here: the join, the separator and each provider's
   // name are `panel::merged_footer`'s, on the far side of the boundary where a
   // Rust test can see them.
   headerLine("usageStale", payload.footer);

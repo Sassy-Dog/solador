@@ -168,8 +168,7 @@ test("a failed read paints the failure Rust named", async ({ page, baseURL }) =>
 
 /**
  * The footer is Rust's text and Rust's colour, and it lives in the header — a
- * line under the body would make the card taller the moment the panel degraded,
- * and `.panel-row` would stretch every neighbour to match.
+ * line under the body would make the card taller the moment the panel degraded.
  */
 test("a degraded read carries its reason in the header, not under the body", async ({ page, baseURL }) => {
   const vm = await fixture(baseURL, "sample-crons.json");

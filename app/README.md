@@ -752,7 +752,7 @@ app/
 │   │                     #   "The one granted capability")
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
-    ├── app.js            # the cockpit (host grid + the panel-row layout)
+    ├── app.js            # the cockpit (host grid, host tabs, panel columns)
     ├── dashboard.js      # overview and persisted tile editing
     ├── settings.js       # the Settings view
     ├── containers.js     # the Containers/VMs panel
@@ -962,13 +962,14 @@ window's width for each panel, applied by `app.js` and never re-derived there.
 is painted **in the panel header, beside the title** (`.panel-stale`), not under
 the body where the original puts it. It used to be a `<p>` after
 `.panel-body`, and that made the card a line taller the moment the panel
-degraded; combined with the equal-height rule above, every other card in the row
-grew with it. So a token quietly losing a scope moved half the cockpit. The
-header is always rendered, so the warning now costs no height at all. It
-ellipsises rather than wrapping — a second header line would be the growth this
-exists to prevent — with the panel title yielding its width first
-(`flex-shrink:100`, the host card's `.stale` rule) and the full text on the
-element's `title`.
+degraded; combined with the equal-height panel rows of the time (removed in
+#668), every other card in the row grew with it. So a token quietly losing a
+scope moved half the cockpit. The header is always rendered, so the warning now
+costs no height at all. It ellipsises rather than wrapping — a second header
+line would be the growth this exists to prevent. The warning is what gives way
+(`.panel-stale`'s `flex-shrink:100`); the panel title is `flex-shrink:0` and
+keeps its characters, the opposite of the host card, where `.stale` is protected
+and the CPU model gives way. The full text is on the element's `title`.
 
 **Every panel's warning, including Usage's per-section ones**
 ([#351](https://github.com/Sassy-Dog/solador/issues/351)). The Usage panel used

@@ -222,9 +222,8 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .panel-body { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 /* The staleness/error warning shares the header row rather than owning a line
    under the body, where it used to live. A line below the content makes the
-   card taller the moment a panel degrades, and `.panel-row` stretches every
-   other card in the row to match -- so a token losing a scope moved half the
-   cockpit. The header is always there, so this costs no height at all.
+   card taller the moment a panel degrades. The header is always there, so this
+   costs no height at all.
 
    The lopsided `flex-shrink` runs the OPPOSITE way to the host card's, where
    `.stale` is protected and `.hdr .title` (a CPU model) is the designated give.
@@ -300,8 +299,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 
    Text, not a bordered pill like `.gh-chip`. A border and vertical padding
    make the element taller than the title's line box, and `.panel-hdr` is
-   `align-items:baseline`, so the header grows -- which grows the card, which
-   `.panel-row`'s stretch then spends on every other card in the row. That is
+   `align-items:baseline`, so the header grows -- which grows the card. That is
    the exact regression moving the staleness warning up here was meant to end,
    and the height assertion in `github.spec.js` catches it. */
 .panel-chip { font-size:9px; font-weight:700; white-space:nowrap; flex:none;

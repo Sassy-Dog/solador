@@ -93,7 +93,7 @@ function renderCrons(payload) {
 
   // A healthy, fresh panel renders no warning at all. It sits in the header
   // rather than under the body because a line below the content makes the card
-  // taller, and `.panel-row` stretches its neighbours to match.
+  // taller the moment it degrades.
   const stale = $c("cronsStale");
   stale.textContent = payload.footer ? payload.footer.text : "";
   stale.title = payload.footer ? payload.footer.text : "";
