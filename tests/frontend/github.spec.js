@@ -205,9 +205,6 @@ test("a Repos panel with every account answering shows no warning", async ({ pag
  */
 test("a per-account failure names the account in the header without blanking the panel", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-repos.json");
-  await gotoWithFixtures(page, baseURL, { repos: good }, "repos");
-  const healthy = await page.locator("#reposPanel").boundingBox();
-
   const failing = {
     ...good,
     // Differs from the tile's name, so the heading asserted below can only be the tile's.
@@ -217,10 +214,18 @@ test("a per-account failure names the account in the header without blanking the
       color: "#e09a26",
     },
   };
-  await gotoWithFixtures(page, baseURL, { repos: failing }, "repos");
+  await gotoWithFixtures(page, baseURL, { repos: { __frames: [good, failing] } }, "repos");
+  // Rows are visible only once the Full view's own healthy reading has painted.
+  await expect(repoRows(page).first()).toBeVisible();
+  const stale = page.locator("#reposStale");
+  await expect(stale).toBeHidden();
+  const healthy = await page.locator("#reposPanel").boundingBox();
+
+  // The next poll fails, as when a token expires while the Full view is open.
+  await advance(page, "repos");
+  await page.evaluate(() => window.__SOLADOR_GITHUB_TEST__.refresh());
 
   await expect(repoRows(page)).toHaveCount(good.rows.length);
-  const stale = page.locator("#reposStale");
   await expect(stale).toBeVisible();
   await expect(stale).toHaveText(failing.footer.text);
   await expect(stale).toHaveCSS("color", rgb(failing.footer.color));
@@ -230,8 +235,9 @@ test("a per-account failure names the account in the header without blanking the
   await expect(page.locator("#reposBody .gh-message")).toHaveCount(0);
 
   // In the header for the reason the Runners warning is: a line under the body
-  // makes the card taller, and `.panel-row` stretches its neighbours to match —
-  // so one expired token would move half the cockpit.
+  // makes the card taller. Both readings come from ONE page load:
+  // layout-stability.js floors a panel body during a boot frame on some loads
+  // and not others, so heights taken on two loads are not comparable.
   const degraded = await page.locator("#reposPanel").boundingBox();
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
   // The tile's own name heads its Full view (#640), not the payload's title.
