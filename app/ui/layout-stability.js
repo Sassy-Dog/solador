@@ -8,7 +8,7 @@
     // A tile's Full view keeps no floor measured outside it: the key carries
     // the Full view's source, so opening, switching or closing one releases it.
     const full = element.closest('#fullView');
-    if (full) return `full|${full.dataset.fullSource || ''}|${element.dataset.detailState || ''}`;
+    if (full) return `full|${full.dataset.fullSource || ''}|${full.dataset.fullTile || ''}|${element.dataset.detailState || ''}`;
     const tile = element.closest('.db-tile, .db-preview-tile') || element.querySelector('.db-preview-tile');
     return tile ? [tile.dataset.source, tile.dataset.presentation, tile.dataset.scope, tile.dataset.options].join('|') : element.dataset.detailState || '';
   };
@@ -56,6 +56,6 @@
     });
     schedule();
   };
-  new MutationObserver(discover).observe(document.body, {childList:true, subtree:true, attributes:true, attributeFilter:['data-detail-state', 'data-full-source']});
+  new MutationObserver(discover).observe(document.body, {childList:true, subtree:true, attributes:true, attributeFilter:['data-detail-state', 'data-full-source', 'data-full-tile']});
   discover();
 })();

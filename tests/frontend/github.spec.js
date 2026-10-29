@@ -275,6 +275,8 @@ test("a floor measured by the boot frame is not carried into the Repos Full view
   await expect(repoRows(page).first()).toBeVisible();
   await expect.poll(() => body.evaluate((el) => el.style.minHeight)).toBe("200px");
 
+  const bootWidth = await body.evaluate((el) => el.getBoundingClientRect().width);
+
   await page.evaluate(() => window.__releaseDashboard());
   await expect(page.locator(`[data-tile="${tileIdFor("ghWorkflows")}"]`)).toBeVisible();
   await openTileFull(page, "ghWorkflows");
@@ -282,12 +284,48 @@ test("a floor measured by the boot frame is not carried into the Repos Full view
 
   // Opening the Full view released the boot frame's floor: the body is its
   // natural height, and keeps no inline floor taller than that.
+  // Same width as the boot frame, so the release below is the key's doing and
+  // not the width rule's: without the key change this test fails.
+  const fullWidth = await body.evaluate((el) => el.getBoundingClientRect().width);
+  expect(Math.abs(fullWidth - bootWidth)).toBeLessThanOrEqual(1);
   await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
   const { inline, height } = await body.evaluate((el) => ({
     inline: parseFloat(el.style.minHeight || "0"), height: el.getBoundingClientRect().height,
   }));
   expect(inline).not.toBe(200);
   expect(inline).toBeLessThanOrEqual(Math.ceil(height));
+});
+
+/**
+ * Two tiles of one source paint into the same body, so a Full view is keyed on
+ * its tile (#691): tile B's Full view must not inherit the floor tile A's
+ * measured.
+ */
+test("a second Repos tile's Full view does not inherit the first tile's floor", async ({ page, baseURL }) => {
+  const many = await fixture(baseURL, "sample-repos.json");
+  while (many.rows.length < 40) many.rows = many.rows.concat(many.rows);
+  const few = { ...many, rows: many.rows.slice(0, 1) };
+  const second = "full-repos-b";
+  await stubTileIpc(page, baseURL, {
+    source: "ghWorkflows", sources: ["ghWorkflows", { source: "ghWorkflows", id: second }],
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { repos: { __byTile: { [tileIdFor("ghWorkflows")]: many, [second]: few } } },
+  });
+  await page.goto("/index.html");
+  await openTileFull(page, "ghWorkflows");
+  const body = page.locator("#reposBody");
+  await expect(repoRows(page).first()).toBeVisible();
+  await expect(repoRows(page)).toHaveCount(many.rows.length);
+  await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).toBeGreaterThan(200);
+  const floorA = await body.evaluate((el) => parseFloat(el.style.minHeight));
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await openTileFull(page, "ghWorkflows", second);
+  await expect(repoRows(page)).toHaveCount(1);
+  // The release happens on the next animation frame, so poll for it.
+  await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).not.toBe(floorA);
+  await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(floorA);
 });
 
 // MARK: - Repos: tap to open

@@ -443,9 +443,12 @@ or failed polls do not collapse them. Minimum reservations are 196px for Machine
 list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards. The
 200px and 300px panel floors hold outside a tile's Full view; inside one a panel
 fits its content (`dashboard.css` sets `min-height:0`) and keeps only what
-`layout-stability.js` measured in that same Full view. Opening, switching or
+`layout-stability.js` measured in that same tile's Full view. Opening, switching or
 closing a Full view releases any floor measured under another source or none,
-so a frame painted while the app booted never sizes a Full view.
+so a frame painted while the app booted never sizes a Full view. A Full view is
+keyed on its tile, so two tiles of one source do not share a floor; reopening the
+same tile keeps that tile's own. The release applies to host cards too, whose 960px
+stylesheet floor still holds.
 Table inspectors fit their rows without a minimum-height reservation.
 These are floors, never clipping limits. The one exception is the hidden-tile
 library's preview, which scrolls inside `min(440px, 55vh)` like the list beside

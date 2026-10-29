@@ -2206,6 +2206,7 @@
     mode = "overview";
     window.soladorGitHub.setRunnerGroup(null);
     fullView.removeAttribute("data-full-source");
+    fullView.removeAttribute("data-full-tile");
     overviewOpen = true;
     root.hidden = false;
     fullView.hidden = true;
@@ -2239,6 +2240,8 @@
     overviewOpen = false;
     // The one panel this tile's Full view shows; the stylesheet hides the rest.
     fullView.dataset.fullSource = t.source;
+    // Two tiles of one source paint into the same body, so the Full view is keyed on the tile.
+    fullView.dataset.fullTile = t.id;
     root.hidden = true;
     fullView.hidden = false;
     render(true);
