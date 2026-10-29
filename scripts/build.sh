@@ -1003,6 +1003,30 @@ assert_dmg_layout() {
     return "$status"
 }
 
+# Release the devices `hdiutil create` left on <dmg> (#690): every device on
+# that exact path not in the newline-separated <before>, one log line each, by
+# (device, image) pair (#629). `attach_dmg_readonly` would keep a leftover as
+# pre-existing and give up behind it. Fails, saying why, when the listing
+# cannot be read or a device will not go.
+release_dmg_create_leftover() {
+    local dmg="$1" before="${2:-}" now dev
+    # `hdiutil create` can leave a device attached on the image it wrote (#683).
+    if ! now="$(dmg_devices_for_image "$dmg")"; then
+        log_error "could not read 'hdiutil info' after creating $dmg"
+        return 1
+    fi
+    while IFS= read -r dev; do
+        [[ -n "$dev" ]] || continue
+        if ! dmg_in_list "$dev" "$before"; then
+            log_info "releasing $dev, left attached on $dmg by hdiutil create"
+        fi
+    done <<< "$now"
+    if ! release_dmg_image "$dmg" "$before"; then
+        log_error "could not release the devices hdiutil create left on $dmg"
+        return 1
+    fi
+}
+
 # The .dmg is built HERE rather than by `cargo tauri build --bundles dmg`, for
 # the same ordering reason signing is: the CLI would package the app it just
 # bundled, which is before the CFBundleVersion stamp and before the signature.
@@ -1013,7 +1037,8 @@ make_dmg() {
     # The devices already standing on this image path, read BEFORE the old
     # image is deleted (#690). The path repeats across builds, so an operator's
     # Finder mount of the previous build is one of them and is kept on purpose
-    # (attach_dmg_readonly); only what the create below adds is released.
+    # (attach_dmg_readonly); only what the create below adds is released, on
+    # success and on a failed create alike.
     local before
     if ! before="$(dmg_devices_for_image "$dmg")"; then
         log_error "could not read 'hdiutil info' to look for devices attached for $dmg; nothing was deleted or built"
@@ -1038,30 +1063,15 @@ make_dmg() {
     if ! hdiutil create -volname "$APP_NAME" -srcfolder "$stage" \
             -ov -format UDZO "$dmg" >/dev/null; then
         log_error "hdiutil failed to build the disk image"
+        # A failed create can leave a device too; a re-run would record it in
+        # its own `before` as the operator's and keep it. Best effort.
+        release_dmg_create_leftover "$dmg" "$before" || true
         exit 1
     fi
     rm -rf "$stage"
     trap - EXIT
 
-    # `hdiutil create` can leave a device attached on the image it wrote
-    # (#683 saw it); the attach behind assert_dmg_layout would keep it as
-    # pre-existing and give up. Release what appeared since `before`, by
-    # (device, image) pair (#629), and say which.
-    local now dev
-    if ! now="$(dmg_devices_for_image "$dmg")"; then
-        log_error "could not read 'hdiutil info' after creating $dmg"
-        exit 1
-    fi
-    while IFS= read -r dev; do
-        [[ -n "$dev" ]] || continue
-        if ! dmg_in_list "$dev" "$before"; then
-            log_info "releasing $dev, left attached on $dmg by hdiutil create"
-        fi
-    done <<< "$now"
-    if ! release_dmg_image "$dmg" "$before"; then
-        log_error "could not release the devices hdiutil create left on $dmg"
-        exit 1
-    fi
+    release_dmg_create_leftover "$dmg" "$before" || exit 1
 
     # Assert the artifact, not the step (the plist and lipo rule).
     assert_dmg_layout "$dmg" "$(basename "$app")" || exit 1

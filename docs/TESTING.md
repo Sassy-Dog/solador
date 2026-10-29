@@ -167,7 +167,10 @@ path repeats across builds and an operator's Finder mount of the previous build
 stands on it. It reads the devices on the path before `rm -f` (an unreadable
 listing exits before anything is deleted), and after the create releases only
 those not in that snapshot through `release_dmg_image`, logging each by device
-and image. A stub case lists `/dev/disk87` from the start and has the fake
+and image, on a failed create as well as a successful one (best effort there:
+the create's own failure is still what exits). Stub cases cover the unreadable
+listing before the create, after it, a leftover that will not detach, and a
+failed create that left a device. The main stub case lists `/dev/disk87` from the start and has the fake
 create add `/dev/disk88`: exactly `disk88` is detached and `disk87` is
 kept. Snapshotting after the create, or an empty keep list, fails it. `diskutil image attach`, the
 replacement macOS 27 names, is deliberately not used: it works there but
