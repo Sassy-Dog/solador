@@ -235,10 +235,9 @@ test("a per-account failure names the account in the header without blanking the
   await expect(page.locator("#reposBody .gh-message")).toHaveCount(0);
 
   // In the header for the reason the Runners warning is: a line under the body
-  // makes the card taller, and `.panel-row` stretches its neighbours to match —
-  // so one expired token would move half the cockpit. Both readings come from
-  // ONE page load: layout-stability.js floors a panel body during a boot frame
-  // on some loads and not others, so heights taken on two loads are not comparable.
+  // makes the card taller. Both readings come from ONE page load:
+  // layout-stability.js floors a panel body during a boot frame on some loads
+  // and not others, so heights taken on two loads are not comparable.
   const degraded = await page.locator("#reposPanel").boundingBox();
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
   // The tile's own name heads its Full view (#640), not the payload's title.
