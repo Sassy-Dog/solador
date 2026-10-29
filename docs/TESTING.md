@@ -150,7 +150,16 @@ suite's EXIT trap detaches everything under its temp dir before deleting it,
 ends by asserting nothing is left, and at start reaps earlier runs' leaks by
 one rule (`dmg_is_leaked_fixture`: `$TMPDIR/tmp.*/<fixture>.dmg` with the
 backing file gone — a live run's images, `~/Downloads` installers and the
-simulator runtime images never match). `diskutil image attach`, the
+simulator runtime images never match). **What `hdiutil create` leaves on a
+fixture the suite has just written is cleared before anything attaches it
+(#683):** under load the create can leave a device standing on the new image,
+which the next attach would keep as `pre-existing` and then give up behind.
+Every fixture comes from the suite's `make_image`, which detaches every device
+on that exact path (no keep list: the file is new, in the run's own temp dir,
+and nothing has attached it yet) and prints one `cleared <device>: attached on
+<image> right after hdiutil create wrote it` line per device; a listing it
+cannot read fails the run instead. `make_dmg`'s own create, which the release
+path and the suite's two `make_dmg` cases run, is not covered. `diskutil image attach`, the
 replacement macOS 27 names, is deliberately not used: it works there but
 returns bare `diskN` entries, has no `-noverify` and is unmeasured on the 14.0 floor and the runner,
 so one `hdiutil` path serves the runner and the 14.0 floor. macOS only,
