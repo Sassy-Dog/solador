@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { advance, gotoTileFull, openTileFull, lastArgs, tileIdFor } from "./tile-full.js";
+import { advance, gotoTileFull, openTileFull, lastArgs, stubTileIpc, tileIdFor } from "./tile-full.js";
 
 // Same CSP guard as the other suites: the page is served under the app's real
 // policy (csp_server.py), so a blocked style surfaces as a console error rather
@@ -242,6 +242,94 @@ test("a per-account failure names the account in the header without blanking the
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
   // The tile's own name heads its Full view (#640), not the payload's title.
   await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
+});
+
+/**
+ * How tall a panel is in its tile's Full view must not depend on whether a frame
+ * painted while the app booted (#691). `#fullView` starts visible, every panel
+ * reads once before `dashboard.js` has loaded, and the 200px list-panel floor
+ * applies until that first render hides the view. `layout-stability.js` then
+ * writes the tallest height it saw as an inline floor, which opening the Full
+ * view used to keep. Holding `dashboard_view` guarantees the boot frame paints.
+ */
+test("a floor measured by the boot frame is not carried into the Repos Full view", async ({ page, baseURL }) => {
+  const repos = await fixture(baseURL, "sample-repos.json");
+  repos.rows = repos.rows.slice(0, 1); // sparse: natural height is well under the 200px floor
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  await stubTileIpc(page, baseURL, {
+    source: "ghWorkflows", sources: Object.values(GITHUB_TILE), cockpit,
+    answers: { repos, runners: await fixture(baseURL, "sample-runners.json") },
+  });
+  await page.addInitScript(() => {
+    const inner = window.__TAURI__.core.invoke;
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    window.__releaseDashboard = () => release();
+    window.__TAURI__.core.invoke = (command, args) =>
+      command === "dashboard_view" ? held.then(() => inner(command, args)) : inner(command, args);
+  });
+  await page.goto("/index.html");
+
+  // The boot frame: the unhidden Full view floors the body at the CSS 200px.
+  const body = page.locator("#reposBody");
+  await expect(repoRows(page).first()).toBeVisible();
+  await expect.poll(() => body.evaluate((el) => el.style.minHeight)).toBe("200px");
+
+  const bootWidth = await body.evaluate((el) => el.getBoundingClientRect().width);
+
+  await page.evaluate(() => window.__releaseDashboard());
+  await expect(page.locator(`[data-tile="${tileIdFor("ghWorkflows")}"]`)).toBeVisible();
+  await openTileFull(page, "ghWorkflows");
+  await expect(repoRows(page).first()).toBeVisible();
+
+  // Opening the Full view released the boot frame's floor: the body is its
+  // natural height, and keeps no inline floor taller than that.
+  // Same width as the boot frame, so the release below is the key's doing and
+  // not the width rule's: without the `#fullView` key added for #691 (measured
+  // against main) this test fails. The tile part of that key is guarded by the
+  // two-tile test below.
+  const fullWidth = await body.evaluate((el) => el.getBoundingClientRect().width);
+  expect(Math.abs(fullWidth - bootWidth)).toBeLessThanOrEqual(1);
+  await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
+  const { inline, height } = await body.evaluate((el) => ({
+    inline: parseFloat(el.style.minHeight || "0"), height: el.getBoundingClientRect().height,
+  }));
+  expect(inline).not.toBe(200);
+  expect(inline).toBeLessThanOrEqual(Math.ceil(height));
+});
+
+/**
+ * Two tiles of one source paint into the same body, so a Full view is keyed on
+ * its tile (#691): tile B's Full view must not inherit the floor tile A's
+ * measured.
+ */
+test("a second Repos tile's Full view does not inherit the first tile's floor", async ({ page, baseURL }) => {
+  const many = await fixture(baseURL, "sample-repos.json");
+  while (many.rows.length < 40) many.rows = many.rows.concat(many.rows);
+  const few = { ...many, rows: many.rows.slice(0, 1) };
+  const second = "full-repos-b";
+  await stubTileIpc(page, baseURL, {
+    source: "ghWorkflows", sources: ["ghWorkflows", { source: "ghWorkflows", id: second }],
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { repos: { __byTile: { [tileIdFor("ghWorkflows")]: many, [second]: few } } },
+  });
+  await page.goto("/index.html");
+  await openTileFull(page, "ghWorkflows");
+  const body = page.locator("#reposBody");
+  await expect(repoRows(page).first()).toBeVisible();
+  await expect(repoRows(page)).toHaveCount(many.rows.length);
+  await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).toBeGreaterThan(200);
+  const floorA = await body.evaluate((el) => parseFloat(el.style.minHeight));
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await openTileFull(page, "ghWorkflows", second);
+  await expect(repoRows(page)).toHaveCount(1);
+  // The release happens on the next animation frame, so poll for it.
+  await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).not.toBe(floorA);
+  await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(floorA);
+  // …and it is B's natural height, not some smaller stale floor.
+  await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
 });
 
 // MARK: - Repos: tap to open
@@ -575,9 +663,6 @@ test("a failed fetch keeps the last-good rows and surfaces the error in the head
  */
 test("a Runners error does not make the card taller", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-runners.json");
-  await gotoWithFixtures(page, baseURL, { runners: good }, "runners");
-  const healthy = await page.locator("#runnersPanel").boundingBox();
-
   const failing = {
     ...good,
     footer: {
@@ -585,7 +670,16 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
       color: "#e09a26",
     },
   };
-  await gotoWithFixtures(page, baseURL, { runners: failing }, "runners");
+  // Both readings come from ONE page load, as the Repos test does: a panel
+  // body's floor depends on whether a boot frame painted, so heights taken on
+  // two loads are not comparable (#684, #691).
+  await gotoWithFixtures(page, baseURL, { runners: { __frames: [good, failing] } }, "runners");
+  await expect(runnerRows(page).first()).toBeVisible();
+  await expect(page.locator("#runnersStale")).toBeHidden();
+  const healthy = await page.locator("#runnersPanel").boundingBox();
+
+  await advance(page, "runners");
+  await page.evaluate(() => window.__SOLADOR_GITHUB_TEST__.refresh());
   await expect(page.locator("#runnersStale")).toBeVisible();
   const degraded = await page.locator("#runnersPanel").boundingBox();
 
@@ -819,12 +913,17 @@ test("a payload with no verdict hides the chip rather than emptying it", async (
  * must not cost the card any height.
  */
 test("the verdict costs no height and does not truncate", async ({ page, baseURL }) => {
-  await gotoWithVerdict(page, baseURL, null);
-  await switchPanel(page, "runners");
+  // Both readings come from ONE page load (#691): the bare payload first, then
+  // the one carrying the verdict, through the `refresh()` hook.
+  const bareRunners = { ...(await fixture(baseURL, "sample-runners.json")), availability: null };
+  const chipped = { ...bareRunners, availability: chip("Fleet Down", "#e05a4f") };
+  await gotoWithFixtures(page, baseURL, { runners: { __frames: [bareRunners, chipped] } }, "runners");
+  await expect(runnerRows(page).first()).toBeVisible();
+  await expect(page.locator("#runnersAvailability")).toBeHidden();
   const bare = await page.locator("#runnersPanel").boundingBox();
 
-  await gotoWithVerdict(page, baseURL, chip("Fleet Down", "#e05a4f"));
-  await switchPanel(page, "runners");
+  await advance(page, "runners");
+  await page.evaluate(() => window.__SOLADOR_GITHUB_TEST__.refresh());
   const withChip = page.locator("#runnersAvailability");
   await expect(withChip).toBeVisible();
   expect((await page.locator("#runnersPanel").boundingBox()).height).toBeCloseTo(bare.height, 1);
