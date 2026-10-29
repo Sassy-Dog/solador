@@ -851,13 +851,25 @@ leak_img="$root/tmp.Leak/wrong.dmg"; live_img="$root/tmp.Live/wrong.dmg"
 attach_dmg_readonly "$(mktemp -d "$work/mnt.XXXXXX")" "$leak_img"; leak_dev="$ATTACHED_DEV"
 attach_dmg_readonly "$(mktemp -d "$work/mnt.XXXXXX")" "$live_img"; live_dev="$ATTACHED_DEV"
 rm -f "$leak_img"
-reap_leaked_fixtures "$root" >"$work/reap-out"
+reap_leaked_fixtures "$root" >"$work/reap-out" 2>"$work/reap-err"
 leak_st=0; dmg_device_state "$leak_dev" "$leak_img" || leak_st=$?
 live_st=0; dmg_device_state "$live_dev" "$live_img" || live_st=$?
 if [[ "$leak_st" == 1 && "$live_st" == 0 ]] && grep -q "reaping leaked fixture device $leak_dev" "$work/reap-out"; then
     pass "the reaper detaches a leaked fixture device and leaves a live one"
 else
-    fail "the reaper detaches a leaked fixture device and leaves a live one ($(cat "$work/reap-out"))"
+    # #689: say why. States: 0 attached, 1 gone, 2 listing unreadable. The
+    # listing is read only (no detach), as `cleanup` reads it.
+    reap_seen=""
+    if reap_listing="$(dmg_attached_images)"; then
+        while IFS=$'\t' read -r dev path; do
+            [[ -n "$dev" ]] || continue
+            if dmg_under "$path" "$root"; then reap_seen="$reap_seen [$dev $path]"; fi
+        done <<< "$reap_listing"
+        [[ -n "$reap_seen" ]] || reap_seen=" none"
+    else
+        reap_seen=" could not read 'hdiutil info'"
+    fi
+    fail "the reaper detaches a leaked fixture device and leaves a live one (leak_dev=$leak_dev leak_st=$leak_st live_dev=$live_dev live_st=$live_st; reaper stdout: $(cat "$work/reap-out"); reaper stderr: $(cat "$work/reap-err"); attached under $root (listed after the states):$reap_seen)"
 fi
 detach_dmg_device "$leak_dev" "$leak_img" || true
 detach_dmg_device "$live_dev" "$live_img" || true
