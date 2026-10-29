@@ -1010,6 +1010,15 @@ assert_dmg_layout() {
 make_dmg() {
     local app="$1" dmg="$2" identity="$3"
 
+    # The devices already standing on this image path, read BEFORE the old
+    # image is deleted (#690). The path repeats across builds, so an operator's
+    # Finder mount of the previous build is one of them and is kept on purpose
+    # (attach_dmg_readonly); only what the create below adds is released.
+    local before
+    if ! before="$(dmg_devices_for_image "$dmg")"; then
+        log_error "could not read 'hdiutil info' to look for devices attached for $dmg; nothing was deleted or built"
+        exit 1
+    fi
     rm -f "$dmg"
     log_info "Building $dmg"
     # The image is built from a staging directory holding the app and an
@@ -1033,6 +1042,26 @@ make_dmg() {
     fi
     rm -rf "$stage"
     trap - EXIT
+
+    # `hdiutil create` can leave a device attached on the image it wrote
+    # (#683 saw it); the attach behind assert_dmg_layout would keep it as
+    # pre-existing and give up. Release what appeared since `before`, by
+    # (device, image) pair (#629), and say which.
+    local now dev
+    if ! now="$(dmg_devices_for_image "$dmg")"; then
+        log_error "could not read 'hdiutil info' after creating $dmg"
+        exit 1
+    fi
+    while IFS= read -r dev; do
+        [[ -n "$dev" ]] || continue
+        if ! dmg_in_list "$dev" "$before"; then
+            log_info "releasing $dev, left attached on $dmg by hdiutil create"
+        fi
+    done <<< "$now"
+    if ! release_dmg_image "$dmg" "$before"; then
+        log_error "could not release the devices hdiutil create left on $dmg"
+        exit 1
+    fi
 
     # Assert the artifact, not the step (the plist and lipo rule).
     assert_dmg_layout "$dmg" "$(basename "$app")" || exit 1
