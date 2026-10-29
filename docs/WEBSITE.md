@@ -74,7 +74,10 @@ deliberately lacks. Containers keeps the remote host under this machine's
 Neon, Sentry and Vercel sections sit inside its bottom-anchored crop at all three
 boxes with the panel's full width (a two-column Usage at 908pt fails it), and
 `site.spec.js` asserts only Usage's image is anchored bottom, which ties the CSS
-to that assumption. Every screenshot's
+to that assumption. The Hosts alt names only the CPU section ("overall and
+per-core CPU sparklines"), because that is all every layout's crop shows (memory,
+disk and network sit lower), and the generator asserts the overall chart and every
+core sparkline lie inside the crop at all three boxes. Every screenshot's
 `width`/`height` in `site/index.html` is the file's pixel size (`site.spec.js`
 compares them; `mark.svg`'s sizes are not checked). The wide end of the 2-up and
 1-up layouts (near 960 and 640px) shows less of every tall card, Usage's Neon
