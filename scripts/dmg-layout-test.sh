@@ -133,9 +133,37 @@ app="$work/Solador.app"
 mkdir -p "$app/Contents/MacOS"
 echo stub > "$app/Contents/MacOS/Solador"
 
-# make_image <name> <stage dir>: real hdiutil, same flags as build.sh.
+# clear_create_leftovers <image>: detach, and say so, every device standing on
+# a fixture this run has just written (#683). `hdiutil create` can leave one
+# attached under load, and the next attach would keep it as pre-existing, then
+# give up. No keep list: the file was just written inside this run's private
+# $work and nothing has attached it yet, so every device on that exact path is
+# this run's. A listing it cannot read is said, never taken for "nothing
+# attached".
+clear_create_leftovers() {
+    local devs dev
+    devs="$(dmg_devices_for_image "$1")" || {
+        echo "could not read 'hdiutil info' after creating $1; a device hdiutil create left on it may still be attached" >&2
+        return 1
+    }
+    [[ -n "$devs" ]] || return 0
+    if ! release_dmg_image "$1"; then
+        echo "could not clear what hdiutil create left attached on $1" >&2
+        return 1
+    fi
+    while IFS= read -r dev; do
+        echo "cleared $dev: attached on $1 right after hdiutil create wrote it"
+    done <<< "$devs"
+}
+
+# make_image <name> <stage dir>: real hdiutil, same flags as build.sh, then
+# clear whatever the create left attached on the new fixture. Every fixture the
+# suite creates with its own `hdiutil create` goes through here; the two
+# make_dmg cases' images come from build.sh's make_dmg, which this does not
+# cover. A failed create is the status, whatever the clear would have found.
 make_image() {
-    hdiutil create -volname Solador -srcfolder "$2" -ov -format UDZO "$work/$1.dmg" >/dev/null 2>&1
+    hdiutil create -volname Solador -srcfolder "$2" -ov -format UDZO "$work/$1.dmg" >/dev/null 2>&1 || return
+    clear_create_leftovers "$work/$1.dmg"
 }
 
 # --probe-die is how the suite tests its own EXIT trap: attach an image, print
@@ -372,6 +400,100 @@ if [[ "$other_status" == 1 && "$(diag_count)" == 5 && ! -s "$work/fake-detaches"
     pass "a pre-existing device is marked as such and another image is only counted, never named"
 else
     fail "a pre-existing device is marked and another image is only counted (status $other_status; detaches: $(cat "$work/fake-detaches"); $(cat "$work/err"))"
+fi
+
+# #683: `hdiutil create` can leave a device attached on the fixture it just
+# wrote, and the attach that follows used to keep it as pre-existing and give
+# up. A fake listing holds that leftover beside an operator's image and another
+# run's fixture of the same name; while the leftover is listed, every attach
+# fails EAGAIN. FAKE_LISTING picks the case: `leftover` (a detach clears it),
+# `stuck` (it stays listed whatever is detached), `create-fails` (the create
+# itself fails, the leftover still listed) or `junk` (an unreadable listing).
+# Nothing real is created, attached or detached.
+cat > "$work/create-hdiutil.sh" <<'EOF'
+entry() {
+    printf '<dict><key>image-path</key><string>%s</string><key>system-entities</key><array><dict><key>dev-entry</key><string>%s</string></dict></array></dict>' "$1" "$2"
+}
+hdiutil() {
+    case "$1" in
+        create) [[ "$FAKE_LISTING" != create-fails ]] ;;
+        attach)
+            echo x >> "$FAKE_ATTACHES"
+            if ! grep -q disk88 "$FAKE_DETACHES"; then
+                echo "hdiutil: attach failed - Resource temporarily unavailable" >&2
+                return 1
+            fi
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk89s1</string></dict></array></dict></plist>\n' ;;
+        info)
+            if [[ "$FAKE_LISTING" == junk ]]; then echo "not a plist"; return 0; fi
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array>'
+            if [[ "$FAKE_LISTING" == stuck ]] || ! grep -q disk88 "$FAKE_DETACHES"; then
+                entry "$FAKE_DMG" /dev/disk88
+            fi
+            entry /elsewhere/OPERATORS-IMAGE.dmg /dev/disk90
+            entry "$FAKE_OTHER_RUN" /dev/disk91
+            printf '</array></dict></plist>\n' ;;
+        detach) echo "$*" >> "$FAKE_DETACHES" ;;
+    esac
+}
+sleep() { :; }
+EOF
+# create_run <listing>: the suite's own make_image, then attach_dmg_readonly on
+# the new fixture, under the stub. Prints "<status> <attaches> <detaches>";
+# status 10 is make_image failing, 11 the attach.
+create_run() {
+    local status=0 other_run
+    other_run="$(dirname "$work")/tmp.Other/leftover.dmg"
+    : > "$work/fake-detaches"; : > "$work/fake-attaches"
+    (
+        export FAKE_LISTING="$1" FAKE_DETACHES="$work/fake-detaches" FAKE_ATTACHES="$work/fake-attaches" \
+            FAKE_DMG="$work/leftover.dmg" FAKE_OTHER_RUN="$other_run"
+        # shellcheck source=/dev/null
+        source "$work/create-hdiutil.sh"
+        make_image leftover "$good" || exit 10
+        attach_dmg_readonly "$work" "$work/leftover.dmg" || exit 11
+        echo "pre-existing: [$ATTACH_PREEXISTING]"
+    ) >"$work/fake-out" 2>"$work/err" || status=$?
+    echo "$status $(wc -l < "$work/fake-attaches" | tr -d ' ') $(wc -l < "$work/fake-detaches" | tr -d ' ')"
+}
+result="$(create_run leftover)"
+if [[ "$result" == "0 1 1" ]] && grep -qx 'detach /dev/disk88' "$work/fake-detaches" \
+    && grep -qx 'pre-existing: \[\]' "$work/fake-out" \
+    && ! grep -qE 'pre-existing\)|was already attached' "$work/err"; then
+    pass "a device hdiutil create left on a new fixture is cleared, so the attach finds nothing pre-existing"
+else
+    fail "a device hdiutil create left on a new fixture is cleared (status, attaches, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"); $(cat "$work/fake-out"); $(cat "$work/err"))"
+fi
+if [[ "$(grep -c '^cleared ' "$work/fake-out")" == 1 ]] \
+    && grep -qxF "cleared /dev/disk88: attached on $work/leftover.dmg right after hdiutil create wrote it" "$work/fake-out"; then
+    pass "clearing a create's leftover says which device and which image"
+else
+    fail "clearing a create's leftover says which device and which image ($(cat "$work/fake-out"))"
+fi
+if ! grep -qE 'disk90|disk91' "$work/fake-detaches"; then
+    pass "clearing a create's leftover leaves an operator's image and another run's fixture alone"
+else
+    fail "clearing a create's leftover leaves other images alone (detaches: $(tr '\n' '|' < "$work/fake-detaches"))"
+fi
+result="$(create_run junk)"
+if [[ "$result" == "10 0 0" ]] && grep -qF "could not read 'hdiutil info' after creating $work/leftover.dmg" "$work/err"; then
+    pass "an unreadable listing after a create fails make_image, and no detach is sent on it"
+else
+    fail "an unreadable listing after a create fails make_image, and no detach is sent on it (status, attaches, detaches: $result; $(cat "$work/err"))"
+fi
+result="$(create_run stuck)"
+if [[ "$result" == "10 0 "* ]] && grep -q disk88 "$work/fake-detaches" && ! grep -qv disk88 "$work/fake-detaches" \
+    && grep -qF "could not clear what hdiutil create left attached on $work/leftover.dmg" "$work/err" \
+    && ! grep -q '^cleared ' "$work/fake-out"; then
+    pass "a create's leftover that will not detach fails make_image, and nothing is reported cleared"
+else
+    fail "a create's leftover that will not detach fails make_image, and nothing is reported cleared (status, attaches, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"); $(cat "$work/fake-out"); $(cat "$work/err"))"
+fi
+result="$(create_run create-fails)"
+if [[ "$result" == "10 0 0" ]]; then
+    pass "a failed create fails make_image even when the clear after it would succeed"
+else
+    fail "a failed create fails make_image even when the clear after it would succeed (status, attaches, detaches: $result; $(cat "$work/fake-out"); $(cat "$work/err"))"
 fi
 
 # #629: a failed attach or detach must not leave a device attached. The stub
@@ -654,7 +776,7 @@ attach_dmg_readonly "$keep_mnt" "$work/good.dmg"; keep_dev="$ATTACHED_DEV"
 # The replacement is written under another name and moved over the path, so the
 # old inode is unlinked as make_dmg's `rm -f` does but the path is never absent:
 # a leaked-fixture reaper in a concurrent suite would take the gap for a leak.
-hdiutil create -volname Solador -srcfolder "$good" -ov -format UDZO "$work/replacement.dmg" >/dev/null 2>&1
+make_image replacement "$good"
 mv -f "$work/replacement.dmg" "$work/good.dmg"
 keep_rc=0; assert_dmg_layout "$work/good.dmg" Solador.app 2>"$work/err" || keep_rc=$?
 keep_st=0; dmg_device_state "$keep_dev" "$work/good.dmg" || keep_st=$?
@@ -670,6 +792,8 @@ probe_status=0
 probe="$("${BASH:-bash}" "${BASH_SOURCE[0]}" --probe-die 2>"$work/probe-err")" || probe_status=$?
 probe_work=""; probe_dev=""
 read -r _ probe_work probe_dev <<< "$(printf '%s\n' "$probe" | grep '^PROBE ' || true)"
+# The child's make_image says what it cleared on its own stdout, captured here.
+printf '%s\n' "$probe" | grep '^cleared ' || true
 # 1 = that device is no longer attached as the probe's image (2 = unreadable).
 probe_state() { local st=0; dmg_device_state "$probe_dev" "$probe_work/good.dmg" || st=$?; echo "$st"; }
 if [[ "$probe_status" == 3 && -n "$probe_dev" && ! -e "$probe_work" ]] && [[ "$(probe_state)" == 1 ]]; then
