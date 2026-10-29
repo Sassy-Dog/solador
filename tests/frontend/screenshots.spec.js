@@ -155,6 +155,32 @@ async function expectRemoteHostInCrop(panel) {
 }
 
 /**
+ * The Hosts card's alt names only the CPU section ("overall and per-core CPU
+ * sparklines", #692), because the CPU section is the one part of the card that
+ * every layout's crop shows at least some of. So the overall CPU chart and every
+ * core sparkline must lie wholly inside the top-left `cover` crop of every box
+ * in SHOT_BOXES. The width bound cannot fail at these boxes (the scale is set by
+ * the width, so `visibleW` equals the panel's width); it guards a future box.
+ */
+async function expectCpuSectionInCrop(panel) {
+  const box = await panel.boundingBox();
+  await expect(panel.locator(".cpuChart"), "the overall CPU chart the alt names").toHaveCount(1);
+  const charts = panel.locator(".cpuChart, .cores .core .plot");
+  const count = await charts.count();
+  expect(await panel.locator(".cores .core .plot").count(), "per-core sparklines the alt names").toBeGreaterThan(0);
+  for (const [w, h] of SHOT_BOXES) {
+    const scale = Math.max(w / box.width, h / box.height);
+    const visibleW = w / scale;
+    const visibleH = h / scale;
+    for (let i = 0; i < count; i++) {
+      const c = await charts.nth(i).boundingBox();
+      expect(c.y - box.y + c.height, `chart ${i} ends inside the ${w}x${h} crop`).toBeLessThanOrEqual(visibleH);
+      expect(c.x - box.x + c.width, `chart ${i} fits the ${w}x${h} crop's width`).toBeLessThanOrEqual(visibleW + 0.5);
+    }
+  }
+}
+
+/**
  * The Usage card says "Neon, Sentry and Vercel consumption", so each of those
  * three sections must lie wholly inside the crop the site shows. Usage is the
  * one card anchored bottom left (`.tile-shot-bottom`): `cover` scales the image
@@ -233,6 +259,7 @@ test.describe("at 2x: the shots people look at", () => {
       await expect(panel).toBeVisible();
       if (name === "containers") await expectRemoteHostInCrop(panel);
       if (name === "usage") await expectProvidersInBottomCrop(panel);
+      if (name === "hosts") await expectCpuSectionInCrop(panel);
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });
     });
   }
