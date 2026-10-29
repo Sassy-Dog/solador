@@ -362,6 +362,40 @@ test("only the Usage card's screenshot is anchored bottom left", async ({ page }
   expect(anchors.filter((a) => a.src === "/assets/screenshots/panel-usage.png")).toHaveLength(1);
 });
 
+/**
+ * Every card's image box keeps the 3-up aspect, 311:195, at every width (#699),
+ * so each card shows the same crop at 3-up, 2-up and 1-up. The scale of an
+ * `object-fit: cover` crop is set by the box's width, so a box whose height was
+ * fixed moved the Usage crop's top edge into the Codex 5H row at 2-up and 1-up.
+ * The boxes are measured, not computed: 1280 is 3-up (311 wide), 800 is 2-up
+ * (about 330) and 390 is 1-up (about 328).
+ */
+test("every card's image box keeps one aspect at 1280, 800 and 390", async ({ page }) => {
+  const ASPECT = 311 / 195;
+  for (const [width, height] of [
+    [1280, 900],
+    [800, 900],
+    [390, 800],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await openSite(page, "/");
+    const boxes = await page.$$eval(".tile-shot img", (imgs) =>
+      imgs.map((img) => {
+        // Layout size, not getBoundingClientRect: the odd tile is rotated and scaled.
+        return { src: new URL(img.src).pathname, w: img.offsetWidth, h: img.offsetHeight };
+      }),
+    );
+    expect(boxes.length, `cards at ${width}`).toBeGreaterThan(1);
+    for (const { src, w, h } of boxes) {
+      expect(w, `${src} has a box at ${width}`).toBeGreaterThan(0);
+      expect(Math.abs(w / h - ASPECT) < 0.01, `${src} is ${w}x${h} at ${width}`).toBe(true);
+    }
+    if (width === 1280) {
+      for (const { src, w, h } of boxes) expect({ src, w: Math.round(w), h: Math.round(h) }).toEqual({ src, w: 311, h: 195 });
+    }
+  }
+});
+
 test.describe("every page", () => {
   for (const urlPath of PAGES) {
     test(`${urlPath} raises no CSP violation and every local link and asset exists`, async ({ page }) => {

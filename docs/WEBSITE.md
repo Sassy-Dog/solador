@@ -57,28 +57,34 @@ from `tests/frontend/og-card.html`. The nine `panel-*.png` are a tile's **Full
 view** (View, then Full view) of the showcase readings. Full view lays a panel out
 in columns across the whole window, so the window is sized per panel in
 `tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
-crops each image into a 311x195 box (330x195 at 2-up, 328x195 at 1-up) with
-`object-fit: cover`, so the image's shape decides what the card shows. 908pt for
+crops each image into a box that keeps the 3-up aspect, 311:195, at every width
+(311x195 at 3-up, about 330x207 at 2-up, about 328x206 at 1-up; `aspect-ratio` on
+the image, #699) with `object-fit: cover`, so the image's shape decides what the
+card shows, and every card shows the same crop at all three layouts. 908pt for
 Repos and Runners, 462pt for the panels that stack (Containers, Azure Cost,
-Usage, Crons, Services, OpenClaw), 900pt for Hosts. Every card is anchored top
+Crons, Services, OpenClaw), 466pt for Usage, 900pt for Hosts. Every card is anchored top
 left except Usage, which `.tile-shot-bottom` anchors bottom left: its panel is a
 stack of independent sections, its top-left (the Claude rollups) is already
 claimed under "Useful before you configure anything", and its card text names
 the Neon, Sentry and Vercel consumption at the bottom. The card's words no
 longer name the Claude and Codex plan limits; the Codex plan rows still show,
-unnamed, at the top edge of the crop. The limits are claimed on `/setup/` and in
+unnamed, whole, at the top of the crop (the crop's top edge falls just above the
+Codex 5H section's divider at every width, and the generator asserts that no
+child of a `.pv-section[data-plan]` is cut by that edge; 466pt rather than 462pt
+puts it there, because at 462pt the edge fell 1pt into the 5H row's own
+padding). The limits are claimed on `/setup/` and in
 the README. The showcase Usage payload is `usage::Fixture::Showcase`: the
 measured fixture plus a Vercel reading, which the e2e suite's `Measured`
 deliberately lacks. Containers keeps the remote host under this machine's
 (the generator asserts it is inside the crop), the generator asserts that Usage's
-Neon, Sentry and Vercel sections sit inside its bottom-anchored crop at all three
-boxes with the panel's full width (a two-column Usage at 908pt fails it), and
+Neon, Sentry and Vercel sections sit inside its bottom-anchored crop
+with the panel's full width (a two-column Usage at 908pt fails it), and
 `site.spec.js` asserts only Usage's image is anchored bottom, which ties the CSS
 to that assumption. The Hosts alt names only the CPU section ("overall and
 per-core CPU sparklines"), because the CPU section is the one part of the card
 that every layout's crop shows at least some of. The generator asserts that the
 whole CPU section (the overall chart and every core sparkline) lies inside the
-three checked boxes (311, 330 and 328 by 195). Every screenshot's
+crop (the one 311:195 aspect, which `site.spec.js` measures at 1280, 800 and 390). Every screenshot's
 `width`/`height` in `site/index.html` is the file's pixel size (`site.spec.js`
 compares them; `mark.svg`'s sizes are not checked). The wide end of the 2-up and
 1-up layouts (near 960 and 640px) shows less of every tall card, Usage's Neon
