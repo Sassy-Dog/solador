@@ -246,3 +246,9 @@ opening and the next 1s polls, not the slower panel timers; and `cockpit`'s
 width falls back to the window's when `#cockpit` measures zero. A `{ __throw }`
 answer to `cockpit` is how a spec makes it fail; `stubTileIpc`'s `dashboardKeys`
 sets top-level `dashboard_view` keys the fixture does not.
+`dashboard.spec.js`'s own stub holds one tile read (`__HOLD_TILE__`), sets
+`window.__TILE_PARKED__` once the call is parked (wait on it before Escape or
+`__RELEASE_TILE__()`, or fail it with `__FAIL_TILE__()`, #656), refuses a
+tile's read with `__REJECT_TILE__`, and parks every tile read of one command
+with `__HOLD_ALL_TILE__` (resolvers in `__RELEASE_ALL__`) so a poll cannot land
+first.

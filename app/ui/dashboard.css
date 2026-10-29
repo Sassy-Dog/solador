@@ -1008,7 +1008,8 @@
 /* Until a tile's own first reading lands, the panel holds only the rows it last
    painted: hide them, keeping the header (the tile's name) and the notes. */
 #fullView[data-tile-loading] .panel[data-full-active] > :not(.panel-hdr, .db-full-note, .db-full-state),
-#fullView[data-tile-loading][data-full-source="hosts"] #cockpit {
+#fullView[data-tile-loading][data-full-source="hosts"] #cockpit,
+#fullView[data-tile-loading][data-full-source="hosts"] #hostTabs {
   display: none !important;
 }
 #fullView .db-full-note { font-size:11px; color:var(--muted); margin:4px 0 8px; }

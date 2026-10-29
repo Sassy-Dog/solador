@@ -252,10 +252,25 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               // holds this one reading back to land later (#640).
               let scoped = fixtures[command];
               if (window.__TILE_EMPTY__) scoped = { ...scoped, rows: [], tileEmpty: window.__TILE_EMPTY__ };
+              if (window.__REJECT_TILE__ === command) throw "The reading failed.";
+              // Every read of this command parks until released, so a poll cannot
+              // land between the hold and the assertion (#656).
+              if (window.__HOLD_ALL_TILE__ === command) {
+                return await new Promise(resolve => {
+                  (window.__RELEASE_ALL__ ||= []).push(() => resolve(scoped));
+                  window.__TILE_PARKED__ = true;
+                });
+              }
               if (window.__HOLD_TILE__ === command) {
                 window.__HOLD_TILE__ = null;
                 scoped = window.__HELD_PAYLOAD__ ?? scoped;
-                return await new Promise(resolve => { window.__RELEASE_TILE__ = () => resolve(scoped); });
+                // Set only once the call is parked, so a test can wait on it
+                // before pressing Escape, releasing it or failing it (#656).
+                return await new Promise((resolve, reject) => {
+                  window.__RELEASE_TILE__ = () => resolve(scoped);
+                  window.__FAIL_TILE__ = () => reject("The reading failed.");
+                  window.__TILE_PARKED__ = true;
+                });
               }
               return scoped;
             }
@@ -2374,7 +2389,11 @@ test("Escape returns to the overview and restores the panel", async ({ page, bas
 
 // A distinctive repo, so a reading painted where it should not be is findable.
 const STALE_REPO = "stale-marker/zzz";
+// The held read is parked in the stub only once the Full view has asked for it:
+// wait for that before pressing Escape or releasing it (#656, #407's class).
+const heldReadParked = (page) => page.waitForFunction(() => window.__TILE_PARKED__ === true);
 const holdRepos = (page) => page.evaluate(async (name) => {
+  window.__TILE_PARKED__ = false;
   const held = await (await fetch("/sample-repos.json")).json();
   Object.assign(held.rows[0], { repo: name, name });
   window.__HELD_PAYLOAD__ = held;
@@ -2389,8 +2408,9 @@ test("a tile's Full view shows a loading line, never the rows the panel last hel
   await expect(page.locator("#reposBody")).not.toBeEmpty();
   await page.keyboard.press("Escape");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
-  await page.evaluate(() => { window.__HOLD_TILE__ = "repos"; });
+  await page.evaluate(() => { window.__TILE_PARKED__ = false; window.__HOLD_TILE__ = "repos"; });
   await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await heldReadParked(page);
   await expect(page.locator("#reposTitle")).toHaveText(HEALTHY.title);
   // Rust's line, under the note, in place of the body.
   await expect(page.locator("#reposPanel .db-full-state")).toHaveText(/first reading/);
@@ -2412,6 +2432,7 @@ test("a tile's reading that lands after Escape, or after another tile opens, pai
   for (const next of ["escape", "other tile"]) {
     await holdRepos(page);
     await openTileFullViaDetail(page, "overview-ghWorkflows");
+    await heldReadParked(page);
     // The reading is still out, so focus never reached the view: Escape from
     // nothing focused, as the view's own test does.
     await page.evaluate(() => document.activeElement.blur());
@@ -2426,6 +2447,67 @@ test("a tile's reading that lands after Escape, or after another tile opens, pai
     expect(await painted()).not.toContain(STALE_REPO);
     if (next === "other tile") await page.keyboard.press("Escape");
   }
+});
+
+test("a refused tile read keeps the body hidden and says so in Rust's words (#656)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  // An earlier Full view of the same source leaves its rows in the panel.
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await expect(page.locator("#reposBody")).not.toBeEmpty();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  const words = await page.evaluate(async () => (await (await fetch("/sample-dashboard.json")).json()).labels.tileReadFailed);
+  expect(words).toBeTruthy();
+  await page.evaluate(() => { window.__REJECT_TILE__ = "repos"; });
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await expect(page.locator("#reposPanel .db-full-state")).toHaveText(words);
+  // The loading rule stays: those rows must not show under this tile's name.
+  await expect(page.locator("#fullView")).toHaveAttribute("data-tile-loading", "");
+  await expect(page.locator("#reposBody")).toBeHidden();
+  // A later success clears the sentence and shows the rows.
+  await page.evaluate(async () => { window.__REJECT_TILE__ = null; await window.__SOLADOR_GITHUB_TEST__.refresh(); });
+  await expect(page.locator("#reposBody")).toBeVisible();
+  await expect(page.locator(".db-full-state")).toHaveCount(0);
+});
+
+test("a refusal that lands after its Full view closed says nothing in the next one (#656)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  await page.evaluate(() => { window.__TILE_PARKED__ = false; window.__HOLD_TILE__ = "repos"; });
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await heldReadParked(page);
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  // The same tile again, with its own reading still out: only callRust's view
+  // counter tells the old view's refusal from this one's.
+  await page.evaluate(() => { window.__TILE_PARKED__ = false; window.__HOLD_ALL_TILE__ = "repos"; });
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await heldReadParked(page);
+  await page.evaluate(() => window.__FAIL_TILE__());
+  await afterRepaints(page);
+  await expect(page.locator("#reposPanel .db-full-state")).toHaveText(/first reading/);
+  await page.evaluate(() => { window.__HOLD_ALL_TILE__ = null; window.__RELEASE_ALL__.forEach((release) => release()); });
+  await expect(page.locator("#reposBody")).toBeVisible();
+  await expect(page.locator(".db-full-state")).toHaveCount(0);
+});
+
+test("a Machines tile's Full view hides the host tabs until its first reading lands (#656)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false);
+  // The previous view's tab bar, left standing.
+  await page.evaluate(() => {
+    window.__TILE_PARKED__ = false;
+    window.__HOLD_ALL_TILE__ = "cockpit";
+    const bar = document.getElementById("hostTabs");
+    bar.innerHTML = '<button class="tab">previous</button>';
+    bar.hidden = false;
+  });
+  await openTileFullViaDetail(page, "overview-hosts");
+  await heldReadParked(page);
+  await expect(page.locator("#fullView")).toHaveAttribute("data-tile-loading", "");
+  // Every `cockpit` read is parked, so no poll can hide the bar for the rule.
+  expect(await page.evaluate(() => getComputedStyle(document.getElementById("hostTabs")).display)).toBe("none");
+  await page.evaluate(() => { window.__HOLD_ALL_TILE__ = null; window.__RELEASE_ALL__.forEach((release) => release()); });
+  await expect(page.locator("#fullView")).not.toHaveAttribute("data-tile-loading", /.*/);
 });
 
 test("a scope that keeps nothing shows the tile's own sentence in its Full view (#640)", async ({ page, baseURL }) => {

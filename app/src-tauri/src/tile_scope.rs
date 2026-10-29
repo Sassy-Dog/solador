@@ -520,17 +520,35 @@ mod tests {
             ("azureCost", "item:budget"),
             ("openclawAgents", "attention"),
         ] {
-            let absent = json!({"message":"Add a token in Settings","footer":{"text":"f"}});
-            // `tileEmpty` is the tile's sentence, not a row: only rows are
-            // under test here.
-            let mut scoped = scope_payload(&tile(source, scope), absent.clone());
-            scoped.as_object_mut().unwrap().remove("tileEmpty");
-            assert_eq!(scoped, absent, "{source} {scope}: absent");
+            // Rows to filter are absent, so the scope keeps nothing. What the
+            // tile adds is `tileEmpty`, compared whole: a scope on one `item:`
+            // is the tile's own claim and says so; any other scope leaves a
+            // source's own message to its panel (key absent), and carries the
+            // stock sentence only when there is no message to paint (#656).
+            let item = "This resource has no current reading. Review its connection or choose another scope.";
+            let stock = "No readings are available yet.";
+            let expect = |p: &Value, has_message: bool| {
+                let mut p = p.clone();
+                let sentence = match (scope.starts_with("item:"), has_message) {
+                    (true, _) => Some(item),
+                    (false, true) => None,
+                    (false, false) => Some(stock),
+                };
+                if let Some(sentence) = sentence {
+                    p.as_object_mut()
+                        .unwrap()
+                        .insert("tileEmpty".into(), json!(sentence));
+                }
+                p
+            };
+            let absent =
+                json!({"message":{"text":"Add a token in Settings"},"footer":{"text":"f"}});
+            let scoped = scope_payload(&tile(source, scope), absent.clone());
+            assert_eq!(scoped, expect(&absent, true), "{source} {scope}: absent");
             let null = json!({"rows":null,"sections":null,"runtimes":null,"windows":null,
                 "plans":null,"providers":null,"stats":null});
-            let mut scoped = scope_payload(&tile(source, scope), null.clone());
-            scoped.as_object_mut().unwrap().remove("tileEmpty");
-            assert_eq!(scoped, null, "{source} {scope}: null");
+            let scoped = scope_payload(&tile(source, scope), null.clone());
+            assert_eq!(scoped, expect(&null, false), "{source} {scope}: null");
         }
     }
 

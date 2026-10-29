@@ -97,12 +97,21 @@ machine never shows `No hosts configured`: that line counts the hosts configured
 not the cards kept. A tile scoped to everything gets the source's panel
 unchanged, with no note. Until the tile's own first reading arrives the body
 is hidden and Rust's `fullLoading` line stands in for it, so the rows the panel
-last held (another tile) never show under this tile's name;
+last held (another tile) never show under this tile's name (Machines' host
+tabs too); a read the backend refuses keeps the body hidden and replaces the loading line
+with Rust's `labels.tileReadFailed` (`tileFailed`, #656), because no renderer
+paints a failure. A failing Machines read first asks `tileGone`, which closes
+the view when the tile has left the overview; any other failing `cockpit` read
+makes the line `cockpitFailed` instead, and the body also stays hidden;
 a reading that lands after Escape, or after another tile opened, is dropped
 (`callRust` in `app.js` compares a view counter, so no renderer does). A scope
 that keeps nothing says why with the tile's own overview sentence, carried on
 the reading as `tileEmpty` (`dashboard::scoped_empty`, the same `empty_state`
-as the tile's `empty`). A runner group selected in Detail
+as the tile's `empty`). The two sentences the panel body already paints, the
+source's loading line and its own message, are left to the body so the Full
+view never says one twice (#656); every other sentence is carried, the scope's
+own and the stock `No readings are available yet.`, which no panel paints for
+a source with no message. A runner group selected in Detail
 carries in as the panel's filter. **Escape** returns to the overview with focus on that tile's **View** button, and the
 panel gets its own title back. A tile hidden or removed while its Full view is
 open sends the overview back within a second, with `That tile is no longer on the
@@ -149,9 +158,9 @@ one scope):
   unconditionally. Gating that read (on `panelWanted`, say) leaves the notice
   showing raw IPC text.
 - `soladorDashboard` (`dashboard.js`): `fullSource`, `tileGone`, `tileArgs`,
-  `tileHeading`, `tileResponse`, `fullGeneration`, `runnerFullView` /
-  `setRunnerFullView`. `callRust`'s `PANEL_READS` filter uses `fullGeneration`
-  and `tileResponse`.
+  `tileHeading`, `tileResponse`, `tileFailed`, `fullGeneration`, `runnerFullView` /
+  `setRunnerFullView`. `callRust`'s `PANEL_READS` filter uses `fullGeneration`,
+  `tileResponse` and, for a refused tile read, `tileFailed`.
 - `refreshCockpit` and `refreshPanels` (`app.js`), called by `settings.js` on
   close; `settingsOpen` and `overviewOpen` are the shared flags.
 
@@ -3075,6 +3084,8 @@ and that immediacy is itself the check on the corresponding wake:
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
 | `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
+| a tile's Full view: a scope that keeps nothing (`tileEmpty`, #656) | add a **Repos** tile scoped to *Attention* while every repo is healthy (or scoped to one repo that you then remove from the account), then open its **Full view** | the tile's own sentence (`This resource has no current reading…` / `No attention items in available readings.`) shows once under the title row, never the source's setup or loading message twice |
+| a tile's Full view: no previous rows when switching from tile to tile (#640, #656) | open one Repos tile's **Full view**, **Escape**, then open a second Repos tile's (a different scope) | the second view shows its own rows, never the first tile's. A real tile read answers within one round trip, so the loading line and a reading that arrives after the switch cannot be seen by hand; `dashboard.spec.js` covers both with a held read |
 | a tile's Full view: the panel commands' `tile` argument (`cockpit` here; the other eight take it the same way) | with the seeded host from step 2: **Edit dashboard** → **Add tile** → **Machines**, set **Show** to *This machine*, **Add tile**, **Done editing**; open that tile's **View** → **Full view** (or **View** → **Detail**, then **Full view**), then **Escape** | the host grid holds only this machine's card, titled with the tile's name, with `Scope: This machine.` under the title row and no `No hosts configured` line. Escape returns to the overview with focus on the tile's **View** button. The seeded host's card in that view, or a refusal sentence on screen, is the defect this row exists to catch |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |

@@ -8908,6 +8908,13 @@ mod tests {
                 .contains(&remote)
         };
         assert!(!keeps_remote(&app), "within the default limits");
+        // Nothing needs attention, so the Machines tile says so itself:
+        // `scope_payload` skips hosts, and this function stamps the sentence.
+        let none = cockpit_for_tile(1400.0, &app, "t-attention").unwrap();
+        assert_eq!(
+            none["tileEmpty"], "No attention items in available readings.",
+            "a scope that keeps no card carries the tile's sentence"
+        );
         // The stored RAM limit now sits under the host's reading.
         machine_alerts::save(
             &mut app.store.lock().unwrap(),
@@ -8918,11 +8925,29 @@ mod tests {
         assert!(keeps_remote(&app), "over the stored limit");
         let scoped = cockpit_for_tile(1400.0, &app, "t-attention").unwrap();
         assert!(card_ids(&scoped).contains(&remote));
+        assert!(
+            scoped.get("tileEmpty").is_none(),
+            "a scope that keeps a card adds no sentence: {scoped}"
+        );
         let keep = kept_hosts(&tile, &cockpit_with(1400.0, &app, None)).unwrap();
         assert_eq!(
             card_ids(&scoped).into_iter().collect::<BTreeSet<_>>(),
             keep,
             "the scoped payload holds exactly the kept cards"
+        );
+    }
+
+    /// A Machines tile pinned to a host that is gone keeps no card and says why
+    /// in the tile's own words (#656).
+    #[test]
+    fn a_machines_tile_pinned_to_a_gone_host_says_so() {
+        let (_dir, _rt, app) = app_with_remotes(1);
+        tile_in(&app, "t-gone", "hosts", "item:no-such-host", false);
+        let scoped = cockpit_for_tile(1400.0, &app, "t-gone").unwrap();
+        assert!(card_ids(&scoped).is_empty());
+        assert_eq!(
+            scoped["tileEmpty"],
+            "This resource has no current reading. Review its connection or choose another scope."
         );
     }
 
@@ -9029,10 +9054,15 @@ mod tests {
             view["labels"]["cockpitFailed"],
             dashboard::COCKPIT_LOAD_FAILED
         );
+        assert_eq!(
+            view["labels"]["tileReadFailed"],
+            dashboard::TILE_READ_FAILED
+        );
         assert_eq!(view["labels"]["settings"], settings::OPEN_LABEL);
         for words in [
             dashboard::OVERVIEW_LOAD_FAILED,
             dashboard::COCKPIT_LOAD_FAILED,
+            dashboard::TILE_READ_FAILED,
         ] {
             assert!(
                 !words.to_lowercase().contains("below"),

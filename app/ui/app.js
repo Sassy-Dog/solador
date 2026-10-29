@@ -41,7 +41,14 @@ const PANEL_READS = new Set(["cockpit", "repos", "runners", "containers", "servi
 const callRust = async (command, args, fixture) => {
   const dashboard = PANEL_READS.has(command) ? window.soladorDashboard : null;
   const view = dashboard?.fullGeneration?.();
-  const payload = await callRaw(command, args, fixture);
+  let payload;
+  try {
+    payload = await callRaw(command, args, fixture);
+  } catch (e) {
+    // A refused tile read says so in place of the loading line; the body stays hidden.
+    if (dashboard && args?.tile !== undefined && dashboard.fullGeneration() === view) dashboard.tileFailed(args.tile);
+    throw e;
+  }
   if (!dashboard?.fullGeneration) return payload;
   if (dashboard.fullGeneration() !== view) return null;
   if (args?.tile !== undefined && payload) dashboard.tileResponse(args.tile, payload);

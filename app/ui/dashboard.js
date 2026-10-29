@@ -37,7 +37,7 @@
   let mode = "overview";
   // The open tile of a tile's Full view, whose id its source's command is
   // sent. Set exactly while mode is "full".
-  let fullTile = null; // {id, source, loaded, empty}
+  let fullTile = null; // {id, source, loaded, failed, empty}
   // Bumped whenever a tile's Full view opens or closes; app.js's callRust drops
   // a panel reading that comes back under another value than it was asked at.
   let fullGeneration = 0;
@@ -133,7 +133,8 @@
   }
   // The tile's name over its panel, Rust's scope note under the header row, and
   // under that the one sentence the body is waiting on: Rust's loading line
-  // until this tile's own first reading lands, then Rust's reason when the scope
+  // until this tile's own first reading lands (or `labels.tileReadFailed` once
+  // a read for it was refused), then Rust's reason when the scope
   // kept nothing. A Machines tile whose `cockpit` read is failing says so
   // (`labels.cockpitFailed`) instead of promising a reading that is not coming.
   // No sentence is written here.
@@ -150,7 +151,8 @@
       if (fullNoteEl.textContent !== t.fullNote) text(fullNoteEl, t.fullNote);
       if (header.nextElementSibling !== fullNoteEl) header.after(fullNoteEl);
     }
-    const waiting = t.source === "hosts" && cockpitFailed ? L("cockpitFailed") : t.fullLoading;
+    const failed = t.source === "hosts" ? cockpitFailed : fullTile.failed;
+    const waiting = failed ? L(t.source === "hosts" ? "cockpitFailed" : "tileReadFailed") : t.fullLoading;
     const state = fullTile.loaded ? fullTile.empty : waiting;
     if (!state) {
       fullStateEl?.remove();
@@ -168,6 +170,18 @@
     fullTile.loaded = true;
     fullTile.empty = payload.tileEmpty ?? null;
     fullView.removeAttribute("data-tile-loading");
+    paintTileHeading();
+  }
+  // A read for tile `tileId` was refused (app.js's callRust), under the view it
+  // was asked for. No panel renderer paints a failure (each keeps its last good
+  // body), so the loading rule stays: the body stays hidden and Rust's
+  // `labels.tileReadFailed` replaces the loading line. A later success
+  // supersedes it: `tileResponse` marks the tile loaded, and a loaded tile's
+  // line is its own `tileEmpty`, never this one. Machines is not handled here:
+  // its line is `cockpitFailed`, from `setCockpitFailed` (#656).
+  function tileFailed(tileId) {
+    if (fullTile?.id !== tileId || fullTile.loaded || fullTile.source === "hosts") return;
+    fullTile.failed = true;
     paintTileHeading();
   }
   // The tile whose row gap is on the page: the open Full view's, if any.
@@ -2215,7 +2229,7 @@
     const title = document.getElementById(sourceTitles[t.source]);
     coveredTitle = title && { el: title, text: title.textContent };
     fullGeneration++;
-    fullTile = { id: t.id, source: t.source, loaded: false, empty: null };
+    fullTile = { id: t.id, source: t.source, loaded: false, failed: false, empty: null };
     // The panel still holds the rows it last painted, for another tile. They
     // stay hidden until this tile's own reading replaces them.
     fullView.dataset.tileLoading = "";
@@ -2713,6 +2727,7 @@
     tileHeading: fullTileTitle,
     fullGeneration: () => fullGeneration,
     tileResponse,
+    tileFailed,
     // Whether tile `id` has left the overview, asked after a read for it was
     // refused: a fresh model decides, so a refusal for a tile that is still
     // here stays a failure and one for a tile that is gone is the dashboard's

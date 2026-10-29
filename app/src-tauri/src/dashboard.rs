@@ -22,6 +22,14 @@ pub const OVERVIEW_LOAD_FAILED: &str = "Could not load the overview.";
 /// own rows; the overview stays up and this is its `labels.cockpitFailed`.
 pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the Full view.";
 
+/// What a tile's Full view says in place of its loading line when the backend
+/// refuses the tile's read (`tile_from_store`: the tile is gone, hidden or of
+/// another source). No panel renderer paints a failure, so the body stays
+/// hidden and this is its `labels.tileReadFailed`, beside `cockpitFailed`,
+/// which is Machines' own. Both are dashboard labels, not `crates/fault`
+/// words: neither is a vendor's failure (#656).
+pub const TILE_READ_FAILED: &str = "Could not read this tile\u{2019}s data for the Full view.";
+
 pub const SOURCES: [(&str, &str); 9] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
@@ -1312,7 +1320,8 @@ pub(crate) fn all_row_ids(source: &str, payload: &Value) -> Vec<String> {
 
 /// The sentence a tile's Full view shows when its scope keeps nothing: the same
 /// one its overview tile shows (`tile_view`'s `empty`). `None` when the tile
-/// keeps a row, or filters nothing.
+/// keeps a row, filters nothing, or has only the loading line or the source's
+/// own `message` to say, which its panel body already paints (#656).
 pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<String> {
     if !filters_rows(tile) {
         return None;
@@ -1325,7 +1334,15 @@ pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<Stri
     if !matching_rows(tile, &source).is_empty() {
         return None;
     }
-    Some(empty_state(tile, &source, true).0.to_owned())
+    // Drop the two sentences the panel body already paints, which would show
+    // twice: the loading line (no action) and the source's own `message`
+    // (`manage` with a non-empty message). Everything else is carried: the
+    // scope's own sentences (`configure`) and the stock "No readings are
+    // available yet.", which no panel paints for a payload with no message.
+    let (sentence, action) = empty_state(tile, &source, true);
+    let panel_paints =
+        action.is_none() || (action == Some("manage") && !string(&source, "message").is_empty());
+    (!panel_paints).then(|| sentence.to_owned())
 }
 
 /// Says a tile's Full view is narrowed. `None` exactly when `scoped_row_ids` is.
@@ -1675,6 +1692,7 @@ fn labels() -> Value {
         ("subtitle", "Overview"),
         ("settings", crate::settings::OPEN_LABEL),
         ("cockpitFailed", COCKPIT_LOAD_FAILED),
+        ("tileReadFailed", TILE_READ_FAILED),
         ("fitHeight", "Fit window to tiles"),
         ("edit", "Edit dashboard"),
         ("done", "Done editing"),
@@ -3265,6 +3283,26 @@ mod tile_scope_ids_tests {
             None
         );
         assert_eq!(scoped_empty(&tile("ghWorkflows", "all"), &payload), None);
+    }
+
+    /// A filtering scope that is not `item:` over a source with no rows reaches
+    /// `empty_state`'s source-derived branches. The panel body paints the
+    /// loading line and the source's own message, so the tile adds nothing for
+    /// those; the stock "no readings" sentence no panel paints, so it is carried
+    /// rather than leaving the Full view blank (#656).
+    #[test]
+    fn a_scope_leaves_the_sources_own_message_to_the_panel() {
+        let attention = tile("ghWorkflows", "attention");
+        let loading = json!({"loading":true,"columns":[],"rows":[]});
+        assert_eq!(scoped_empty(&attention, &loading), None, "loading");
+        let setup = json!({"message":{"text":"Add a token in Settings"},"columns":[],"rows":[]});
+        assert_eq!(scoped_empty(&attention, &setup), None, "source message");
+        let bare = json!({"columns":[],"rows":[]});
+        assert_eq!(
+            scoped_empty(&attention, &bare).as_deref(),
+            Some("No readings are available yet."),
+            "no message: the stock sentence is carried"
+        );
     }
 
     /// Machines has no totals to cover, so its note is the scope alone.
