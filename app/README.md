@@ -100,15 +100,18 @@ is hidden and Rust's `fullLoading` line stands in for it, so the rows the panel
 last held (another tile) never show under this tile's name (Machines' host
 tabs too); a read the backend refuses keeps the body hidden and replaces the loading line
 with Rust's `labels.tileReadFailed` (`tileFailed`, #656), because no renderer
-paints a failure; a Machines tile's line becomes `cockpitFailed` instead and its
-body also stays hidden;
+paints a failure. A failing Machines read first asks `tileGone`, which closes
+the view when the tile has left the overview; any other failing `cockpit` read
+makes the line `cockpitFailed` instead, and the body also stays hidden;
 a reading that lands after Escape, or after another tile opened, is dropped
 (`callRust` in `app.js` compares a view counter, so no renderer does). A scope
 that keeps nothing says why with the tile's own overview sentence, carried on
 the reading as `tileEmpty` (`dashboard::scoped_empty`, the same `empty_state`
-as the tile's `empty`). Only a sentence about the scope is carried: when the
-source has no rows to filter, its loading line or own message is left to the
-panel body, so the Full view never says it twice (#656). A runner group selected in Detail
+as the tile's `empty`). The two sentences the panel body already paints, the
+source's loading line and its own message, are left to the body so the Full
+view never says one twice (#656); every other sentence is carried, the scope's
+own and the stock `No readings are available yet.`, which no panel paints for
+a source with no message. A runner group selected in Detail
 carries in as the panel's filter. **Escape** returns to the overview with focus on that tile's **View** button, and the
 panel gets its own title back. A tile hidden or removed while its Full view is
 open sends the overview back within a second, with `That tile is no longer on the

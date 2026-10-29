@@ -265,9 +265,10 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
                 window.__HOLD_TILE__ = null;
                 scoped = window.__HELD_PAYLOAD__ ?? scoped;
                 // Set only once the call is parked, so a test can wait on it
-                // before pressing Escape or releasing it (#656).
-                return await new Promise(resolve => {
+                // before pressing Escape, releasing it or failing it (#656).
+                return await new Promise((resolve, reject) => {
                   window.__RELEASE_TILE__ = () => resolve(scoped);
+                  window.__FAIL_TILE__ = () => reject("The reading failed.");
                   window.__TILE_PARKED__ = true;
                 });
               }
@@ -2441,7 +2442,6 @@ test("a tile's reading that lands after Escape, or after another tile opens, pai
       await openTileFullViaDetail(page, "repos-attention");
       await expect(page.locator("#reposBody")).toBeVisible();
     }
-    await heldReadParked(page);
     await page.evaluate(() => window.__RELEASE_TILE__());
     await afterRepaints(page);
     expect(await painted()).not.toContain(STALE_REPO);
@@ -2466,6 +2466,27 @@ test("a refused tile read keeps the body hidden and says so in Rust's words (#65
   await expect(page.locator("#reposBody")).toBeHidden();
   // A later success clears the sentence and shows the rows.
   await page.evaluate(async () => { window.__REJECT_TILE__ = null; await window.__SOLADOR_GITHUB_TEST__.refresh(); });
+  await expect(page.locator("#reposBody")).toBeVisible();
+  await expect(page.locator(".db-full-state")).toHaveCount(0);
+});
+
+test("a refusal that lands after its Full view closed says nothing in the next one (#656)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, false, healthyRepos);
+  await page.evaluate(() => { window.__TILE_PARKED__ = false; window.__HOLD_TILE__ = "repos"; });
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await heldReadParked(page);
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  // The same tile again, with its own reading still out: only callRust's view
+  // counter tells the old view's refusal from this one's.
+  await page.evaluate(() => { window.__TILE_PARKED__ = false; window.__HOLD_ALL_TILE__ = "repos"; });
+  await openTileFullViaDetail(page, "overview-ghWorkflows");
+  await heldReadParked(page);
+  await page.evaluate(() => window.__FAIL_TILE__());
+  await afterRepaints(page);
+  await expect(page.locator("#reposPanel .db-full-state")).toHaveText(/first reading/);
+  await page.evaluate(() => { window.__HOLD_ALL_TILE__ = null; window.__RELEASE_ALL__.forEach((release) => release()); });
   await expect(page.locator("#reposBody")).toBeVisible();
   await expect(page.locator(".db-full-state")).toHaveCount(0);
 });

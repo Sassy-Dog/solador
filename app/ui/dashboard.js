@@ -168,7 +168,6 @@
   function tileResponse(tileId, payload) {
     if (fullTile?.id !== tileId) return;
     fullTile.loaded = true;
-    fullTile.failed = false;
     fullTile.empty = payload.tileEmpty ?? null;
     fullView.removeAttribute("data-tile-loading");
     paintTileHeading();
@@ -176,9 +175,10 @@
   // A read for tile `tileId` was refused (app.js's callRust), under the view it
   // was asked for. No panel renderer paints a failure (each keeps its last good
   // body), so the loading rule stays: the body stays hidden and Rust's
-  // `labels.tileReadFailed` replaces the loading line. A later success clears
-  // it (`tileResponse`). Machines is not handled here: its line is
-  // `cockpitFailed`, from `setCockpitFailed` (#656).
+  // `labels.tileReadFailed` replaces the loading line. A later success
+  // supersedes it: `tileResponse` marks the tile loaded, and a loaded tile's
+  // line is its own `tileEmpty`, never this one. Machines is not handled here:
+  // its line is `cockpitFailed`, from `setCockpitFailed` (#656).
   function tileFailed(tileId) {
     if (fullTile?.id !== tileId || fullTile.loaded || fullTile.source === "hosts") return;
     fullTile.failed = true;
