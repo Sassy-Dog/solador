@@ -13,8 +13,8 @@ source "$SCRIPT_DIR/config.sh"
 # `--over-budget` cleans only when target/ is larger than TARGET_BUDGET_GB
 # (scripts/config.sh) and otherwise reports the size and leaves it. The budget
 # sits well above one debug plus one release build, so the latest build always
-# survives and only the accumulation is removed. tidy-repo runs this form
-# (.claude/sassy-dog/tidy-repo.md).
+# survives and only the accumulation is removed. Nothing runs either form for
+# you: tidy-repo leaves caches alone (.claude/sassy-dog/tidy-repo.md).
 
 usage() {
     echo "Usage: ./dev clean [--over-budget]" >&2

@@ -54,8 +54,9 @@
 - `./dev clean` — `cargo clean` (all of `target/`) plus the pre-Tauri `build/`
   and Playwright's `test-results/`. Cargo never prunes superseded dependency
   versions' artifacts, so `target/` only grows; `./dev clean --over-budget`
-  cleans only above `TARGET_BUDGET_GB` (`scripts/config.sh`, 15) and is what
-  tidy-repo runs, so the latest build survives a tidy and the accumulation does not
+  cleans only above `TARGET_BUDGET_GB` (`scripts/config.sh`, 15), so the latest
+  build survives and the accumulation does not. Both are run by hand: tidy-repo
+  leaves `target/` and every other cache alone (`.claude/sassy-dog/tidy-repo.md`)
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
   stapled `.dmg` (#306). **Pushes a real tag**; `--skip-mint` runs the same
   build without one. `./dev publish --agent` mints and pushes the agent's own
