@@ -156,12 +156,10 @@ async function expectRemoteHostInCrop(panel) {
 
 /**
  * The Hosts card's alt names only the CPU section ("overall and per-core CPU
- * sparklines", #692), because the CPU section is the only part every layout's
- * crop shows: at 1280, 800 and 390 the crop also shows most of Memory and
- * Graphics, which the wide ends of the 2-up and 1-up layouts cut, and disk and
- * network sit below every crop. So the overall CPU chart and every core
- * sparkline must lie wholly inside the top-left `cover` crop of every box in
- * SHOT_BOXES. The width bound cannot fail at these boxes (the scale is set by
+ * sparklines", #692), because the CPU section is the one part of the card that
+ * every layout's crop shows at least some of. So the overall CPU chart and every
+ * core sparkline must lie wholly inside the top-left `cover` crop of every box
+ * in SHOT_BOXES. The width bound cannot fail at these boxes (the scale is set by
  * the width, so `visibleW` equals the panel's width); it guards a future box.
  */
 async function expectCpuSectionInCrop(panel) {
