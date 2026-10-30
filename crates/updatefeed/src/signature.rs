@@ -338,13 +338,25 @@ mod tests {
             shipped_pubkey()
         );
 
-        let dir = std::env::temp_dir().join("solador-pubkey-reader-test");
+        // A per-process directory, removed afterwards, so concurrent worktrees
+        // and test runs never share one.
+        let dir =
+            std::env::temp_dir().join(format!("solador-pubkey-reader-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
-        let none = dir.join("none.json");
-        std::fs::write(&none, r#"{"plugins":{"updater":{"pubkey":"  "}}}"#).expect("write");
-        assert!(pubkey_from_tauri_config(&none)
-            .expect_err("a blank key is a refusal")
-            .contains("declares no plugins.updater.pubkey"));
+        for (name, body) in [
+            ("blank", r#"{"plugins":{"updater":{"pubkey":"  "}}}"#),
+            ("empty-object", "{}"),
+            ("no-pubkey", r#"{"plugins":{"updater":{}}}"#),
+            ("number", r#"{"plugins":{"updater":{"pubkey":42}}}"#),
+        ] {
+            let path = dir.join(format!("{name}.json"));
+            std::fs::write(&path, body).expect("write");
+            let err = pubkey_from_tauri_config(&path).expect_err(name);
+            assert!(
+                err.contains("declares no plugins.updater.pubkey"),
+                "{name}: {err}"
+            );
+        }
         let bad = dir.join("bad.json");
         std::fs::write(&bad, "not json").expect("write");
         assert!(pubkey_from_tauri_config(&bad)
@@ -353,6 +365,7 @@ mod tests {
         assert!(pubkey_from_tauri_config(&dir.join("missing.json"))
             .expect_err("unreadable")
             .contains("could not read"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

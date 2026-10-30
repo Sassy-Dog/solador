@@ -357,11 +357,15 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       # The updater signing key (#308, this leg since #705) is deliberately NOT
-      # here. It is step-level `env:` on only the preflight and the minisign
-      # step, so it never reaches `./dev build --release` (every build.rs and
-      # proc macro, plus `cargo install tauri-cli`), rust-cache, azure/login
-      # or the trusted-signing action. (The macOS job holds it job-wide; that
-      # is its own, older choice.)
+      # here. It is step-level `env:` on exactly two steps: the preflight (plain
+      # bash, which only tests that it is non-empty) and the minisign step,
+      # which runs the already-installed `cargo-tauri` binary and compiles
+      # nothing. It is absent from `./dev build --release`, `cargo install
+      # tauri-cli`, rust-cache, azure/login, the trusted-signing action, and the
+      # verify step that follows signing, which is the one place after the build
+      # that cargo compiles anything (updatefeed's dependency tree) and needs
+      # only the PUBLIC key from tauri.conf.json. (The macOS job holds the key
+      # job-wide; that is its own, older choice.)
 
     steps:
       # BEFORE checkout. The runner image sets core.autocrlf=true, so every
@@ -498,15 +502,15 @@ jobs:
       # which appends to the PE. A `.sig` made before the step above would cover
       # bytes that never ship, and every client would refuse the update.
       #
-      # The signature is verified here, against the pubkey compiled into the
-      # app, before anything is uploaded (`solador-verify-signature` runs the
-      # plugin's own algorithm; the Tauri CLI can sign but not verify). The
+      # The signature is verified in the next step, against the pubkey compiled
+      # into the app, before anything is uploaded (`solador-verify-signature` runs
+      # the plugin's own algorithm; the Tauri CLI can sign but not verify). The
       # signer's exit code is not evidence of that, so this does not lean on it.
       #
       # `createUpdaterArtifacts` stays off and so does the NSIS `signCommand`
       # (docs/RELEASING.md): the bundler would minisign a zip of the UNSIGNED
       # installer, and the file the signer is given here must be the signed one.
-      - name: Minisign the Authenticode-signed installer and verify the signature
+      - name: Minisign the Authenticode-signed installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -542,6 +546,22 @@ jobs:
             echo "::error::the signer reported success but produced no $(basename "$exe").sig"
             exit 1
           fi
+
+      # Its own step, with NO `TAURI_SIGNING_*` in its environment: `cargo run`
+      # compiles updatefeed's dependency tree (proc macros and build scripts),
+      # and the verification needs only the public key it reads from
+      # `tauri.conf.json`. Order is load-bearing: Authenticode, minisign, this
+      # verify, then validate and upload, so a bad signature fails here, before
+      # either.
+      - name: Verify the installer's signature against the shipped public key
+        run: |
+          shopt -s nullglob
+          exes=(target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one NSIS installer to verify, found ${#exes[@]}"
+            exit 1
+          fi
+          exe="${exes[0]}"
 
           cargo run --locked -p solador-updatefeed --bin solador-verify-signature -- \
             --file "$exe" \
