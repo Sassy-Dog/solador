@@ -13,13 +13,25 @@ name: Publish update feed
 # It also means the human checkpoint `release.yml` deliberately kept is the same
 # checkpoint that opens the update path. There is one decision, not two.
 #
-# This workflow holds NO credential: the `.sig` was produced during the release
-# build (`build.sh`'s `make_updater_archive`) and is a release asset. What
-# happens here is a *verification* — `solador-update-feed` checks the signature
-# against the public key in `app/src-tauri/tauri.conf.json` before it will write
-# a manifest, so a mis-signed artifact fails this run instead of failing
-# silently on every installed app. `ci.yml`'s `secrets-guard` asserts the
-# absence: no secret reference may appear in this file at all.
+# This workflow holds NO credential: both `.sig` files were produced during the
+# release builds (`build.sh`'s `make_updater_archive` for the macOS tarball, and
+# `release.yml`'s `release-windows` job for the Windows installer) and are
+# release assets. What happens here is a *verification* — `solador-update-feed`
+# checks BOTH signatures against the public key in
+# `app/src-tauri/tauri.conf.json` before it will write a manifest, so a
+# mis-signed artifact fails this run instead of failing silently on every
+# installed app. `ci.yml`'s `secrets-guard` asserts the absence: no secret
+# reference may appear in this file at all.
+#
+# THE FEED CARRIES THREE TARGETS AND ALL OF THEM ARE REQUIRED (#705):
+# `darwin-aarch64` and `darwin-x86_64` (one universal tarball) and
+# `windows-x86_64` (the Authenticode-signed NSIS installer itself). A feed
+# without the Windows key makes every updater-enabled Windows install fail its
+# check on every launch (#368's symptom), so a release missing the installer or
+# its `.sig` fails this run rather than shipping a macOS-only feed. The
+# corollary is that this file cannot replay a release cut before the Windows
+# leg minisigned its installer: that release has no Windows `.sig`, and the
+# honest outcome is a red run, not a feed that is silently half a feed.
 #
 # DESKTOP ONLY, since #491. The agent's feed (`agent-latest.json`, #391) used to
 # be a second, protected job here. The agent now has its own release train
@@ -181,14 +193,18 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           mkdir -p feed
-          # The tarball and its signature only. The .dmg is the human download
-          # and the updater cannot apply one.
+          # The two updater payloads and their signatures only. The .dmg is the
+          # human download and the updater cannot apply one. The Windows payload
+          # is the installer itself (#705); `*-setup.exe` does not match
+          # `*-setup.exe.sig`, and the explicit second pattern fetches the
+          # signature.
           #
           # `|| true`: gh's own "no assets match" failure is less useful than the
-          # message below, which says what a missing payload means and what to
-          # do about it. The count check is the gate, not this command.
+          # messages below, which say what a missing payload means and what to
+          # do about it. The count checks are the gate, not this command.
           gh release download "$TAG" --dir feed \
-            --pattern '*.app.tar.gz' --pattern '*.app.tar.gz.sig' || true
+            --pattern '*.app.tar.gz' --pattern '*.app.tar.gz.sig' \
+            --pattern '*-setup.exe' --pattern '*-setup.exe.sig' || true
 
           shopt -s nullglob
           tarballs=(feed/*.app.tar.gz)
@@ -203,9 +219,32 @@ jobs:
             echo "::error::$(basename "$tarball") has no .sig asset on $TAG"
             exit 1
           fi
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-          echo "asset=$(basename "$tarball")" >> "$GITHUB_OUTPUT"
-          echo "Downloaded $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) + .sig"
+
+          # Exactly one installer, and its signature (#705). Zero fails the feed
+          # (a macOS-only feed would break every Windows install's check); more
+          # than one fails it too, because picking one would be a guess about
+          # which installer the signature in the feed belongs to.
+          installers=(feed/*-setup.exe)
+          if [[ ${#installers[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one *-setup.exe on $TAG, found ${#installers[@]}"
+            echo "A feed without the Windows installer would fail every Windows install's" >&2
+            echo "update check on every launch. Re-run release.yml for this tag, or" >&2
+            echo "publish a release built after #705." >&2
+            exit 1
+          fi
+          installer="${installers[0]}"
+          if [[ ! -s "$installer.sig" ]]; then
+            echo "::error::$(basename "$installer") has no .sig asset on $TAG"
+            exit 1
+          fi
+
+          {
+            echo "tarball=$tarball"
+            echo "asset=$(basename "$tarball")"
+            echo "installer=$installer"
+            echo "installer_asset=$(basename "$installer")"
+          } >> "$GITHUB_OUTPUT"
+          echo "Downloaded $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) and $(basename "$installer") ($(du -h "$installer" | cut -f1)), each with its .sig"
 
       # The release body, verbatim, through a file. Never interpolated into a
       # shell command: it is maintainer- and contributor-authored text (GitHub's
@@ -217,7 +256,7 @@ jobs:
         run: printf '%s' "$NOTES" > feed/notes.md
 
       # Verify, then write. `solador-update-feed` refuses to emit a manifest
-      # whose signature does not cover the artifact, under the public key the
+      # unless BOTH signatures cover their artifacts, under the public key the
       # app compiles in — the negative case #308 exists to guarantee, checked
       # here as well as on every operator's machine.
       - name: Build and verify latest.json
@@ -226,6 +265,8 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           TARBALL: ${{ steps.assets.outputs.tarball }}
           ASSET: ${{ steps.assets.outputs.asset }}
+          INSTALLER: ${{ steps.assets.outputs.installer }}
+          INSTALLER_ASSET: ${{ steps.assets.outputs.installer_asset }}
           PUBLISHED_AT: ${{ github.event.release.published_at }}
           DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
         run: |
@@ -247,6 +288,9 @@ jobs:
             --tarball "$TARBALL" \
             --signature "$TARBALL.sig" \
             --url "$DOWNLOAD_BASE/$TAG/$ASSET" \
+            --windows-installer "$INSTALLER" \
+            --windows-signature "$INSTALLER.sig" \
+            --windows-url "$DOWNLOAD_BASE/$TAG/$INSTALLER_ASSET" \
             --tauri-config app/src-tauri/tauri.conf.json \
             --notes-file feed/notes.md \
             "${date_arg[@]}" \
@@ -287,5 +331,8 @@ jobs:
           # different (and also valid) manifest. Asserting this run's version
           # here would fail that case for being correct.
           served="$(jq -r '.version' served.json)"
-          jq -e '.platforms["darwin-aarch64"].signature and .platforms["darwin-x86_64"].url' served.json >/dev/null
+          #
+          # All three targets (#705): a served feed missing `windows-x86_64` is
+          # the one that fails every Windows install's check on every launch.
+          jq -e '.platforms["darwin-aarch64"].signature and .platforms["darwin-x86_64"].url and .platforms["windows-x86_64"].signature and .platforms["windows-x86_64"].url' served.json >/dev/null
           echo "The configured endpoint currently offers $served."

@@ -37,7 +37,7 @@
 
 use serde_json::{json, Value};
 use viewmodel::color;
-use viewmodel::update::{self, Channel, Check, Install, NotUpdatable, Provenance};
+use viewmodel::update::{self, Channel, Check, Install, InstallEffect, NotUpdatable, Provenance};
 
 /// The Settings group's heading.
 pub const HEADING: &str = "Updates";
@@ -45,13 +45,26 @@ pub const HEADING: &str = "Updates";
 /// The manual re-check button.
 pub const CHECK_LABEL: &str = "Check for updates";
 
-/// The policy, stated on screen rather than left to be discovered.
+/// What pressing Install does to the running app, on this platform.
 ///
-/// Two promises, both of which the code keeps: the check happens once at
-/// launch, and nothing installs itself. A cockpit that sits full-screen on a
-/// second monitor for days must not restart itself, so even a downloaded update
-/// waits for a relaunch the operator chooses.
-pub const HELP: &str = "Solador checks once when it starts. Nothing is downloaded or installed until you ask, and an installed update takes effect the next time you open the app.";
+/// The one fact only the shell can know about the words (#705); the words
+/// themselves are `viewmodel::update`'s. A `cfg!` rather than a probe, for the
+/// reason the cargo profile is: it cannot drift at runtime.
+///
+/// On Windows the updater plugin runs the installer and calls
+/// `std::process::exit(0)` inside `download_and_install`, so Install closes
+/// Solador and the installer reopens it on the new version (`passive` mode with
+/// restart after install, `tauri.conf.json`). Everywhere else the bundle is
+/// replaced and the running process is left alone until the operator relaunches
+/// it.
+#[must_use]
+pub const fn install_effect() -> InstallEffect {
+    if cfg!(windows) {
+        InstallEffect::ClosesAndReopens
+    } else {
+        InstallEffect::NextLaunch
+    }
+}
 
 /// Said when the plugin cannot be reached because the app is not up yet.
 ///
@@ -86,22 +99,57 @@ pub fn not_updatable(current: Option<&str>) -> Option<NotUpdatable> {
     } else {
         Provenance::Released
     };
-    // The second fact only the shell can know (#368). `latest.json` carries
-    // `darwin-aarch64` and `darwin-x86_64` and nothing else, and
-    // `publish-feed.yml` harvests only `*.app.tar.gz`, so macOS is the one
-    // platform with anything to be offered. A `cfg!` rather than a probe, for
-    // the same reason the profile is: it cannot drift at runtime.
-    //
-    // This mirrors `crates/updatefeed`'s platform keys rather than reading
-    // them — the app deliberately does not depend on the release tooling. When
-    // Windows gains an updater payload, this is the line that changes, and
-    // `crates/updatefeed` is the file to change with it.
-    let channel = if cfg!(target_os = "macos") {
-        Channel::Published
-    } else {
-        Channel::Absent
-    };
-    update::not_updatable(current, provenance, channel)
+    not_updatable_on(
+        current,
+        provenance,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+/// [`not_updatable`], with the platform as an argument so each platform's
+/// answer can be tested from any host.
+fn not_updatable_on(
+    current: Option<&str>,
+    provenance: Provenance,
+    os: &str,
+    arch: &str,
+) -> Option<NotUpdatable> {
+    update::not_updatable(current, provenance, channel_for(os, arch))
+}
+
+/// Whether the feed has an artifact for this platform (#368, #705).
+///
+/// The second fact only the shell can know. `latest.json` carries
+/// `darwin-aarch64`, `darwin-x86_64` and `windows-x86_64`, and nothing else —
+/// `crates/updatefeed`'s `manifest.rs` is the source of truth and this mirrors
+/// it, because the app deliberately does not depend on the release tooling.
+/// macOS ships one universal bundle, so either architecture is covered; the
+/// Windows installer is x86_64 only, so a Windows build on another
+/// architecture would ask for a `windows-aarch64` key the feed does not have
+/// and report a failed check on every launch. It is told there is no channel
+/// instead. When a platform gains a payload, this is the match that changes,
+/// and `crates/updatefeed` is the file to change with it.
+fn channel_for(os: &str, arch: &str) -> Channel {
+    match (os, arch) {
+        ("macos", _) | ("windows", "x86_64") => Channel::Published,
+        _ => Channel::Absent,
+    }
+}
+
+/// Run by the updater plugin on Windows, after the download is verified and
+/// just before it launches the installer and calls `std::process::exit(0)`
+/// (#705).
+///
+/// A normal quit saves the window's size and position from the window-state
+/// plugin's `RunEvent::Exit` handler; `process::exit` skips that, so this does
+/// it first. Everything else the app persists is written when it changes. Then
+/// `cleanup_before_exit`, because handing the plugin a hook replaces the one it
+/// installs by default, and that default is this call.
+#[cfg(windows)]
+pub fn before_exit(handle: &tauri::AppHandle) {
+    crate::window_state::save(handle);
+    handle.cleanup_before_exit();
 }
 
 /// Everything the Updates group renders from, plus the banner ledger.
@@ -181,7 +229,7 @@ impl UpdateState {
     /// succession cannot start two downloads over the same bundle.
     #[must_use]
     pub fn can_install(&self) -> bool {
-        update::install_label(&self.check, &self.install).is_some()
+        update::can_install(&self.check, &self.install)
     }
 
     /// The banner for a newly-found version, or `None`.
@@ -210,7 +258,14 @@ impl UpdateState {
 /// of its arguments, and so a test can name a version.
 #[must_use]
 pub fn view(state: &UpdateState, current: Option<&str>) -> Value {
-    let status = update::status(&state.check, &state.install, current);
+    view_with(state, current, install_effect())
+}
+
+/// [`view`], with what Install does passed in so both platforms' words can be
+/// asserted from any host.
+#[must_use]
+pub fn view_with(state: &UpdateState, current: Option<&str>, effect: InstallEffect) -> Value {
+    let status = update::status(&state.check, &state.install, current, effect);
     json!({
         "heading": HEADING,
         "status": { "text": status.text, "color": color::hex(status.color) },
@@ -220,14 +275,20 @@ pub fn view(state: &UpdateState, current: Option<&str>) -> Value {
         // moments it is suppressed (the first check, and a running install) are
         // both moments where the honest answer is "not yet".
         "checkLabel": update::can_check(&state.check, &state.install).then_some(CHECK_LABEL),
-        "installLabel": update::install_label(&state.check, &state.install),
-        "help": HELP,
+        "installLabel": update::install_label(&state.check, &state.install, effect),
+        "help": update::help(effect),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The existing tests assert the macOS words wherever they run; the Windows
+    /// words are asserted in `windows_*` below through `view_with`.
+    fn view(state: &UpdateState, current: Option<&str>) -> Value {
+        view_with(state, current, InstallEffect::NextLaunch)
+    }
 
     fn found(state: &mut UpdateState) {
         state.found("2026.8.114".to_string(), Some("notes".to_string()));
@@ -398,26 +459,115 @@ mod tests {
     }
 
     /// The shell's whole share of the decision: which profile, and which
-    /// platform.
-    ///
-    /// Asserted against the profile and target the test itself was compiled
-    /// at, because that is the only honest thing to assert about a `cfg!` —
-    /// the rule they feed is covered exhaustively in `viewmodel::update`.
+    /// platform. Asserted against the profile and target the test itself was
+    /// compiled at, because that is the only honest thing to assert about a
+    /// `cfg!`; the platform table is covered for every platform below.
     #[test]
     fn the_cargo_profile_and_platform_are_what_decide_whether_this_build_checks() {
         let named = Some("2026.8.113");
+        let published = matches!(
+            (std::env::consts::OS, std::env::consts::ARCH),
+            ("macos", _) | ("windows", "x86_64")
+        );
         if cfg!(debug_assertions) {
             assert_eq!(not_updatable(named), Some(NotUpdatable::DevelopmentBuild));
-        } else if cfg!(target_os = "macos") {
+        } else if published {
             assert_eq!(not_updatable(named), None);
         } else {
-            // #368: the feed publishes darwin keys only, so a release build
-            // anywhere else is outside the update path by platform — and says
-            // so, instead of asking and reporting the refusal as a failure.
+            // #368: a release build on a platform the feed carries no key for
+            // is outside the update path by platform — and says so, instead of
+            // asking and reporting the refusal as a failure.
             assert_eq!(not_updatable(named), Some(NotUpdatable::NoChannel));
         }
         // Either way, a build that cannot name itself never compares itself
         // against anything.
         assert!(not_updatable(None).is_some());
+    }
+
+    /// #705: a released Windows build is `Channel::Published`, macOS still is,
+    /// and every other platform is not — each from any host.
+    #[test]
+    fn a_released_build_is_compared_on_macos_and_windows_and_nowhere_else() {
+        let named = Some("2026.8.113");
+        let released = Provenance::Released;
+        for (os, arch) in [
+            ("macos", "aarch64"),
+            ("macos", "x86_64"),
+            ("windows", "x86_64"),
+        ] {
+            assert_eq!(channel_for(os, arch), Channel::Published, "{os}-{arch}");
+            assert_eq!(
+                not_updatable_on(named, released, os, arch),
+                None,
+                "{os}-{arch}"
+            );
+        }
+        for (os, arch) in [
+            ("linux", "x86_64"),
+            ("linux", "aarch64"),
+            ("freebsd", "x86_64"),
+            // The feed has no `windows-aarch64` key; asking for one would be a
+            // failed check on every launch.
+            ("windows", "aarch64"),
+        ] {
+            assert_eq!(channel_for(os, arch), Channel::Absent, "{os}-{arch}");
+            assert_eq!(
+                not_updatable_on(named, released, os, arch),
+                Some(NotUpdatable::NoChannel),
+                "{os}-{arch}"
+            );
+        }
+        // A local build is still, first, a local build — on Windows too.
+        assert_eq!(
+            not_updatable_on(named, Provenance::Development, "windows", "x86_64"),
+            Some(NotUpdatable::DevelopmentBuild)
+        );
+        // And a Windows build that cannot name itself is not compared.
+        assert_eq!(
+            not_updatable_on(None, released, "windows", "x86_64"),
+            Some(NotUpdatable::UnnameableBuild)
+        );
+    }
+
+    /// What the shell hands `viewmodel` is decided by the target, and only by
+    /// it.
+    #[test]
+    fn install_closes_and_reopens_only_on_windows() {
+        assert_eq!(
+            install_effect() == InstallEffect::ClosesAndReopens,
+            cfg!(windows)
+        );
+    }
+
+    /// #705: the Windows payload says before the click what Install does, and
+    /// the macOS payload is the sentence it always was.
+    #[test]
+    fn windows_words_are_in_the_payload_before_the_click_and_macos_is_unchanged() {
+        let mut state = UpdateState::new();
+        found(&mut state);
+
+        let windows = view_with(&state, Some("2026.8.113"), InstallEffect::ClosesAndReopens);
+        let status = windows["status"]["text"].as_str().expect("a sentence");
+        assert!(status.contains("closes Solador and reopens it"), "{status}");
+        assert!(windows["help"]
+            .as_str()
+            .expect("a sentence")
+            .contains("closes Solador"));
+        assert_eq!(
+            windows["installLabel"],
+            json!("Install 2026.8.114 and reopen")
+        );
+
+        let mac = view_with(&state, Some("2026.8.113"), InstallEffect::NextLaunch);
+        assert_eq!(
+            mac["status"]["text"],
+            json!("Solador 2026.8.114 is available. You have 2026.8.113.")
+        );
+        assert_eq!(mac["installLabel"], json!("Install 2026.8.114"));
+        assert_eq!(mac["help"], json!(update::help(InstallEffect::NextLaunch)));
+        assert!(!mac["help"]
+            .as_str()
+            .expect("a sentence")
+            .contains("closes Solador"));
     }
 }

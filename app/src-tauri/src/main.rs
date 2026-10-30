@@ -2410,9 +2410,24 @@ async fn run_update_check(app: Arc<App>) {
 /// ~30 MB from. If the feed has moved on in between, this installs what is
 /// actually offered now and says so.
 ///
-/// **Nothing restarts.** The bundle on disk is replaced; the running process
-/// keeps running the old one until the operator opens the app again. A cockpit
-/// living full-screen on a second monitor does not get to close itself.
+/// **Nothing installs itself, and what the click does depends on the platform
+/// (#705).** On macOS the bundle on disk is replaced and the running process
+/// keeps running the old one until the operator opens the app again. On Windows
+/// the plugin runs the installer (`passive`, with restart after install) and then
+/// calls `std::process::exit(0)` *inside* `download_and_install`: the call never
+/// returns, Solador closes, and the installer reopens it on the new version. The
+/// words for both come from `viewmodel::update` and say so before the click; the
+/// click is still the operator's, so a cockpit living full-screen on a second
+/// monitor never closes itself unasked.
+///
+/// `process::exit` runs no destructors and no `RunEvent::Exit`, so anything a
+/// normal quit persists has to be persisted first. The audit (#705): the store,
+/// credentials and every other piece of state are written when they change, with
+/// no `Drop` or exit hook behind them, and the one thing written only at exit is
+/// the window's size and position, which `tauri-plugin-window-state` saves on
+/// `RunEvent::Exit`. [`update::before_exit`] saves that, via the plugin's
+/// `on_before_exit` hook, and then does the cleanup the plugin's own default
+/// hook would have done (the hook replaces it).
 async fn run_update_install(app: Arc<App>) {
     use tauri_plugin_updater::UpdaterExt as _;
 
@@ -2424,7 +2439,13 @@ async fn run_update_install(app: Arc<App>) {
         return;
     };
 
-    let outcome = match handle.updater() {
+    let builder = handle.updater_builder();
+    #[cfg(windows)]
+    let builder = builder.on_before_exit({
+        let handle = handle.clone();
+        move || update::before_exit(&handle)
+    });
+    let outcome = match builder.build() {
         Ok(updater) => updater.check().await,
         Err(e) => Err(e),
     };
@@ -2456,6 +2477,8 @@ async fn run_update_install(app: Arc<App>) {
     // frontend polls `update_status`, and a byte counter written from this
     // task would be state nothing renders.
     match found.download_and_install(|_, _| {}, || {}).await {
+        // Not reached on Windows: the plugin exits the process once the
+        // installer is launched, which is the point of `update::before_exit`.
         Ok(()) => {
             eprintln!("update: {version} installed; it applies on the next launch");
             app.update

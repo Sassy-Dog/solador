@@ -3690,7 +3690,10 @@ mod tests {
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let updates = &vm["about"]["updates"];
         assert_eq!(updates["heading"], json!(crate::update::HEADING));
-        assert_eq!(updates["help"], json!(crate::update::HELP));
+        assert_eq!(
+            updates["help"],
+            json!(viewmodel::update::help(crate::update::install_effect()))
+        );
         // `no_updates()` is a state nothing has checked in, which must read as
         // "checking", not as "up to date" — the distinction this whole feature
         // rests on, asserted where the tab is assembled and not only where the

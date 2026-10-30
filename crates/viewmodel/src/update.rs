@@ -57,6 +57,17 @@
 //! on a second monitor for days; an app that restarts itself to apply an update
 //! takes the display down at a moment nobody chose. The install is a separate
 //! state machine ([`Install`]) that only an operator action starts.
+//!
+//! # What the click does is a platform fact, and it is said before the click
+//!
+//! On macOS an install replaces the bundle on disk and the running process
+//! carries on until the operator opens the app again. On Windows the updater
+//! runs the installer and **exits the process**; the installer shows a progress
+//! bar and reopens Solador on the new version (#705). Those are different
+//! promises, so [`InstallEffect`] — supplied by the shell, like [`Channel`] —
+//! selects the words ([`help`], [`status`], [`install_label`]), and the
+//! Windows ones say that Install closes Solador *before* it is pressed, never
+//! only after.
 
 use crate::color;
 use semver::Version;
@@ -132,6 +143,20 @@ pub enum Channel {
     Absent,
 }
 
+/// What pressing Install does to the running app.
+///
+/// Supplied by the shell for the reason [`Channel`] is: the words belong here,
+/// the fact (which OS the updater plugin is running on) does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallEffect {
+    /// The bundle on disk is replaced and the running process is left alone: the
+    /// new version takes effect the next time the operator opens the app. macOS.
+    NextLaunch,
+    /// Solador closes, a progress-bar installer runs, and Solador reopens on the
+    /// new version. Windows.
+    ClosesAndReopens,
+}
+
 /// How the running build was produced, as far as replacing it goes.
 ///
 /// The shell decides this from the cargo profile. The ambiguity is deliberately
@@ -157,9 +182,12 @@ pub enum Install {
     /// Downloading and unpacking. The button is gone while this is true, so a
     /// second click cannot start a second install over the first.
     Running,
-    /// Applied on disk. The new version takes effect on the next launch —
-    /// which the operator chooses, because relaunching a cockpit unasked is
-    /// the thing this feature must not do.
+    /// Applied on disk. Where [`InstallEffect::NextLaunch`] holds, the new
+    /// version takes effect on the next launch — which the operator chooses,
+    /// because relaunching a cockpit unasked is the thing this feature must not
+    /// do. Under [`InstallEffect::ClosesAndReopens`] the process exits inside the
+    /// install, so this is a state the Windows build does not normally live to
+    /// render.
     Applied,
     /// The install failed. The offer stays, so it can be retried.
     Failed { reason: String },
@@ -239,24 +267,55 @@ pub fn is_newer(current: CurrentVersion<'_>, release: &str) -> bool {
     Version::parse(current).is_ok_and(|current| release > current)
 }
 
+/// The policy line under the Updates group.
+///
+/// Two promises on every platform, both of which the code keeps: the check
+/// happens once at launch, and nothing installs itself. What differs is what
+/// Install does, which is stated here, ahead of the click.
+#[must_use]
+pub fn help(effect: InstallEffect) -> &'static str {
+    match effect {
+        InstallEffect::NextLaunch => "Solador checks once when it starts. Nothing is downloaded or installed until you ask, and an installed update takes effect the next time you open the app.",
+        InstallEffect::ClosesAndReopens => "Solador checks once when it starts. Nothing is downloaded or installed until you ask. Installing an update closes Solador, runs the installer, and reopens Solador on the new version.",
+    }
+}
+
 /// The sentence describing where this app stands relative to the feed.
 ///
 /// The [`Install`] state outranks the [`Check`] state whenever it has something
 /// to say: once an operator has started an install, "an update is available" is
 /// no longer the useful line.
 #[must_use]
-pub fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> Status {
+pub fn status(
+    check: &Check,
+    install: &Install,
+    current: CurrentVersion<'_>,
+    effect: InstallEffect,
+) -> Status {
     match install {
         Install::Running => {
             return Status {
-                text: "Downloading the update…".to_string(),
+                text: match effect {
+                    InstallEffect::NextLaunch => "Downloading the update…".to_string(),
+                    InstallEffect::ClosesAndReopens => {
+                        "Downloading the update… Solador closes and reopens on the new version when it is ready to install."
+                            .to_string()
+                    }
+                },
                 color: color::MUTED,
             }
         }
         Install::Applied => {
             return Status {
-                text: "Update installed. It takes effect the next time you open Solador."
-                    .to_string(),
+                text: match effect {
+                    InstallEffect::NextLaunch => {
+                        "Update installed. It takes effect the next time you open Solador."
+                    }
+                    InstallEffect::ClosesAndReopens => {
+                        "Update installed. Solador reopens on the new version."
+                    }
+                }
+                .to_string(),
                 color: color::GREEN,
             }
         }
@@ -285,9 +344,19 @@ pub fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> 
             color: color::GREEN_DIM,
         },
         Check::Available { version, .. } => Status {
-            text: match current {
-                Some(current) => format!("Solador {version} is available. You have {current}."),
-                None => format!("Solador {version} is available."),
+            text: {
+                let offer = match current {
+                    Some(current) => format!("Solador {version} is available. You have {current}."),
+                    None => format!("Solador {version} is available."),
+                };
+                match effect {
+                    InstallEffect::NextLaunch => offer,
+                    // Said here, beside the offer, so it is read before the
+                    // button is pressed rather than discovered by it.
+                    InstallEffect::ClosesAndReopens => format!(
+                        "{offer} Installing it closes Solador and reopens it on the new version."
+                    ),
+                }
             },
             color: color::AMBER,
         },
@@ -317,9 +386,9 @@ pub fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> 
                     "This build could not derive its own version, so it is not compared against any release."
                         .to_string()
                 }
-                // Deliberately does not name a platform. The feed being
-                // macOS-only is true today and is the kind of fact that
-                // changes; "not published for this platform" stays true
+                // Deliberately does not name a platform. Which platforms the
+                // feed carries is the kind of fact that changes (Windows was
+                // added in #705); "not published for this platform" stays true
                 // either way, and the second sentence is the only thing an
                 // operator here can actually act on.
                 (NotUpdatable::NoChannel, Some(v)) => format!(
@@ -340,14 +409,30 @@ pub fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> 
 /// There is nothing to install unless a check has *seen* a newer version, and
 /// nothing to start while one is already running or has already been applied.
 #[must_use]
-pub fn install_label(check: &Check, install: &Install) -> Option<String> {
+pub fn install_label(check: &Check, install: &Install, effect: InstallEffect) -> Option<String> {
     let Check::Available { version, .. } = check else {
         return None;
     };
-    match install {
-        Install::Idle | Install::Failed { .. } => Some(format!("Install {version}")),
-        Install::Running | Install::Applied => None,
+    match (install, effect) {
+        (Install::Idle | Install::Failed { .. }, InstallEffect::NextLaunch) => {
+            Some(format!("Install {version}"))
+        }
+        // The label itself says the app does not stay open.
+        (Install::Idle | Install::Failed { .. }, InstallEffect::ClosesAndReopens) => {
+            Some(format!("Install {version} and reopen"))
+        }
+        (Install::Running | Install::Applied, _) => None,
     }
+}
+
+/// Whether an install may be started right now.
+///
+/// The same question [`install_label`] answers, without the words — so the
+/// guard on the command cannot disagree with the button the payload drew, and
+/// does not need to know what the click does.
+#[must_use]
+pub fn can_install(check: &Check, install: &Install) -> bool {
+    install_label(check, install, InstallEffect::NextLaunch).is_some()
 }
 
 /// Whether the "Check for updates" button should be offered.
@@ -382,6 +467,19 @@ mod tests {
     use super::*;
 
     const CURRENT: CurrentVersion<'static> = Some("2026.8.113");
+    const MAC: InstallEffect = InstallEffect::NextLaunch;
+    const WIN: InstallEffect = InstallEffect::ClosesAndReopens;
+
+    // Every test below that predates #705 asserts the macOS words, unchanged,
+    // through these two wrappers. The Windows words are asserted in the
+    // `windows_*` tests, which call the real functions with `WIN`.
+    fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> Status {
+        super::status(check, install, current, MAC)
+    }
+
+    fn install_label(check: &Check, install: &Install) -> Option<String> {
+        super::install_label(check, install, MAC)
+    }
 
     fn available() -> Check {
         Check::Available {
@@ -732,5 +830,130 @@ mod tests {
         );
         assert!(can_check(&available(), &Install::Idle));
         assert_eq!(notes(&available()), Some("fixed a thing"));
+    }
+
+    // MARK: - #705
+
+    /// The macOS strings are the contract the Windows words must not disturb.
+    /// Spelled out in full so a drift fails here, byte for byte.
+    #[test]
+    fn the_macos_words_are_byte_for_byte_what_they_were() {
+        assert_eq!(
+            help(MAC),
+            "Solador checks once when it starts. Nothing is downloaded or installed until you ask, and an installed update takes effect the next time you open the app."
+        );
+        assert_eq!(
+            super::status(&available(), &Install::Idle, CURRENT, MAC).text,
+            "Solador 2026.8.114 is available. You have 2026.8.113."
+        );
+        assert_eq!(
+            super::status(&available(), &Install::Running, CURRENT, MAC).text,
+            "Downloading the update…"
+        );
+        assert_eq!(
+            super::status(&available(), &Install::Applied, CURRENT, MAC).text,
+            "Update installed. It takes effect the next time you open Solador."
+        );
+        assert_eq!(
+            super::install_label(&available(), &Install::Idle, MAC),
+            Some("Install 2026.8.114".to_string())
+        );
+    }
+
+    /// The acceptance sentence: on Windows, Settings -> About says BEFORE the
+    /// click that Install closes Solador and reopens it on the new version. The
+    /// offer line and the always-visible help both carry it.
+    #[test]
+    fn windows_says_before_the_click_that_install_closes_and_reopens_solador() {
+        let offer = super::status(&available(), &Install::Idle, CURRENT, WIN);
+        assert_eq!(
+            offer.text,
+            "Solador 2026.8.114 is available. You have 2026.8.113. Installing it closes Solador and reopens it on the new version."
+        );
+        assert_eq!(offer.color, color::AMBER);
+
+        let unnameable = super::status(&available(), &Install::Idle, None, WIN);
+        assert_eq!(
+            unnameable.text,
+            "Solador 2026.8.114 is available. Installing it closes Solador and reopens it on the new version."
+        );
+
+        let help = help(WIN);
+        assert!(help.contains("closes Solador"), "{help}");
+        assert!(
+            help.contains("reopens Solador on the new version"),
+            "{help}"
+        );
+        // Both promises that hold on every platform are still made.
+        assert!(help.contains("checks once when it starts"), "{help}");
+        assert!(
+            help.contains("Nothing is downloaded or installed until you ask"),
+            "{help}"
+        );
+        // And it must not borrow the macOS promise, which is false here.
+        assert!(!help.contains("next time you open"), "{help}");
+
+        assert_eq!(
+            super::install_label(&available(), &Install::Idle, WIN),
+            Some("Install 2026.8.114 and reopen".to_string())
+        );
+    }
+
+    /// The macOS sentence "takes effect the next time you open the app" is not
+    /// true on Windows and must not appear in any Windows line.
+    #[test]
+    fn no_windows_line_promises_a_next_launch_effect() {
+        for install in [
+            Install::Idle,
+            Install::Running,
+            Install::Applied,
+            Install::Failed {
+                reason: "boom".to_string(),
+            },
+        ] {
+            let text = super::status(&available(), &install, CURRENT, WIN).text;
+            assert!(!text.contains("next time"), "{install:?}: {text}");
+        }
+        assert!(super::status(&available(), &Install::Running, CURRENT, WIN)
+            .text
+            .starts_with("Downloading the update…"));
+        assert_eq!(
+            super::status(&available(), &Install::Applied, CURRENT, WIN).text,
+            "Update installed. Solador reopens on the new version."
+        );
+    }
+
+    /// The effect changes words only: which states offer an install, and
+    /// whether one may start, is the same on both platforms.
+    #[test]
+    fn the_install_effect_changes_words_and_never_whether_an_install_is_offered() {
+        let failed = Install::Failed {
+            reason: "boom".to_string(),
+        };
+        for check in [
+            Check::Unknown,
+            Check::UpToDate,
+            available(),
+            Check::NotUpdatable(NotUpdatable::NoChannel),
+        ] {
+            for install in [
+                Install::Idle,
+                Install::Running,
+                Install::Applied,
+                failed.clone(),
+            ] {
+                assert_eq!(
+                    super::install_label(&check, &install, MAC).is_some(),
+                    super::install_label(&check, &install, WIN).is_some(),
+                    "{check:?} / {install:?}"
+                );
+                assert_eq!(
+                    can_install(&check, &install),
+                    super::install_label(&check, &install, WIN).is_some()
+                );
+            }
+        }
+        // A failed Windows install keeps its offer, so it can be retried.
+        assert!(super::install_label(&available(), &failed, WIN).is_some());
     }
 }

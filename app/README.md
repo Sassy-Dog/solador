@@ -3045,6 +3045,14 @@ cannot see.
       ([#353](https://github.com/Sassy-Dog/solador/issues/353)). What fails is a
       **missing terminal line**, or the group reading `Checking for updates…`
       for more than a few seconds, which means `run_update_check` never ran.
+      **On Windows** (the check no PR can run, #705) a *released* build reads the
+      Settings → About line before you click: `Solador <new> is available. You
+      have <old>. Installing it closes Solador and reopens it on the new
+      version.`, the help text says the same, and the button reads `Install <new>
+      and reopen`. Install the first updater-enabled release by hand (earlier
+      Windows installs never check), publish the next, then click Install and
+      confirm a progress-bar installer runs and Solador reopens on the new
+      version with its window where you left it.
       **Never `This is the latest version.` and never `Solador <version> is
       available.` on a `./dev` build** — the first is a verdict nothing looked
       for, and the second is #353 back: an offer to install a release over a

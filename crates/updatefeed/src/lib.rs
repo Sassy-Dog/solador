@@ -32,7 +32,10 @@
 //! asserts the agent half with `cargo tree`, in CI and `./dev lint`). The running app verifies through
 //! `tauri-plugin-updater`, which carries its own copy of the same verifier;
 //! this crate is release tooling, used by the feed workflows through the
-//! `solador-update-feed` binary (`publish-feed.yml`, the cockpit's) and the
+//! `solador-update-feed` binary (`publish-feed.yml`, the cockpit's; it verifies
+//! the macOS tarball and the Windows installer, #705), the
+//! `solador-verify-signature` binary (`release.yml`'s Windows leg, before it
+//! uploads the minisigned installer) and the
 //! `solador-agent-feed` binary (the agent's feed workflow, on its own `agent-v*`
 //! releases since #472). The two agreeing is not a coincidence — [`signature::verify`]
 //! reproduces the plugin's `verify_signature` step for step, and the
@@ -41,4 +44,5 @@
 
 pub mod agent;
 pub mod manifest;
+pub mod release;
 pub mod signature;

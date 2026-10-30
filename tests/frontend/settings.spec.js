@@ -1491,7 +1491,7 @@ test("the device key is not a field anyone can type into", async ({ page, baseUR
 });
 
 test("update status, notes and buttons change inside a stable group", async ({ page, baseURL }) => {
-  // `help` is one constant in Rust (`update::HELP`) and carries no fixed height
+  // `help` is one constant in Rust (`viewmodel::update::help`) and carries no fixed height
   // (#540), so the stub must not vary it between the two renders.
   const settings = await fixture(baseURL, "sample-settings.json");
   const failed = { heading:"Updates", status:{text:"Could not check: " + "network unavailable ".repeat(20), color:"#e0a03a"}, notes:null, checkLabel:"Check for updates", installLabel:null, help:settings.about.updates.help };
@@ -1557,7 +1557,7 @@ const INSTALLED_UPDATE = {
   notes: RELEASE_NOTES_V2026_10_47,
   checkLabel: "Check for updates",
   installLabel: null,
-  help: "", // the real sentence is read from the fixture (`update::HELP`) per test
+  help: "", // the real sentence is read from the fixture (`viewmodel::update::help`) per test
 };
 const installedUpdate = async (baseURL) => ({
   ...INSTALLED_UPDATE,
