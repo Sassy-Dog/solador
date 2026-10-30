@@ -15,6 +15,13 @@ name = "solador-update-feed"
 path = "src/bin/solador-update-feed.rs"
 
 [[bin]]
+# Run by `release.yml`'s Windows leg straight after it minisigns the installer,
+# before upload (#705): the Tauri CLI signs but cannot verify, and the signer's
+# exit code is not evidence the shipped bytes verify under the shipped key.
+name = "solador-verify-signature"
+path = "src/bin/solador-verify-signature.rs"
+
+[[bin]]
 # The agent's counterpart (#391): builds and verifies `agent-latest.json`, run
 # by `publish-agent-feed.yml`'s protected `agent-feed` job. Since #490 it takes
 # `--tag agent-v<version>` and writes `agent-v<version>` URLs only.

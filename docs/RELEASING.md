@@ -145,19 +145,66 @@ only files whose bytes are load-bearing — the signature-covered fixtures and, 
 `/bin/sh`, so no checkout step could protect it) — so `dev` and `scripts/*.sh` are
 protected here instead, at the only place a Windows checkout executes them.
 
-**There is no Windows updater, and saying so is the point.** The feed is macOS-only:
-`latest.json` carries exactly `darwin-aarch64` and `darwin-x86_64`, and
-`publish-feed.yml` harvests only `*.app.tar.gz`. Windows ships an installer and
-nothing else, so a Windows user updates by downloading the next one, and everything
-**Updates** describes below is a macOS mechanism. **The app says so rather than
-discovering it** (#368): `update::not_updatable` takes a `Channel` alongside the cargo
-profile, and a platform the feed does not publish for reaches
-`NotUpdatable::NoChannel` *before any request is made*. Until that landed, a released
-Windows build asked anyway, got `TargetNotFound`, and rendered it as *"the update
-check failed"* — on every launch, forever, with nothing broken. The shell's
-`cfg!(target_os = "macos")` mirrors `crates/updatefeed`'s platform keys rather than
-reading them, because the app deliberately does not depend on the release tooling;
-when Windows gains an updater payload, those two lines change together.
+**Windows updates in place too (#705), and the installer is the payload.**
+`latest.json` carries `darwin-aarch64`, `darwin-x86_64` and `windows-x86_64`, and
+all three are required. `tauri-plugin-updater` downloads the raw
+Authenticode-signed `*-setup.exe`, verifies its minisign signature against
+`plugins.updater.pubkey`, runs it with `/UPDATE`, and calls `std::process::exit(0)`
+right after launching it. `release-windows` therefore does two more things after
+Authenticode signing:
+
+- **It minisigns the exact signed installer** with `cargo tauri signer sign`, the
+  signer `build.sh`'s `make_updater_archive` uses and the same
+  `TAURI_SIGNING_PRIVATE_KEY` pair (the job's preflight now checks six secrets,
+  the password required non-empty). It is **after** Authenticode because
+  Authenticode appends to the PE: a `.sig` made earlier covers bytes that never
+  ship. The signature is then verified against `tauri.conf.json`'s pubkey with
+  `solador-verify-signature` (the plugin's own algorithm; the Tauri CLI signs but
+  cannot verify) before anything is uploaded, never on the signer's exit code, and
+  the validate step fails if the `.sig` is missing. `<installer>.sig` is uploaded
+  beside the installer.
+- **`bundle.createUpdaterArtifacts` and the NSIS `signCommand` stay off.** The
+  bundler would minisign a zip made *before* Authenticode, and a `signCommand`
+  would put a CI-only branch in the build; the file the signer is handed has to be
+  the signed one.
+
+`publish-feed.yml` harvests exactly one `*-setup.exe` and its `.sig`, fails on zero
+or more than one, and `solador-update-feed` verifies both signatures and **requires**
+the Windows entry: a feed without `windows-x86_64` would make every updater-enabled
+Windows install report a failed check on every launch (#368's symptom), so a
+release missing the installer or its `.sig` has no feed. The corollary is that the
+replay door cannot rebuild the feed for a release cut before this landed.
+
+**Install closes and reopens Solador on Windows.** `plugins.updater.windows.
+installMode` is `"passive"` in `tauri.conf.json`, stated rather than inherited: the
+installer shows only a progress bar, and with the plugin's default
+`restart_after_install` it passes `/R`, so Solador reopens on the new version. That
+differs from macOS, where an installed update takes effect the next time the app is
+opened, so `viewmodel::update` says it **before the click** (the offer line, the
+help text and the button label); the shell only supplies `InstallEffect` by `cfg!`.
+Nothing installs without the operator's click. `process::exit` runs no destructors
+and no `RunEvent::Exit`; the audit found one thing a normal quit persists that it
+would lose, the window geometry `tauri-plugin-window-state` saves on `Exit`, so
+`run_update_install` passes the plugin an `on_before_exit` hook that saves it (and
+nothing more: the plugin's default `cleanup_before_exit` hides every window, and a
+failed installer launch returns an error without exiting, which must leave the
+window visible to show it). Everything else,
+the store included, is written when it changes.
+
+**Existing Windows installs never update to this release.** They were built
+`Channel::Absent`, show *"Updates are not published for this platform"* and never
+check, so a user installs the first updater-enabled release by hand, once. Only
+builds from that release on check `latest.json`. **No PR can exercise any of this**
+(neither release train runs in a PR): install that release on Windows by hand,
+publish the next one, and confirm the in-app update closes Solador and reopens it
+on the new version.
+
+A platform the feed has no key for (Linux, or Windows on another architecture)
+still reaches `NotUpdatable::NoChannel` *before any request is made* (#368), rather
+than asking, getting `TargetNotFound` and rendering *"the update check failed"*.
+The shell's `channel_for(os, arch)` mirrors `crates/updatefeed`'s platform keys
+rather than reading them, because the app deliberately does not depend on the
+release tooling; when a platform gains a payload, those two change together.
 
 **The agent's release train (#472, #491; #390 first built it as `release.yml`'s
 third leg).** `release-agent.yml` runs on an `agent-v*` tag push, and its
@@ -280,7 +327,8 @@ set; empty only for an unencrypted key), from Doppler `solador/prd`;
 `release.yml` has both from the `prd` environment, and a local `./dev publish`
 requires both **in pre-flight, before the mint** (#402), the same way it
 requires `SENTRY_DSN`. A `.dmg` is not an update —
-macOS applies a tarball — so both ship as release assets. `bundle.
+macOS applies a tarball — so both ship as release assets. (Windows is covered
+above: its payload is the signed installer itself.) `bundle.
 createUpdaterArtifacts` is deliberately **off**: the CLI builds that tarball
 *during* bundling, which is before the `CFBundleVersion` stamp, before the
 signature and before the staple, so it would carry a different artifact from
@@ -298,11 +346,12 @@ whose feed is the agent's own — and the condition is not a bare `startsWith` o
 the tag, which is false on a `workflow_dispatch` (no release payload) and would
 have shut the replay door, so each event's clause carries its own event name.
 `crates/updatefeed` builds and **verifies** that manifest — it refuses to write
-one whose signature does not cover the artifact under the public key in
-`tauri.conf.json`.
+one unless both the macOS and the Windows signature cover their artifacts under the
+public key in `tauri.conf.json`.
 
 In the app: the check runs **once, in `setup`**, never on a cadence, and nothing
-auto-installs — a cockpit on a second monitor does not restart itself.
+auto-installs — a cockpit on a second monitor does not restart itself. (On Windows
+the operator's click on Install does close it, which the words say first.)
 `tauri-plugin-updater` is granted **nothing** in `capabilities/default.json`
 (the `tauri-plugin-notification` precedent), and "up to date", "checking", "the
 check failed", "an update is waiting" and "this build has nothing to replace"

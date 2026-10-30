@@ -69,8 +69,9 @@
 │   │                       #   `agent-latest.json` (module `agent`, #391).
 │   │                       #   RELEASE TOOLING — neither the app nor the agent
 │   │                       #   depends on it; publish-feed.yml runs its
-│   │                       #   `solador-update-feed` bin, publish-agent-feed.yml
-│   │                       #   its `solador-agent-feed` bin
+│   │                       #   `solador-update-feed` bin, release.yml's Windows
+│   │                       #   leg its `solador-verify-signature` bin (#705),
+│   │                       #   publish-agent-feed.yml its `solador-agent-feed` bin
 │   ├── agentrelease/       # the cockpit's reader of the AGENT feed (#489): fetches
 │   │                       #   `agent-latest.json` + `.minisig` from `agent-latest`
 │   │                       #   and verifies the exact bytes under the agent's keys

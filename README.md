@@ -25,7 +25,7 @@ thing that isn't right.
 | Platform | You want | Notes |
 |---|---|---|
 | **macOS 14+** | `Solador-<version>.dmg` | Universal — Apple silicon and Intel. Signed, notarized and stapled, so it opens without a Gatekeeper argument. Open it and drag Solador onto the Applications shortcut beside it. Checks for an update on launch and never installs one behind your back. |
-| **Windows 10/11** | `Solador_<version>_x64-setup.exe` | x64, Authenticode-signed. **No update channel yet** — the app says so plainly rather than reporting a failed check, and you install the next one over it. |
+| **Windows 10/11** | `Solador_<version>_x64-setup.exe` | x64, Authenticode-signed. Checks for an update on launch and never installs one behind your back; Install closes Solador and reopens it on the new version. An install that predates the first release carrying this has to install that release by hand, once. |
 | **Linux** | — | No cockpit build. Linux runs the [agent](agent/), which is how a Linux box appears in someone else's cockpit. |
 
 **The agent is not in that release.** It has a release train of its own
@@ -318,12 +318,10 @@ palette.
 It ships, it's signed, and it runs all day — and it is still young.
 
 **Working today:** signed and notarized universal macOS builds, a signed Windows
-installer, an update check on macOS, and all nine panels.
+installer, an update check, and all nine panels.
 
 **Rough edges, stated plainly:**
 
-- **Windows has no update channel.** The app tells you that instead of
-  pretending a check failed; you install the next release over the current one.
 - **Linux runs the agent, not the cockpit.**
 - **The Service Health panel only watches what you actually read.** The vendor list is
   derived from your own configuration rather than shipped, so a cockpit with no

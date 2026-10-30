@@ -1,5 +1,5 @@
-//! Build `latest.json` for a published release — and refuse to, if the
-//! signature does not cover the artifact.
+//! Build `latest.json` for a published release — and refuse to, if either
+//! signature does not cover its artifact.
 //!
 //! Run by `.github/workflows/publish-feed.yml` on `release: published`. It is a
 //! binary rather than a workflow step full of `jq` because the check it exists
@@ -13,11 +13,19 @@
 //!   --tarball  Solador-2026.8.114.app.tar.gz \
 //!   --signature Solador-2026.8.114.app.tar.gz.sig \
 //!   --url https://github.com/Sassy-Dog/solador/releases/download/v2026.8.114/Solador-2026.8.114.app.tar.gz \
+//!   --windows-installer Solador_2026.8.114_x64-setup.exe \
+//!   --windows-signature Solador_2026.8.114_x64-setup.exe.sig \
+//!   --windows-url https://github.com/Sassy-Dog/solador/releases/download/v2026.8.114/Solador_2026.8.114_x64-setup.exe \
 //!   --tauri-config app/src-tauri/tauri.conf.json \
 //!   --pub-date 2026-08-15T12:00:00Z \
 //!   --notes-file notes.md \
 //!   --out latest.json
 //! ```
+//!
+//! Both platforms are **required**. A feed with no `windows-x86_64` key makes
+//! every updater-enabled Windows install fail its check on every launch, so a
+//! release missing the installer or its `.sig` fails here rather than shipping
+//! a macOS-only feed.
 //!
 //! The public key is read out of `tauri.conf.json` rather than passed in, so
 //! the key this gate verifies under is, by construction, the key the app
@@ -29,7 +37,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use updatefeed::manifest::{Artifact, Feed};
+use updatefeed::release::{build_feed, Payload};
 use updatefeed::signature;
 
 fn main() -> ExitCode {
@@ -50,7 +58,7 @@ fn main() -> ExitCode {
 fn run() -> Result<String, String> {
     let args = Args::parse(std::env::args().skip(1))?;
 
-    let pubkey = pubkey_from_tauri_config(&args.tauri_config)?;
+    let pubkey = signature::pubkey_from_tauri_config(&args.tauri_config)?;
     let key_id = signature::key_id(&pubkey).ok_or_else(|| {
         format!(
             "{} carries no readable minisign key id",
@@ -60,12 +68,8 @@ fn run() -> Result<String, String> {
 
     let payload = read_bytes(&args.tarball)?;
     let sig = read_text(&args.signature)?;
-
-    // Before anything is built, let alone written. This is the acceptance
-    // item: a feed entry whose signature does not verify must never be
-    // published, and "the toolchain that produced it would not have got this
-    // wrong" is not a check.
-    signature::verify(&pubkey, &sig, &payload).map_err(|e| e.user_message())?;
+    let win_payload = read_bytes(&args.windows_installer)?;
+    let win_sig = read_text(&args.windows_signature)?;
 
     let notes = match &args.notes_file {
         Some(path) => {
@@ -76,16 +80,26 @@ fn run() -> Result<String, String> {
         None => None,
     };
 
-    let feed = Feed::macos_universal(
+    // Both signatures are verified before anything is built, let alone
+    // written. This is the acceptance item: a feed entry whose signature does
+    // not verify must never be published, and "the toolchain that produced it
+    // would not have got this wrong" is not a check.
+    let feed = build_feed(
+        &pubkey,
         &args.version,
         notes,
         args.pub_date.clone(),
-        Artifact {
-            url: args.url.clone(),
-            signature: sig.trim().to_string(),
+        &Payload {
+            bytes: &payload,
+            signature: &sig,
+            url: &args.url,
         },
-    )
-    .map_err(|e| e.user_message())?;
+        &Payload {
+            bytes: &win_payload,
+            signature: &win_sig,
+            url: &args.windows_url,
+        },
+    )?;
 
     let mut json = serde_json::to_string_pretty(&feed.to_json())
         .map_err(|e| format!("could not serialize the manifest: {e}"))?;
@@ -94,33 +108,17 @@ fn run() -> Result<String, String> {
         .map_err(|e| format!("could not write {}: {e}", args.out.display()))?;
 
     Ok(format!(
-        "Wrote {} for {} ({} bytes verified under minisign key {key_id}), targets: {}",
+        "Wrote {} for {} ({} macOS bytes and {} Windows bytes verified under minisign key {key_id}), targets: {}",
         args.out.display(),
         args.version,
         payload.len(),
+        win_payload.len(),
         feed.platforms
             .keys()
             .cloned()
             .collect::<Vec<_>>()
             .join(", ")
     ))
-}
-
-/// Read `plugins.updater.pubkey` out of the app's own configuration.
-fn pubkey_from_tauri_config(path: &Path) -> Result<String, String> {
-    let conf: serde_json::Value = serde_json::from_slice(&read_bytes(path)?)
-        .map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
-    conf["plugins"]["updater"]["pubkey"]
-        .as_str()
-        .map(str::to_string)
-        .filter(|k| !k.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{} declares no plugins.updater.pubkey — the app would ship with no key to verify \
-                 updates against",
-                path.display()
-            )
-        })
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
@@ -136,12 +134,15 @@ fn read_text(path: &Path) -> Result<String, String> {
 ///
 /// Hand-parsed rather than through `clap`: this workspace takes no
 /// argument-parsing dependency anywhere (`main.rs`'s `--dump-*` flags are
-/// hand-read too), and six flags do not justify becoming the first.
+/// hand-read too), and nine flags do not justify becoming the first.
 struct Args {
     version: String,
     tarball: PathBuf,
     signature: PathBuf,
     url: String,
+    windows_installer: PathBuf,
+    windows_signature: PathBuf,
+    windows_url: String,
     tauri_config: PathBuf,
     notes_file: Option<PathBuf>,
     pub_date: Option<String>,
@@ -154,6 +155,9 @@ impl Args {
         let mut tarball = None;
         let mut signature = None;
         let mut url = None;
+        let mut windows_installer = None;
+        let mut windows_signature = None;
+        let mut windows_url = None;
         let mut tauri_config = None;
         let mut notes_file = None;
         let mut pub_date = None;
@@ -179,6 +183,9 @@ impl Args {
                 "--tarball" => tarball = Some(PathBuf::from(value()?)),
                 "--signature" => signature = Some(PathBuf::from(value()?)),
                 "--url" => url = Some(value()?),
+                "--windows-installer" => windows_installer = Some(PathBuf::from(value()?)),
+                "--windows-signature" => windows_signature = Some(PathBuf::from(value()?)),
+                "--windows-url" => windows_url = Some(value()?),
                 "--tauri-config" => tauri_config = Some(PathBuf::from(value()?)),
                 "--notes-file" => notes_file = Some(PathBuf::from(value()?)),
                 "--pub-date" => pub_date = Some(value()?),
@@ -192,6 +199,9 @@ impl Args {
             tarball: required(tarball, "--tarball")?,
             signature: required(signature, "--signature")?,
             url: required(url, "--url")?,
+            windows_installer: required(windows_installer, "--windows-installer")?,
+            windows_signature: required(windows_signature, "--windows-signature")?,
+            windows_url: required(windows_url, "--windows-url")?,
             tauri_config: required(tauri_config, "--tauri-config")?,
             notes_file,
             pub_date,

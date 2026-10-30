@@ -1,6 +1,6 @@
 //! The `latest.json` document itself.
 //!
-//! # One artifact, two platform keys, and why that is honest
+//! # One macOS artifact under two keys, and why that is honest
 //!
 //! `tauri-plugin-updater` asks the manifest for `<os>-<arch>` —
 //! `darwin-aarch64` on Apple silicon, `darwin-x86_64` on Intel — and refuses
@@ -10,13 +10,22 @@
 //! two builds we have not made: the file genuinely carries both slices, so both
 //! answers are true.
 //!
-//! # The platform keys are settled here so Windows is additive
+//! # Windows is a third key, and a required one
 //!
-//! Windows packaging is #334 and does not exist yet (`scripts/build.sh` refuses
-//! on non-Darwin by design). Naming the key scheme now — the plugin's own
-//! `<os>-<arch>`, static format, one entry per target — means #334 adds a
-//! `windows-x86_64` entry to [`Feed::platforms`] and changes nothing else. A
-//! feed shaped around "the macOS artifact" would have had to be rewritten.
+//! The key scheme is the plugin's own `<os>-<arch>`, static format, one entry
+//! per target, so Windows added a `windows-x86_64` entry to [`Feed::platforms`]
+//! and changed nothing else. Its artifact is the Authenticode-signed NSIS
+//! installer itself (`*-setup.exe`, not a zip), and its signature is the
+//! minisign `.sig` that `release.yml`'s `release-windows` job made over those
+//! exact shipped bytes. The plugin downloads the installer, verifies that
+//! signature under `plugins.updater.pubkey`, and runs it.
+//!
+//! **The Windows entry is required, never optional.** An updater-enabled
+//! Windows install asks for `windows-x86_64` and fails the check with
+//! `TargetNotFound` if the key is absent, on every launch (#368's symptom). So
+//! [`Feed::new`] takes the Windows artifact as a non-optional argument: a
+//! release missing its installer or its `.sig` fails the feed instead of
+//! shipping a macOS-only one.
 //!
 //! # Every field here can break every client at once
 //!
@@ -25,7 +34,7 @@
 //! the plugin's deserializer fails and the whole check errors out on every
 //! machine. So this module validates rather than trusts, and
 //! [`Feed::to_json`] cannot be reached without going through
-//! [`Feed::macos_universal`], which is where the refusals live.
+//! [`Feed::new`], which is where the refusals live.
 
 use std::collections::BTreeMap;
 
@@ -35,6 +44,8 @@ use serde_json::{json, Value};
 pub const DARWIN_AARCH64: &str = "darwin-aarch64";
 /// Intel macOS, same source.
 pub const DARWIN_X86_64: &str = "darwin-x86_64";
+/// 64-bit Windows, same source. The only Windows target Solador builds.
+pub const WINDOWS_X86_64: &str = "windows-x86_64";
 
 /// One downloadable artifact and the signature that covers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,17 +123,22 @@ pub struct Feed {
 }
 
 impl Feed {
-    /// The macOS feed: one universal tarball, advertised under both Apple
-    /// targets.
+    /// The release feed: one universal macOS tarball, advertised under both
+    /// Apple targets, and the Windows installer under `windows-x86_64`.
+    ///
+    /// Both artifacts are required. There is no constructor for a macOS-only
+    /// feed, because that feed would fail every updater-enabled Windows install
+    /// on every launch.
     ///
     /// Every argument is validated here rather than at [`to_json`](Self::to_json)
     /// because this is the only constructor — there is no way to hold a `Feed`
     /// that would not deserialize.
-    pub fn macos_universal(
+    pub fn new(
         version: &str,
         notes: Option<String>,
         pub_date: Option<String>,
-        artifact: Artifact,
+        macos: Artifact,
+        windows: Artifact,
     ) -> Result<Self, FeedError> {
         if !is_calver(version) {
             return Err(FeedError::Version(version.to_string()));
@@ -132,16 +148,19 @@ impl Feed {
                 return Err(FeedError::PubDate(date.to_string()));
             }
         }
-        if !artifact.url.starts_with("https://") || artifact.url.len() <= "https://".len() {
-            return Err(FeedError::Url(artifact.url));
-        }
-        if artifact.signature.trim().is_empty() {
-            return Err(FeedError::MissingSignature("macOS".to_string()));
+        for (label, artifact) in [("macOS", &macos), ("Windows", &windows)] {
+            if !artifact.url.starts_with("https://") || artifact.url.len() <= "https://".len() {
+                return Err(FeedError::Url(artifact.url.clone()));
+            }
+            if artifact.signature.trim().is_empty() {
+                return Err(FeedError::MissingSignature(label.to_string()));
+            }
         }
 
         let mut platforms = BTreeMap::new();
-        platforms.insert(DARWIN_AARCH64.to_string(), artifact.clone());
-        platforms.insert(DARWIN_X86_64.to_string(), artifact);
+        platforms.insert(DARWIN_AARCH64.to_string(), macos.clone());
+        platforms.insert(DARWIN_X86_64.to_string(), macos);
+        platforms.insert(WINDOWS_X86_64.to_string(), windows);
 
         Ok(Feed {
             version: version.to_string(),
@@ -266,12 +285,20 @@ mod tests {
         }
     }
 
+    fn windows_artifact() -> Artifact {
+        Artifact {
+            url: "https://github.com/Sassy-Dog/solador/releases/download/v2026.8.114/Solador_2026.8.114_x64-setup.exe".to_string(),
+            signature: "V2luZG93cyBzaWduYXR1cmU=".to_string(),
+        }
+    }
+
     fn feed() -> Feed {
-        Feed::macos_universal(
+        Feed::new(
             "2026.8.114",
             Some("what changed".to_string()),
             Some("2026-08-15T12:00:00Z".to_string()),
             artifact(),
+            windows_artifact(),
         )
         .expect("a valid feed")
     }
@@ -295,16 +322,60 @@ mod tests {
         assert_eq!(a["url"], json!(artifact().url));
         // And nothing else is advertised: a target key we cannot build for
         // would send those machines to a 404 rather than telling them there is
-        // no update. Windows arrives as an added key (#334).
+        // no update.
         let platforms = doc["platforms"]
             .as_object()
             .expect("platforms is an object");
-        assert_eq!(platforms.len(), 2);
+        assert_eq!(platforms.len(), 3);
+    }
+
+    /// The Windows entry is the installer and the signature made over it, kept
+    /// apart from the macOS tarball's: a shared url or signature would make
+    /// one platform's update fail verification on the other.
+    #[test]
+    fn the_windows_target_carries_the_installer_and_its_own_signature() {
+        let doc = feed().to_json();
+        let w = &doc["platforms"][WINDOWS_X86_64];
+        assert_eq!(w["url"], json!(windows_artifact().url));
+        assert_eq!(w["signature"], json!(windows_artifact().signature));
+        assert_ne!(w["url"], doc["platforms"][DARWIN_AARCH64]["url"]);
+        assert_ne!(
+            w["signature"],
+            doc["platforms"][DARWIN_AARCH64]["signature"]
+        );
+    }
+
+    /// The #368 symptom, refused at publish time: a Windows entry with no
+    /// signature (what a missing `.sig` file reads as) is an error, never a
+    /// macOS-only feed.
+    #[test]
+    fn a_windows_entry_with_no_signature_is_refused() {
+        let unsigned = Artifact {
+            signature: "  \n".to_string(),
+            ..windows_artifact()
+        };
+        let err = Feed::new("2026.8.114", None, None, artifact(), unsigned)
+            .expect_err("an unsigned Windows installer must not be advertised");
+        assert_eq!(err, FeedError::MissingSignature("Windows".to_string()));
+        assert!(err.user_message().contains("Windows"));
+    }
+
+    #[test]
+    fn a_windows_url_that_is_not_https_is_refused() {
+        let plain = Artifact {
+            url: "http://example.invalid/Solador-setup.exe".to_string(),
+            ..windows_artifact()
+        };
+        assert!(matches!(
+            Feed::new("2026.8.114", None, None, artifact(), plain),
+            Err(FeedError::Url(_))
+        ));
     }
 
     #[test]
     fn an_absent_note_or_date_is_an_absent_key_not_a_null() {
-        let bare = Feed::macos_universal("2026.8.114", None, None, artifact()).expect("valid");
+        let bare =
+            Feed::new("2026.8.114", None, None, artifact(), windows_artifact()).expect("valid");
         let doc = bare.to_json();
         assert!(
             doc.get("notes").is_none(),
@@ -326,7 +397,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    Feed::macos_universal(bad, None, None, artifact()),
+                    Feed::new(bad, None, None, artifact(), windows_artifact()),
                     Err(FeedError::Version(_))
                 ),
                 "{bad} should have been refused"
@@ -344,7 +415,13 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    Feed::macos_universal("2026.8.114", None, Some(bad.to_string()), artifact()),
+                    Feed::new(
+                        "2026.8.114",
+                        None,
+                        Some(bad.to_string()),
+                        artifact(),
+                        windows_artifact()
+                    ),
                     Err(FeedError::PubDate(_))
                 ),
                 "{bad} should have been refused"
@@ -357,8 +434,14 @@ mod tests {
             "2026-08-15T12:00:00.5-05:00",
         ] {
             assert!(
-                Feed::macos_universal("2026.8.114", None, Some(good.to_string()), artifact())
-                    .is_ok(),
+                Feed::new(
+                    "2026.8.114",
+                    None,
+                    Some(good.to_string()),
+                    artifact(),
+                    windows_artifact()
+                )
+                .is_ok(),
                 "{good} should have been accepted"
             );
         }
@@ -371,7 +454,7 @@ mod tests {
             ..artifact()
         };
         assert!(matches!(
-            Feed::macos_universal("2026.8.114", None, None, unsigned),
+            Feed::new("2026.8.114", None, None, unsigned, windows_artifact()),
             Err(FeedError::MissingSignature(_))
         ));
     }
@@ -390,7 +473,7 @@ mod tests {
             };
             assert!(
                 matches!(
-                    Feed::macos_universal("2026.8.114", None, None, a),
+                    Feed::new("2026.8.114", None, None, a, windows_artifact()),
                     Err(FeedError::Url(_))
                 ),
                 "{bad} should have been refused"
@@ -406,5 +489,6 @@ mod tests {
         let doc = feed().to_json();
         assert!(doc["platforms"]["darwin-aarch64"].is_object());
         assert!(doc["platforms"]["darwin-x86_64"].is_object());
+        assert!(doc["platforms"]["windows-x86_64"].is_object());
     }
 }

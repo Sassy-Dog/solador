@@ -3690,7 +3690,10 @@ mod tests {
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let updates = &vm["about"]["updates"];
         assert_eq!(updates["heading"], json!(crate::update::HEADING));
-        assert_eq!(updates["help"], json!(crate::update::HELP));
+        assert_eq!(
+            updates["help"],
+            json!(viewmodel::update::help(crate::update::install_effect()))
+        );
         // `no_updates()` is a state nothing has checked in, which must read as
         // "checking", not as "up to date" — the distinction this whole feature
         // rests on, asserted where the tab is assembled and not only where the
@@ -3706,10 +3709,14 @@ mod tests {
         let mut found = crate::update::UpdateState::new();
         found.found("2026.9.1".to_owned(), None);
         let offered = about_tab(crate::update::view(&found, Some("2026.8.113")));
-        assert_eq!(
-            offered["updates"]["installLabel"],
-            json!("Install 2026.9.1")
-        );
+        // The label is the current platform's: Windows says the app reopens
+        // (#705), macOS keeps its exact string.
+        let label = if cfg!(windows) {
+            "Install 2026.9.1 and reopen"
+        } else {
+            "Install 2026.9.1"
+        };
+        assert_eq!(offered["updates"]["installLabel"], json!(label));
         assert_ne!(
             offered["updates"]["status"],
             about_tab(no_updates())["updates"]["status"]

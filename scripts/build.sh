@@ -1289,10 +1289,12 @@ make_updater_archive() {
         exit 1
     fi
     # Empty rather than unset, deliberately. `cargo tauri signer sign` reads
-    # this from the environment; with it *unset* and an encrypted key, the
-    # minisign crate falls back to prompting on a tty — which on a runner means
-    # the job hangs until it times out instead of failing. An empty password
-    # against an encrypted key fails immediately and says so.
+    # this from the environment. With it *unset*, tauri-cli prompts on a
+    # terminal but, when stdin is not one (a runner), assumes an empty password
+    # on its own (`helpers/updater_signature.rs`, 2.12.1); an encrypted key then
+    # fails with a wrong-password error either way. Exporting it makes the
+    # behaviour identical on a terminal and off one: no prompt, an immediate
+    # failure that says so.
     export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
     # Delete first, so "it exists afterwards" means THIS build made it — the
