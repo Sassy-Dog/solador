@@ -2546,7 +2546,8 @@ without a grant. Here is the whole `permissions` list, line by line:
   unreachable from JavaScript.
 - **Anything for `tauri-plugin-updater`** ([#308](https://github.com/Sassy-Dog/solador/issues/308)).
   Same arrangement, and here the argument is at its strongest: this plugin's job
-  is to download a tarball and unpack it over the running application, so
+  is to download an update (on macOS a tarball it unpacks over the running
+  application, on Windows an installer it runs) and replace the app with it, so
   `updater:default` would give the one seam with no automated coverage
   ([#123](https://github.com/Sassy-Dog/solador/issues/123)) the ability to
   execute code. `run_update_check` and `run_update_install` in `src/main.rs` are

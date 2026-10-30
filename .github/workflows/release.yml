@@ -356,13 +356,12 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      # The updater signing key (#308), now also this leg's (#705): the
-      # "Minisign the installer" step reads both, through the pinned Tauri
-      # CLI's own signer, to minisign the Authenticode-signed `*-setup.exe`
-      # that the in-app updater downloads. The same pair the macOS job holds,
-      # so one `plugins.updater.pubkey` verifies both platforms' payloads.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # The updater signing key (#308, this leg since #705) is deliberately NOT
+      # here. It is step-level `env:` on only the preflight and the minisign
+      # step, so it never reaches `./dev build --release` (every build.rs and
+      # proc macro, plus `cargo install tauri-cli`), rust-cache, azure/login
+      # or the trusted-signing action. (The macOS job holds it job-wide; that
+      # is its own, older choice.)
 
     steps:
       # BEFORE checkout. The runner image sets core.autocrlf=true, so every
@@ -392,6 +391,9 @@ jobs:
       # unsigned installer whose only symptom is a SmartScreen warning on
       # users' machines, exactly what #342's acceptance forbids.
       - name: Preflight — every release secret must be non-empty
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           missing=()
           # The signing password is required non-empty here exactly as in the
@@ -505,6 +507,9 @@ jobs:
       # (docs/RELEASING.md): the bundler would minisign a zip of the UNSIGNED
       # installer, and the file the signer is given here must be the signed one.
       - name: Minisign the Authenticode-signed installer and verify the signature
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           shopt -s nullglob
           # Same folder, same single-file guarantee, as the validate step below.
@@ -516,12 +521,13 @@ jobs:
           exe="${exes[0]}"
 
           # Empty rather than unset, deliberately — build.sh's
-          # `make_updater_archive` says why: `cargo tauri signer sign` reads
-          # this from the environment, and with it *unset* and an encrypted key
-          # the minisign crate falls back to prompting on a tty, which on a
-          # runner means the job hangs until it times out instead of failing.
-          # (The preflight already proved it non-empty; this is the same
-          # belt-and-braces build.sh keeps.)
+          # `make_updater_archive` keeps the same export. `cargo tauri signer
+          # sign` reads this from the environment. With it unset and stdin not
+          # a terminal (a runner), tauri-cli 2.12.1 assumes an empty password
+          # on its own, and an encrypted key then fails with a wrong-password
+          # error; on a terminal it would prompt instead. Exporting it explicitly
+          # makes the behaviour the same everywhere. (The preflight already
+          # proved it non-empty.)
           export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
           # Delete first, so "it exists afterwards" means THIS run made it.

@@ -142,6 +142,30 @@ pub fn key_id(pubkey: &str) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// Read `plugins.updater.pubkey` out of the app's own `tauri.conf.json`.
+///
+/// The one reader, shared by `solador-update-feed` and
+/// `solador-verify-signature`: the key a gate verifies under is, by
+/// construction, the key the app compiles in, and two readers could disagree
+/// about what counts as "declared".
+pub fn pubkey_from_tauri_config(path: &std::path::Path) -> Result<String, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let conf: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
+    conf["plugins"]["updater"]["pubkey"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "{} declares no plugins.updater.pubkey — the app would ship with no key to verify \
+                 updates against",
+                path.display()
+            )
+        })
+}
+
 fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
@@ -303,6 +327,32 @@ mod tests {
             .is_ok(),
             "the shipped pubkey must parse as a minisign public key"
         );
+    }
+
+    #[test]
+    fn the_pubkey_is_read_from_the_config_and_its_absence_is_a_refusal() {
+        let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../app/src-tauri/tauri.conf.json");
+        assert_eq!(
+            pubkey_from_tauri_config(&shipped).expect("the shipped config declares a key"),
+            shipped_pubkey()
+        );
+
+        let dir = std::env::temp_dir().join("solador-pubkey-reader-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let none = dir.join("none.json");
+        std::fs::write(&none, r#"{"plugins":{"updater":{"pubkey":"  "}}}"#).expect("write");
+        assert!(pubkey_from_tauri_config(&none)
+            .expect_err("a blank key is a refusal")
+            .contains("declares no plugins.updater.pubkey"));
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "not json").expect("write");
+        assert!(pubkey_from_tauri_config(&bad)
+            .expect_err("not JSON")
+            .contains("not valid JSON"));
+        assert!(pubkey_from_tauri_config(&dir.join("missing.json"))
+            .expect_err("unreadable")
+            .contains("could not read"));
     }
 
     #[test]

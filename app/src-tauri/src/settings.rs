@@ -3709,10 +3709,14 @@ mod tests {
         let mut found = crate::update::UpdateState::new();
         found.found("2026.9.1".to_owned(), None);
         let offered = about_tab(crate::update::view(&found, Some("2026.8.113")));
-        assert_eq!(
-            offered["updates"]["installLabel"],
-            json!("Install 2026.9.1")
-        );
+        // The label is the current platform's: Windows says the app reopens
+        // (#705), macOS keeps its exact string.
+        let label = if cfg!(windows) {
+            "Install 2026.9.1 and reopen"
+        } else {
+            "Install 2026.9.1"
+        };
+        assert_eq!(offered["updates"]["installLabel"], json!(label));
         assert_ne!(
             offered["updates"]["status"],
             about_tab(no_updates())["updates"]["status"]

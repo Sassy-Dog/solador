@@ -186,7 +186,9 @@ Nothing installs without the operator's click. `process::exit` runs no destructo
 and no `RunEvent::Exit`; the audit found one thing a normal quit persists that it
 would lose, the window geometry `tauri-plugin-window-state` saves on `Exit`, so
 `run_update_install` passes the plugin an `on_before_exit` hook that saves it (and
-then does the cleanup the plugin's default hook would have done). Everything else,
+nothing more: the plugin's default `cleanup_before_exit` hides every window, and a
+failed installer launch returns an error without exiting, which must leave the
+window visible to show it). Everything else,
 the store included, is written when it changes.
 
 **Existing Windows installs never update to this release.** They were built

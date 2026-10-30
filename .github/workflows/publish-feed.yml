@@ -235,6 +235,8 @@ jobs:
           installer="${installers[0]}"
           if [[ ! -s "$installer.sig" ]]; then
             echo "::error::$(basename "$installer") has no .sig asset on $TAG"
+            echo "A release cut before #705 has no Windows signature and needs a new tag;" >&2
+            echo "re-running that tag's release.yml will not help." >&2
             exit 1
           fi
 

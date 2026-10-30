@@ -58,7 +58,7 @@ fn main() -> ExitCode {
 fn run() -> Result<String, String> {
     let args = Args::parse(std::env::args().skip(1))?;
 
-    let pubkey = pubkey_from_tauri_config(&args.tauri_config)?;
+    let pubkey = signature::pubkey_from_tauri_config(&args.tauri_config)?;
     let key_id = signature::key_id(&pubkey).ok_or_else(|| {
         format!(
             "{} carries no readable minisign key id",
@@ -119,23 +119,6 @@ fn run() -> Result<String, String> {
             .collect::<Vec<_>>()
             .join(", ")
     ))
-}
-
-/// Read `plugins.updater.pubkey` out of the app's own configuration.
-fn pubkey_from_tauri_config(path: &Path) -> Result<String, String> {
-    let conf: serde_json::Value = serde_json::from_slice(&read_bytes(path)?)
-        .map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
-    conf["plugins"]["updater"]["pubkey"]
-        .as_str()
-        .map(str::to_string)
-        .filter(|k| !k.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{} declares no plugins.updater.pubkey — the app would ship with no key to verify \
-                 updates against",
-                path.display()
-            )
-        })
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {

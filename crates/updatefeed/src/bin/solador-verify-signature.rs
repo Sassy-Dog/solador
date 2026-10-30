@@ -41,18 +41,7 @@ fn main() -> ExitCode {
 fn run() -> Result<String, String> {
     let args = Args::parse(std::env::args().skip(1))?;
 
-    let conf: serde_json::Value = serde_json::from_slice(&read_bytes(&args.tauri_config)?)
-        .map_err(|e| format!("{} is not valid JSON: {e}", args.tauri_config.display()))?;
-    let pubkey = conf["plugins"]["updater"]["pubkey"]
-        .as_str()
-        .map(str::to_string)
-        .filter(|k| !k.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{} declares no plugins.updater.pubkey",
-                args.tauri_config.display()
-            )
-        })?;
+    let pubkey = signature::pubkey_from_tauri_config(&args.tauri_config)?;
     let key_id = signature::key_id(&pubkey).ok_or_else(|| {
         format!(
             "{} carries no readable minisign key id",

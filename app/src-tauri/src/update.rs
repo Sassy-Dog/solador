@@ -143,13 +143,25 @@ fn channel_for(os: &str, arch: &str) -> Channel {
 ///
 /// A normal quit saves the window's size and position from the window-state
 /// plugin's `RunEvent::Exit` handler; `process::exit` skips that, so this does
-/// it first. Everything else the app persists is written when it changes. Then
-/// `cleanup_before_exit`, because handing the plugin a hook replaces the one it
-/// installs by default, and that default is this call.
+/// it first. Everything else the app persists is written when it changes. A
+/// failed save is logged and not fatal: losing a window position must not stand
+/// between an operator and the update they asked for.
+///
+/// **This deliberately does not call `cleanup_before_exit`**, which the plugin's
+/// default hook would have (handing the plugin a hook replaces that default).
+/// The plugin runs this hook BEFORE `ShellExecuteW`, and if the launch fails it
+/// returns `Err` WITHOUT exiting. `cleanup_before_exit` hides every window on
+/// Windows and clears the resource tables, which would leave a running,
+/// invisible Solador and no way to show `install_failed`'s text. Skipping it
+/// leaves nothing orphaned on the success path either: the app has no tray icon
+/// (the one thing it would clear that outlives a process), and the process is
+/// about to end.
 #[cfg(windows)]
 pub fn before_exit(handle: &tauri::AppHandle) {
-    crate::window_state::save(handle);
-    handle.cleanup_before_exit();
+    use tauri_plugin_window_state::AppHandleExt as _;
+    if let Err(e) = handle.save_window_state(crate::window_state::state_flags()) {
+        eprintln!("update: could not save the window state before exiting: {e}");
+    }
 }
 
 /// Everything the Updates group renders from, plus the banner ledger.

@@ -2426,8 +2426,10 @@ async fn run_update_check(app: Arc<App>) {
 /// no `Drop` or exit hook behind them, and the one thing written only at exit is
 /// the window's size and position, which `tauri-plugin-window-state` saves on
 /// `RunEvent::Exit`. [`update::before_exit`] saves that, via the plugin's
-/// `on_before_exit` hook, and then does the cleanup the plugin's own default
-/// hook would have done (the hook replaces it).
+/// `on_before_exit` hook. That hook deliberately skips the plugin's default
+/// `cleanup_before_exit`: it runs before the installer launch, and a failed
+/// launch returns `Err` without exiting, which must leave the window visible to
+/// show the failure text.
 async fn run_update_install(app: Arc<App>) {
     use tauri_plugin_updater::UpdaterExt as _;
 
