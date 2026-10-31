@@ -239,7 +239,7 @@ test("a per-account failure names the account in the header without blanking the
   // boot frame painted (and so left a floor to release) varies from load to
   // load, so heights taken on two loads are not comparable. Within one load the
   // floor is already released when the Full view's rows paint, whenever
-  // layout-stability.js's next frame runs (#707, tested above).
+  // layout-stability.js's next frame runs (#707, tested below).
   const degraded = await page.locator("#reposPanel").boundingBox();
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
   // The tile's own name heads its Full view (#640), not the payload's title.
@@ -306,7 +306,8 @@ test("a floor measured by the boot frame is not carried into the Repos Full view
  * change that releases it used to be applied only in layout-stability.js's next
  * animation frame, so the Full view could paint its first rows (and be measured)
  * with the stale floor whenever that frame ran late on a loaded machine. Here
- * layout-stability's frames are held for the whole opening, which makes that
+ * every animation frame on the page is held for the whole opening (the init
+ * script cannot tell layout-stability's from app.js's own), which makes that
  * window the whole test: the floor must already be gone when the rows are.
  */
 test("opening the Repos Full view releases the boot frame's floor before any frame runs", async ({ page, baseURL }) => {
@@ -346,7 +347,7 @@ test("opening the Repos Full view releases the boot frame's floor before any fra
   await page.evaluate(() => (window.__holdFrames = true));
   await openTileFull(page, "ghWorkflows");
   await expect(repoRows(page).first()).toBeVisible();
-  // No layout-stability frame has run since the Full view opened.
+  // No frame (so no layout-stability frame) has run since the Full view opened.
   const { inline, height } = await body.evaluate((el) => ({
     inline: el.style.minHeight, height: el.getBoundingClientRect().height,
   }));
@@ -354,7 +355,52 @@ test("opening the Repos Full view releases the boot frame's floor before any fra
   expect(height).toBeLessThan(200);
 
   await page.evaluate(() => { window.__holdFrames = false; window.__runHeldFrames(); });
-  await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
+  // The frame then re-measures: the floor it writes is the natural height, never the boot frame's.
+  await expect.poll(() => body.evaluate((el) => {
+    const floor = parseFloat(el.style.minHeight || "0");
+    return floor > 0 && floor <= Math.ceil(el.getBoundingClientRect().height) && floor !== 200;
+  })).toBe(true);
+});
+
+/**
+ * Closing a Full view is not a release (#695, #707). The hidden body keeps its
+ * floor for the same tile's next opening, and the overview's tiles keep the
+ * floors that retain their space through a short or failed poll: only opening or
+ * switching a Full view drops a floor, and only that resets the page.
+ */
+test("closing a Full view keeps its tile's floor and resets no overview tile", async ({ page, baseURL }) => {
+  const many = await fixture(baseURL, "sample-repos.json");
+  while (many.rows.length < 40) many.rows = many.rows.concat(many.rows);
+  const few = { ...many, rows: many.rows.slice(0, 1) };
+  await stubTileIpc(page, baseURL, {
+    source: "ghWorkflows", sources: Object.values(GITHUB_TILE),
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { repos: { __frames: [many, few] }, runners: await fixture(baseURL, "sample-runners.json") },
+  });
+  await page.goto("/index.html");
+  const overviewFloor = () => page.locator(`[data-tile="${tileIdFor("ghRunners")}"] .db-tile-content`)
+    .evaluate((el) => el.style.minHeight);
+  await expect(page.locator(`[data-tile="${tileIdFor("ghRunners")}"]`)).toBeVisible();
+  await expect.poll(overviewFloor).not.toBe("");
+  const overview = await overviewFloor();
+
+  await openTileFull(page, "ghWorkflows");
+  const body = page.locator("#reposBody");
+  await expect(repoRows(page)).toHaveCount(many.rows.length);
+  await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).toBeGreaterThan(200);
+  const floorA = await body.evaluate((el) => parseFloat(el.style.minHeight));
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  // Two frames after the close, so a reset the close queued has run.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await overviewFloor(), "closing a Full view does not reset the overview's floors").toBe(overview);
+
+  await advance(page, "repos");
+  await openTileFull(page, "ghWorkflows");
+  await expect(repoRows(page)).toHaveCount(1);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await body.evaluate((el) => parseFloat(el.style.minHeight))).toBe(floorA);
 });
 
 /**

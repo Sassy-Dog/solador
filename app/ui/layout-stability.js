@@ -7,8 +7,8 @@
   let released = false;
   const configuration = element => {
     // A tile's Full view keeps no floor measured outside it: the key carries
-    // the Full view's source and tile, so opening, switching or closing one releases it,
-    // in the mutation callback that sees the change, before any frame paints.
+    // the Full view's source and tile, so opening or switching one releases it,
+    // in the mutation callback, before the next frame or any other task can measure it.
     const full = element.closest('#fullView');
     if (full) return `full|${full.dataset.fullSource || ''}|${full.dataset.fullTile || ''}|${element.dataset.detailState || ''}`;
     const tile = element.closest('.db-tile, .db-preview-tile') || element.querySelector('.db-preview-tile');
@@ -55,16 +55,19 @@
     document.querySelectorAll(selector).forEach(element => {
       const state = tracked.get(element);
       if (state) {
-        // A changed key (a Full view opened, switched or closed) drops the old
-        // floor now, in this mutation callback, not in the next animation frame:
-        // a frame that runs late would otherwise paint the new view, and let it
-        // be measured, at the floor the old key measured (#707).
+        // A changed key (a Full view opened or switched) drops the old floor now,
+        // in this mutation callback, not in the next animation frame: a task that
+        // measures before that frame would see the new view at the floor the old
+        // key measured (#707). Closing a Full view is left to the frame: the hidden
+        // body keeps its floor for the same tile's next opening (#695), and only a
+        // release that touched a visible element resets the rest of the page.
         const key = configuration(element);
-        if (state.key !== key) {
+        const closing = element.closest('#fullView') && !element.closest('#fullView').dataset.fullSource;
+        if (state.key !== key && !closing) {
           element.style.minHeight = '';
           state.height = 0;
           state.key = key;
-          released = true;
+          if (element.getClientRects().length) released = true;
         }
         return;
       }
