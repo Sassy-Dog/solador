@@ -107,7 +107,7 @@ trap 'exit 130' INT TERM
 # mutated revision of one function.
 build_sh="${BUILD_SH:-$SCRIPT_DIR/build.sh}"
 lift() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$1"; }
-helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image release_dmg_create_leftover warn_kept_dmg_devices dmg_attach_diag"
+helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image release_dmg_create_leftover warn_kept_dmg_devices dmg_attach_diag dmg_attach_device"
 {
     for fn in $helpers; do
         lift "$SCRIPT_DIR/build.sh" "$fn"
@@ -430,6 +430,8 @@ hdiutil() {
             if [[ "$FAKE_LISTING" == stuck ]] || ! grep -q disk88 "$FAKE_DETACHES"; then
                 entry "$FAKE_DMG" /dev/disk88
             fi
+            # The attach that succeeded is listed as the device it returned (#708).
+            if [[ -s "$FAKE_ATTACHES" ]]; then entry "$FAKE_DMG" /dev/disk89; fi
             entry /elsewhere/OPERATORS-IMAGE.dmg /dev/disk90
             entry "$FAKE_OTHER_RUN" /dev/disk91
             printf '</array></dict></plist>\n' ;;
@@ -701,6 +703,82 @@ if [[ "$result" == "1 0" ]]; then
     pass "an attach that lands on a pre-existing device does not detach it"
 else
     fail "an attach that lands on a pre-existing device does not detach it (status, detaches: $result: $(tr '\n' '|' < "$work/fake-detaches"); $(cat "$work/err"))"
+fi
+
+# #708: which device an attach reports. An APFS image attaches as the whole disk
+# plus a synthesized container disk, and `hdiutil attach -plist` lists their
+# entities in either order (measured: about half the attaches under load put the
+# synthesized disk and its volume first). `hdiutil info` always lists the whole
+# disk, and every detach here matches a device by that listing, so an attach
+# that reported the synthesized disk handed back a number nothing could ever
+# detach, and the real device stayed attached. A fake attach lists the entities
+# in the order FAKE_ORDER names: `synth-first`, `whole-first`, or `unlisted`
+# (entities `hdiutil info` never shows). The fake listing also holds an
+# operator's image, which must never be named. Nothing real is touched.
+cat > "$work/entity-hdiutil.sh" <<'EOF'
+entity() { printf '<dict><key>dev-entry</key><string>%s</string></dict>' "$1"; }
+hdiutil() {
+    case "$1" in
+        attach)
+            echo attach >> "$FAKE_EVENTS"
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>system-entities</key><array>'
+            case "$FAKE_ORDER" in
+                synth-first) entity /dev/disk29s1; entity /dev/disk27s1; entity /dev/disk29; entity /dev/disk27 ;;
+                whole-first) entity /dev/disk27; entity /dev/disk27s1; entity /dev/disk29s1; entity /dev/disk29 ;;
+                unlisted) entity /dev/disk55s1; entity /dev/disk55 ;;
+            esac
+            printf '</array></dict></plist>\n' ;;
+        info)
+            printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array>'
+            if [[ "$FAKE_ORDER" != unlisted ]] && grep -qx attach "$FAKE_EVENTS" && ! grep -qx 'detach /dev/disk27' "$FAKE_EVENTS"; then
+                printf '<dict><key>image-path</key><string>%s</string><key>system-entities</key><array>' "$FAKE_DMG"
+                entity /dev/disk27; entity /dev/disk27s1; entity /dev/disk29; entity /dev/disk29s1
+                printf '</array></dict>'
+            fi
+            printf '<dict><key>image-path</key><string>/elsewhere/OPERATORS-IMAGE.dmg</string><key>system-entities</key><array>'
+            entity /dev/disk90
+            printf '</array></dict></array></dict></plist>\n' ;;
+        detach) echo "$*" >> "$FAKE_EVENTS" ;;
+    esac
+}
+sleep() { :; }
+EOF
+# entity_run <order>: attach_dmg_readonly under the stub, then a detach of the
+# device it reported. Prints "<attach status>|<ATTACHED_DEV>|<devices left on the
+# image>"; the events (attach, detach <dev>) land in $work/fake-events.
+entity_run() {
+    : > "$work/fake-events"
+    (
+        export FAKE_ORDER="$1" FAKE_EVENTS="$work/fake-events" FAKE_DMG=/elsewhere/mine.dmg
+        # shellcheck source=/dev/null
+        source "$work/entity-hdiutil.sh"
+        rc=0
+        attach_dmg_readonly "$work" /elsewhere/mine.dmg || rc=$?
+        if [[ -n "$ATTACHED_DEV" ]]; then detach_dmg_device "$ATTACHED_DEV" /elsewhere/mine.dmg || true; fi
+        echo "$rc|$ATTACHED_DEV|$(dmg_devices_for_image /elsewhere/mine.dmg | tr '\n' ' ')"
+    ) 2>"$work/err"
+}
+# What the fake was asked to do besides attach, one event per line; an empty
+# list is not a failure (`set -e` and `pipefail` would otherwise end the suite
+# silently on the very run that should report it).
+entity_detaches() { { grep -v '^attach$' "$work/fake-events" || true; } | tr '\n' '|'; }
+entity_bad=""
+for order in synth-first whole-first; do
+    result="$(entity_run "$order")"
+    [[ "$result" == "0|/dev/disk27|" ]] || entity_bad="$entity_bad [$order reported: $result]"
+    [[ "$(entity_detaches)" == "detach /dev/disk27|" ]] || entity_bad="$entity_bad [$order detached: $(entity_detaches)]"
+done
+if [[ -z "$entity_bad" ]]; then
+    pass "an attach reports the device hdiutil info lists, whichever entity hdiutil attach puts first"
+else
+    fail "an attach reports the device hdiutil info lists, whichever entity hdiutil attach puts first:$entity_bad"
+fi
+result="$(entity_run unlisted)"
+if [[ "$result" == "1||" ]] && ! grep -q '^detach' "$work/fake-events" && grep -q "reported no device" "$work/err" \
+    && ! grep -q 'disk90\|OPERATORS' "$work/fake-events" "$work/err"; then
+    pass "an attach whose entities hdiutil info does not list fails with no device, and nothing is detached"
+else
+    fail "an attach whose entities hdiutil info does not list fails with no device, and nothing is detached (result $result; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
 fi
 
 # A device that finishes attaching AFTER a failed attach reported its error (and

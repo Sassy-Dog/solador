@@ -882,6 +882,40 @@ dmg_attach_diag() {
         "$what" "$dmg" "$devs" "$mnt" "$mounted" "$total" "${errtext:+; error: $errtext}" >&2
 }
 
+# The device `hdiutil info` lists for <dmg>, picked out of the entities of the
+# `hdiutil attach -plist` output <plist> (#708). The order of those entities is
+# not stable: an APFS image attaches as the whole disk (/dev/disk18, the one
+# `hdiutil info` lists) plus a synthesized container disk (/dev/disk20, with the
+# mounted volume /dev/disk20s1), and either may come first. Taking the first
+# entity named the synthesized disk about half the time, a number no detach by
+# (device, image) pair ever matched, so the real device stayed attached (#629's
+# identity rule, applied to the wrong number). So each entity, its slice suffix
+# dropped, is looked up in the listing for this image, and the first one there
+# wins. The listing can lag the attach by a moment under load (measured: the
+# first attach of a run, the image not listed yet), so a miss is retried, up to
+# 5 reads 1 s apart. It prints nothing and fails when the listing never names
+# one of them, or cannot be read: a device it cannot match is not a device it
+# may detach.
+dmg_attach_device() {
+    local plist="$1" dmg="$2" listed i dev read_try
+    for ((read_try = 1; read_try <= 5; read_try++)); do
+        if listed="$(dmg_devices_for_image "$dmg")"; then
+            for ((i = 0; ; i++)); do
+                dev="$(printf '%s' "$plist" | plutil -extract "system-entities.$i.dev-entry" raw -o - - 2>/dev/null)" || break
+                dev="${dev%s[0-9]*}"
+                if dmg_in_list "$dev" "$listed"; then
+                    printf '%s\n' "$dev"
+                    return 0
+                fi
+            done
+        fi
+        if ((read_try < 5)); then
+            sleep 1
+        fi
+    done
+    return 1
+}
+
 attach_dmg_readonly() {
     local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile rc started
     ATTACHED_DEV=""
@@ -895,11 +929,8 @@ attach_dmg_readonly() {
         started=$SECONDS
         out="$(hdiutil attach -plist -nobrowse -readonly -noverify -mountpoint "$mnt" "$dmg" 2>"$errfile")" || rc=$?
         if ((rc == 0)); then
-            ATTACHED_DEV="$(printf '%s' "$out" | plutil -extract system-entities.0.dev-entry raw -o - - 2>/dev/null || true)"
             rm -f "$errfile"
-            # With -mountpoint the first entity is the mounted slice
-            # (/dev/disk17s1); `hdiutil info` lists the whole disk (/dev/disk17).
-            ATTACHED_DEV="${ATTACHED_DEV%s[0-9]*}"
+            ATTACHED_DEV="$(dmg_attach_device "$out" "$dmg" || true)"
             if [[ -n "$ATTACHED_DEV" ]]; then
                 return 0
             fi
