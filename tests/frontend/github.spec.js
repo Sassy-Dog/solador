@@ -235,9 +235,11 @@ test("a per-account failure names the account in the header without blanking the
   await expect(page.locator("#reposBody .gh-message")).toHaveCount(0);
 
   // In the header for the reason the Runners warning is: a line under the body
-  // makes the card taller. Both readings come from ONE page load:
-  // layout-stability.js floors a panel body during a boot frame on some loads
-  // and not others, so heights taken on two loads are not comparable.
+  // makes the card taller. Both readings come from ONE page load: whether a
+  // boot frame painted (and so left a floor to release) varies from load to
+  // load, so heights taken on two loads are not comparable. Within one load the
+  // floor is already released when the Full view's rows paint, whenever
+  // layout-stability.js's next frame runs (#707, tested below).
   const degraded = await page.locator("#reposPanel").boundingBox();
   expect(degraded.height).toBeCloseTo(healthy.height, 1);
   // The tile's own name heads its Full view (#640), not the payload's title.
@@ -299,6 +301,123 @@ test("a floor measured by the boot frame is not carried into the Repos Full view
 });
 
 /**
+ * The release in the test above must not wait for a frame (#707). The boot
+ * frame leaves a 200px inline floor on the hidden Full view's body; the key
+ * change that releases it used to be applied only in layout-stability.js's next
+ * animation frame, so the Full view could paint its first rows (and be measured)
+ * with the stale floor whenever that frame ran late on a loaded machine. Here
+ * every animation frame on the page is held for the whole opening (the init
+ * script cannot tell layout-stability's from app.js's own), which makes that
+ * window the whole test: the floor must already be gone when the rows are.
+ */
+test("opening the Repos Full view releases the boot frame's floor before any frame runs", async ({ page, baseURL }) => {
+  const repos = await fixture(baseURL, "sample-repos.json");
+  repos.rows = repos.rows.slice(0, 1); // sparse: natural height is well under the 200px floor
+  await stubTileIpc(page, baseURL, {
+    source: "ghWorkflows", sources: Object.values(GITHUB_TILE),
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { repos, runners: await fixture(baseURL, "sample-runners.json") },
+  });
+  await page.addInitScript(() => {
+    const inner = window.requestAnimationFrame.bind(window);
+    const held = [];
+    window.__holdFrames = false;
+    window.requestAnimationFrame = (callback) => {
+      if (!window.__holdFrames) return inner(callback);
+      held.push(callback);
+      return 0;
+    };
+    window.__runHeldFrames = () => held.splice(0).forEach((callback) => inner(callback));
+    // Holding `dashboard_view` guarantees the boot frame paints (as in the test above).
+    const invoke = window.__TAURI__.core.invoke;
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    window.__releaseDashboard = () => release();
+    window.__TAURI__.core.invoke = (command, args) =>
+      command === "dashboard_view" ? gate.then(() => invoke(command, args)) : invoke(command, args);
+  });
+  await page.goto("/index.html");
+  const body = page.locator("#reposBody");
+  // The boot frame painted: the unhidden Full view floored the body at the CSS 200px.
+  await expect(repoRows(page).first()).toBeVisible();
+  await expect.poll(() => body.evaluate((el) => el.style.minHeight)).toBe("200px");
+  await page.evaluate(() => window.__releaseDashboard());
+  await expect(page.locator(`[data-tile="${tileIdFor("ghWorkflows")}"]`)).toBeVisible();
+
+  await page.evaluate(() => (window.__holdFrames = true));
+  await openTileFull(page, "ghWorkflows");
+  await expect(repoRows(page).first()).toBeVisible();
+  // No frame (so no layout-stability frame) has run since the Full view opened.
+  const { inline, height } = await body.evaluate((el) => ({
+    inline: el.style.minHeight, height: el.getBoundingClientRect().height,
+  }));
+  expect(inline).not.toBe("200px");
+  expect(height).toBeLessThan(200);
+
+  await page.evaluate(() => { window.__holdFrames = false; window.__runHeldFrames(); });
+  // The frame then re-measures: the floor it writes is the natural height, never the boot frame's.
+  await expect.poll(() => body.evaluate((el) => {
+    const floor = parseFloat(el.style.minHeight || "0");
+    return floor > 0 && floor <= Math.ceil(el.getBoundingClientRect().height) && floor !== 200;
+  })).toBe(true);
+});
+
+/**
+ * Closing a Full view is not a release (#695, #707). The hidden body keeps its
+ * floor for the same tile's next opening, and the overview's tiles keep the
+ * floors that retain their space through a short or failed poll: only opening or
+ * switching a Full view drops a floor, and only that resets the page.
+ */
+test("closing a Full view keeps its tile's floor and resets no overview tile", async ({ page, baseURL }) => {
+  const many = await fixture(baseURL, "sample-repos.json");
+  while (many.rows.length < 40) many.rows = many.rows.concat(many.rows);
+  const few = { ...many, rows: many.rows.slice(0, 1) };
+  await stubTileIpc(page, baseURL, {
+    source: "ghWorkflows", sources: Object.values(GITHUB_TILE),
+    cockpit: await fixture(baseURL, "sample-cockpit.json"),
+    answers: { repos: { __frames: [many, few] }, runners: await fixture(baseURL, "sample-runners.json") },
+  });
+  await page.goto("/index.html");
+  const overviewFloor = () => page.locator(`[data-tile="${tileIdFor("ghRunners")}"] .db-tile-content`)
+    .evaluate((el) => el.style.minHeight);
+  await expect(page.locator(`[data-tile="${tileIdFor("ghRunners")}"]`)).toBeVisible();
+  await expect.poll(overviewFloor).not.toBe("");
+  // Drive the overview tile to a floor above its natural height: it measures tall, then
+  // shrinks and holds the taller floor. A page-wide reset on close would re-measure it
+  // down to the natural height, so only then can the assertion below tell.
+  const content = page.locator(`[data-tile="${tileIdFor("ghRunners")}"] .db-tile-content`);
+  await content.evaluate((el) => {
+    const filler = document.createElement("div");
+    filler.id = "tallFiller";
+    filler.style.height = "500px";
+    el.append(filler);
+  });
+  await expect.poll(() => content.evaluate((el) => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(500);
+  await content.evaluate((el) => el.querySelector("#tallFiller").remove());
+  await expect.poll(() => content.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(500);
+  const overview = await overviewFloor();
+  expect(parseFloat(overview)).toBeGreaterThanOrEqual(500);
+
+  await openTileFull(page, "ghWorkflows");
+  const body = page.locator("#reposBody");
+  await expect(repoRows(page)).toHaveCount(many.rows.length);
+  await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).toBeGreaterThan(200);
+  const floorA = await body.evaluate((el) => parseFloat(el.style.minHeight));
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  // Two frames after the close, so a reset the close queued has run.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await overviewFloor(), "closing a Full view does not reset the overview's floors").toBe(overview);
+
+  await advance(page, "repos");
+  await openTileFull(page, "ghWorkflows");
+  await expect(repoRows(page)).toHaveCount(1);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await body.evaluate((el) => parseFloat(el.style.minHeight))).toBe(floorA);
+});
+
+/**
  * Two tiles of one source paint into the same body, so a Full view is keyed on
  * its tile (#691): tile B's Full view must not inherit the floor tile A's
  * measured.
@@ -325,7 +444,8 @@ test("a second Repos tile's Full view does not inherit the first tile's floor", 
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await openTileFull(page, "ghWorkflows", second);
   await expect(repoRows(page)).toHaveCount(1);
-  // The release happens on the next animation frame, so poll for it.
+  // The old floor is dropped as the Full view switches; B's own is measured on the
+  // next animation frame, so poll for it.
   await expect.poll(() => body.evaluate((el) => parseFloat(el.style.minHeight || "0"))).not.toBe(floorA);
   await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(floorA);
   // …and it is B's natural height, not some smaller stale floor.
