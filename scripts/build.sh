@@ -936,7 +936,7 @@ dmg_attach_entities() {
 }
 
 attach_dmg_readonly() {
-    local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile rc started dev_rc ents cmds dev
+    local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile rc started dev_rc ents cmds notes other_listing other d p dev
     ATTACHED_DEV=""
     ATTACH_PREEXISTING="$(dmg_devices_for_image "$dmg")" || {
         log_error "could not read 'hdiutil info' before attaching $dmg"
@@ -962,12 +962,33 @@ attach_dmg_readonly() {
             ents="$(dmg_attach_entities "$out")"
             dmg_attach_diag "attached, but no attach entity was matched to the image (status $dev_rc)" "$mnt" "$dmg" "$ATTACH_PREEXISTING" || true
             release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
-            cmds=""
-            for dev in $ents; do cmds="$cmds${cmds:+; }hdiutil detach -force $dev"; done
+            # What to tell the operator, by the (device, image) rule (#629): a
+            # device is never just a number. Against the last readable listing,
+            # an entity it lists for ANOTHER image is not this build's to
+            # detach, so it gets no command and the other image is not named.
+            # Any other entity gets a command that starts with the check, since
+            # the number may be someone else's by the time it is read. With no
+            # listing to classify against (status 2) every entity gets the
+            # check. Logged, never run.
+            cmds="" notes="" other_listing=""
+            if ((dev_rc != 2)); then
+                other_listing="$(dmg_attached_images)" || other_listing=""
+            fi
+            for dev in $ents; do
+                other=0
+                while IFS=$'\t' read -r d p; do
+                    if [[ -n "$d" && "$d" == "$dev" ]] && ! dmg_same_image "$p" "$dmg"; then other=1; fi
+                done <<< "$other_listing"
+                if ((other)); then
+                    notes="$notes${notes:+; }$dev is listed for another image and is not this build's to detach"
+                else
+                    cmds="$cmds${cmds:+; }if 'hdiutil info' lists $dev for $dmg: hdiutil detach -force $dev"
+                fi
+            done
             if ((dev_rc == 2)); then
-                log_error "hdiutil attached $dmg (entities: ${ents:-none}) but 'hdiutil info' could not be read to find which is its device; if one is still attached: ${cmds:-hdiutil info}"
+                log_error "hdiutil attached $dmg (entities: ${ents:-none}) but 'hdiutil info' could not be read to find which is its device; ${cmds:-run hdiutil info}"
             else
-                log_error "hdiutil attached $dmg (entities: ${ents:-none}) but 'hdiutil info' lists none of them for it; if one is still attached: ${cmds:-hdiutil info}"
+                log_error "hdiutil attached $dmg (entities: ${ents:-none}) but 'hdiutil info' lists none of them for it; ${cmds}${cmds:+${notes:+; }}${notes}"
             fi
             return 1
         fi

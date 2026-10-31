@@ -147,8 +147,12 @@ lists for the image (the listing can lag the attach by a moment under load, so
 a miss is re-read, up to 5 reads 1 s apart), and an attach whose entities the
 listing never names for that image (or a listing that cannot be read) fails
 closed rather than guessing: it records a `dmg attach:` line, sweeps by image,
-and logs the attach's entities with the `hdiutil detach -force <dev>` an
-operator would run (logged, never run). The suite proves both orders, the lag
+and logs the attach's entities. An entity the listing gives to another image is
+reported as not this build's to detach, with no command and without naming that
+image (a device is the (device, image) pair, never its number); any other entity
+gets a check-first command, `if 'hdiutil info' lists <dev> for <dmg>: hdiutil
+detach -force <dev>`, and with an unreadable listing every entity does. Logged,
+never run. The suite proves both orders, the lag
 (the right device after n+1 reads, the read limit spent when never listed), an
 entity listed only under another image, and an unreadable listing against a fake
 `hdiutil`. Detach is retried with a backoff,

@@ -820,8 +820,11 @@ else
 fi
 # Fail closed. Entities `hdiutil info` does not list for this image (unlisted),
 # or lists only under ANOTHER image (the operator's), or a listing that cannot
-# be read: the attach fails, names the entities and the command that removes
-# them, detaches nothing, and never names the operator's image.
+# be read: the attach fails, names the entities, detaches nothing, and never
+# names the operator's image. By the (device, image) rule (#629) a command is
+# offered only for an entity no other image holds, and it starts with the check;
+# an entity the listing gives to another image gets no command at all, and with
+# no listing to classify against every entity gets the check first.
 closed_bad=""
 for order in unlisted other unreadable; do
     result="$(entity_run "$order")"
@@ -832,8 +835,15 @@ for order in unlisted other unreadable; do
     [[ "$result" == "1||"* ]] || closed_bad="$closed_bad [$order status: $result]"
     [[ -z "$(entity_detaches)" ]] || closed_bad="$closed_bad [$order detached: $(entity_detaches)]"
     grep -qF "(entities: $ent) but" "$work/err" || closed_bad="$closed_bad [$order did not name $ent: $(cat "$work/err")]"
-    grep -qF "hdiutil detach -force $ent" "$work/err" || closed_bad="$closed_bad [$order gave no detach command]"
-    grep -q 'OPERATORS' "$work/err" && closed_bad="$closed_bad [$order named the operator's image]"
+    if [[ "$order" == other ]]; then
+        grep -qF "hdiutil detach -force $ent" "$work/err" && closed_bad="$closed_bad [other advised force-detaching the operator's $ent]"
+        grep -qF "$ent is listed for another image and is not this build's to detach" "$work/err" || closed_bad="$closed_bad [other did not say $ent belongs to another image]"
+        grep -q "disk90" "$work/fake-events" && closed_bad="$closed_bad [other sent something for disk90]"
+    else
+        grep -qF "if 'hdiutil info' lists $ent for /elsewhere/mine.dmg: hdiutil detach -force $ent" "$work/err" || closed_bad="$closed_bad [$order gave no check-first detach command]"
+        grep -q 'disk90' "$work/err" "$work/fake-events" && closed_bad="$closed_bad [$order named or touched the operator's disk90]"
+    fi
+    grep -q 'OPERATORS' "$work/err" "$work/fake-events" && closed_bad="$closed_bad [$order named the operator's image]"
     grep -q '^dmg attach: attached, but no attach entity was matched' "$work/err" || closed_bad="$closed_bad [$order wrote no dmg attach line]"
 done
 grep -q "could not be read to find which is its device" "$work/err" || closed_bad="$closed_bad [unreadable message]"
