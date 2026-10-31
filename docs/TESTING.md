@@ -27,7 +27,8 @@
   `Applications` symlink must be present and point at `/Applications`; and,
   #586, only `hdiutil attach`'s transient EAGAIN is retried; #629, a failed
   attempt's device is swept, unless it appears more than 2 s after the last
-  failure), the
+  failure; #708, the device an attach reports is the one `hdiutil info` lists,
+  whichever order `hdiutil attach` names its entities in), the
   notarization outcome test (`scripts/notarize-outcome-test.sh`, #551 — a stub
   `xcrun`: a timed-out wait is "still in progress", never "rejected"), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
@@ -133,7 +134,28 @@ version names it (it is kept, never detached) on its next attach, successful or
 not; once the CalVer moves the image path (`<product>-<version>.dmg`) changes
 and nothing revisits the old one, so `hdiutil info` is how to see it. Detach is by the whole-disk device node
 (`attach_dmg_readonly` leaves it in `ATTACHED_DEV`; a mount point names nothing
-once the unmount succeeds and the eject does not), retried with a backoff,
+once the unmount succeeds and the eject does not). **`ATTACHED_DEV` is the
+device `hdiutil info` lists, not the first entity of the attach (#708):** an APFS
+image attaches as the whole disk plus a synthesized container disk, and
+`hdiutil attach -plist` lists their entities in either order (about half the
+attaches under load put the synthesized disk first). The first entity named a
+number that no (device, image) pair ever matched, so a detach of it was a silent
+no-op and the real device stayed attached, which failed the suite's keep-device
+and reaper cases and its final "nothing still attached" check on roughly one run in a few
+under load, passing on a retry. `dmg_attach_device` now takes the first entity that `hdiutil info`
+lists for the image (the listing can lag the attach by a moment under load, so
+a miss is re-read, up to 5 reads 1 s apart), and an attach whose entities the
+listing never names for that image (or a listing that cannot be read) fails
+closed rather than guessing: it records a `dmg attach:` line, sweeps by image,
+and logs the attach's entities. An entity the listing gives to another image is
+reported as not this build's to detach, with no command and without naming that
+image (a device is the (device, image) pair, never its number); any other entity
+gets a check-first command, `if 'hdiutil info' lists <dev> for <dmg>: hdiutil
+detach -force <dev>`, and with an unreadable listing every entity does. Logged,
+never run. The suite proves both orders, the lag
+(the right device after n+1 reads, the read limit spent when never listed), an
+entity listed only under another image, and an unreadable listing against a fake
+`hdiutil`. Detach is retried with a backoff,
 `-force` only on the last try, then checked against `hdiutil info -plist` (read
 with `plutil`). A device is the pair (device, image path), never its number:
 macOS hands a freed `/dev/diskN` to the next image at once, so the pair is

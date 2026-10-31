@@ -882,8 +882,61 @@ dmg_attach_diag() {
         "$what" "$dmg" "$devs" "$mnt" "$mounted" "$total" "${errtext:+; error: $errtext}" >&2
 }
 
+# The device `hdiutil info` lists for <dmg>, picked out of the entities of the
+# `hdiutil attach -plist` output <plist> (#708). The order of those entities is
+# not stable: an APFS image attaches as the whole disk (/dev/disk18, the one
+# `hdiutil info` lists) plus a synthesized container disk (/dev/disk20, with the
+# mounted volume /dev/disk20s1), and either may come first. Taking the first
+# entity named the synthesized disk about half the time, a number no detach by
+# (device, image) pair ever matched, so the real device stayed attached (#629's
+# identity rule, applied to the wrong number). So each entity, its slice suffix
+# dropped, is looked up in the listing for this image, and the first one there
+# wins. The listing can lag the attach by a moment under load (measured: the
+# first attach of a run, the image not listed yet), so a miss is retried, up to
+# 5 reads 1 s apart. It prints nothing and fails when the listing never names
+# one of them (status 1), or when the last read could not be read (status 2):
+# a device it cannot match is not a device it may detach.
+dmg_attach_device() {
+    local plist="$1" dmg="$2" listed i dev read_try status=1
+    for ((read_try = 1; read_try <= 5; read_try++)); do
+        status=1
+        if ! listed="$(dmg_devices_for_image "$dmg")"; then
+            status=2
+        else
+            for ((i = 0; ; i++)); do
+                dev="$(printf '%s' "$plist" | plutil -extract "system-entities.$i.dev-entry" raw -o - - 2>/dev/null)" || break
+                dev="${dev%s[0-9]*}"
+                if dmg_in_list "$dev" "$listed"; then
+                    printf '%s\n' "$dev"
+                    return 0
+                fi
+            done
+        fi
+        if ((read_try < 5)); then
+            sleep 1
+        fi
+    done
+    return "$status"
+}
+
+# The whole-disk devices named by the entities of an `hdiutil attach -plist`
+# output, slice suffixes dropped, space-separated and unique. For a message that
+# says what to look for: never used to pick a device to detach.
+dmg_attach_entities() {
+    local plist="$1" i dev out=""
+    for ((i = 0; ; i++)); do
+        dev="$(printf '%s' "$plist" | plutil -extract "system-entities.$i.dev-entry" raw -o - - 2>/dev/null)" || break
+        dev="${dev%s[0-9]*}"
+        case " $out " in
+            *" $dev "*) ;;
+            *) out="$out${out:+ }$dev" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 attach_dmg_readonly() {
-    local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile rc started
+    local mnt="$1" dmg="$2" attempt out err="" attempts=5 errfile rc started dev_rc ents cmds notes other_listing other d p dev
     ATTACHED_DEV=""
     ATTACH_PREEXISTING="$(dmg_devices_for_image "$dmg")" || {
         log_error "could not read 'hdiutil info' before attaching $dmg"
@@ -895,19 +948,48 @@ attach_dmg_readonly() {
         started=$SECONDS
         out="$(hdiutil attach -plist -nobrowse -readonly -noverify -mountpoint "$mnt" "$dmg" 2>"$errfile")" || rc=$?
         if ((rc == 0)); then
-            ATTACHED_DEV="$(printf '%s' "$out" | plutil -extract system-entities.0.dev-entry raw -o - - 2>/dev/null || true)"
             rm -f "$errfile"
-            # With -mountpoint the first entity is the mounted slice
-            # (/dev/disk17s1); `hdiutil info` lists the whole disk (/dev/disk17).
-            ATTACHED_DEV="${ATTACHED_DEV%s[0-9]*}"
+            dev_rc=0
+            ATTACHED_DEV="$(dmg_attach_device "$out" "$dmg")" || dev_rc=$?
             if [[ -n "$ATTACHED_DEV" ]]; then
                 return 0
             fi
-            # Attached, but the device is unnamed: detach by image, then fail.
+            # Attached, but no entity is a device this run can match to the
+            # image. Read the state BEFORE the sweep (it detaches silently, #642),
+            # then detach by image, then fail closed naming what to look for.
             # `|| true`: release_dmg_image has already reported any failure on
             # stderr, and the return below is unconditional.
+            ents="$(dmg_attach_entities "$out")"
+            dmg_attach_diag "attached, but no attach entity was matched to the image (status $dev_rc)" "$mnt" "$dmg" "$ATTACH_PREEXISTING" || true
             release_dmg_image "$dmg" "$ATTACH_PREEXISTING" || true
-            log_error "hdiutil attached $dmg but reported no device"
+            # What to tell the operator, by the (device, image) rule (#629): a
+            # device is never just a number. Against the last readable listing,
+            # an entity it lists for ANOTHER image is not this build's to
+            # detach, so it gets no command and the other image is not named.
+            # Any other entity gets a command that starts with the check, since
+            # the number may be someone else's by the time it is read. With no
+            # listing to classify against (status 2) every entity gets the
+            # check. Logged, never run.
+            cmds="" notes="" other_listing=""
+            if ((dev_rc != 2)); then
+                other_listing="$(dmg_attached_images)" || other_listing=""
+            fi
+            for dev in $ents; do
+                other=0
+                while IFS=$'\t' read -r d p; do
+                    if [[ -n "$d" && "$d" == "$dev" ]] && ! dmg_same_image "$p" "$dmg"; then other=1; fi
+                done <<< "$other_listing"
+                if ((other)); then
+                    notes="$notes${notes:+; }$dev is listed for another image and is not this build's to detach"
+                else
+                    cmds="$cmds${cmds:+; }if 'hdiutil info' lists $dev for $dmg: hdiutil detach -force $dev"
+                fi
+            done
+            if ((dev_rc == 2)); then
+                log_error "hdiutil attached $dmg (entities: ${ents:-none}) but 'hdiutil info' could not be read to find which is its device; ${cmds:-run hdiutil info}"
+            else
+                log_error "hdiutil attached $dmg (entities: ${ents:-none}) but 'hdiutil info' lists none of them for it; ${cmds}${cmds:+${notes:+; }}${notes}"
+            fi
             return 1
         fi
         err="$(cat "$errfile")"
