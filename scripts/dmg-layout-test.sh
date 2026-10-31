@@ -107,7 +107,7 @@ trap 'exit 130' INT TERM
 # mutated revision of one function.
 build_sh="${BUILD_SH:-$SCRIPT_DIR/build.sh}"
 lift() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$1"; }
-helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image release_dmg_create_leftover warn_kept_dmg_devices dmg_attach_diag dmg_attach_device"
+helpers="dmg_attached_images dmg_norm_path dmg_same_image dmg_in_list dmg_devices_for_image dmg_device_state detach_dmg_device release_dmg_image release_dmg_create_leftover warn_kept_dmg_devices dmg_attach_diag dmg_attach_device dmg_attach_entities"
 {
     for fn in $helpers; do
         lift "$SCRIPT_DIR/build.sh" "$fn"
@@ -712,9 +712,13 @@ fi
 # disk, and every detach here matches a device by that listing, so an attach
 # that reported the synthesized disk handed back a number nothing could ever
 # detach, and the real device stayed attached. A fake attach lists the entities
-# in the order FAKE_ORDER names: `synth-first`, `whole-first`, or `unlisted`
-# (entities `hdiutil info` never shows). The fake listing also holds an
-# operator's image, which must never be named. Nothing real is touched.
+# in the order FAKE_ORDER names: `synth-first`, `whole-first`, `unlisted`
+# (entities `hdiutil info` never shows), `other` (entities that ARE listed, but
+# for an operator's image, not this one) or `unreadable` (the listing cannot be
+# read once the attach has run). FAKE_LAG=<n> keeps the image out of the first n
+# listings read after the attach (the lag measured under load); every such read
+# is counted in $FAKE_READS. The fake listing also holds an operator's image,
+# which must never be named or detached. Nothing real is touched.
 cat > "$work/entity-hdiutil.sh" <<'EOF'
 entity() { printf '<dict><key>dev-entry</key><string>%s</string></dict>' "$1"; }
 hdiutil() {
@@ -725,12 +729,20 @@ hdiutil() {
             case "$FAKE_ORDER" in
                 synth-first) entity /dev/disk29s1; entity /dev/disk27s1; entity /dev/disk29; entity /dev/disk27 ;;
                 whole-first) entity /dev/disk27; entity /dev/disk27s1; entity /dev/disk29s1; entity /dev/disk29 ;;
-                unlisted) entity /dev/disk55s1; entity /dev/disk55 ;;
+                other) entity /dev/disk90s1; entity /dev/disk90 ;;
+                *) entity /dev/disk55s1; entity /dev/disk55 ;;
             esac
             printf '</array></dict></plist>\n' ;;
         info)
+            local reads=0
+            if grep -qx attach "$FAKE_EVENTS"; then
+                echo read >> "$FAKE_READS"
+                reads="$(wc -l < "$FAKE_READS" | tr -d ' ')"
+                if [[ "$FAKE_ORDER" == unreadable ]]; then echo "not a plist"; return 0; fi
+            fi
             printf '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>images</key><array>'
-            if [[ "$FAKE_ORDER" != unlisted ]] && grep -qx attach "$FAKE_EVENTS" && ! grep -qx 'detach /dev/disk27' "$FAKE_EVENTS"; then
+            case "$FAKE_ORDER" in synth-first|whole-first) ;; *) reads=-1 ;; esac
+            if ((reads > ${FAKE_LAG:-0})) && ! grep -qx 'detach /dev/disk27' "$FAKE_EVENTS"; then
                 printf '<dict><key>image-path</key><string>%s</string><key>system-entities</key><array>' "$FAKE_DMG"
                 entity /dev/disk27; entity /dev/disk27s1; entity /dev/disk29; entity /dev/disk29s1
                 printf '</array></dict>'
@@ -743,19 +755,33 @@ hdiutil() {
 }
 sleep() { :; }
 EOF
-# entity_run <order>: attach_dmg_readonly under the stub, then a detach of the
-# device it reported. Prints "<attach status>|<ATTACHED_DEV>|<devices left on the
-# image>"; the events (attach, detach <dev>) land in $work/fake-events.
+# entity_run <order> [lag]: attach_dmg_readonly under the stub, then a detach of
+# the device it reported. Prints "<attach status>|<ATTACHED_DEV>|<devices left on
+# the image>"; the events (attach, detach <dev>) land in $work/fake-events.
 entity_run() {
-    : > "$work/fake-events"
+    : > "$work/fake-events"; : > "$work/fake-reads"
     (
-        export FAKE_ORDER="$1" FAKE_EVENTS="$work/fake-events" FAKE_DMG=/elsewhere/mine.dmg
+        export FAKE_ORDER="$1" FAKE_LAG="${2:-0}" FAKE_EVENTS="$work/fake-events" FAKE_READS="$work/fake-reads" FAKE_DMG=/elsewhere/mine.dmg
         # shellcheck source=/dev/null
         source "$work/entity-hdiutil.sh"
         rc=0
         attach_dmg_readonly "$work" /elsewhere/mine.dmg || rc=$?
         if [[ -n "$ATTACHED_DEV" ]]; then detach_dmg_device "$ATTACHED_DEV" /elsewhere/mine.dmg || true; fi
         echo "$rc|$ATTACHED_DEV|$(dmg_devices_for_image /elsewhere/mine.dmg | tr '\n' ' ')"
+    ) 2>"$work/err"
+}
+# device_run <order> [lag]: dmg_attach_device alone, on the plist the fake attach
+# hands back. Prints "<status>|<device>|<listings read>".
+device_run() {
+    : > "$work/fake-events"; : > "$work/fake-reads"
+    (
+        export FAKE_ORDER="$1" FAKE_LAG="${2:-0}" FAKE_EVENTS="$work/fake-events" FAKE_READS="$work/fake-reads" FAKE_DMG=/elsewhere/mine.dmg
+        # shellcheck source=/dev/null
+        source "$work/entity-hdiutil.sh"
+        plist="$(hdiutil attach)"
+        rc=0
+        dev="$(dmg_attach_device "$plist" /elsewhere/mine.dmg)" || rc=$?
+        echo "$rc|$dev|$(wc -l < "$FAKE_READS" | tr -d ' ')"
     ) 2>"$work/err"
 }
 # What the fake was asked to do besides attach, one event per line; an empty
@@ -773,12 +799,50 @@ if [[ -z "$entity_bad" ]]; then
 else
     fail "an attach reports the device hdiutil info lists, whichever entity hdiutil attach puts first:$entity_bad"
 fi
-result="$(entity_run unlisted)"
-if [[ "$result" == "1||" ]] && ! grep -q '^detach' "$work/fake-events" && grep -q "reported no device" "$work/err" \
-    && ! grep -q 'disk90\|OPERATORS' "$work/fake-events" "$work/err"; then
-    pass "an attach whose entities hdiutil info does not list fails with no device, and nothing is detached"
+# A listing that lags the attach is re-read: the image is out of the first n
+# reads and the right device is returned after exactly n+1. If nothing is ever
+# listed, the read limit (5) is spent and the status is the no-match one.
+lag_bad=""
+for lag in 0 2 4; do
+    result="$(device_run synth-first "$lag")"
+    [[ "$result" == "0|/dev/disk27|$((lag + 1))" ]] || lag_bad="$lag_bad [lag $lag: $result]"
+done
+result="$(device_run unlisted)"
+[[ "$result" == "1||5" ]] || lag_bad="$lag_bad [unlisted: $result]"
+result="$(device_run other)"
+[[ "$result" == "1||5" ]] || lag_bad="$lag_bad [other image's entities: $result]"
+result="$(device_run unreadable)"
+[[ "$result" == "2||5" ]] || lag_bad="$lag_bad [unreadable: $result]"
+if [[ -z "$lag_bad" ]]; then
+    pass "a listing that lags the attach is re-read until it names the device, and at most 5 times"
 else
-    fail "an attach whose entities hdiutil info does not list fails with no device, and nothing is detached (result $result; events: $(tr '\n' '|' < "$work/fake-events"); $(cat "$work/err"))"
+    fail "a listing that lags the attach is re-read until it names the device, and at most 5 times:$lag_bad"
+fi
+# Fail closed. Entities `hdiutil info` does not list for this image (unlisted),
+# or lists only under ANOTHER image (the operator's), or a listing that cannot
+# be read: the attach fails, names the entities and the command that removes
+# them, detaches nothing, and never names the operator's image.
+closed_bad=""
+for order in unlisted other unreadable; do
+    result="$(entity_run "$order")"
+    case "$order" in
+        other) ent=/dev/disk90 ;;
+        *) ent=/dev/disk55 ;;
+    esac
+    [[ "$result" == "1||"* ]] || closed_bad="$closed_bad [$order status: $result]"
+    [[ -z "$(entity_detaches)" ]] || closed_bad="$closed_bad [$order detached: $(entity_detaches)]"
+    grep -qF "(entities: $ent) but" "$work/err" || closed_bad="$closed_bad [$order did not name $ent: $(cat "$work/err")]"
+    grep -qF "hdiutil detach -force $ent" "$work/err" || closed_bad="$closed_bad [$order gave no detach command]"
+    grep -q 'OPERATORS' "$work/err" && closed_bad="$closed_bad [$order named the operator's image]"
+    grep -q '^dmg attach: attached, but no attach entity was matched' "$work/err" || closed_bad="$closed_bad [$order wrote no dmg attach line]"
+done
+grep -q "could not be read to find which is its device" "$work/err" || closed_bad="$closed_bad [unreadable message]"
+entity_run unlisted >/dev/null
+grep -q "lists none of them for it" "$work/err" || closed_bad="$closed_bad [unlisted message]"
+if [[ -z "$closed_bad" ]]; then
+    pass "an attach no entity of which is listed for the image fails closed, names its entities and the detach command, and detaches nothing"
+else
+    fail "an attach no entity of which is listed for the image fails closed:$closed_bad"
 fi
 
 # A device that finishes attaching AFTER a failed attach reported its error (and
