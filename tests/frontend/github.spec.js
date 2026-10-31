@@ -382,7 +382,21 @@ test("closing a Full view keeps its tile's floor and resets no overview tile", a
     .evaluate((el) => el.style.minHeight);
   await expect(page.locator(`[data-tile="${tileIdFor("ghRunners")}"]`)).toBeVisible();
   await expect.poll(overviewFloor).not.toBe("");
+  // Drive the overview tile to a floor above its natural height: it measures tall, then
+  // shrinks and holds the taller floor. A page-wide reset on close would re-measure it
+  // down to the natural height, so only then can the assertion below tell.
+  const content = page.locator(`[data-tile="${tileIdFor("ghRunners")}"] .db-tile-content`);
+  await content.evaluate((el) => {
+    const filler = document.createElement("div");
+    filler.id = "tallFiller";
+    filler.style.height = "500px";
+    el.append(filler);
+  });
+  await expect.poll(() => content.evaluate((el) => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(500);
+  await content.evaluate((el) => el.querySelector("#tallFiller").remove());
+  await expect.poll(() => content.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(500);
   const overview = await overviewFloor();
+  expect(parseFloat(overview)).toBeGreaterThanOrEqual(500);
 
   await openTileFull(page, "ghWorkflows");
   const body = page.locator("#reposBody");

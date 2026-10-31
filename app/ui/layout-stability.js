@@ -58,9 +58,10 @@
         // A changed key (a Full view opened or switched) drops the old floor now,
         // in this mutation callback, not in the next animation frame: a task that
         // measures before that frame would see the new view at the floor the old
-        // key measured (#707). Closing a Full view is left to the frame: the hidden
-        // body keeps its floor for the same tile's next opening (#695), and only a
-        // release that touched a visible element resets the rest of the page.
+        // key measured (#707). Closing releases nothing: the hidden body keeps its floor
+        // for the same tile's next opening (#695), and the frame never measures it while
+        // it is hidden (only the boot-time Full view, visible with no source, is measured
+        // there). Only a release of a visible element resets the rest of the page.
         const key = configuration(element);
         const closing = element.closest('#fullView') && !element.closest('#fullView').dataset.fullSource;
         if (state.key !== key && !closing) {

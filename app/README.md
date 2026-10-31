@@ -443,10 +443,11 @@ or failed polls do not collapse them. Minimum reservations are 196px for Machine
 list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards. The
 200px and 300px panel floors hold outside a tile's Full view; inside one a panel
 fits its content (`dashboard.css` sets `min-height:0`) and keeps only what
-`layout-stability.js` measured in that same tile's Full view. Opening, switching or
-closing a Full view releases any floor measured under another tile or none;
-opening or switching releases it in the mutation callback, before the next frame or any other task can measure it,
-so a frame painted while the app booted never sizes a Full view. A Full view is
+`layout-stability.js` measured in that same tile's Full view. Opening or switching
+a Full view releases any floor measured under another tile or none, in the mutation
+callback, before the next frame or any other task can measure it, so a frame painted
+while the app booted never sizes a Full view. Closing releases nothing: the hidden
+body keeps its floor for that tile's next opening. A Full view is
 keyed on its tile, so two tiles of one source do not share a floor; a tile keeps
 its own floor until another tile's Full view opens. The release applies to host cards too, whose 960px
 stylesheet floor still holds.
