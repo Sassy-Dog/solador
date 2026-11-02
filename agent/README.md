@@ -98,7 +98,9 @@ Notes:
     agent doesn't know. Existing remote Macs need the updated agent before
     they can supply this reading; an app update alone cannot add it.
   - `gpu` is **measured on Macs** (agent ≥ 0.5.1) **and on hosts with an
-    NVIDIA card** (agent ≥ 0.4.0) — `sysinfo` reports no GPU on any platform.
+    NVIDIA card** (agent ≥ 0.4.0) — not through `sysinfo`, which the agent
+    builds without the `gpu` feature sysinfo added in 0.40, so it contributes
+    no GPU reading on any platform.
     - **macOS** reads IOKit's `IOAccelerator` registry through
       `crates/accelerator`, the same reader and mapping the cockpit uses for
       its own card, so a Mac host's remote card matches what that Mac shows

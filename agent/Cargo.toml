@@ -82,11 +82,12 @@ solador-certpin = { path = "../crates/certpin" }
 serde_json = "1"
 # Same explicit feature set as crates/localhost, not sysinfo's defaults.
 # Both are workspace members now, and cargo unifies features across a workspace
-# build -- so leaving this on defaults would silently hand `components` and
-# `users` back to crates/localhost, whose manifest turns them off on purpose.
+# build -- so leaving this on defaults would silently hand `components`,
+# `users` and (since sysinfo 0.40) `gpu` back to crates/localhost, whose
+# manifest turns them off on purpose.
 # One sysinfo configuration for the whole repo, which is what that comment
 # always intended. The agent uses System/Disks/Networks and nothing else.
-sysinfo = { version = "0.39", default-features = false, features = [
+sysinfo = { version = "0.40", default-features = false, features = [
   "system",
   "disk",
   "network",

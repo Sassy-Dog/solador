@@ -19,8 +19,9 @@ solador-mempressure = { path = "../mempressure" }
 # Same major as `agent/Cargo.toml` so the two samplers share semantics and the
 # repo only ever learns one sysinfo API. Default features off: this crate needs
 # CPU/memory/processes (`system`), mounted filesystems (`disk`) and interface
-# counters (`network`) — not components (temperatures) or users.
-sysinfo = { version = "0.39", default-features = false, features = [
+# counters (`network`) — not components (temperatures), users, or the `gpu`
+# feature sysinfo 0.40 added to its defaults.
+sysinfo = { version = "0.40", default-features = false, features = [
   "system",
   "disk",
   "network",

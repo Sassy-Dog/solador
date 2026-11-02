@@ -1,8 +1,9 @@
 //! GPU sampling: IOKit on a Mac, `nvidia-smi` on an NVIDIA host.
 //!
-//! `sysinfo` reports no GPU on any platform, which is why #183 had the agent
-//! omit the `gpu` object outright rather than keep sending the all-zero one
-//! that predated it. Two sources measure one now:
+//! `sysinfo` had no GPU support when #183 had the agent omit the `gpu` object
+//! outright rather than keep sending the all-zero one that predated it, and the
+//! agent still builds it without the `gpu` feature sysinfo added in 0.40. Two
+//! sources measure one now:
 //!
 //! - **macOS** — the `IOAccelerator` registry, through `crates/accelerator`:
 //!   the same reader, and the same mapping, that fills the cockpit's own card.
@@ -228,7 +229,7 @@ fn physical_memory_bytes() -> u64 {
     System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
     )
-    .total_memory()
+    .map_or(0, |sys| sys.total_memory())
 }
 
 /// The NVIDIA arm: run `nvidia-smi`, read the first GPU out of its output.

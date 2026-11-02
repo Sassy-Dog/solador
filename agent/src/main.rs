@@ -561,7 +561,7 @@ fn init_tracing() {
 
 /// Best-effort hostname for the `/v1/health` response.
 fn hostname() -> String {
-    sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string())
+    sysinfo::System::host_name().unwrap_or_else(|_| "unknown".to_string())
 }
 
 /// The Tailscale CGNAT range (`100.64.0.0/10`, RFC 6598) that `tailscale0`
