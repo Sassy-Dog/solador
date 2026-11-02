@@ -20,7 +20,7 @@ solador-mempressure = { path = "../mempressure" }
 # repo only ever learns one sysinfo API. Default features off: this crate needs
 # CPU/memory/processes (`system`), mounted filesystems (`disk`) and interface
 # counters (`network`) — not components (temperatures) or users.
-sysinfo = { version = "0.39", default-features = false, features = [
+sysinfo = { version = "0.40", default-features = false, features = [
   "system",
   "disk",
   "network",

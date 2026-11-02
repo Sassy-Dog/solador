@@ -86,7 +86,7 @@ serde_json = "1"
 # `users` back to crates/localhost, whose manifest turns them off on purpose.
 # One sysinfo configuration for the whole repo, which is what that comment
 # always intended. The agent uses System/Disks/Networks and nothing else.
-sysinfo = { version = "0.39", default-features = false, features = [
+sysinfo = { version = "0.40", default-features = false, features = [
   "system",
   "disk",
   "network",
