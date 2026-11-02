@@ -56,6 +56,12 @@ pub use thermal::ThermalState;
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
+/// What a sysinfo constructor's `expect` says. Since sysinfo 0.40 the
+/// constructors return `Err(Unsupported)` only on a platform sysinfo has no
+/// backend for; on macOS, Windows and Linux they cannot fail. An `Err` is a
+/// build-target mistake, not a machine state to render as unknown.
+const SYSINFO_SUPPORTED: &str = "sysinfo has a backend for every target this crate builds for";
+
 /// How long between full process enumerations. Matches the original collector's
 /// `processSampleInterval`: enumerating every process is expensive, and the
 /// question it answers ("what has been hogging this machine?") is a
@@ -244,9 +250,9 @@ impl LocalSampler {
     #[must_use]
     pub fn new() -> Self {
         LocalSampler {
-            system: System::new_all(),
-            networks: Networks::new_with_refreshed_list(),
-            disks: Disks::new_with_refreshed_list(),
+            system: System::new_all().expect(SYSINFO_SUPPORTED),
+            networks: Networks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED),
+            disks: Disks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED),
             network_rate: RateTracker::default(),
             disk_rate: RateTracker::default(),
             cpu_refreshed_at: Instant::now(),
@@ -290,7 +296,7 @@ impl LocalSampler {
                         .system
                         .cpus()
                         .iter()
-                        .map(|cpu| f64::from(cpu.cpu_usage()))
+                        .map(|cpu| f64::from(cpu.usage()))
                         .collect(),
                 }),
                 model: self
@@ -343,7 +349,7 @@ impl LocalSampler {
     /// before a baseline exists, same as [`Self::network_rates`].
     fn disk_rates(&mut self, now: Instant) -> wire::Disk {
         let mut counters = Counters::default();
-        for disk in self.disks.list() {
+        for disk in self.disks.iter() {
             let usage = disk.usage();
             counters.inbound = counters.inbound.saturating_add(usage.total_read_bytes);
             counters.outbound = counters.outbound.saturating_add(usage.total_written_bytes);
@@ -359,7 +365,6 @@ impl LocalSampler {
     fn collect_volumes(&self) -> Vec<wire::Volume> {
         let entries: Vec<MountEntry> = self
             .disks
-            .list()
             .iter()
             .map(|disk| MountEntry {
                 mount: disk.mount_point().to_string_lossy().to_string(),
@@ -432,6 +437,7 @@ impl LocalSampler {
 #[must_use]
 pub fn host_name() -> Option<String> {
     System::host_name()
+        .ok()
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
 }

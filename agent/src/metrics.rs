@@ -29,9 +29,9 @@
 //!   Linux thermal zones expose temperatures, and converting those into the
 //!   contract's 0–3 pressure ladder needs per-machine policy we do not know.
 //! - `gpu` — **measured on Macs and on hosts with an NVIDIA card**, never by
-//!   `sysinfo`, which reports no GPU on any platform: IOKit's `IOAccelerator`
-//!   registry on macOS (through `crates/accelerator`, the cockpit's own
-//!   reader), `nvidia-smi` elsewhere (#217). See [`crate::gpu`] for the probe
+//!   `sysinfo`, which the agent builds without its `gpu` feature: IOKit's
+//!   `IOAccelerator` registry on macOS (through `crates/accelerator`, the
+//!   cockpit's own reader), `nvidia-smi` elsewhere (#217). See [`crate::gpu`] for the probe
 //!   and why it never runs on this module's 1s path. Omitted ([`Gpu::unknown`],
 //!   serialising as `{}`) everywhere that probe measures nothing: a Mac with no
 //!   accelerator (a VM), no NVIDIA driver, a failed or hung invocation, or
@@ -63,6 +63,13 @@ use tokio::sync::RwLock;
 // — the contract's `…GB` is 1024-base everywhere or it is inconsistent.
 pub(crate) const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 pub(crate) const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
+
+/// What a sysinfo constructor's `expect` says. Since sysinfo 0.40 the
+/// constructors return `Err(Unsupported)` only on a platform sysinfo has no
+/// backend for; on the Linux and macOS targets the agent ships, and the Windows
+/// leg CI tests it on, they cannot fail. An `Err` is a build-target mistake,
+/// not a host state to report.
+const SYSINFO_SUPPORTED: &str = "sysinfo has a backend for every target the agent builds for";
 
 /// Refresh interval for the background sampler. Disk/network rates are computed
 /// as (delta bytes over this interval) / (interval seconds).
@@ -419,10 +426,10 @@ impl SamplerSystems {
     /// prime also seeds *its* CPU counters, which is what makes the first real
     /// process sample a ~1 s average rather than nothing at all.
     fn new() -> Self {
-        let mut machine = System::new();
+        let mut machine = System::new().expect(SYSINFO_SUPPORTED);
         machine.refresh_cpu_all();
 
-        let mut processes = System::new();
+        let mut processes = System::new().expect(SYSINFO_SUPPORTED);
         processes.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
 
         SamplerSystems { machine, processes }
@@ -642,8 +649,8 @@ pub fn spawn_sampler() -> MetricsState {
 /// every Linux host's TOP CPU list, silently.
 async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
     let mut sys = SamplerSystems::new();
-    let mut networks = Networks::new_with_refreshed_list();
-    let mut disks = Disks::new_with_refreshed_list();
+    let mut networks = Networks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED);
+    let mut disks = Disks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED);
 
     // Read once at startup; the skip policy doesn't change while running.
     let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
@@ -775,7 +782,7 @@ fn compute_snapshot(
 
     // CPU.
     let total_usage = sys.global_cpu_usage() as f64;
-    let core_usages: Vec<f64> = sys.cpus().iter().map(|c| c.cpu_usage() as f64).collect();
+    let core_usages: Vec<f64> = sys.cpus().iter().map(|c| c.usage() as f64).collect();
     let model = sys
         .cpus()
         .first()
@@ -790,7 +797,7 @@ fn compute_snapshot(
 
     // Disk I/O: sum per-disk byte deltas over the interval, then -> MiB/s.
     let (mut read_bytes, mut written_bytes) = (0u64, 0u64);
-    for disk in disks.list() {
+    for disk in disks.iter() {
         let usage = disk.usage();
         read_bytes = read_bytes.saturating_add(usage.read_bytes);
         written_bytes = written_bytes.saturating_add(usage.written_bytes);
@@ -800,7 +807,6 @@ fn compute_snapshot(
 
     // Per-volume usage; see `build_volumes` for the filtering policy.
     let entries: Vec<DiskEntry> = disks
-        .list()
         .iter()
         .map(|disk| DiskEntry {
             mount: disk.mount_point().to_string_lossy().to_string(),
@@ -977,9 +983,9 @@ mod tests {
 
     fn sampled_snapshot_with(pressure: Option<f64>, gpu: Gpu) -> Snapshot {
         compute_snapshot(
-            &System::new(),
-            &Networks::new(),
-            &Disks::new(),
+            &System::new().unwrap(),
+            &Networks::new().unwrap(),
+            &Disks::new().unwrap(),
             1.0,
             Vec::new(),
             &skip_fstypes(None),
@@ -997,9 +1003,9 @@ mod tests {
         use thermal::ThermalState::{Critical, Fair, Nominal, Serious};
         for (state, expected) in [(Nominal, 0), (Fair, 1), (Serious, 2), (Critical, 3)] {
             let snapshot = compute_snapshot(
-                &System::new(),
-                &Networks::new(),
-                &Disks::new(),
+                &System::new().unwrap(),
+                &Networks::new().unwrap(),
+                &Disks::new().unwrap(),
                 1.0,
                 Vec::new(),
                 &skip_fstypes(None),
@@ -1025,9 +1031,9 @@ mod tests {
         use mempressure::Level::{Critical, Normal, Warning};
         let sample = |pressure_level| {
             compute_snapshot(
-                &System::new(),
-                &Networks::new(),
-                &Disks::new(),
+                &System::new().unwrap(),
+                &Networks::new().unwrap(),
+                &Disks::new().unwrap(),
                 1.0,
                 Vec::new(),
                 &skip_fstypes(None),
