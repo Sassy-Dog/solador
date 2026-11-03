@@ -3161,7 +3161,11 @@ test("a below-floor cadence is refused with the floor's reason, not clamped, and
   await expect(error).toContainText(`${c.min}s floor`);
   await expect(error).toContainText(c.help);
   await expect(page.locator("[data-cadence] button .db-action-error")).toHaveCount(0);
-  await expect(section.locator('[data-action="cadence-apply"]')).toHaveAccessibleName(c.applyLabel);
+  // The button reads a bare "Apply", like the tile's own; its accessible name
+  // adds the cadence it applies, so the two are never the same control by name.
+  const apply = section.locator('[data-action="cadence-apply"]');
+  await expect(apply).toHaveText(c.applyLabel);
+  await expect(apply).toHaveAccessibleName(`${c.applyLabel} ${c.label}`);
   // Not clamped to the floor, and the saved state is untouched.
   await expect(section.locator("input")).toHaveValue("30");
   await expect(section.locator(".db-cadence-status")).toHaveText(c.status);

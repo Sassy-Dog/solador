@@ -3039,7 +3039,7 @@ mod tests {
                 {"id": "codex-plan", "label": "Codex · Plus", "value": "out in ~1d 1h",
                  "valueColor": amber, "color": amber, "detail": "…", "metrics": []}
             ],
-            "plansMessage": {"text": "Codex plan limits are off — turn on in Settings",
+            "plansMessage": {"text": "Codex plan limits are off — turn on in Settings → Connections → Add connection → Codex",
                              "color": muted}
         });
         let source = source_view("claudeUsage", "Usage", &payload);

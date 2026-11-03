@@ -115,7 +115,7 @@ pub fn section(settings: &Settings, panel: PanelInterval, titles: &[&str]) -> Va
             interval_label(spec.floor_secs),
             spec.floor_reason,
         ),
-        "applyLabel": "Apply cadence",
+        "applyLabel": "Apply",
         "resetLabel": "Use default",
     })
 }

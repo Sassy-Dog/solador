@@ -611,12 +611,17 @@ page. Each entry names the panels it feeds. GitHub repos and runners share the
 account editor; Sentry usage and scheduled jobs share the Sentry editor.
 **Add connection** opens the appropriate source form. Providers with one saved
 configuration reopen that same configuration. Local monitoring, Claude Code
-logs and automatic provider status are listed separately under Automatic sources.
-**Claude plan limits** and **Codex plan limits** are in **Add connection** too:
-each is one checkbox, off in a fresh store, that lets the Usage panel read that
-tool's own saved sign-in for the plan's limit windows (see
-[the plans' own limits](#the-plans-own-limits)). Like crash reporting, the box
-saves on the click, and a plan is listed as a connection only while it is on.
+and automatic provider status are listed separately under Automatic sources.
+**Claude Code** is one page for everything read from Claude Code: its local
+usage logs, which need nothing, and, under **Plan limits**, the **Read Claude
+Code's sign-in** checkbox, which lets the Usage panel read Claude Code's own
+saved sign-in for the plan's limit windows (see
+[the plans' own limits](#the-plans-own-limits)). While that box is on, the entry
+reads `Local usage logs · plan limits on`; it stays under Automatic sources
+either way. Codex has no local logs, so its checkbox, **Read Codex's sign-in**,
+is on the **Codex** page in **Add connection**, and Codex is listed as a
+connection only while it is on. Both boxes are off in a fresh store and, like
+crash reporting, save on the click.
 
 Configuration badges describe the available evidence: **Configured** means setup
 exists, not that the last network request succeeded. OpenClaw uses its live
@@ -1515,8 +1520,10 @@ await window.__TAURI__.core.invoke("azure_cost");
     //     failure, and `metrics: []`
   ],
   "plansMessage": null, // or {"text": "Claude and Codex plan limits are off —
-                        //    turn on in Settings", "color": …}: ONE muted line
-                        //    naming every plan that is off
+                        //    turn on in Settings → Connections (Claude Code,
+                        //    Add connection → Codex)", "color": …}: ONE muted
+                        //    line naming every plan that is off and where its
+                        //    switch is
   "footer": null,   // ONE line for the panel: Claude's own (staleAfter 2.5 rollup cycles, never under 150s)
                     // plus each plan's and each metered section's, attributed and joined by
                     // `merged_footer` — "⚠ neon: stale · updated 23h ago
@@ -1713,8 +1720,9 @@ the `Unmeasured` enums above exist to prevent, wearing a different costume.
 
 **The Claude and Codex plans publish their own limit windows, and reading them
 means reading another program's credential — so nothing does until the operator
-says so.** Each provider is a checkbox (Settings → Add connection → **Claude
-plan limits** / **Codex plan limits**), persisted as the non-secret
+says so.** Each provider is a checkbox (Settings → Connections → **Claude
+Code** → **Read Claude Code's sign-in**, and Add connection → **Codex** → **Read
+Codex's sign-in**), persisted as the non-secret
 `claude_plan_usage_enabled` / `codex_plan_usage_enabled` and `false` in a fresh
 store. Off, the provider is never read and never woken, and the panel shows one
 muted line for every plan that is off instead of rows of `—`. The mechanism is
@@ -3146,8 +3154,8 @@ and that immediacy is itself the check on the corresponding wake:
 | Configure's three pages (`dashboard_save`, `TILE_VIEWS`, #647) | **Edit dashboard** → the Machines tile's **Configure**: the switch at the top reads **This tile** / **Detail** / **Full view**. On **Full view** set *CPU core rows* to `3`, *Host overflow* to **Show as tabs** and *Row spacing* to `8`, then **Apply** from that page; open a GitHub Runners tile's Configure and check its **Detail** and **Full view** pages each offer Table / List | one **Apply** saves all three pages. The Machines tile's Full view (View menu → **Full view**) shows three core rows and, with two hosts and a narrow window, a tab bar; list rows sit 8px apart. A value outside a field's range (*CPU core rows* `9`) is refused by the field before anything is saved, and pressing **Apply** from **This tile** with that value left on **Full view** switches back to **Full view** with the field focused (Rust refuses the same value on `dashboard_save`; it is clamped, not refused, only when read from a hand-edited `store.json`) |
 | Edit from a Full view | open any tile's **Full view** (tile **View** menu), then press **Edit** in the toolbar. Then press Escape, and press **Edit** on the overview | from the Full view, the overview opens with that tile's **Configure** on its **Full view** page; from the overview, **Configure** opens on **This tile** |
 | a failed `cockpit` read in a Machines tile's Full view (`dashboard::COCKPIT_LOAD_FAILED`, #667) | open a Machines tile's Full view while the `cockpit` command is failing (for example with the app's IPC unavailable, or a host list the read cannot build), then let it recover | the Full view shows Rust's sentence in the loading line's place, never a plain "loading"; when the next read succeeds the sentence goes and the host cards show |
-| `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press **Apply cadence**; then set it to `30` and **Apply cadence**; then press **Use default**; also type `10000000000` and press **Apply cadence** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. `10000000000` is **refused** with `Not saved — … the largest cadence that can be stored` and never with `invalid value`, and the status line is unchanged: that decode at the IPC boundary is covered only by this checklist. A refusal that silently stores `5` instead is the defect this row exists to catch |
-| `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and **Apply cadence**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
+| `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press the section's **Apply**; then set it to `30` and **Apply**; then press **Use default**; also type `10000000000` and press **Apply** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. `10000000000` is **refused** with `Not saved — … the largest cadence that can be stored` and never with `invalid value`, and the status line is unchanged: that decode at the IPC boundary is covered only by this checklist. A refusal that silently stores `5` instead is the defect this row exists to catch |
+| `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and the section's **Apply**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the GitHub Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
@@ -3314,8 +3322,8 @@ and that immediacy is itself the check on the corresponding wake:
    `0.0 CU-h`, and never an unattributed warning that could have come from any
    of the three sections.
 
-   To exercise the plans, tick **Claude plan limits** under Settings →
-   Connections on a machine signed in to Claude Code. Within a poll the
+   To exercise the plans, tick **Read Claude Code's sign-in** under Settings →
+   Connections → **Claude Code** on a machine signed in to Claude Code. Within a poll the
    panel's first block is `Claude · <plan>` (the name Claude Code itself
    displays; `Claude` alone when its profile names none) with one meter per
    limit the reply carries: on a verified Ultra plan, `Week` and `Week ·

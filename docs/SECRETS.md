@@ -28,8 +28,9 @@ Credential Manager on Windows), never in `store.json`.
 
 ### Borrowed sign-ins (read, never stored)
 
-The Usage panel's **plan limits** are off until you tick **Claude plan limits**
-or **Codex plan limits** in Settings → Connections. While one is on, each poll
+The Usage panel's **plan limits** are off until you tick **Read Claude Code's
+sign-in** on Settings → Connections → **Claude Code**, or add the **Codex**
+connection and tick **Read Codex's sign-in**. While one is on, each poll
 reads that tool's *own* saved sign-in, sends one read-only request, and drops
 the token. Nothing is copied into Solador's credential store, and the sign-in
 is never written, refreshed or rotated.

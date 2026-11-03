@@ -1763,9 +1763,13 @@ function connectionEditor() {
   } else if (entry.kind === "local") {
     const hosts = S.view.hosts;
     content = [help(entry.help)];
-  } else if (entry.kind === "claude") content = [help(entry.help)];
-  else if (entry.kind === "claudePlan") content = [planUsageGroup(S.view.planUsage, "claude")];
-  else if (entry.kind === "codexPlan") content = [planUsageGroup(S.view.planUsage, "codex")];
+  } else if (entry.kind === "claude") {
+    // One page for everything read from Claude Code: the local logs, which
+    // need nothing, and the plan limits, which need the operator's consent.
+    const local = group(entry.localHeading);
+    local.appendChild(help(entry.help));
+    content = [local, planUsageGroup(S.view.planUsage, "claude")];
+  } else if (entry.kind === "codexPlan") content = [planUsageGroup(S.view.planUsage, "codex")];
   else if (entry.kind === "services") {
     const add = button(t.addLabel, "connection-add");
     add.addEventListener("click", () => openConnection(t.catalog.find(item => item.kind === "vendor")));

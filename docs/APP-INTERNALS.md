@@ -401,7 +401,9 @@
   read only while the operator has opted in** (`store.json`'s
   `claude_plan_usage_enabled` / `codex_plan_usage_enabled`, both `false` in a
   fresh store and on any store written before them; Settings → Connections →
-  **Claude plan limits** / **Codex plan limits**, saved on the click like the
+  **Claude Code** → **Read Claude Code's sign-in** (the automatic source that
+  also reads the local logs) / Add connection → **Codex** → **Read Codex's
+  sign-in**, saved on the click like the
   crash-reporting toggle). Claude: the macOS keychain item `Claude
   Code-credentials` (account `$USER`), read by `/usr/bin/security`, else
   `~/.claude/.credentials.json`; then `GET
