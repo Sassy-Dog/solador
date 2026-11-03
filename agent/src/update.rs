@@ -4491,7 +4491,8 @@ mod tests {
     /// was "allow" every time; nothing was blocked. So
     /// production's 2 s connect bound is right for the service and too short
     /// for this test. Loopback is never filtered, so every other test keeps
-    /// production's bounds.
+    /// production's bounds. A test binary the firewall has no rule for is
+    /// held past even these bounds: see `firewall_rule_hint`.
     const LAN_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
     const LAN_TOTAL: std::time::Duration = std::time::Duration::from_secs(35);
 
@@ -4505,15 +4506,19 @@ mod tests {
     /// with these diagnostics and the firewall's own log, is the verdict hold
     /// described at `LAN_CONNECT`. The 2026-10-01 measurement that ruled the
     /// firewall out looked for a dialog, not a delay, and its runs that day
-    /// were fast: the hold varies. A failure past those bounds is something
-    /// else, so the failure still carries its own evidence:
+    /// were fast: the hold varies. A failure past those bounds has had one
+    /// cause so far, a test binary the firewall has no rule for (2026-11-02,
+    /// see `firewall_rule_hint`). Anything else still needs its own
+    /// evidence, so the failure carries it:
     ///
     /// - the full error chain, not just the top-level `Debug`;
     /// - a raw TCP connect to the same address, which separates "the path to my
     ///   own address is dead" from "TLS or HTTP failed". A "connected" line
     ///   proves the path only: the kernel's listen backlog completes the
     ///   handshake whether or not the server task is accepting;
-    /// - the route and firewall state the address came from.
+    /// - the route and firewall state the address came from;
+    /// - on macOS, the firewall's rule for this test binary, or that it has
+    ///   none (with how to allow it), or why that is unknown.
     ///
     /// Best-effort throughout: a diagnostic that can itself fail would hide the
     /// failure it exists to describe. Only the failure path runs any of it.
@@ -4555,7 +4560,215 @@ mod tests {
                 let _ = write!(out, "\n    {line}");
             }
         }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = write!(out, "\n  {}", firewall_rule_hint());
+        }
         out
+    }
+
+    /// Where macOS keeps the Application Firewall's command-line tool.
+    const SOCKETFILTERFW: &str = "/usr/libexec/ApplicationFirewall/socketfilterfw";
+
+    /// The firewall's rule for this test binary, and what to do when it has
+    /// none (2026-11-02). The firewall knows an ad-hoc-signed binary by its
+    /// signing identifier, which is its file name, and cargo renames
+    /// `solador_agent-<hash>` whenever a dependency or the package version
+    /// changes. On that date four binaries with no rule were each held past
+    /// `LAN_CONNECT` on every run, while one with an Allow rule passed in
+    /// 0.04 s. `--getappblocked` called an unruled binary "permitted"
+    /// throughout, so this reads `--listapps` instead. (On 2026-10-01 a
+    /// never-seen binary was NOT held; what changed between the two dates is
+    /// unknown.) Only the command runs here; `firewall_rule_message` decides
+    /// what its output means, and is tested on every OS.
+    #[cfg(target_os = "macos")]
+    fn firewall_rule_hint() -> String {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => return format!("firewall rule for this test binary: unknown ({e})"),
+        };
+        let listing = match std::process::Command::new(SOCKETFILTERFW)
+            .arg("--listapps")
+            .output()
+        {
+            Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+            Ok(o) => Err(format!(
+                "{SOCKETFILTERFW} --listapps {}: {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+            )),
+            Err(e) => Err(format!("{SOCKETFILTERFW}: {e}")),
+        };
+        firewall_rule_message(listing.as_deref().map_err(String::as_str), &exe)
+    }
+
+    /// What the failure says about the firewall's rule for `exe`, given
+    /// `socketfilterfw --listapps`'s output or why it could not be read.
+    /// "none" is said only of a listing this recognises, and a verdict it does
+    /// not recognise is reported as such: when the answer is not known the
+    /// reader is told "unknown", never sent to add a rule on a guess.
+    fn firewall_rule_message(listing: Result<&str, &str>, exe: &std::path::Path) -> String {
+        let name = exe.file_name().map_or_else(
+            || exe.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let listing = match listing {
+            Ok(listing) if listing.trim_start().starts_with("Total number of apps") => listing,
+            Ok(_) => {
+                return format!(
+                    "firewall rule for {name}: unknown (unrecognised --listapps output)"
+                )
+            }
+            Err(why) => return format!("firewall rule for {name}: unknown ({why})"),
+        };
+        let quoted = shell_quoted(&exe.display().to_string());
+        let allow_it = format!(
+            "Allow it (System Settings > Network > Firewall > Options, or \
+             `sudo {SOCKETFILTERFW} --add {quoted}` then \
+             `sudo {SOCKETFILTERFW} --unblockapp {quoted}`) and rerun."
+        );
+        match firewall_rule_in(listing, &name) {
+            Some(rule @ "(Allow incoming connections)") => {
+                format!("firewall rule for {name}: {rule}")
+            }
+            Some(rule @ "(Block incoming connections)") => {
+                format!("firewall rule for {name}: {rule}. {allow_it}")
+            }
+            Some(rule) => {
+                format!("firewall rule for {name}: unknown (unrecognised verdict line {rule:?})")
+            }
+            None => format!(
+                "firewall rule for {name}: none. If the firewall is enabled (above), \
+                 it holds inbound connections to a binary it has no rule for, and cargo \
+                 gives this one a new name whenever a dependency or the version changes. \
+                 {allow_it}"
+            ),
+        }
+    }
+
+    /// `s` as one single-quoted POSIX shell word. The hint's commands are
+    /// pasted under `sudo`, and a checkout path may hold a space or a `$(`.
+    fn shell_quoted(s: &str) -> String {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+
+    /// The line `socketfilterfw --listapps` prints under the rule for a binary
+    /// named `name` (empty if the listing ends there), or `None` when no rule
+    /// names it. Matched by file name rather than path: the firewall matches by
+    /// signing identifier, so a rule added for the same file name in another
+    /// checkout applies here too. Each rule is `N : <path>` followed by an
+    /// indented `(Allow incoming connections)` or `(Block incoming connections)`.
+    fn firewall_rule_in<'a>(listing: &'a str, name: &str) -> Option<&'a str> {
+        let mut lines = listing.lines();
+        while let Some(line) = lines.next() {
+            let path = line.trim_end();
+            if path.contains('/') && path.rsplit('/').next() == Some(name) {
+                return Some(lines.next().map_or("", str::trim));
+            }
+        }
+        None
+    }
+
+    /// `--listapps` in the shape this macOS printed on 2026-11-02, trailing
+    /// spaces kept; the paths and verdicts are made up.
+    const LISTAPPS: &str = "Total number of apps = 3 \n\
+        1 : /Users/x/solador/.claude/worktrees/a/target/debug/deps/solador_agent-eb74bb751298a652 \n\
+        \x20            (Allow incoming connections)\n\
+        2 : /Users/x/solador/target/debug/deps/solador_agent-dc05677a05e55727 \n\
+        \x20            (Block incoming connections)\n\
+        3 : /Users/sassydog-agents/.local/bin/solador-agent \n\
+        \x20            (Allow incoming connections)\n";
+
+    #[test]
+    fn firewall_rule_in_reads_the_line_under_a_matching_file_name() {
+        // A rule made in another checkout matches by file name.
+        let allow = firewall_rule_in(LISTAPPS, "solador_agent-eb74bb751298a652");
+        assert_eq!(allow, Some("(Allow incoming connections)"));
+        let block = firewall_rule_in(LISTAPPS, "solador_agent-dc05677a05e55727");
+        assert_eq!(block, Some("(Block incoming connections)"));
+        let crlf = LISTAPPS.replace('\n', "\r\n");
+        let block = firewall_rule_in(&crlf, "solador_agent-dc05677a05e55727");
+        assert_eq!(block, Some("(Block incoming connections)"));
+
+        // A new hash has no rule; neither does a name that is only a suffix
+        // of a listed one, nor one that is only a directory on a listed path.
+        assert_eq!(
+            firewall_rule_in(LISTAPPS, "solador_agent-21789bb75aa8c52e"),
+            None
+        );
+        assert_eq!(firewall_rule_in(LISTAPPS, "agent-eb74bb751298a652"), None);
+        assert_eq!(firewall_rule_in(LISTAPPS, "deps"), None);
+        assert_eq!(firewall_rule_in("", "solador_agent-eb74bb751298a652"), None);
+
+        // A match with no verdict under it yields whatever is there, which
+        // `firewall_rule_message` reports as unrecognised.
+        let at_end = "Total number of apps = 1 \n1 : /x/solador_agent-a \n";
+        assert_eq!(firewall_rule_in(at_end, "solador_agent-a"), Some(""));
+        let next_path = "1 : /x/solador_agent-a \n2 : /x/solador_agent-b \n";
+        assert_eq!(
+            firewall_rule_in(next_path, "solador_agent-a"),
+            Some("2 : /x/solador_agent-b")
+        );
+    }
+
+    #[test]
+    fn firewall_rule_message_says_unknown_rather_than_guess_and_quotes_the_path() {
+        // One literal per path, never `Path::join`: on the Windows leg, which
+        // runs these tests, `join` inserts `\` and the expected `/` would miss.
+        let exe = |name: &str| {
+            std::path::PathBuf::from(format!("/Users/x/My Repo's $(id)/target/debug/deps/{name}"))
+        };
+        let quoted =
+            |name: &str| format!(r"'/Users/x/My Repo'\''s $(id)/target/debug/deps/{name}'");
+
+        let name = "solador_agent-eb74bb751298a652";
+        assert_eq!(
+            firewall_rule_message(Ok(LISTAPPS), &exe(name)),
+            format!("firewall rule for {name}: (Allow incoming connections)")
+        );
+
+        for (name, verdict) in [
+            (
+                "solador_agent-dc05677a05e55727",
+                "(Block incoming connections).",
+            ),
+            ("solador_agent-21789bb75aa8c52e", "none."),
+        ] {
+            let said = firewall_rule_message(Ok(LISTAPPS), &exe(name));
+            assert!(
+                said.starts_with(&format!("firewall rule for {name}: {verdict}")),
+                "{said}"
+            );
+            for flag in ["--add", "--unblockapp"] {
+                let command = format!("`sudo {SOCKETFILTERFW} {flag} {}`", quoted(name));
+                assert!(said.contains(&command), "{said}");
+            }
+        }
+
+        // Nothing read, or nothing recognisable: unknown, and no advice.
+        let name = "solador_agent-dc05677a05e55727";
+        let no_verdict = "Total number of apps = 1 \n1 : /x/solador_agent-dc05677a05e55727 \n";
+        for (listing, why) in [
+            (
+                Err("socketfilterfw: denied"),
+                "unknown (socketfilterfw: denied)",
+            ),
+            (Ok(""), "unknown (unrecognised --listapps output)"),
+            (
+                Ok("A listing in some new format\n"),
+                "unknown (unrecognised --listapps output)",
+            ),
+            (Ok(no_verdict), "unknown (unrecognised verdict line \"\")"),
+        ] {
+            assert_eq!(
+                firewall_rule_message(listing, &exe(name)),
+                format!("firewall rule for {name}: {why}")
+            );
+        }
     }
 
     /// The host commands behind [`self_connect_diagnostics`]. `192.0.2.1` is
@@ -4567,11 +4780,7 @@ mod tests {
     fn host_context_commands() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
         vec![
             ("route", "/sbin/route", &["-n", "get", "192.0.2.1"]),
-            (
-                "firewall",
-                "/usr/libexec/ApplicationFirewall/socketfilterfw",
-                &["--getglobalstate"],
-            ),
+            ("firewall", SOCKETFILTERFW, &["--getglobalstate"]),
         ]
     }
 
