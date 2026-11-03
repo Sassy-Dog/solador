@@ -682,6 +682,52 @@ test('GPU memory reads VRAM, and a unified machine says so on RAM and VRAM', asy
   await expect(cards.nth(1).locator('.db-metric').nth(3)).toContainText('22.1 / 24 GB');
 });
 
+// A Usage tile in place of the Services one: the default overview has none.
+const withUsageTile = (view) => {
+  const services = view.layout.tiles.find(t => t.source === 'services');
+  Object.assign(services, {id:'overview-claudeUsage', source:'claudeUsage', title:'Usage'});
+};
+
+test('the Usage tile leads with each plan as a row of the Machines tile\'s meters', async ({page,baseURL}) => {
+  const view = await openDashboard(page, baseURL, false, withUsageTile);
+  const source = view.sources.find(s => s.id === 'claudeUsage');
+  const plans = source.rows.filter(r => r.scopes.includes('plans'));
+  expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, 2).map(r => r.id));
+  expect(source.rows.filter(r => r.label === 'Claude Code'), 'the tokens are one line').toHaveLength(1);
+  // A row with meters is a card, as a machine is.
+  const items = tile(page, 'claudeUsage').locator('.db-host');
+  await expect(items).toHaveCount(plans.length);
+  for (const [i, plan] of plans.entries()) {
+    const item = items.nth(i);
+    await expect(item.locator('.db-value')).toHaveText(plan.value);
+    const rgb = await item.locator('.db-value').evaluate(el => getComputedStyle(el).color);
+    expect(rgb, 'the verdict in Rust\'s colour').toBe(await page.evaluate(hex => {
+      const n = parseInt(hex.slice(1), 16);
+      return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+    }, plan.valueColor));
+    const metrics = item.locator('.db-metric');
+    await expect(metrics).toHaveCount(plan.metrics.length);
+    for (const [j, m] of plan.metrics.entries()) {
+      const meter = tile(page, 'claudeUsage').getByRole('meter', {name:`${plan.label} ${m.label}`, exact:true});
+      await expect(meter).toHaveAttribute('aria-valuetext', m.value);
+      await expect(meter).toHaveAttribute('aria-description', m.note);
+      // The note is the hover title on the tile, not a line under the meter.
+      await expect(metrics.nth(j)).toHaveAttribute('title', m.note);
+      await expect(metrics.nth(j).locator('.db-meter-note')).toHaveCount(0);
+      await expect(meter.locator('.db-meter-pace')).toHaveCount(m.pace === null ? 0 : 1);
+    }
+  }
+  // An amber verdict is a forecast, so the tile asks for no attention for it.
+  expect(plans.some(r => r.valueColor === '#e0a03a' && !r.attention)).toBe(true);
+
+  // Detail lists each limit as a column of its own.
+  await openDetail(page, 'claudeUsage');
+  const headers = await page.locator('#dashboardOverview .db-detail-table thead th').allTextContents();
+  for (const label of new Set(plans.flatMap(r => r.metrics.map(m => m.label)))) {
+    expect(headers.map(h => h.toLowerCase())).toContain(label.toLowerCase());
+  }
+});
+
 test('a Machines tile can drop its Disk strip, and only Machines tiles offer it', async ({page,baseURL}) => {
   await openDashboard(page,baseURL);
   await action(page,'edit').click();

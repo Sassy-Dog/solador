@@ -17,8 +17,9 @@
 //!    `Retry-After` pushes that provider's next read out; a refused keychain
 //!    **parks** Claude until the toggle is flipped, so a "Deny" is not asked
 //!    again every 15 minutes.
-//! 3. **The rows.** Words and colours come from `viewmodel::plan_usage`; this
-//!    module only assembles them into the panel's payload.
+//! 3. **The rows.** Words, colours and pace come from `viewmodel::plan_usage`;
+//!    this module only assembles them into the panel's payload: one row per
+//!    plan (`Claude · Ultra`), carrying a meter per limit.
 //!
 //! # Never the token
 //!
@@ -31,22 +32,24 @@
 //!
 //! These rows are a different reading from the panel's token rollups, which
 //! are this machine's consumption from local logs and are attributed to no
-//! account. Plan rows are labelled `CLAUDE PLAN (…)` / `CODEX PLAN (…)`, render
-//! in their own block, and never mix with the rollups.
+//! account. A plan row is named by its provider and plan, its meters by their
+//! limit (`5h`, `Week`, `Budget`), and the rollups sit apart under the panel's
+//! "This machine" heading as `LAST 5H` / `LAST 7D`, so the two never read as
+//! one figure.
 
 use std::future::Future;
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
 use subscription::{
-    PlanErrorKind, PlanUsage, PlanUsageError, PlanWindow, Provider, Slot, WindowSpan,
+    Money, PlanErrorKind, PlanUsage, PlanUsageError, PlanWindow, Provider, Slot, WindowSpan,
     NO_WINDOWS_MESSAGE,
 };
 use viewmodel::color;
 use viewmodel::freshness::Freshness;
 use viewmodel::plan_usage as vm;
 
-use crate::panel::{attributed_freshness_payload, attributed_status_footer, progress_bar};
+use crate::panel::{attributed_freshness_payload, attributed_status_footer};
 use crate::usage::{ProviderState, UsageState};
 
 /// The Claude plan section's id. Also its attribution in the header line.
@@ -70,15 +73,7 @@ pub const fn section_id(provider: Provider) -> &'static str {
     }
 }
 
-/// The provider's name as its rows are labelled.
-const fn row_name(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => "CLAUDE",
-        Provider::Codex => "CODEX",
-    }
-}
-
-/// The provider's name in the setup line.
+/// The provider's name, in its plan row and in the setup line.
 const fn plain_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => "Claude",
@@ -446,7 +441,7 @@ pub fn view(claude: &PlanSource, codex: &PlanSource, inputs: PlanInputs, now: u6
         }
         let id = section_id(provider);
         plan.sections
-            .push(json!({ "id": id, "rows": rows(provider, source, enabled, now) }));
+            .push(section(provider, source, enabled, now, inputs.cadence_secs));
         // Twice the cadence: one missed read is not yet a stuck poller.
         plan.warnings.push(attributed_status_footer(
             id,
@@ -470,29 +465,58 @@ pub fn view(claude: &PlanSource, codex: &PlanSource, inputs: PlanInputs, now: u6
     plan
 }
 
-/// One provider's rows: one per window, or a single placeholder.
-fn rows(provider: Provider, source: &PlanSource, enabled: bool, now: u64) -> Vec<Value> {
-    let name = row_name(provider);
-    let windows = source
+/// One provider's section: its plan row and that row's meters, or a single
+/// placeholder row with no meters while there is nothing to show.
+fn section(
+    provider: Provider,
+    source: &PlanSource,
+    enabled: bool,
+    now: u64,
+    cadence_secs: u64,
+) -> Value {
+    let id = section_id(provider);
+    let name = plain_name(provider);
+    let reading = source
         .state
         .summary
         .as_ref()
-        .map(|reading| reading.windows.as_slice())
-        .unwrap_or_default();
-    if windows.is_empty() {
-        return vec![row_json(&vm::placeholder_row(
-            name,
-            source.is_loading(enabled),
-        ))];
-    }
-    let now = i64::try_from(now).unwrap_or(i64::MAX);
-    windows
-        .iter()
-        .map(|window| row_json(&vm::row(name, &mirror(window), now)))
-        .collect()
+        .filter(|reading| !reading.is_empty());
+    let Some(reading) = reading else {
+        // A plan name with no limits is not a reading, but it is still the
+        // plan: `Claude · Ultra  —` says more than `Claude  —`.
+        let plan = source
+            .state
+            .summary
+            .as_ref()
+            .and_then(|reading| reading.plan.as_deref());
+        let label = vm::provider_label(name, plan);
+        return row_json(id, &vm::placeholder_row(&label, source.is_loading(enabled)));
+    };
+    // Pace is judged at the reading's own time, and only while it is inside the
+    // same stale edge the header warns at. A reading with no time is not fresh.
+    let (read_at, fresh) = match source.state.last_updated {
+        Some(at) => (at, now.saturating_sub(at) <= cadence_secs.saturating_mul(2)),
+        None => (now, false),
+    };
+    let secs = |at: u64| i64::try_from(at).unwrap_or(i64::MAX);
+    let row = vm::plan_row(name, &mirror_plan(reading), secs(now), secs(read_at), fresh);
+    row_json(id, &row)
 }
 
-fn mirror(window: &PlanWindow) -> vm::Window {
+fn mirror_plan(reading: &PlanUsage) -> vm::Plan {
+    vm::Plan {
+        name: reading.plan.clone(),
+        windows: reading.windows.iter().map(mirror_window).collect(),
+        spend: reading.spend.as_ref().map(|spend| vm::Spend {
+            used: spend.used.as_ref().map(mirror_money),
+            limit: spend.limit.as_ref().map(mirror_money),
+            stated_percent: spend.stated_percent,
+            enabled: spend.enabled,
+        }),
+    }
+}
+
+fn mirror_window(window: &PlanWindow) -> vm::Window {
     vm::Window {
         span: match window.span {
             WindowSpan::Minutes(minutes) => vm::Span::Minutes(minutes),
@@ -505,16 +529,42 @@ fn mirror(window: &PlanWindow) -> vm::Window {
     }
 }
 
-/// A row as the panel's other rows are shaped, plus its own `bar`.
-fn row_json(row: &vm::Row) -> Value {
+fn mirror_money(money: &Money) -> vm::Money {
+    vm::Money {
+        minor: money.minor,
+        exponent: money.exponent,
+        currency: money.currency.clone(),
+    }
+}
+
+/// A plan section as the panel and the tile both read it: the row the tile
+/// lists, and the meters under it.
+fn row_json(id: &str, row: &vm::PlanRow) -> Value {
     json!({
+        "id": id,
         "label": row.label,
         "value": row.value,
-        "valueColor": color::hex(row.color),
-        "bar": row.bar.map_or(Value::Null, |fraction| {
-            progress_bar(fraction, vm::BAR_AMBER_AT, vm::BAR_RED_AT)
-        }),
+        "valueColor": color::hex(row.value_color),
+        "color": color::hex(row.color),
+        "detail": row.detail,
+        "metrics": row.metrics.iter().map(metric_json).collect::<Vec<_>>(),
     })
+}
+
+/// One meter, in the Machines tile's metric shape plus a pace tick and a note.
+fn metric_json(metric: &vm::Metric) -> Value {
+    let mut out = json!({
+        "label": metric.label,
+        "value": metric.value,
+        "fraction": metric.fraction,
+        "color": color::hex(metric.color),
+        "pace": metric.pace,
+        "note": metric.note,
+    });
+    if metric.full {
+        out["span"] = json!("full");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -546,6 +596,26 @@ mod tests {
                     resets_at: Some(at(NOW + 3 * 86_400)),
                 },
             ],
+            ..PlanUsage::default()
+        }
+    }
+
+    /// An Enterprise seat: no windows, a dollar budget.
+    fn enterprise() -> PlanUsage {
+        let usd = |minor| Money {
+            minor,
+            exponent: 2,
+            currency: Some("USD".into()),
+        };
+        PlanUsage {
+            plan: Some("Enterprise".into()),
+            windows: vec![],
+            spend: Some(subscription::PlanSpend {
+                used: Some(usd(31_245)),
+                limit: Some(usd(50_000)),
+                stated_percent: Some(62.49),
+                enabled: None,
+            }),
         }
     }
 
@@ -939,7 +1009,11 @@ mod tests {
     #[tokio::test]
     async fn an_answer_with_no_windows_is_a_reading_that_says_so() {
         let usage = Mutex::new(UsageState::new());
-        let empty = PlanUsage { windows: vec![] };
+        // A plan name alone is not a reading.
+        let empty = PlanUsage {
+            plan: Some("Ultra".into()),
+            ..PlanUsage::default()
+        };
         pass(
             &usage,
             Provider::Claude,
@@ -1251,11 +1325,11 @@ mod tests {
             NOW,
         );
         assert!(v.loading);
-        assert_eq!(v.sections[0]["id"], CLAUDE_ID);
-        let row = &v.sections[0]["rows"][0];
-        assert_eq!(row["label"], "CLAUDE PLAN");
-        assert_eq!(row["value"], vm::LOADING_VALUE);
-        assert!(row["bar"].is_null());
+        let plan = &v.sections[0];
+        assert_eq!(plan["id"], CLAUDE_ID);
+        assert_eq!(plan["label"], "Claude");
+        assert_eq!(plan["value"], vm::LOADING_VALUE);
+        assert_eq!(plan["metrics"], json!([]));
     }
 
     #[test]
@@ -1266,66 +1340,153 @@ mod tests {
             .failed("Codex not found — install it and sign in".into());
         let v = view(&PlanSource::default(), &codex, on(false, true), NOW);
         assert!(!v.loading);
-        assert_eq!(v.sections[0]["rows"][0]["value"], "—");
+        assert_eq!(v.sections[0]["id"], CODEX_ID);
+        assert_eq!(v.sections[0]["value"], vm::NO_READING_VALUE);
+        assert_eq!(v.sections[0]["metrics"], json!([]));
         assert_eq!(
             v.warnings[0]["text"],
             "⚠ codex-plan: Codex not found — install it and sign in"
         );
     }
 
+    /// One row per plan, one meter per window, the verdict the tightest.
     #[test]
-    fn a_reading_renders_one_row_per_window_with_a_meter_coloured_bar() {
+    fn a_reading_is_one_plan_row_with_a_meter_per_window() {
+        let mut claude = PlanSource::default();
+        let mut max = reading();
+        max.plan = Some("Max".into());
+        claude.state.succeeded(max, NOW, None);
+        let v = view(&claude, &PlanSource::default(), on(true, false), NOW);
+        let plan = &v.sections[0];
+        assert_eq!(plan["label"], "Claude · Max");
+        // The Fable week: 93% with 4 of 7 days gone runs out in ~7h 13m.
+        assert_eq!(plan["value"], "out in ~7h 13m");
+        assert_eq!(plan["valueColor"], color::hex(color::AMBER));
+        assert_eq!(plan["color"], color::hex(color::RED), "the worst meter");
+        assert!(plan["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("Week · Fable is at 93%"));
+
+        let metrics = plan["metrics"].as_array().unwrap();
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0]["label"], "5h");
+        assert_eq!(metrics[0]["value"], "42%");
+        assert_eq!(metrics[0]["fraction"], 0.42);
+        assert_eq!(metrics[0]["color"], color::hex(color::GREEN));
+        assert_eq!(metrics[0]["note"], "resets in 2h 14m · on pace for 76%");
+        let tick = metrics[0]["pace"].as_f64().unwrap();
+        assert!((tick - 166.0 / 300.0).abs() < 1e-9, "{tick}");
+        assert!(metrics[0].get("span").is_none());
+        assert_eq!(metrics[1]["label"], "Week · Fable");
+        assert_eq!(metrics[1]["color"], color::hex(color::RED));
+        assert!(v.warnings[0].is_null(), "a healthy section raises nothing");
+    }
+
+    /// The pace is the reading's, not the clock's: the tick stays put as time
+    /// passes, and past the stale edge there is no pace at all.
+    #[test]
+    fn pace_is_frozen_at_the_read_and_hidden_once_stale() {
         let mut claude = PlanSource::default();
         claude.state.succeeded(reading(), NOW, None);
-        let v = view(&claude, &PlanSource::default(), on(true, false), NOW);
-        let rows = v.sections[0]["rows"].as_array().unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["label"], "CLAUDE PLAN (5H)");
-        assert_eq!(rows[0]["value"], "42% · resets in 2h 14m");
-        assert_eq!(rows[0]["valueColor"], color::hex(color::GREEN));
-        assert_eq!(rows[0]["bar"]["fraction"], 0.42);
-        assert_eq!(rows[1]["label"], "CLAUDE PLAN (WEEK · FABLE)");
-        assert_eq!(rows[1]["valueColor"], color::hex(color::RED));
-        assert_eq!(rows[1]["bar"]["color"], color::hex(color::RED));
-        assert!(v.warnings[0].is_null(), "a healthy section raises nothing");
+        let later = view(
+            &claude,
+            &PlanSource::default(),
+            on(true, false),
+            NOW + CADENCE,
+        );
+        let session = &later.sections[0]["metrics"][0];
+        let tick = session["pace"].as_f64().unwrap();
+        assert!((tick - 166.0 / 300.0).abs() < 1e-9, "{tick}");
+        assert_eq!(session["note"], "resets in 1h 59m · on pace for 76%");
+
+        let stale = view(
+            &claude,
+            &PlanSource::default(),
+            on(true, false),
+            NOW + 2 * CADENCE + 1,
+        );
+        let plan = &stale.sections[0];
+        assert!(plan["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["pace"].is_null()));
+        assert_eq!(plan["value"], "resets in 2d 23h");
+        assert_eq!(plan["valueColor"], color::hex(color::MUTED));
+    }
+
+    /// An Enterprise seat is a budget: one full-width meter, no pace, and no
+    /// "no windows" warning, because a spend is a reading.
+    #[tokio::test]
+    async fn a_budget_with_no_windows_is_a_reading_with_one_budget_meter() {
+        let usage = Mutex::new(UsageState::new());
+        pass(
+            &usage,
+            Provider::Claude,
+            true,
+            NOW,
+            &Calls::new(),
+            Ok("token"),
+            Ok(enterprise()),
+        )
+        .await;
+        let state = usage.lock().unwrap();
+        let claude = state.plan(Provider::Claude);
+        assert_eq!(claude.state.last_error, None);
+        let v = view(claude, &PlanSource::default(), on(true, false), NOW);
+        let plan = &v.sections[0];
+        assert_eq!(plan["label"], "Claude · Enterprise");
+        assert_eq!(plan["value"], "62% of budget");
+        assert_eq!(plan["valueColor"], color::hex(color::GREEN));
+        let budget = &plan["metrics"][0];
+        assert_eq!(budget["label"], "Budget");
+        assert_eq!(budget["value"], "$312 / $500 · 62%");
+        assert_eq!(budget["span"], "full");
+        assert!(budget["pace"].is_null());
+        assert!(v.warnings[0].is_null());
     }
 
     /// An empty answer is the dash, and the header says why.
     #[test]
     fn an_empty_reading_is_a_dash_and_says_no_windows() {
         let mut codex = PlanSource::default();
-        codex.state.succeeded(
-            PlanUsage { windows: vec![] },
-            NOW,
-            Some(NO_WINDOWS_MESSAGE.into()),
-        );
+        codex
+            .state
+            .succeeded(PlanUsage::default(), NOW, Some(NO_WINDOWS_MESSAGE.into()));
         let v = view(&PlanSource::default(), &codex, on(false, true), NOW);
-        assert_eq!(v.sections[0]["rows"][0]["value"], "—");
+        assert_eq!(v.sections[0]["value"], vm::NO_READING_VALUE);
+        assert_eq!(v.sections[0]["metrics"], json!([]));
         assert!(v.warnings[0]["text"]
             .as_str()
             .unwrap()
             .contains(NO_WINDOWS_MESSAGE));
     }
 
-    /// A Codex window with no stated length keeps its slot name.
+    /// A Codex window with no stated length keeps its slot name, and has no pace.
     #[test]
     fn an_unstated_window_keeps_its_slot_label() {
         let mut codex = PlanSource::default();
         codex.state.succeeded(
             PlanUsage {
+                plan: Some("plus".into()),
                 windows: vec![PlanWindow {
                     span: WindowSpan::Unstated(Slot::Secondary),
                     scope: None,
                     used_percent: 5.0,
                     resets_at: None,
                 }],
+                spend: None,
             },
             NOW,
             None,
         );
         let v = view(&PlanSource::default(), &codex, on(false, true), NOW);
-        assert_eq!(v.sections[0]["rows"][0]["label"], "CODEX PLAN (SECONDARY)");
-        assert_eq!(v.sections[0]["rows"][0]["value"], "5%");
+        assert_eq!(v.sections[0]["label"], "Codex · Plus");
+        let metric = &v.sections[0]["metrics"][0];
+        assert_eq!(metric["label"], "Secondary");
+        assert_eq!(metric["value"], "5%");
+        assert!(metric["pace"].is_null());
     }
 
     /// The staleness warning sits at twice the cadence, so a longer cadence

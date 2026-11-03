@@ -1,5 +1,6 @@
-// The Usage panel: Claude Code token rollups, the Claude and Codex plans' own
-// limit windows when the operator has turned those on, plus a Neon, Sentry and
+// The Usage panel: the Claude and Codex plans' own limits when the operator
+// has turned those on, drawn with the Machines tile's meters (`meter.js`),
+// then Claude Code's token rollups for this machine, plus a Neon, Sentry and
 // Vercel section when those providers are configured. Same discipline as every
 // other panel
 // here: each string, colour and figure arrives from Rust
@@ -23,7 +24,8 @@
 // scope, so a top-level `function render()` here would silently REPLACE app.js's
 // and every host card would stop painting (settings.js learned this the hard
 // way). The only names crossing the boundary are the two app.js exposes —
-// `callRust` and `settingsOpen` — plus the test hook at the bottom.
+// `callRust` and `settingsOpen` — meter.js's `soladorMeter`, and the test hook
+// at the bottom.
 (function () {
 
 /** How often the panel asks Rust for a fresh payload.
@@ -127,22 +129,27 @@ function providerNode(provider) {
 }
 
 /**
- * One plan section: a divider, then each window as a row with its own bar.
+ * One plan section: a divider, the plan's header row (`Claude · Ultra` and
+ * Rust's verdict), then a meter per limit.
  *
- * A bar per row rather than one per section, because each window is its own
- * limit (the 5-hour session and the week fill independently). `bar` is `null`
- * when Rust has nothing honest to draw: no reading yet, or a window whose reset
- * has passed since it was read. `data-plan`, not `data-provider`: a plan is
- * not a provider account, and the suite counts providers by that attribute.
+ * The meters are the Machines tile's (`meter.js`), so a plan's Week reads the
+ * way a machine's RAM does, and each one's reset-and-pace sentence is shown
+ * under it: on the panel there is room for the words the tile keeps in a
+ * tooltip. A plan with nothing to show yet has no meters at all, not empty
+ * ones. `data-plan`, not `data-provider`: a plan is not a provider account,
+ * and the suite counts providers by that attribute.
  */
 function planNode(plan) {
   const el = node("div", "pv-section");
   el.dataset.plan = plan.id;
   el.appendChild(node("hr", "pv-divider"));
-  for (const row of plan.rows || []) {
-    el.appendChild(valueRow(row, "plan"));
-    const bar = barNode(row.bar);
-    if (bar) el.appendChild(bar);
+  el.appendChild(valueRow(plan, "plan"));
+  if (plan.metrics?.length) {
+    const stats = node("div", "db-host-stats");
+    for (const m of plan.metrics) {
+      stats.appendChild(window.soladorMeter.metricNode(m, plan.label, { showNote: true }).metric);
+    }
+    el.appendChild(stats);
   }
   return el;
 }
@@ -167,6 +174,24 @@ function renderUsage(payload) {
   // `panel_columns`, never decided here.
   const main = node("div", "usage-main");
 
+  // The plans lead: a share of a subscription's limit is the figure an
+  // operator acts on. A reading of the plan, not of this machine's logs, so it
+  // is its own block. A plan that is off contributes no section; Rust folds
+  // every plan that is off into one muted setup line, so turning both off
+  // costs one line, not two rows of dashes.
+  const plans = node("div", "usage-plans");
+  if (payload.plansMessage) {
+    const line = node("p", "pv-message", payload.plansMessage.text);
+    line.style.color = payload.plansMessage.color;
+    plans.appendChild(line);
+  }
+  for (const plan of payload.plans || []) plans.appendChild(planNode(plan));
+  if (plans.childElementCount) main.appendChild(plans);
+
+  // Then this machine's own token counts, under Rust's heading, which is
+  // `null` when there are no rows to head.
+  if (payload.machineHeading) main.appendChild(node("div", "lbl pv-heading", payload.machineHeading));
+
   // Not `window` — that name is the global object inside this loop body.
   for (const row of payload.windows || []) main.appendChild(valueRow(row, "window"));
 
@@ -178,19 +203,6 @@ function renderUsage(payload) {
     for (const item of payload.projects.rows || []) section.appendChild(itemRow(item));
     main.appendChild(section);
   }
-
-  // The plans' limit windows, after the rollups: a reading of the plan, not of
-  // this machine's logs, so it is its own block. A plan that is off contributes
-  // no section; Rust folds every plan that is off into one muted setup line, so
-  // turning both off costs one line, not two rows of dashes.
-  const plans = node("div", "usage-plans");
-  if (payload.plansMessage) {
-    const line = node("p", "pv-message", payload.plansMessage.text);
-    line.style.color = payload.plansMessage.color;
-    plans.appendChild(line);
-  }
-  for (const plan of payload.plans || []) plans.appendChild(planNode(plan));
-  if (plans.childElementCount) main.appendChild(plans);
 
   if (main.childElementCount) children.push(main);
 

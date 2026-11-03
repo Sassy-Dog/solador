@@ -331,6 +331,49 @@ impl StoreData {
     }
 }
 
+impl StoreData {
+    /// A Usage tile scoped to one row (`item:<row id>`) keeps that row after
+    /// the Usage rows were regrouped: a plan was one row per limit window
+    /// (`claude-plan:CLAUDE PLAN (5H)`) and is now one row carrying a meter
+    /// per window (`claude-plan`), and the token windows (`claude-5H`,
+    /// `claude-WEEK`) folded into the `claude-today` row. Without this a tile
+    /// scoped to either would match nothing and go silently empty.
+    ///
+    /// Idempotent: no id this writes matches what it reads.
+    ///
+    /// One-way: the rewrite is many-to-one, so it cannot be undone, and the
+    /// next save persists it. An older build opening the file afterwards finds
+    /// `item:claude-plan` or `item:claude-today`, which none of its rows carry,
+    /// and shows that tile empty until it is re-scoped.
+    ///
+    /// The ids it writes are the app's (`plan_usage::CLAUDE_ID`, `CODEX_ID`,
+    /// `dashboard::CLAUDE_TODAY_ID`), spelled out here because this crate
+    /// cannot see that one; `tile_scope.rs` has the test that keeps them equal.
+    pub fn carry_usage_item_scopes_onto_plan_rows(&mut self) {
+        let Some(dashboard) = self.dashboard.as_mut() else {
+            return;
+        };
+        for tile in &mut dashboard.tiles {
+            if tile.source != "claudeUsage" {
+                continue;
+            }
+            let Some(id) = tile.scope.strip_prefix("item:") else {
+                continue;
+            };
+            let carried = ["claude-plan", "codex-plan"]
+                .into_iter()
+                .find(|plan| {
+                    id.strip_prefix(plan)
+                        .is_some_and(|rest| rest.starts_with(':'))
+                })
+                .or_else(|| matches!(id, "claude-5H" | "claude-WEEK").then_some("claude-today"));
+            if let Some(row) = carried {
+                tile.scope = format!("item:{row}");
+            }
+        }
+    }
+}
+
 /// Reads the retired `layout` key for the one thing that survives it: the first
 /// breakpoint's host-overflow mode, the one with the smallest `min_width`.
 ///
@@ -538,6 +581,9 @@ impl Store {
                 // Same independence, same one-shot: the view settings moved onto
                 // the tiles (#647) and are taken here so a save drops them.
                 data.carry_view_settings_onto_tiles();
+                // Same one-shot shape: a Usage tile scoped to one of the rows
+                // plans became one row each.
+                data.carry_usage_item_scopes_onto_plan_rows();
                 Ok(Store { path, data })
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {

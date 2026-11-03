@@ -1,0 +1,13 @@
+{
+  "numStartups": 412,
+  "primaryApiKey": "sk-ant-api03-FAKE-NEVER-READ",
+  "projects": { "/Users/someone/repo": { "allowedTools": [], "history": [{ "display": "a prompt" }] } },
+  "oauthAccount": {
+    "accountUuid": "00000000-0000-0000-0000-000000000000",
+    "emailAddress": "someone@example.com",
+    "organizationType": "claude_max",
+    "organizationRateLimitTier": "default_claude_max_20x",
+    "planDisplayName": "  Ultra  ",
+    "displayName": "Some One"
+  }
+}

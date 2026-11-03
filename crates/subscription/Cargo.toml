@@ -18,6 +18,10 @@ name = "subscription"
 # The stock message vocabulary. A leaf crate with no dependencies of its own.
 solador-fault = { path = "../fault" }
 serde_json = { workspace = true }
+# A typed parse of Claude Code's `~/.claude.json` that names one field and
+# skips the rest unread (`claude::read_plan_name`): the file can hold an API key
+# and the account's identity, and a `Value` parse would hold all of it.
+serde = { workspace = true }
 # Home directory for the two credential files (`~/.claude/.credentials.json`,
 # `~/.codex/auth.json`; `%USERPROFILE%\…` on Windows). Already a workspace
 # dependency.

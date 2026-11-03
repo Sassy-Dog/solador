@@ -421,6 +421,24 @@
   Codex that keeps its sign-in in the OS keyring reads as not signed in. Like
   the rollups, the reading is machine-local: it is whichever account the tool
   is signed in as, and is not modelled as an account.
+  **The plan's name** comes from the same gate. The usage reply carries none,
+  so after a successful Claude read Solador reads Claude Code's cached profile,
+  `~/.claude.json` (`%USERPROFILE%\.claude.json` on Windows), and keeps exactly
+  one field of it, `oauthAccount.planDisplayName` (`"Ultra"`), trimmed, and
+  dropped (no name shown) if it is longer than 40 characters or carries a
+  control character. That file can also hold an API key, the account's
+  identity and every project's history, so it is parsed into a typed struct
+  that names that one field and skips the rest unread, its size is checked
+  before it is opened (32 MiB), and a parse failure is `None` with no serde
+  error formatted (one can quote a value). Codex's name is the reply's own
+  `plan_type`. Neither is ever derived from a tier code: Anthropic renamed
+  Max 20x to Ultra on 2026-10-30 while `organizationRateLimitTier` still
+  read `default_claude_max_20x`. **An Enterprise seat** has no windows; its
+  limit is a currency cap, read from the reply's `spend` (`used`, `limit` or
+  `cap.money`, `percent`, `enabled`), else the older `extra_usage` (whose
+  `utilization` is never read: its unit is ambiguous). An amount with no
+  currency is a bare number, never dollars, and no reset date is invented for
+  it, so it has no pace.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
   normal preference, not a credential-store item.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`

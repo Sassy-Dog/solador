@@ -56,10 +56,12 @@
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
 │   ├── usage/              # Claude Code log rollups + Neon + Sentry + Vercel
-│   ├── subscription/       # the Claude and Codex plans' limit windows: reads
-│   │                       #   each tool's OWN saved sign-in (read-only, never
-│   │                       #   copied or refreshed) and one undocumented usage
-│   │                       #   endpoint each. APP-ONLY — agent/ must never
+│   ├── subscription/       # the Claude and Codex plans' limits (windows, and
+│   │                       #   an Enterprise seat's spend cap) and the plan's
+│   │                       #   name: reads each tool's OWN saved sign-in
+│   │                       #   (read-only, never copied or refreshed), one
+│   │                       #   undocumented usage endpoint each, and one field
+│   │                       #   of ~/.claude.json. APP-ONLY — agent/ must never
 │   │                       #   resolve it
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519

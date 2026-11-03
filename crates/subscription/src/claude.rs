@@ -25,8 +25,29 @@
 //!   corrupt `-5` into a measured 0%.
 //! - **`CLAUDE_CONFIG_DIR` profiles are not read.** Their keychain service
 //!   carries a hash suffix (`keychain.ts:38-45`). Only the default login is
-//!   read.
+//!   read, and only the default profile's plan name.
+//! - **The spend's currency is never defaulted.** orca falls back to `USD`
+//!   (`claude-usage-credits.ts:110`); an unnamed currency here is a bare
+//!   amount. Its exponent default of 2 (`:44`) is kept: every amount the
+//!   endpoint is known to send is in minor units.
+//! - **`extra_usage.utilization` is not read.** orca computes from the amounts
+//!   first because that field "has been seen as a 0–1 fraction as well as a
+//!   percentage" (`:138`), then falls back to it anyway. A number whose unit
+//!   is unknown is not a percentage, so here there is no fallback.
+//! - **The plan's name is read**, which orca does not do: from Claude Code's
+//!   cached profile, `~/.claude.json`'s `oauthAccount.planDisplayName`. It is
+//!   the display name and not `organizationType` or a tier code, because only
+//!   the display name followed the 2026-10-30 rename of Max 20x to Ultra.
+//!
+//! # Enterprise seats
+//!
+//! An Enterprise seat's reply has no `five_hour` or `seven_day`. Its limit is
+//! a spend cap, in `spend` or the older `extra_usage` (`claude-usage-credits.ts:58`:
+//! "Enterprise seats have no 5h/7d windows; their monthly spend cap is the
+//! only limit that binds"). Beside windows, the same object is spend past the
+//! plan's limits instead. Which one it is, is the view's call.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -34,8 +55,8 @@ use serde_json::Value;
 
 use crate::keychain::{KeychainError, KeychainReader};
 use crate::{
-    http, used_percent, AccessToken, PlanErrorKind, PlanUsage, PlanUsageError, PlanWindow,
-    Provider, WindowSpan, SESSION_MINUTES, WEEK_MINUTES,
+    http, plan_name, used_percent, AccessToken, Money, PlanErrorKind, PlanSpend, PlanUsage,
+    PlanUsageError, PlanWindow, Provider, WindowSpan, SESSION_MINUTES, WEEK_MINUTES,
 };
 
 /// The keychain service Claude Code stores its default login under.
@@ -186,6 +207,65 @@ pub fn read_this_machine() -> Result<AccessToken, PlanErrorKind> {
     }
 }
 
+/// Claude Code's cached profile, `~/.claude.json` under `home` (`%USERPROFILE%`
+/// on Windows, where Claude Code writes it too).
+#[must_use]
+pub fn profile_file(home: &Path) -> PathBuf {
+    home.join(".claude.json")
+}
+
+/// The largest profile [`read_plan_name`] will parse. The file also holds
+/// Claude Code's per-project history, so it grows; this one is 100 KB on a
+/// working machine, and a file past the cap is skipped rather than read.
+pub const PROFILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The one field read out of the profile. Every other key is skipped by
+/// serde without being held: the file can carry `primaryApiKey` and the
+/// account's email and name.
+#[derive(serde::Deserialize)]
+struct Profile {
+    #[serde(rename = "oauthAccount")]
+    oauth_account: Option<OauthAccount>,
+}
+
+#[derive(serde::Deserialize)]
+struct OauthAccount {
+    #[serde(rename = "planDisplayName")]
+    plan_display_name: Option<String>,
+}
+
+/// The plan's display name from a profile file (`"Ultra"`, `"Enterprise"`),
+/// or `None`: no file, an oversized or unparseable one, or no usable name.
+///
+/// A half-written file (Claude Code rewrites it often) is `None` for one read.
+/// The parse error is dropped unformatted, because serde's messages can quote
+/// the value they choked on.
+#[must_use]
+pub fn read_plan_name(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > PROFILE_MAX_BYTES {
+        return None;
+    }
+    // `take`: a file that grew past the cap since `metadata` is cut short and
+    // fails to parse, rather than being read whole.
+    let file = std::fs::File::open(path).ok()?.take(PROFILE_MAX_BYTES);
+    let profile: Profile = serde_json::from_reader(std::io::BufReader::new(file)).ok()?;
+    profile
+        .oauth_account?
+        .plan_display_name
+        .as_deref()
+        .and_then(plan_name)
+}
+
+/// This machine's plan name, from the profile under the real home directory.
+///
+/// Like [`read_this_machine`], **no test calls it**, and the shell calls it
+/// only behind the opt-in.
+#[must_use]
+pub fn plan_name_this_machine() -> Option<String> {
+    read_plan_name(&profile_file(&dirs::home_dir()?))
+}
+
 /// `resets_at` as orca reads it (`claude-usage-window.ts:10-30`): a number, or
 /// a numeric string, is epoch seconds, or milliseconds above 1e10; anything
 /// else is an RFC 3339 instant. Unparseable is `None`, never "now".
@@ -230,7 +310,88 @@ fn window(raw: Option<&Value>, scope: Option<&str>) -> Option<PlanWindow> {
     })
 }
 
-/// The windows in one `/api/oauth/usage` body.
+/// An amount from its three parts (`claude-usage-credits.ts:5-10,37-49`).
+///
+/// - The amount must be a finite, non-negative number. A fractional count of
+///   minor units is rounded to the nearest one.
+/// - A missing exponent is 2, as orca's (`:44`). One outside 0–6 makes the
+///   amount unknown, as it does there (`:45`).
+/// - A currency that is not three ASCII letters is none.
+fn money_parts(
+    amount: Option<&Value>,
+    exponent: Option<&Value>,
+    currency: Option<&Value>,
+) -> Option<Money> {
+    // 9e15 keeps the rounding below exact in an f64 and the result inside i64.
+    let amount = amount?
+        .as_f64()
+        .filter(|a| a.is_finite() && (0.0..9e15).contains(a))?;
+    let exponent = match exponent {
+        None | Some(Value::Null) => 2,
+        Some(v) => v
+            .as_u64()
+            .and_then(|e| u8::try_from(e).ok())
+            .filter(|e| *e <= 6)?,
+    };
+    let currency = currency
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|c| c.len() == 3 && c.bytes().all(|b| b.is_ascii_alphabetic()))
+        .map(str::to_ascii_uppercase);
+    #[allow(clippy::cast_possible_truncation)]
+    Some(Money {
+        minor: amount.round() as i64,
+        exponent,
+        currency,
+    })
+}
+
+/// A `{ amount_minor, currency, exponent }` object (`claude-usage-credits.ts:5-10`).
+fn money(raw: Option<&Value>) -> Option<Money> {
+    let raw = raw.filter(|r| r.is_object())?;
+    money_parts(
+        raw.get("amount_minor"),
+        raw.get("exponent"),
+        raw.get("currency"),
+    )
+}
+
+/// The reply's spend: `spend` (`claude-usage-credits.ts:12-21,87-121`), else
+/// the older `extra_usage` (`:23-31,123-151`). `None` when neither carries an
+/// amount.
+///
+/// `spend.balance` is not read: it is a prepaid credit, not a cap, and a
+/// budget meter has no place for it.
+fn spend(doc: &Value) -> Option<PlanSpend> {
+    if let Some(s) = doc.get("spend").filter(|s| s.is_object()) {
+        let used = money(s.get("used"));
+        // The cap is `limit`, else `cap.money` (`:92`).
+        let limit = money(s.get("limit")).or_else(|| money(s.pointer("/cap/money")));
+        if used.is_some() || limit.is_some() {
+            return Some(PlanSpend {
+                used,
+                limit,
+                stated_percent: used_percent(s.get("percent")),
+                enabled: s.get("enabled").and_then(Value::as_bool),
+            });
+        }
+    }
+    // One exponent and one currency for both amounts (`:127-137`).
+    let e = doc.get("extra_usage").filter(|e| e.is_object())?;
+    let (exponent, currency) = (e.get("decimal_places"), e.get("currency"));
+    let used = money_parts(e.get("used_credits"), exponent, currency);
+    let limit = money_parts(e.get("monthly_limit"), exponent, currency);
+    (used.is_some() || limit.is_some()).then(|| PlanSpend {
+        used,
+        limit,
+        // Never `utilization`: its unit is ambiguous (see the module doc).
+        stated_percent: None,
+        enabled: e.get("is_enabled").and_then(Value::as_bool),
+    })
+}
+
+/// The windows and the spend in one `/api/oauth/usage` body. The plan's name
+/// is not in it; the shell adds that from [`plan_name_this_machine`].
 ///
 /// # Errors
 /// [`PlanErrorKind::Undecodable`] for a body that is not a JSON object.
@@ -293,7 +454,11 @@ pub fn parse_usage(body: &str) -> Result<PlanUsage, PlanErrorKind> {
         windows.extend(legacy);
     }
 
-    Ok(PlanUsage { windows })
+    Ok(PlanUsage {
+        plan: None,
+        windows,
+        spend: spend(&doc),
+    })
 }
 
 /// A client for the usage endpoint.
@@ -480,6 +645,199 @@ mod tests {
         .expect("parses");
         assert_eq!(both.windows.len(), 1);
         assert_eq!(both.windows[0].used_percent, 12.0);
+    }
+
+    // ---- Ultra, Enterprise and spend --------------------------------------
+
+    /// Hand-written, like `USAGE`: a verified Ultra account's shape, with no
+    /// session window, plus the legacy `extra_usage` spend.
+    const ULTRA: &str = include_str!("../tests/fixtures/claude_usage_ultra.json");
+    /// Hand-written: an Enterprise seat, with no window and a `spend` cap.
+    const ENTERPRISE: &str = include_str!("../tests/fixtures/claude_usage_enterprise.json");
+
+    fn usd(minor: i64) -> Money {
+        Money {
+            minor,
+            exponent: 2,
+            currency: Some("USD".into()),
+        }
+    }
+
+    #[test]
+    fn a_verified_ultra_reply_has_no_session_window_and_reads_its_extra_usage() {
+        let usage = parse_usage(ULTRA).expect("parses");
+        assert!(usage
+            .windows
+            .iter()
+            .all(|w| w.span != WindowSpan::Minutes(SESSION_MINUTES)));
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[1].scope.as_deref(), Some("Fable"));
+        // Amounts, not the ambiguous `utilization` beside them.
+        assert_eq!(
+            usage.spend,
+            Some(PlanSpend {
+                used: Some(usd(1250)),
+                limit: Some(usd(20000)),
+                stated_percent: None,
+                enabled: Some(true),
+            })
+        );
+    }
+
+    #[test]
+    fn an_enterprise_reply_is_a_spend_cap_and_no_windows_and_is_not_empty() {
+        let usage = parse_usage(ENTERPRISE).expect("parses");
+        assert!(usage.windows.is_empty());
+        assert!(!usage.is_empty(), "a spend is a reading");
+        assert_eq!(
+            usage.spend,
+            Some(PlanSpend {
+                used: Some(usd(31245)),
+                limit: Some(usd(50000)),
+                stated_percent: Some(62.49),
+                enabled: Some(true),
+            })
+        );
+    }
+
+    #[test]
+    fn spend_wins_over_extra_usage_and_the_cap_can_be_cap_money() {
+        let usage = parse_usage(
+            r#"{"spend":{"used":{"amount_minor":100,"currency":"EUR"},
+                         "cap":{"money":{"amount_minor":5000,"currency":"EUR","exponent":2}}},
+                "extra_usage":{"monthly_limit":99999,"used_credits":1}}"#,
+        )
+        .expect("parses");
+        let spend = usage.spend.expect("spend");
+        assert_eq!(spend.limit.expect("cap").minor, 5000);
+        // No exponent is 2, as orca reads it.
+        assert_eq!(spend.used.expect("used").exponent, 2);
+    }
+
+    #[test]
+    fn a_spend_with_no_amount_falls_back_and_none_anywhere_is_no_spend() {
+        let usage = parse_usage(
+            r#"{"spend":{"balance":{"amount_minor":1000},"enabled":true},
+                "extra_usage":{"monthly_limit":5000,"currency":"usd"}}"#,
+        )
+        .expect("parses");
+        let spend = usage.spend.expect("from extra_usage");
+        assert_eq!(spend.limit.expect("limit").currency.as_deref(), Some("USD"));
+        assert_eq!(spend.used, None);
+
+        for body in [
+            r#"{"spend":null}"#,
+            r#"{"spend":{"balance":{"amount_minor":1}}}"#,
+            r#"{"extra_usage":{"is_enabled":false,"utilization":40}}"#,
+            r#"{"extra_usage":"on"}"#,
+        ] {
+            let usage = parse_usage(body).expect("parses");
+            assert_eq!(usage.spend, None, "{body}");
+            assert!(usage.is_empty(), "{body}");
+        }
+    }
+
+    /// Corrupt money is unknown, never zero; an unnamed currency is unnamed.
+    #[test]
+    fn corrupt_amounts_are_unknown_and_a_missing_currency_is_never_dollars() {
+        let money = |raw: &str| money(Some(&serde_json::from_str::<Value>(raw).unwrap()));
+        for unknown in [
+            r#"{"amount_minor":-1}"#,
+            r#"{"amount_minor":"500"}"#,
+            r#"{"amount_minor":500,"exponent":7}"#,
+            r#"{"amount_minor":500,"exponent":-1}"#,
+            r#"{"amount_minor":500,"exponent":1.5}"#,
+            r#"{"currency":"USD"}"#,
+            "500",
+        ] {
+            assert_eq!(money(unknown), None, "{unknown}");
+        }
+        let bare = money(r#"{"amount_minor":499.6,"exponent":0}"#).expect("money");
+        assert_eq!(
+            bare,
+            Money {
+                minor: 500,
+                exponent: 0,
+                currency: None
+            }
+        );
+        let odd = money(r#"{"amount_minor":1,"currency":"dollars"}"#).expect("money");
+        assert_eq!(odd.currency, None);
+    }
+
+    // ---- the plan's name -------------------------------------------------
+
+    const PROFILE: &str = include_str!("../tests/fixtures/claude_profile.json");
+
+    fn profile(dir: &Path, raw: &str) -> PathBuf {
+        let path = profile_file(dir);
+        std::fs::write(&path, raw).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_plan_name_is_the_display_name_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(profile_file(dir.path()), dir.path().join(".claude.json"));
+        let name = read_plan_name(&profile(dir.path(), PROFILE));
+        assert_eq!(name.as_deref(), Some("Ultra"));
+    }
+
+    /// The fixture's other fields (an API key, the account's email and name,
+    /// the tier code `claude_max` that did not follow the Ultra rename) are
+    /// never a fallback: without a usable display name there is no name.
+    #[test]
+    fn no_other_profile_field_stands_in_for_a_missing_plan_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let named = r#""planDisplayName": "  Ultra  ","#;
+        assert!(PROFILE.contains(named), "the fixture carries the name");
+        for without in [
+            "",
+            r#""planDisplayName": null,"#,
+            r#""planDisplayName": " ","#,
+        ] {
+            let raw = PROFILE.replace(named, without);
+            assert_eq!(
+                read_plan_name(&profile(dir.path(), &raw)),
+                None,
+                "{without}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_unusable_plan_name_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_plan_name(&dir.path().join("absent.json")), None);
+        assert_eq!(read_plan_name(dir.path()), None, "a directory");
+        let long = format!(
+            r#"{{"oauthAccount":{{"planDisplayName":"{}"}}}}"#,
+            "x".repeat(crate::PLAN_NAME_MAX_CHARS + 1)
+        );
+        for raw in [
+            "{",
+            "[]",
+            "{}",
+            r#"{"oauthAccount":null}"#,
+            r#"{"oauthAccount":"Ultra"}"#,
+            r#"{"oauthAccount":{}}"#,
+            r#"{"oauthAccount":{"planDisplayName":null}}"#,
+            r#"{"oauthAccount":{"planDisplayName":42}}"#,
+            r#"{"oauthAccount":{"planDisplayName":"   "}}"#,
+            r#"{"oauthAccount":{"planDisplayName":"Ul\ntra"}}"#,
+            &long,
+        ] {
+            assert_eq!(read_plan_name(&profile(dir.path(), raw)), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_profile_past_the_size_cap_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = profile(dir.path(), PROFILE);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(PROFILE_MAX_BYTES + 1).unwrap();
+        assert_eq!(read_plan_name(&path), None);
     }
 
     #[test]

@@ -127,9 +127,9 @@ pub fn read_this_machine() -> Result<Login, PlanErrorKind> {
 pub fn parse_usage(body: &str) -> Result<PlanUsage, PlanErrorKind> {
     let doc: Value =
         serde_json::from_str(body).map_err(|e| PlanErrorKind::Undecodable(e.to_string()))?;
-    if doc.get("plan_type").and_then(Value::as_str).is_none() {
+    let Some(plan_type) = doc.get("plan_type").and_then(Value::as_str) else {
         return Err(PlanErrorKind::Undecodable("no plan_type".into()));
-    }
+    };
     let windows = [
         ("primary_window", Slot::Primary),
         ("secondary_window", Slot::Secondary),
@@ -137,7 +137,13 @@ pub fn parse_usage(body: &str) -> Result<PlanUsage, PlanErrorKind> {
     .into_iter()
     .filter_map(|(key, slot)| window(doc.get("rate_limit")?.get(key)?, slot))
     .collect();
-    Ok(PlanUsage { windows })
+    Ok(PlanUsage {
+        // `"plus"`, `"pro"`: the plan's name as the service spells it. A
+        // blank one is no name, and `plan_name` is the shared bound on it.
+        plan: crate::plan_name(plan_type),
+        windows,
+        spend: None,
+    })
 }
 
 /// One `{ used_percent, limit_window_seconds, reset_at }` window
@@ -243,6 +249,8 @@ mod tests {
     #[test]
     fn the_fixture_reads_as_a_session_and_a_week() {
         let usage = parse_usage(USAGE).expect("parses");
+        assert_eq!(usage.plan.as_deref(), Some("plus"));
+        assert_eq!(usage.spend, None);
         assert_eq!(
             usage.windows,
             vec![

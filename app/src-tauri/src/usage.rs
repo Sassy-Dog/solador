@@ -4,8 +4,10 @@
 //!
 //! The plan block is a different reading from the rollups and is never merged
 //! with them: the rollups are this machine's consumption from local logs, the
-//! plan rows a subscription's utilisation of its own limits
-//! ([`crate::plan_usage`]). It renders between the two, and its sections and
+//! plan meters a subscription's utilisation of its own limits
+//! ([`crate::plan_usage`]). The plans lead, because a percentage of a limit is
+//! the figure an operator acts on; the rollups follow under their own
+//! `machineHeading`; the metered providers come last. The plans' sections and
 //! setup line are their own payload keys (`plans`, `plansMessage`).
 //!
 //! Port of `ClaudeUsagePanel`. The data
@@ -140,6 +142,9 @@ pub const EMPTY_MESSAGE: &str = "no Claude usage in the last 7 days";
 /// reports this from its own existence check, which is why it is the shell's
 /// string and not the crate's.
 pub const NO_LOG_ROOT_MESSAGE: &str = "no ~/.claude/projects";
+
+/// The heading over this machine's token rollups, below the plan meters.
+pub const MACHINE_HEADING: &str = "THIS MACHINE";
 
 /// Amber threshold for the Sentry quota bar — the same 90% the Azure budget bar
 /// uses, because they are the same widget answering the same question.
@@ -737,24 +742,36 @@ pub fn view(
 
     // Three states, in the original's own order: no summary at all (loading, or a log
     // root we could not locate), a summary that measured nothing, and content.
-    let (message, windows, projects) = match &state.claude {
+    // The heading is `Null` with no rows under it: the message above the body
+    // already names that state, and a heading over nothing would be a second,
+    // emptier way of saying it.
+    let (message, heading, windows, projects) = match &state.claude {
         None => {
             let text = if state.claude_loading {
                 LOADING_MESSAGE
             } else {
                 NO_DATA_MESSAGE
             };
-            (state_message(text), Value::Array(vec![]), Value::Null)
+            (
+                state_message(text),
+                Value::Null,
+                Value::Array(vec![]),
+                Value::Null,
+            )
         }
         Some(summary) if summary.last_7d.total_tokens() == 0 => (
             state_message(EMPTY_MESSAGE),
+            Value::Null,
             Value::Array(vec![]),
             Value::Null,
         ),
         Some(summary) => {
+            // `LAST 5H` / `LAST 7D`, never `5H` / `WEEK`: the plan meters
+            // above are `5h` and `Week`, and a token count read as a share of
+            // a limit is the confusion the two labels exist to prevent.
             let windows = json!([
-                window_row("5H", &summary.last_5h),
-                window_row("WEEK", &summary.last_7d),
+                window_row("LAST 5H", &summary.last_5h),
+                window_row("LAST 7D", &summary.last_7d),
             ]);
             // Absent, not empty: the original renders the divider and the heading only
             // `if !summary.projectsLast7d.isEmpty`.
@@ -775,7 +792,7 @@ pub fn view(
                         .collect::<Vec<_>>(),
                 })
             };
-            (Value::Null, windows, projects)
+            (Value::Null, json!(MACHINE_HEADING), windows, projects)
         }
     };
 
@@ -846,6 +863,11 @@ pub fn view(
         "title": kind.title(),
         "trailing": trailing,
         "message": message,
+        // The heading over this machine's own rollups, which sit under the
+        // plan meters: the two answer different questions (what this machine
+        // burned, and how much of the subscription is used), so the panel
+        // names the line between them rather than leaving it to layout.
+        "machineHeading": heading,
         "windows": windows,
         "projects": projects,
         // ONE line for the whole panel — Claude's warning and every metered
@@ -883,11 +905,14 @@ pub fn view(
 /// Which rendering `--dump-usage` should produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fixture {
-    /// Everything measured: Claude content, both plans' windows (well inside
-    /// their limits), Neon figures + last invoice, Sentry count + bar.
+    /// Everything measured: Claude content, both plans (Claude's an Ultra
+    /// plan with no 5-hour window and a Fable week running out early, Codex's
+    /// a session too young to project), Neon figures + last invoice, Sentry
+    /// count + bar.
     Measured,
-    /// [`Fixture::Measured`] plus a Vercel reading, for the website's Usage
-    /// card and the README's full image (#685). Kept apart from `Measured` so
+    /// [`Fixture::Measured`] with every plan meter green and under pace, plus a
+    /// Vercel reading, for the website's Usage card and the README's full image
+    /// (#685). Kept apart from `Measured` so
     /// the e2e suite's fixture stays at two providers; the reading goes through
     /// the same `ProviderState` and section a poll fills.
     Showcase,
@@ -896,6 +921,10 @@ pub enum Fixture {
     Unmeasured,
     /// No Claude summary and no provider configured.
     Empty,
+    /// The plan block's edge cases: an Enterprise seat's budget with no
+    /// windows and no plan name, beside a Codex that failed before any
+    /// reading. Claude content, no metered provider.
+    PlanEdges,
 }
 
 /// A hand-made state for the offline fixtures.
@@ -924,8 +953,14 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
             state.apply_claude(Some(fixture_summary()), claude_at, None);
             // Read at the providers' clock, reset times from the render's: a
             // stale dump moves only when the plans were read, so its rows and
-            // bars are the healthy dump's.
-            for (provider, reading) in fixture_plans(claude_at) {
+            // meters are the healthy dump's. Only the pace goes: a stale
+            // reading projects nothing.
+            let plans = if kind == Fixture::Showcase {
+                showcase_plans(claude_at)
+            } else {
+                measured_plans(claude_at)
+            };
+            for (provider, reading) in plans {
                 state.plan_mut(provider).state.succeeded(reading, at, None);
             }
             state.neon.succeeded(
@@ -982,6 +1017,20 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
                 );
             }
         }
+        Fixture::PlanEdges => {
+            state.apply_claude(Some(fixture_summary()), claude_at, None);
+            state
+                .plan_mut(Provider::Claude)
+                .state
+                .succeeded(budget_plan(), at, None);
+            state.plan_mut(Provider::Codex).state.failed(
+                subscription::PlanUsageError::new(
+                    Provider::Codex,
+                    subscription::PlanErrorKind::NotSignedIn,
+                )
+                .user_message(),
+            );
+        }
         Fixture::Unmeasured => {
             state.apply_claude(Some(fixture_summary()), claude_at, None);
             state.neon.succeeded(
@@ -1002,40 +1051,111 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
     state
 }
 
-/// The fixture's plan readings, with every reset counted from `at`: green,
-/// mid-window, every reset ahead. Shown only when the dump turns the plans on
-/// ([`FIXTURE_PLANS`]).
-fn fixture_plans(at: u64) -> [(Provider, subscription::PlanUsage); 2] {
-    use subscription::{PlanUsage, PlanWindow, WindowSpan, SESSION_MINUTES, WEEK_MINUTES};
-    let reset = |secs: u64| {
-        chrono::DateTime::from_timestamp(i64::try_from(at + secs).unwrap_or(i64::MAX), 0)
-    };
-    let window = |minutes, scope: Option<&str>, used, resets_in| PlanWindow {
-        span: WindowSpan::Minutes(minutes),
+fn plan_window(
+    at: u64,
+    minutes: u32,
+    scope: Option<&str>,
+    used: f64,
+    resets_in: u64,
+) -> subscription::PlanWindow {
+    subscription::PlanWindow {
+        span: subscription::WindowSpan::Minutes(minutes),
         scope: scope.map(str::to_owned),
         used_percent: used,
-        resets_at: reset(resets_in),
-    };
+        resets_at: chrono::DateTime::from_timestamp(
+            i64::try_from(at + resets_in).unwrap_or(i64::MAX),
+            0,
+        ),
+    }
+}
+
+/// The measured fixture's plans, every reset counted from `at`. Shown only
+/// when the dump turns the plans on ([`FIXTURE_PLANS`]).
+///
+/// Each one is an edge the panel has to get right, rather than a pretty
+/// picture: Claude is an Ultra plan, which has no 5-hour window, so it has no
+/// `5h` meter; its Fable week is 78% used with 91 of 168 hours gone, which
+/// runs out in about a day, before the reset. Codex's session opened 20
+/// minutes ago, too early to project.
+fn measured_plans(at: u64) -> [(Provider, subscription::PlanUsage); 2] {
+    use subscription::{PlanUsage, SESSION_MINUTES, WEEK_MINUTES};
+    let week_reset = 3 * 86_400 + 5 * 3_600;
     [
         (
             Provider::Claude,
             PlanUsage {
+                plan: Some("Ultra".into()),
                 windows: vec![
-                    window(SESSION_MINUTES, None, 34.0, 2 * 3_600 + 14 * 60),
-                    window(WEEK_MINUTES, None, 41.0, 3 * 86_400 + 5 * 3_600),
+                    plan_window(at, WEEK_MINUTES, None, 41.0, week_reset),
+                    plan_window(at, WEEK_MINUTES, Some("Fable"), 78.0, week_reset),
                 ],
+                spend: None,
             },
         ),
         (
             Provider::Codex,
             PlanUsage {
+                plan: Some("plus".into()),
                 windows: vec![
-                    window(SESSION_MINUTES, None, 12.0, 3_600 + 40 * 60),
-                    window(WEEK_MINUTES, None, 22.0, 4 * 86_400 + 2 * 3_600),
+                    plan_window(at, SESSION_MINUTES, None, 12.0, 4 * 3_600 + 40 * 60),
+                    plan_window(at, WEEK_MINUTES, None, 22.0, 4 * 86_400 + 2 * 3_600),
                 ],
+                spend: None,
             },
         ),
     ]
+}
+
+/// The showcase's plans: every meter green and under pace, because the
+/// showcase's one anomaly is a failing repo
+/// (`the_showcase_dashboard_has_exactly_one_tile_out_of_true`).
+fn showcase_plans(at: u64) -> [(Provider, subscription::PlanUsage); 2] {
+    use subscription::{PlanUsage, SESSION_MINUTES, WEEK_MINUTES};
+    let week_reset = 3 * 86_400 + 5 * 3_600;
+    [
+        (
+            Provider::Claude,
+            PlanUsage {
+                plan: Some("Ultra".into()),
+                windows: vec![
+                    plan_window(at, WEEK_MINUTES, None, 41.0, week_reset),
+                    plan_window(at, WEEK_MINUTES, Some("Fable"), 33.0, week_reset),
+                ],
+                spend: None,
+            },
+        ),
+        (
+            Provider::Codex,
+            PlanUsage {
+                plan: Some("plus".into()),
+                windows: vec![
+                    plan_window(at, SESSION_MINUTES, None, 34.0, 2 * 3_600 + 14 * 60),
+                    plan_window(at, WEEK_MINUTES, None, 22.0, 4 * 86_400 + 2 * 3_600),
+                ],
+                spend: None,
+            },
+        ),
+    ]
+}
+
+/// An Enterprise seat as Claude's reply shapes it: no window, a dollar budget,
+/// and no plan name, as on a machine whose Claude Code profile has none.
+fn budget_plan() -> subscription::PlanUsage {
+    let usd = |minor| subscription::Money {
+        minor,
+        exponent: 2,
+        currency: Some("USD".into()),
+    };
+    subscription::PlanUsage {
+        plan: None,
+        windows: vec![],
+        spend: Some(subscription::PlanSpend {
+            used: Some(usd(31_245)),
+            limit: Some(usd(50_000)),
+            stated_percent: Some(62.49),
+            enabled: None,
+        }),
+    }
 }
 
 /// The plan opt-ins the measured dumps render with: both on, so they show the
@@ -1215,9 +1335,63 @@ mod tests {
             ids,
             [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
         );
-        assert_eq!(on["plans"][0]["rows"][0]["label"], "CLAUDE PLAN (5H)");
+        assert_eq!(on["plans"][0]["label"], "Claude · Ultra");
         assert_eq!(on["windows"], off["windows"], "the rollups do not move");
-        assert_eq!(on["windows"][0]["label"], "5H");
+        assert_eq!(on["windows"][0]["label"], "LAST 5H");
+        assert_eq!(on["machineHeading"], MACHINE_HEADING);
+    }
+
+    /// The measured fixture's plans are the edges the panel must get right: an
+    /// Ultra plan has no 5-hour window and so no `5h` meter, its Fable week is
+    /// burning fast enough to run out before the reset, and a Codex session
+    /// opened 20 minutes ago is too young to project.
+    #[test]
+    fn the_measured_plans_are_an_ultra_week_running_out_and_a_young_session() {
+        let on = super::view(&measured(), QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);
+        let claude = &on["plans"][0];
+        let labels: Vec<&str> = claude["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["Week", "Week · Fable"], "no 5h meter on Ultra");
+        // 78% with 91 of 168 hours gone: the rest lasts 91 × 22/78 ≈ 25.7h.
+        assert_eq!(claude["value"], "out in ~1d 1h");
+        assert_eq!(claude["valueColor"], color::hex(color::AMBER));
+        assert_eq!(claude["metrics"][1]["color"], color::hex(color::AMBER));
+
+        let codex = &on["plans"][1];
+        assert_eq!(codex["label"], "Codex · Plus");
+        assert_eq!(codex["metrics"][0]["label"], "5h");
+        assert!(codex["metrics"][0]["pace"].is_null());
+        assert_eq!(
+            codex["metrics"][0]["note"],
+            "resets in 4h 40m · too early to project"
+        );
+    }
+
+    /// An Enterprise seat's budget with no plan name, and a Codex that failed
+    /// before any reading: one budget meter, and a dash with its reason in
+    /// the header.
+    #[test]
+    fn the_plan_edges_fixture_is_a_budget_and_a_dash() {
+        let state = fixture_state(Fixture::PlanEdges, NOW, NOW);
+        let v = super::view(&state, QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);
+        let claude = &v["plans"][0];
+        assert_eq!(claude["label"], "Claude");
+        assert_eq!(claude["value"], "62% of budget");
+        assert_eq!(claude["metrics"][0]["label"], "Budget");
+        assert_eq!(claude["metrics"][0]["value"], "$312 / $500 · 62%");
+        assert_eq!(claude["metrics"][0]["span"], "full");
+        let codex = &v["plans"][1];
+        assert_eq!(codex["value"], viewmodel::plan_usage::NO_READING_VALUE);
+        assert_eq!(codex["metrics"], json!([]));
+        assert!(v["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("codex-plan: "));
+        assert!(v["providers"].as_array().unwrap().is_empty());
     }
 
     /// A plan's failure reads in the header in body order: after Claude's own
@@ -1331,6 +1505,10 @@ mod tests {
         assert_eq!(payload["trailing"], "");
         assert!(payload["windows"].as_array().unwrap().is_empty());
         assert!(payload["projects"].is_null());
+        assert!(
+            payload["machineHeading"].is_null(),
+            "no heading over no rows"
+        );
         assert!(payload["footer"].is_null(), "nothing to be stale yet");
     }
 
@@ -1408,9 +1586,9 @@ mod tests {
 
         let windows = payload["windows"].as_array().unwrap();
         assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0]["label"], "5H");
+        assert_eq!(windows[0]["label"], "LAST 5H");
         assert_eq!(windows[0]["value"], "820k");
-        assert_eq!(windows[1]["label"], "WEEK");
+        assert_eq!(windows[1]["label"], "LAST 7D");
         assert_eq!(windows[1]["value"], "4.3M");
         assert_eq!(windows[0]["valueColor"], color::hex(color::GREEN));
 
