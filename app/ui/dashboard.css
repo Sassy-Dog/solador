@@ -714,6 +714,7 @@
   color: var(--db-muted);
 }
 #dashboardOverview input[type="text"],
+#dashboardOverview input[type="number"],
 #dashboardOverview select {
   background: var(--db-panel);
   border: 1px solid var(--db-line);

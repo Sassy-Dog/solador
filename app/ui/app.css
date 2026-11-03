@@ -1,4 +1,8 @@
 :root {
+  /* The app has one theme, and it is dark. Saying so is what makes WebKit
+     draw the parts of a native control no rule can reach (a number field's
+     stepper, a checkbox) for a dark page instead of a white one. */
+  color-scheme: dark;
   --panel:#0b1020; --panelAlt:#131b30; --line:#1c2b4a; --green:#4ec98a;
   /* `viewmodel::color::RED`. Every colour that *carries meaning* still arrives
      from Rust via CSSOM — this exists for the two chrome rules that cannot
@@ -730,7 +734,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .connection-identity { color:var(--muted); font-size:11px; margin-left:10px; overflow-wrap:anywhere; }
 .connection-feeds { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
 .connection-state { font-size:11px; display:inline-flex; align-items:center; gap:7px; flex-shrink:0; }
-.connection-state::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+.connection-state::before { content:""; flex:none; width:5px; height:5px; border-radius:50%; background:currentColor; }
 .connection-automatic { margin-top:8px; }
 .connection-automatic h3 { font-size:11px; font-weight:500; color:var(--muted); margin:0 0 12px; }
 .connection-auto-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
@@ -763,6 +767,8 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   .connection-fields, .connection-catalog { grid-template-columns:1fr; }
   .settings .connection-row { align-items:flex-start; flex-direction:column; gap:8px; padding:13px 0; }
   .connection-identity { margin-left:0; display:block; margin-top:3px; }
+  /* Under the copy rather than beside it, so it takes the row's width. */
+  .settings .connection-state { min-width:0; max-width:none; justify-content:flex-start; text-align:left; }
 }
 .group { padding:14px 18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
@@ -859,7 +865,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .svc-state { width:18ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
 .cont-status { width:16ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
 .settings .status { min-width:0; max-width:50%; white-space:nowrap; overflow:auto; }
-.connection-state { width:18ch; justify-content:flex-end; white-space:nowrap; overflow:auto; }
+/* A status is Rust's sentence and can be any length (a disconnected OpenClaw
+   gateway says why), so it wraps instead of being clipped. A fixed, right-aligned
+   slot overflowed off its LEFT edge, which no scrollbar reaches: "awaiting device
+   pairing" read "ing device pairing". 18ch still holds the short ones in a
+   column; half the row is the most it takes from the connection's name. */
+.connection-state { min-width:18ch; max-width:50%; justify-content:flex-end; text-align:right; overflow-wrap:anywhere; }
 /* Controls precede changing content, so messages can grow without moving
    the action row or clipping text inside fixed-height slots. */
 .update-status { line-height:1.5; overflow-wrap:anywhere; }

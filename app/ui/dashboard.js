@@ -1017,8 +1017,16 @@
         if (event.key === "Enter") { event.preventDefault(); box.querySelector('[data-action="cadence-apply"]')?.click(); }
       });
       const line = node("div", "db-cadence-line");
-      line.append(input, button(c.applyLabel, "cadence-apply"), button(c.resetLabel, "cadence-reset"));
-      box.append(node("legend"), node("label", "db-cadence-label"), line,
+      const apply = button(c.applyLabel, "cadence-apply");
+      line.append(input, apply, button(c.resetLabel, "cadence-reset"));
+      const label = node("label", "db-cadence-label");
+      // Its text is the bare "Apply" the tile's own button also carries, so
+      // its accessible name adds the cadence it applies: "Apply Usage — Claude
+      // and Codex plans (seconds)". Both halves are visible text on screen.
+      apply.id = `dashboard-cadence-apply-${c.id}`;
+      label.id = `dashboard-cadence-label-${c.id}`;
+      apply.setAttribute("aria-labelledby", `${apply.id} ${label.id}`);
+      box.append(node("legend"), label, line,
         node("p", "db-sub db-cadence-status"), node("p", "db-sub db-cadence-help"),
         node("p", "db-muted db-cadence-shared"));
     }

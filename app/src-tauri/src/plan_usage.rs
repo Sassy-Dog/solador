@@ -81,6 +81,24 @@ const fn plain_name(provider: Provider) -> &'static str {
     }
 }
 
+/// The Settings page every plan switch is on, in the names Settings renders.
+fn settings_section() -> String {
+    use crate::settings::{CONNECTIONS_LABEL, OPEN_LABEL};
+    format!("{OPEN_LABEL} \u{2192} {CONNECTIONS_LABEL}")
+}
+
+/// Where the provider's switch is on that page: Claude's is on the Claude Code
+/// source; Codex's is in the catalog while it is off, which is the only time
+/// the setup line names it. Built, like [`settings_section`], from the names
+/// Settings renders, so the line cannot point at a name that is not on screen.
+fn settings_place(provider: Provider) -> String {
+    use crate::settings::{ADD_CONNECTION_LABEL, CLAUDE_CODE_TITLE, CODEX_TITLE};
+    match provider {
+        Provider::Claude => CLAUDE_CODE_TITLE.to_owned(),
+        Provider::Codex => format!("{ADD_CONNECTION_LABEL} \u{2192} {CODEX_TITLE}"),
+    }
+}
+
 /// One provider's published state, and its schedule.
 #[derive(Debug, Default)]
 pub struct PlanSource {
@@ -436,7 +454,7 @@ pub fn view(claude: &PlanSource, codex: &PlanSource, inputs: PlanInputs, now: u6
     for (provider, source) in [(Provider::Claude, claude), (Provider::Codex, codex)] {
         let enabled = inputs.enabled(provider);
         if !enabled {
-            off.push(plain_name(provider));
+            off.push((plain_name(provider), settings_place(provider)));
             continue;
         }
         let id = section_id(provider);
@@ -459,7 +477,11 @@ pub fn view(claude: &PlanSource, codex: &PlanSource, inputs: PlanInputs, now: u6
         ));
         plan.loading |= source.is_loading(enabled);
     }
-    if let Some(text) = vm::off_line(&off) {
+    let off: Vec<(&str, &str)> = off
+        .iter()
+        .map(|(name, place)| (*name, place.as_str()))
+        .collect();
+    if let Some(text) = vm::off_line(&settings_section(), &off) {
         plan.off_line = json!({ "text": text, "color": color::hex(color::MUTED) });
     }
     plan
@@ -1279,7 +1301,7 @@ mod tests {
         assert!(off.sections.is_empty());
         assert_eq!(
             off.off_line["text"],
-            "Claude and Codex plan limits are off — turn on in Settings"
+            "Claude and Codex plan limits are off — turn on in Settings → Connections (Claude Code, Add connection → Codex)"
         );
         assert_eq!(off.off_line["color"], color::hex(color::MUTED));
         assert!(!off.loading);
@@ -1294,7 +1316,7 @@ mod tests {
         assert_eq!(codex_off.sections.len(), 1);
         assert_eq!(
             codex_off.off_line["text"],
-            "Codex plan limits are off — turn on in Settings"
+            "Codex plan limits are off — turn on in Settings → Connections → Add connection → Codex"
         );
         assert!(view(
             &PlanSource::default(),

@@ -776,7 +776,7 @@ pub fn view(
         "openLabel": OPEN_LABEL,
         "closeLabel": "Done",
         "tabs": [
-            { "id": "connections", "title": "Connections" },
+            { "id": "connections", "title": CONNECTIONS_LABEL },
             { "id": "general", "title": "Preferences" },
             { "id": "about", "title": "About" },
         ],
@@ -893,24 +893,17 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             ("OpenClaw connection", &["openclaw"])
         }
         "claudeUsage" => {
-            // Plan rows first: `claude-plan` also starts with `claude-`, and it
-            // belongs to the plan opt-in, not to the log rollups. A plan row's
-            // id is its section's; `claude-plan:…` is the per-window id a
-            // tile saved before plans became one row each.
-            let is_plan = |id: &str, section: &str| {
-                id == section || id.strip_prefix(section).is_some_and(|r| r.starts_with(':'))
-            };
-            let plan = resource.and_then(|id| {
-                if is_plan(id, crate::plan_usage::CLAUDE_ID) {
-                    Some("claudePlan")
-                } else if is_plan(id, crate::plan_usage::CODEX_ID) {
-                    Some("codexPlan")
-                } else {
-                    None
-                }
+            // Every Claude row opens Claude Code, which holds both the log
+            // rollups and the plan opt-in: `claude-plan` (and the
+            // `claude-plan:…` per-window id a tile saved before plans became
+            // one row each) starts with `claude-` like the token rows. A Codex
+            // plan row opens Codex's own opt-in.
+            let codex_plan = resource.is_some_and(|id| {
+                id.strip_prefix(crate::plan_usage::CODEX_ID)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
             });
-            if let Some(kind) = plan {
-                target = editor(kind, None);
+            if codex_plan {
+                target = editor("codexPlan", None);
             } else if route.scope == "claude"
                 || resource.is_some_and(|id| id.starts_with("claude-"))
             {
@@ -924,15 +917,8 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
                 "Usage connections",
                 match route.scope.as_str() {
                     "providers" => &["neon", "sentry", "vercel"],
-                    "plans" => &["claudePlan", "codexPlan"],
-                    _ => &[
-                        "neon",
-                        "sentry",
-                        "vercel",
-                        "claude",
-                        "claudePlan",
-                        "codexPlan",
-                    ],
+                    "plans" => &["claude", "codexPlan"],
+                    _ => &["neon", "sentry", "vercel", "claude", "codexPlan"],
                 },
             )
         }
@@ -952,11 +938,23 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             }
             ("Service health connections", &["vendor", "services"])
         }
-        _ => ("Connections", &[]),
+        _ => (CONNECTIONS_LABEL, &[]),
     };
     json!({"editor":target,"kinds":kinds,"heading":heading,
         "help":"Choose the connection that supplies this tile. Tile names and placement stay on the overview."})
 }
+
+/// The Connections tab's title and its page's heading. Named once, like the
+/// three below, because the Usage panel's setup line sends the operator here
+/// by these names (`plan_usage::settings_place`).
+pub const CONNECTIONS_LABEL: &str = "Connections";
+/// The automatic source that holds everything read from Claude Code: its local
+/// logs and its plan opt-in.
+pub const CLAUDE_CODE_TITLE: &str = "Claude Code";
+/// Codex's plan opt-in, a catalog connection until it is on.
+pub const CODEX_TITLE: &str = "Codex";
+/// The button, and the heading of the catalog it opens.
+pub const ADD_CONNECTION_LABEL: &str = "Add connection";
 
 /// Configuration status is deliberately distinct from liveness. A saved token
 /// proves that setup exists, not that its provider accepted the last request.
@@ -1072,33 +1070,21 @@ fn connections_section(
             ));
         }
     }
-    // A plan opt-in is a connection only once it is on. Off, it is offered in
-    // the catalog and claims nothing here.
-    for (kind, title, holder, on) in [
-        (
-            "claudePlan",
-            "Claude plan limits",
-            "Claude Code's sign-in",
-            s.claude_plan_usage_enabled,
-        ),
-        (
+    // Codex's plan opt-in is a connection only once it is on. Off, it is
+    // offered in the catalog and claims nothing here. Claude's is not a row at
+    // all: it is a switch on the automatic Claude Code source, beside the local
+    // logs that source already reads, so one entry holds everything Solador
+    // reads from Claude Code.
+    if s.codex_plan_usage_enabled {
+        rows.push(row(
+            "codexPlan".into(),
             "codexPlan",
-            "Codex plan limits",
-            "Codex's sign-in",
-            s.codex_plan_usage_enabled,
-        ),
-    ] {
-        if on {
-            rows.push(row(
-                kind.into(),
-                kind,
-                None,
-                title,
-                holder.into(),
-                "Usage",
-                status("On", false),
-            ));
-        }
+            None,
+            CODEX_TITLE,
+            "Codex's sign-in".into(),
+            "Usage",
+            status("On", false),
+        ));
     }
     if !s.azure_storage_account.is_empty() || !s.azure_cost_container.is_empty() {
         let complete = !s.azure_storage_account.is_empty() && !s.azure_cost_container.is_empty();
@@ -1156,16 +1142,16 @@ fn connections_section(
         .count();
     let count = rows.len();
     json!({
-        "heading": "Connections",
+        "heading": CONNECTIONS_LABEL,
         "summary": if attention == 0 { format!("{count} configured") }
             else { format!("{count} configured · {attention} needs attention") },
         "attentionCount": if attention == 0 { String::new() } else { attention.to_string() },
         "rows": rows,
         "empty": "Add a connection to start monitoring a remote host or provider.",
-        "addLabel": "Add connection",
+        "addLabel": ADD_CONNECTION_LABEL,
         "backLabel": "← Connections",
         "allLabel": "All connections",
-        "catalogHeading": "Add connection",
+        "catalogHeading": ADD_CONNECTION_LABEL,
         "catalogHelp": "One connection can feed several tiles.",
         "catalog": [
             {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners"},
@@ -1176,14 +1162,15 @@ fn connections_section(
             {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
             {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
-            {"kind":"claudePlan", "title":"Claude plan limits", "feeds":"The Claude plan's name and its own limits (5-hour, weekly, or an Enterprise budget), from Claude Code's sign-in"},
-            {"kind":"codexPlan", "title":"Codex plan limits", "feeds":"The Codex plan's own 5-hour and weekly limits, from Codex's sign-in"},
+            {"kind":"codexPlan", "title":CODEX_TITLE, "feeds":"The Codex plan's own 5-hour and weekly limits, from Codex's sign-in"},
         ],
         "automaticHeading": "Automatic sources",
         "automatic": [
             {"kind":"local", "title":"This machine", "feeds":"Local monitoring",
                 "help":"Local machine metrics are collected automatically. Container group rules live in the Containers tile\u{2019}s Configure."},
-            {"kind":"claude", "title":"Claude Code", "feeds":"Local usage logs",
+            {"kind":"claude", "title":CLAUDE_CODE_TITLE,
+                "feeds": if s.claude_plan_usage_enabled { "Local usage logs \u{b7} plan limits on" } else { "Local usage logs" },
+                "localHeading":"Local usage",
                 "help":"Claude Code usage is read from local session logs. No account token is required."},
             {"kind":"services", "title":"Service health", "feeds":"Connected providers",
                 "help":"Service health follows configured providers automatically. Add a status page to watch another service."},
@@ -2229,12 +2216,12 @@ mod tests {
             route("claudeUsage", "claude", &data)["editor"]["kind"],
             "claude"
         );
-        // A plan row opens its own opt-in, not the log rollups' source, even
-        // though both ids start with `claude-`. The bare id is today's row; the
+        // Claude's plan row opens Claude Code, where its opt-in sits beside the
+        // log rollups; Codex's opens Codex. The bare id is today's row; the
         // `:…` form is a per-window id saved before plans were one row each.
         assert_eq!(
             route("claudeUsage", "item:claude-plan", &data)["editor"]["kind"],
-            "claudePlan"
+            "claude"
         );
         assert_eq!(
             route("claudeUsage", "item:codex-plan", &data)["editor"]["kind"],
@@ -2242,13 +2229,10 @@ mod tests {
         );
         assert_eq!(
             route("claudeUsage", "item:claude-plan:CLAUDE PLAN (5H)", &data)["editor"]["kind"],
-            "claudePlan"
-        );
-        // A look-alike is not a plan.
-        assert_eq!(
-            route("claudeUsage", "item:claude-planner", &data)["editor"]["kind"],
             "claude"
         );
+        // A look-alike is not Codex's plan.
+        assert!(route("claudeUsage", "item:codex-planner", &data)["editor"].is_null());
         assert_eq!(
             route("claudeUsage", "item:codex-plan:CODEX PLAN (WEEK)", &data)["editor"]["kind"],
             "codexPlan"
@@ -2259,7 +2243,7 @@ mod tests {
         );
         assert_eq!(
             route("claudeUsage", "plans", &data)["kinds"],
-            json!(["claudePlan", "codexPlan"])
+            json!(["claude", "codexPlan"])
         );
         assert_eq!(
             route("sentryCrons", "active", &data)["editor"]["kind"],
@@ -2850,13 +2834,14 @@ mod tests {
             &facts(),
         );
         assert_eq!(vm["connections"]["rows"], json!([]));
-        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 10);
+        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 9);
         assert_eq!(vm["connections"]["automatic"].as_array().unwrap().len(), 3);
     }
 
-    /// The two plan opt-ins are offered in the catalog, and only become a
-    /// connection row once the operator has turned them on. A default store
-    /// claims no plan source.
+    /// Claude's plan opt-in is a switch on the automatic Claude Code source,
+    /// never a catalog entry or a row of its own; Codex's is offered in the
+    /// catalog and becomes a row only once on. A default store claims no plan
+    /// source.
     #[test]
     fn plan_limits_are_offered_off_and_become_a_row_only_once_on() {
         let off = view_of(
@@ -2872,7 +2857,17 @@ mod tests {
             .iter()
             .map(|e| e["kind"].as_str().unwrap())
             .collect();
-        assert!(kinds.contains(&"claudePlan") && kinds.contains(&"codexPlan"));
+        assert!(kinds.contains(&"codexPlan") && !kinds.contains(&"claudePlan"));
+        let claude_code = |vm: &Value| {
+            vm["connections"]["automatic"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["kind"] == "claude")
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(claude_code(&off)["feeds"], "Local usage logs");
         assert_eq!(off["connections"]["rows"], json!([]));
         assert_eq!(off["planUsage"]["claude"]["value"], false);
         assert_eq!(
@@ -2885,16 +2880,28 @@ mod tests {
             ..Settings::default()
         };
         let on = view_of(&settings, &[], &[], &StoredSecrets::default(), &facts());
-        let rows = on["connections"]["rows"].as_array().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["kind"], "claudePlan");
-        assert_eq!(rows[0]["status"]["attention"], false);
+        assert_eq!(on["connections"]["rows"], json!([]));
+        assert_eq!(
+            claude_code(&on)["feeds"],
+            "Local usage logs \u{b7} plan limits on"
+        );
         assert_eq!(on["planUsage"]["claude"]["value"], true);
         assert_eq!(
             on["planUsage"]["claude"]["status"],
             "On. Reads Claude Code's sign-in every 15 minutes."
         );
         assert_eq!(on["planUsage"]["codex"]["value"], false);
+
+        let codex = Settings {
+            codex_plan_usage_enabled: true,
+            ..Settings::default()
+        };
+        let on = view_of(&codex, &[], &[], &StoredSecrets::default(), &facts());
+        let rows = on["connections"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["kind"], "codexPlan");
+        assert_eq!(rows[0]["title"], "Codex");
+        assert_eq!(rows[0]["status"]["attention"], false);
     }
 
     /// The help says what is read, that nothing is stored or refreshed, and

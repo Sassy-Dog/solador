@@ -414,6 +414,30 @@ test("the crash-reporting toggle saves on the spot and paints Rust's sentence", 
   await expect(toggle).toBeChecked({ checked: c.value });
 });
 
+// A status is Rust's sentence and can be any length (a disconnected gateway
+// says why), so its slot wraps rather than clipping. A right-aligned slot that
+// overflows loses the START of the sentence, off the edge where no scrollbar
+// reaches: "awaiting device pairing" read "ing device pairing".
+test("a long connection status is shown whole, at every width", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const long = settings.connections.rows.find((row) => row.status.text.length > 18);
+  expect(long, "the fixture needs a status longer than the 18ch slot").toBeTruthy();
+  for (const width of [1100, 760, 420]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator('.tab[data-tab="connections"]').click();
+    const state = page.locator(`.connection-row[data-connection="${long.id}"] .connection-state`);
+    await expect(state).toHaveText(long.status.text);
+    const box = await state.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const text = range.getBoundingClientRect(), slot = el.getBoundingClientRect();
+      return { text: [text.left, text.right], slot: [slot.left, slot.right] };
+    });
+    expect(box.text[0], `${width}px: the status starts inside its slot`).toBeGreaterThanOrEqual(box.slot[0] - 0.5);
+    expect(box.text[1], `${width}px: the status ends inside its slot`).toBeLessThanOrEqual(box.slot[1] + 0.5);
+  }
+});
+
 test("each plan opt-in is off in a fresh store, saves on the spot, and paints Rust's sentences", async ({
   page,
   baseURL,
@@ -421,18 +445,28 @@ test("each plan opt-in is off in a fresh store, saves on the spot, and paints Ru
   const settings = await openSettings(page, baseURL);
   const plans = settings.planUsage;
   // The fixture is a store that never opted in: neither plan is a saved
-  // connection, so each is reached through the catalog, and each is off.
-  for (const kind of ["claudePlan", "codexPlan"]) {
-    expect(
-      settings.connections.rows.some((row) => row.kind === kind),
-      "an opt-in that is off claims no connection row"
-    ).toBe(false);
-  }
+  // connection, and each is off. Claude's switch is on the automatic Claude
+  // Code source, beside the local logs it already reads, and nowhere else;
+  // Codex has no local logs, so its switch is a catalog connection.
+  expect(settings.connections.rows.some((row) => ["claude", "codexPlan"].includes(row.kind)),
+    "an opt-in that is off claims no connection row").toBe(false);
+  expect(settings.connections.catalog.map((entry) => entry.kind)).not.toContain("claudePlan");
+  expect(settings.connections.catalog.find((entry) => entry.kind === "codexPlan").title).toBe("Codex");
 
-  for (const [kind, provider] of [["claudePlan", "claude"], ["codexPlan", "codex"]]) {
+  const open = {
+    claude: async () => {
+      await openConnection(page, "claude");
+      const claude = settings.connections.automatic.find((entry) => entry.kind === "claude");
+      // One page for everything read from Claude Code: the local logs first.
+      await expect(page.locator(".group > .group-hdr").first()).toHaveText(claude.localHeading);
+      await expect(page.locator(".group").first()).toContainText(claude.help);
+    },
+    codex: () => addConnection(page, "codexPlan"),
+  };
+  for (const provider of ["claude", "codex"]) {
     const p = plans[provider];
     expect(p.value, "a fresh store reads nobody's sign-in").toBe(false);
-    await addConnection(page, kind);
+    await open[provider]();
     const toggle = page.locator(`#plan-usage-${provider}`);
     await expect(toggle).toBeChecked({ checked: false });
     // Both sentences are Rust's, verbatim: what is read (nothing, while off)

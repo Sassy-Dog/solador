@@ -599,14 +599,28 @@ pub fn placeholder_row(label: &str, loading: bool) -> PlanRow {
 /// The one setup line for every provider that is off, or `None` when all are
 /// on. One line however many are off, so turning the feature off costs the
 /// panel one row, not one per provider.
+///
+/// `section` is the Settings page every switch is on (`Settings → Connections`),
+/// and each entry is the provider's name and where its switch is on that page,
+/// so the line says exactly where to go rather than "Settings": the place a
+/// first-time operator looks is the tile's own Configure, which has no such
+/// switch. The caller supplies every name, because only the caller knows what
+/// Settings calls them; this only joins them.
 #[must_use]
-pub fn off_line(off: &[&str]) -> Option<String> {
-    let names = match off {
+pub fn off_line(section: &str, off: &[(&str, &str)]) -> Option<String> {
+    let (names, places): (Vec<&str>, Vec<&str>) = off.iter().copied().unzip();
+    let names = match names.as_slice() {
         [] => return None,
         [one] => (*one).to_owned(),
         [init @ .., last] => format!("{} and {last}", init.join(", ")),
     };
-    Some(format!("{names} plan limits are off — turn on in Settings"))
+    let place = match places.as_slice() {
+        [one] => format!(" \u{2192} {one}"),
+        many => format!(" ({})", many.join(", ")),
+    };
+    Some(format!(
+        "{names} plan limits are off \u{2014} turn on in {section}{place}"
+    ))
 }
 
 #[cfg(test)]
@@ -1074,14 +1088,20 @@ mod tests {
     /// Off is a setup instruction, never the dash a failure renders.
     #[test]
     fn the_off_line_names_every_provider_that_is_off_and_how_to_turn_it_on() {
-        assert_eq!(off_line(&[]), None);
+        assert_eq!(off_line("Settings → Connections", &[]), None);
         assert_eq!(
-            off_line(&["Claude"]).as_deref(),
-            Some("Claude plan limits are off — turn on in Settings")
+            off_line("Settings → Connections", &[("Claude", "Claude Code")]).as_deref(),
+            Some("Claude plan limits are off — turn on in Settings → Connections → Claude Code")
         );
         assert_eq!(
-            off_line(&["Claude", "Codex"]).as_deref(),
-            Some("Claude and Codex plan limits are off — turn on in Settings")
+            off_line(
+                "Settings → Connections",
+                &[("Claude", "Claude Code"), ("Codex", "Add connection → Codex")]
+            )
+            .as_deref(),
+            Some(
+                "Claude and Codex plan limits are off — turn on in Settings → Connections (Claude Code, Add connection → Codex)"
+            )
         );
     }
 }
