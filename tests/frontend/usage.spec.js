@@ -416,55 +416,121 @@ test("an unconfigured provider contributes no section at all", async ({ page, ba
 
 const planSection = (page, id) => page.locator(`#usageBody .pv-section[data-plan="${id}"]`);
 
-test("each plan that is on paints its windows as rows, each with its own bar", async ({ page, baseURL }) => {
+/**
+ * Asserts one plan section paints `plan` as Rust sent it: the header row, then
+ * the Machines tile's meter for each metric, with its note under it.
+ */
+async function expectPlan(page, plan) {
+  const section = planSection(page, plan.id);
+  await expect(section).not.toHaveAttribute("data-provider");
+  const header = section.locator(".pv-row.plan");
+  await expect(header).toHaveCount(1);
+  await expect(header.locator(".lbl")).toHaveText(plan.label);
+  await expect(header.locator(".val")).toHaveText(plan.value);
+  await expect(header.locator(".val")).toHaveCSS("color", rgb(plan.valueColor));
+
+  const metrics = section.locator(".db-metric");
+  await expect(metrics).toHaveCount(plan.metrics.length);
+  for (const [i, m] of plan.metrics.entries()) {
+    const metric = metrics.nth(i);
+    await expect(metric).toHaveClass(m.span === "full" ? /db-metric-full/ : /^db-metric$/);
+    await expect(metric.locator(".db-stat-label > span")).toHaveText(m.label);
+    await expect(metric.locator(".db-stat-label strong")).toHaveText(m.value);
+    await expect(metric.locator(".db-meter-note")).toHaveText(m.note);
+    const track = metric.locator(".db-meter");
+    await expect(track).toHaveAttribute("aria-label", `${plan.label} ${m.label}`);
+    await expect(track).toHaveAttribute("aria-description", m.note);
+    // The same 5px track the Machines tile draws: the meter rules reach the
+    // panel, not only the overview.
+    await expect(track).toHaveCSS("height", "5px");
+    const fill = track.locator(".db-meter-fill");
+    const tick = track.locator(".db-meter-pace");
+    if (m.fraction === null) {
+      await expect(track).toHaveAttribute("aria-hidden", "true");
+      await expect(track).not.toHaveAttribute("role");
+      await expect(fill).toHaveCount(0);
+      await expect(tick).toHaveCount(0);
+      continue;
+    }
+    await expect(track).toHaveAttribute("role", "meter");
+    await expect(track).toHaveAttribute("aria-valuetext", m.value);
+    await expect(fill).toHaveCSS("background-color", rgb(m.color));
+    // The browser normalises `34.0%` to `34%`, so compare the number.
+    const width = await fill.evaluate((el) => parseFloat(el.style.width));
+    expect(width).toBeCloseTo(m.fraction * 100, 1);
+    if (m.pace === null) {
+      await expect(tick).toHaveCount(0);
+    } else {
+      await expect(tick).toHaveCount(1);
+      await expect(tick).toHaveAttribute("aria-hidden", "true");
+      const left = await tick.evaluate((el) => parseFloat(el.style.left));
+      expect(left).toBeCloseTo(m.pace * 100, 1);
+    }
+  }
+}
+
+test("each plan that is on leads the panel: a header row, then the Machines tile's meters", async ({ page, baseURL }) => {
   const usage = await gotoWithUsage(page, baseURL);
   expect(usage.plans.length, "the measured fixture has both plans on").toBe(2);
   expect(usage.plansMessage, "and so no setup line").toBeNull();
   await expect(page.locator("#usageBody .usage-plans > .pv-message")).toHaveCount(0);
+  const ticks = usage.plans.flatMap((plan) => plan.metrics).filter((m) => m.pace !== null);
+  expect(ticks.length, "the fixture has a meter with a pace tick").toBeGreaterThan(0);
+  expect(
+    usage.plans.flatMap((plan) => plan.metrics).some((m) => m.fraction !== null && m.pace === null),
+    "and one too young to project",
+  ).toBe(true);
 
-  for (const plan of usage.plans) {
-    const section = planSection(page, plan.id);
-    // Inside the rollups' block, after the projects: a reading of the plan, not
-    // a provider account, so never under `.usage-providers` and never counted
-    // by `data-provider`.
-    await expect(page.locator(`#usageBody .usage-main .usage-plans [data-plan="${plan.id}"]`)).toHaveCount(1);
-    await expect(section).not.toHaveAttribute("data-provider");
-    const rows = section.locator(".pv-row.plan");
-    await expect(rows).toHaveCount(plan.rows.length);
-    for (const [i, row] of plan.rows.entries()) {
-      await expect(rows.nth(i).locator(".lbl")).toHaveText(row.label);
-      await expect(rows.nth(i).locator(".val")).toHaveText(row.value);
-      await expect(rows.nth(i).locator(".val")).toHaveCSS("color", rgb(row.valueColor));
-    }
-    // One bar per window that has one, in Rust's colour and width.
-    const bars = plan.rows.filter((row) => row.bar);
-    await expect(section.locator(".pbar")).toHaveCount(bars.length);
-    for (const [i, row] of bars.entries()) {
-      const fill = section.locator(".pbar > span").nth(i);
-      await expect(fill).toHaveCSS("background-color", rgb(row.bar.color));
-      // The browser normalises `34.0%` to `34%`, so compare the number.
-      const width = await fill.evaluate((el) => parseFloat(el.style.width));
-      expect(width).toBeCloseTo(row.bar.fraction * 100, 1);
-    }
-  }
+  // Plans first, then this machine's heading over its token rows, then the
+  // projects. A plan is not a provider account, so never under
+  // `.usage-providers` and never counted by `data-provider`.
+  const order = await page.locator("#usageBody .usage-main").evaluate((el) =>
+    [...el.children].map((c) => c.className),
+  );
+  expect(order).toEqual(["usage-plans", "lbl pv-heading", "pv-row window", "pv-row window", "pv-section"]);
+  await expect(page.locator("#usageBody .pv-heading")).toHaveText(usage.machineHeading);
+  await expect(page.locator("#usageBody .usage-providers [data-plan]")).toHaveCount(0);
+
+  for (const plan of usage.plans) await expectPlan(page, plan);
+
+  // Nothing sits above the first plan, so its rule is not drawn; the second
+  // one's still separates the two.
+  const dividers = page.locator("#usageBody .usage-plans .pv-divider");
+  await expect(dividers.nth(0)).toBeHidden();
+  await expect(dividers.nth(1)).toBeVisible();
 });
 
-test("a plan window with no bar draws none, rather than an empty one", async ({ page, baseURL }) => {
-  // `bar: null` is Rust's "nothing honest to draw" (no reading yet, or a reset
-  // that has passed since the read). A track drawn at zero would read as an
-  // unused plan.
+test("a window whose reset has passed is an empty track: no fill, no tick, no zero", async ({ page, baseURL }) => {
+  // `fraction: null` is Rust's "nothing honest to draw": the reading was true
+  // of a window that has since rolled over. A track drawn at zero would read as
+  // an unused plan.
   const healthy = await gotoWithUsage(page, baseURL);
-  const id = healthy.plans[0].id;
-  const withoutBars = {
+  const muted = {
     ...healthy,
     plans: healthy.plans.map((plan) => ({
       ...plan,
-      rows: plan.rows.map((row) => ({ ...row, bar: null })),
+      metrics: plan.metrics.map((m) => ({ ...m, fraction: null, pace: null, note: "reset since read" })),
     })),
   };
-  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), withoutBars);
-  await expect(planSection(page, id).locator(".pv-row.plan")).toHaveCount(healthy.plans[0].rows.length);
-  await expect(page.locator("#usageBody .usage-plans .pbar")).toHaveCount(0);
+  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), muted);
+  for (const plan of muted.plans) await expectPlan(page, plan);
+  await expect(page.locator("#usageBody .usage-plans .db-meter-fill")).toHaveCount(0);
+});
+
+test("an Enterprise budget is one full-width meter, and a plan that failed first is a dash with no meters", async ({ page, baseURL }) => {
+  const usage = await gotoWithUsage(page, baseURL, "sample-usage-plans.json");
+  const [claude, codex] = usage.plans;
+  expect(claude.metrics.map((m) => m.label), "a seat with no windows").toEqual(["Budget"]);
+  expect(codex.metrics, "a failure before any reading").toEqual([]);
+  for (const plan of usage.plans) await expectPlan(page, plan);
+  // The reason is the header's, in Rust's words; the body says only "—".
+  await expect(page.locator("#usageStale")).toHaveText(usage.footer.text);
+});
+
+test("with no token rows there is no machine heading over nothing", async ({ page, baseURL }) => {
+  const usage = await gotoWithUsage(page, baseURL, "sample-usage-empty.json");
+  expect(usage.machineHeading).toBeNull();
+  await expect(page.locator("#usageBody .pv-heading")).toHaveCount(0);
 });
 
 test("plans that are off are one muted setup line, not rows of dashes", async ({ page, baseURL }) => {
@@ -487,6 +553,8 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
   await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), mixed);
   await expect(page.locator("#usageBody .pv-section[data-plan]")).toHaveCount(1);
   await expect(line).toHaveText(mixed.plansMessage.text);
+  // The line sits above the plan, so the plan's rule separates the two.
+  await expect(page.locator("#usageBody .usage-plans .pv-divider")).toBeVisible();
 });
 
 /**
@@ -496,8 +564,8 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
  * Every cockpit fixture the `fixtures` script dumps is at least 700pt wide, so
  * all of them give Usage two content columns (the second arrives at 696pt,
  * since `PanelKind::ClaudeUsage::min_width` is 340). `fixtures:showcase` is the
- * exception: its `sample-showcase-cockpit-434.json` (`--width 434`) gives
- * `panelColumns.claudeUsage = 1` (floor(450 / 356)), and it is the dump
+ * exception: its `sample-showcase-cockpit-440.json` (`--width 440`) gives
+ * `panelColumns.claudeUsage = 1` (floor(456 / 356)), and it is the dump
  * `screenshots.spec.js` shoots the site's Usage panel from. That is why this
  * suite builds the one-column and two-column cases by editing the payload. The
  * Rust tests pin Usage's cap but not its 696pt breakpoint; the payload is the

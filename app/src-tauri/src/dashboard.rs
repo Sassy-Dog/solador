@@ -236,6 +236,10 @@ fn tint(v: &Value) -> Value {
         json!(color::hex(color::MUTED))
     }
 }
+/// The Usage tile's one row for this machine's Claude Code rollups. Its Full
+/// view keeps the panel's token counts, projects and heading with it.
+pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
+
 fn row(id: &str, label: &str, value: &str, color: Value, attention: bool) -> Value {
     json!({"id": id, "label": label, "value": value, "color": color, "valueColor": color, "attention": attention, "detail": "", "scopes": [], "metrics": [], "url": null})
 }
@@ -740,9 +744,32 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
             .collect(),
         "claudeUsage" => {
             let mut rows = Vec::new();
+            // The plans lead, as they do on the panel: a share of a limit is
+            // the figure an operator acts on. One row per plan carrying the
+            // Machines tile's meters. Its id is the plan section's, never built
+            // from its label, which carries a plan name that can change
+            // (Anthropic renamed Max 20x to Ultra). Only red asks for
+            // attention: amber is a pace, and a pace is a forecast.
+            for plan in list(p, "plans") {
+                let mut r = row(
+                    string(plan, "id"),
+                    string(plan, "label"),
+                    string(plan, "value"),
+                    tint(&plan["color"]),
+                    red(&plan["color"]),
+                );
+                r["valueColor"] = tint(&plan["valueColor"]);
+                r["detail"] = json!(string(plan, "detail"));
+                r["metrics"] = plan["metrics"].clone();
+                add_scope(&mut r, "plans");
+                rows.push(r);
+            }
+            // This machine's rollups are one line on the tile; the panel keeps
+            // the 5-hour and 7-day counts and the projects under its "This
+            // machine" heading.
             if !string(p, "trailing").is_empty() {
                 let mut r = row(
-                    "claude-today",
+                    CLAUDE_TODAY_ID,
                     "Claude Code",
                     string(p, "trailing"),
                     json!(color::hex(color::MUTED)),
@@ -750,34 +777,6 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 );
                 add_scope(&mut r, "claude");
                 rows.push(r);
-            }
-            for v in list(p, "windows") {
-                let mut r = row(
-                    &format!("claude-{}", string(v, "label")),
-                    string(v, "label"),
-                    string(v, "value"),
-                    tint(&v["valueColor"]),
-                    false,
-                );
-                add_scope(&mut r, "claude");
-                rows.push(r);
-            }
-            // Plan windows, in the panel's order: after the rollups, before
-            // the metered providers. Only readings become rows; the setup
-            // line for a plan that is off stays on the panel and in Settings.
-            for plan in list(p, "plans") {
-                for v in list(plan, "rows") {
-                    let mut r = row(
-                        &format!("{}:{}", string(plan, "id"), string(v, "label")),
-                        string(v, "label"),
-                        string(v, "value"),
-                        tint(&v["valueColor"]),
-                        red(&v["valueColor"]),
-                    );
-                    add_scope(&mut r, "plans");
-                    r["detail"] = json!(string(plan, "id"));
-                    rows.push(r);
-                }
             }
             for provider in list(p, "providers") {
                 for v in list(provider, "rows") {
@@ -3019,32 +3018,46 @@ mod tests {
         assert_eq!(strip, ["7 issues", "— ready", "2 PRs"]);
     }
 
-    /// Plan rows join the Usage tile under their own scope, a plan at or past
-    /// its red edge needs attention, and the setup line for a plan that is off
-    /// is not a reading, so it is not a row.
+    /// A plan is one Usage row under its own scope, carrying its meters, and it
+    /// leads the tile. Only red needs attention: amber is a pace, a forecast.
+    /// The token windows are not rows; `claude-today` stands for them. The
+    /// setup line for a plan that is off is not a reading, so it is not a row.
     #[test]
-    fn plan_windows_are_usage_rows_under_their_own_scope() {
+    fn plans_are_usage_rows_with_meters_under_their_own_scope() {
         let red = color::hex(color::RED);
-        let green = color::hex(color::GREEN);
+        let amber = color::hex(color::AMBER);
+        let muted = color::hex(color::MUTED);
+        let week = json!({"label": "Week", "value": "100%", "fraction": 1.0, "color": red,
+            "pace": null, "note": "limit reached · resets in 1h 0m"});
         let payload = json!({
+            "trailing": "1.2M today",
+            "windows": [{"label": "LAST 5H", "value": "820k"}, {"label": "LAST 7D", "value": "4.3M"}],
             "plans": [
-                {"id": "claude-plan", "rows": [
-                    {"label": "CLAUDE PLAN (5H)", "value": "92% · resets in 1h 0m", "valueColor": red,
-                     "bar": {"fraction": 0.92, "color": red}},
-                    {"label": "CLAUDE PLAN (WEEK)", "value": "40%", "valueColor": green,
-                     "bar": {"fraction": 0.4, "color": green}}
-                ]}
+                {"id": "claude-plan", "label": "Claude · Ultra", "value": "limit reached",
+                 "valueColor": red, "color": red,
+                 "detail": "Week is at 100% until its reset in 1h 0m.", "metrics": [week]},
+                {"id": "codex-plan", "label": "Codex · Plus", "value": "out in ~1d 1h",
+                 "valueColor": amber, "color": amber, "detail": "…", "metrics": []}
             ],
             "plansMessage": {"text": "Codex plan limits are off — turn on in Settings",
-                             "color": color::hex(color::MUTED)}
+                             "color": muted}
         });
         let source = source_view("claudeUsage", "Usage", &payload);
         let rows = list(&source, "rows");
-        assert_eq!(rows.len(), 2, "the off line is not a row");
-        assert_eq!(rows[0]["id"], "claude-plan:CLAUDE PLAN (5H)");
+        let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
+        assert_eq!(ids, ["claude-plan", "codex-plan", CLAUDE_TODAY_ID]);
+        assert_eq!(rows[0]["label"], "Claude · Ultra");
         assert_eq!(rows[0]["scopes"], json!(["plans"]));
         assert_eq!(rows[0]["attention"], true);
-        assert_eq!(rows[1]["attention"], false);
+        assert_eq!(rows[0]["valueColor"], red);
+        assert_eq!(
+            rows[0]["detail"],
+            "Week is at 100% until its reset in 1h 0m."
+        );
+        assert_eq!(rows[0]["metrics"], json!([week]));
+        assert_eq!(rows[1]["attention"], false, "amber is a forecast");
+        assert_eq!(rows[1]["color"], amber);
+        assert_eq!(rows[2]["label"], "Claude Code");
         assert!(list(&source, "scopes")
             .iter()
             .any(|s| s["value"] == "plans"));

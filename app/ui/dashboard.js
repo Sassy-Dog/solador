@@ -352,37 +352,19 @@
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");
       for (const m of row.metrics) {
-        const metric = node("div", m.span === "full" ? "db-metric db-metric-full" : "db-metric");
-        if (m.title) metric.title = m.title;
-        const label = node("div", "db-stat-label");
-        const reading = node("strong", "", m.value ?? "—");
+        // The meter itself is meter.js's, shared with the Usage panel.
+        const { metric, label, reading } = window.soladorMeter.metricNode(m, row.label);
         // An acknowledged warning is a ✓ beside its value, not a line of its
         // own: it lasts as long as the warning, which can be all day.
         const badge = acknowledgementBadge(m, true);
         if (badge) reading.append(" ", badge);
-        label.append(node("span", "", m.label));
         // Beside the mount it hides, so the percentage keeps the right edge
         // every other reading on the card uses.
         if (m.mount && interactive) {
           const hide = volumeButton(row, m.mount, true);
           hide.dataset.origin = "tile";
-          label.append(hide);
+          label.insertBefore(hide, reading);
         }
-        label.append(reading);
-        const track = node("div", "db-meter");
-        track.setAttribute("aria-label", `${row.label} ${m.label}`);
-        if (Number.isFinite(m.fraction)) {
-          track.setAttribute("role", "meter");
-          track.setAttribute("aria-valuemin", "0");
-          track.setAttribute("aria-valuemax", "100");
-          track.setAttribute("aria-valuenow", String(m.fraction * 100));
-          track.setAttribute("aria-valuetext", m.value);
-          const fill = node("span", "db-meter-fill");
-          fill.style.width = `${m.fraction * 100}%`;
-          fill.style.backgroundColor = m.color;
-          track.append(fill);
-        } else track.setAttribute("aria-hidden", "true");
-        metric.append(label, track);
         stats.append(metric);
       }
       wrap.append(stats);

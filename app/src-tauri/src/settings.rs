@@ -893,15 +893,22 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             ("OpenClaw connection", &["openclaw"])
         }
         "claudeUsage" => {
-            // Plan rows first: their ids also start with `claude-`, and they
-            // belong to the plan opt-in, not to the log rollups.
-            let plan = resource
-                .and_then(|id| id.split_once(':'))
-                .and_then(|(section, _)| match section {
-                    crate::plan_usage::CLAUDE_ID => Some("claudePlan"),
-                    crate::plan_usage::CODEX_ID => Some("codexPlan"),
-                    _ => None,
-                });
+            // Plan rows first: `claude-plan` also starts with `claude-`, and it
+            // belongs to the plan opt-in, not to the log rollups. A plan row's
+            // id is its section's; `claude-plan:…` is the per-window id a
+            // tile saved before plans became one row each.
+            let is_plan = |id: &str, section: &str| {
+                id == section || id.strip_prefix(section).is_some_and(|r| r.starts_with(':'))
+            };
+            let plan = resource.and_then(|id| {
+                if is_plan(id, crate::plan_usage::CLAUDE_ID) {
+                    Some("claudePlan")
+                } else if is_plan(id, crate::plan_usage::CODEX_ID) {
+                    Some("codexPlan")
+                } else {
+                    None
+                }
+            });
             if let Some(kind) = plan {
                 target = editor(kind, None);
             } else if route.scope == "claude"
@@ -1169,7 +1176,7 @@ fn connections_section(
             {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
             {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
-            {"kind":"claudePlan", "title":"Claude plan limits", "feeds":"The Claude plan's own 5-hour and weekly limits, from Claude Code's sign-in"},
+            {"kind":"claudePlan", "title":"Claude plan limits", "feeds":"The Claude plan's name and its own limits (5-hour, weekly, or an Enterprise budget), from Claude Code's sign-in"},
             {"kind":"codexPlan", "title":"Codex plan limits", "feeds":"The Codex plan's own 5-hour and weekly limits, from Codex's sign-in"},
         ],
         "automaticHeading": "Automatic sources",
@@ -1269,7 +1276,7 @@ fn plan_usage_section(settings: &Settings) -> Value {
             settings.claude_plan_usage_enabled,
             "Read Claude Code's sign-in",
             "Claude Code",
-            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the Usage panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
+            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It also reads the plan's name from Claude Code's ~/.claude.json, keeping that one field and nothing else from the file. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the Usage panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
         ),
         "codex": entry(
             settings.codex_plan_usage_enabled,
@@ -2223,10 +2230,24 @@ mod tests {
             "claude"
         );
         // A plan row opens its own opt-in, not the log rollups' source, even
-        // though both ids start with `claude-`.
+        // though both ids start with `claude-`. The bare id is today's row; the
+        // `:…` form is a per-window id saved before plans were one row each.
+        assert_eq!(
+            route("claudeUsage", "item:claude-plan", &data)["editor"]["kind"],
+            "claudePlan"
+        );
+        assert_eq!(
+            route("claudeUsage", "item:codex-plan", &data)["editor"]["kind"],
+            "codexPlan"
+        );
         assert_eq!(
             route("claudeUsage", "item:claude-plan:CLAUDE PLAN (5H)", &data)["editor"]["kind"],
             "claudePlan"
+        );
+        // A look-alike is not a plan.
+        assert_eq!(
+            route("claudeUsage", "item:claude-planner", &data)["editor"]["kind"],
+            "claude"
         );
         assert_eq!(
             route("claudeUsage", "item:codex-plan:CODEX PLAN (WEEK)", &data)["editor"]["kind"],

@@ -520,8 +520,16 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .pv-row .lbl { font-size:9px; }
 .pv-row .val { margin-left:auto; font-size:12px; font-weight:700;
   white-space:nowrap; font-variant-numeric:tabular-nums; }
-/* The 5H / WEEK window rows: a fixed label column so the two figures align. */
-.pv-row.window .lbl { font-size:10px; min-width:42px; }
+/* The LAST 5H / LAST 7D token rows: a fixed label column so the two figures
+   align. */
+.pv-row.window .lbl { font-size:10px; min-width:54px; }
+/* A plan's header: its name (`Claude · Ultra`) in ink, beside Rust's verdict.
+   Its limits follow as the Machines tile's meters (dashboard.css). */
+.pv-row.plan .lbl { font-size:11px; color:var(--ink); }
+/* "THIS MACHINE": the line between the plan meters above and this machine's
+   own token counts below. Ruled only when the plans are above it. */
+.pv-heading { font-size:9px; }
+.usage-plans + .pv-heading { border-top:1px solid var(--line); padding-top:10px; }
 .pv-message { font-size:11px; color:var(--muted); margin:0; }
 .pv-divider { border:0; border-top:1px solid var(--line); margin:0; width:100%; }
 .pv-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
@@ -561,10 +569,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 }
 .usage-main { display:flex; flex-direction:column; gap:10px; min-width:0; }
 .usage-providers { display:flex; flex-direction:column; gap:10px; min-width:0; }
-/* The plan windows sit inside `.usage-main`, after the projects: each plan
-   section opens with its own rule, which separates it from the rollups above
-   at either column count. */
+/* The plans lead `.usage-main`, above this machine's rollups. Each plan
+   section opens with its own rule; the first has nothing above it to separate
+   from, so its rule is dropped, as the providers' first one is side by side.
+   A setup line above it keeps the rule. */
 .usage-plans { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.usage-main > .usage-plans:first-child > .pv-section:first-child > .pv-divider { display:none; }
 /* A message names a state of the whole panel, so it spans the split. */
 #usageBody > .pv-message { grid-column: 1 / -1; }
 /* Every provider section opens with a rule separating it from the block ABOVE

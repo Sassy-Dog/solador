@@ -3563,9 +3563,17 @@ async fn plan_usage_loop(app: Arc<App>) {
                     .unwrap_or(Err(subscription::PlanErrorKind::CredentialUnreadable))
             },
             |token| async move {
-                subscription::claude::Client::default()
+                let mut reading = subscription::claude::Client::default()
                     .usage(&token, github::now_utc())
-                    .await
+                    .await?;
+                // The plan's name is not in the reply. It is Claude Code's
+                // cached profile, read here so it sits behind the same gate as
+                // the sign-in: nothing reads it while the provider is off.
+                reading.plan =
+                    tokio::task::spawn_blocking(subscription::claude::plan_name_this_machine)
+                        .await
+                        .unwrap_or(None);
+                Ok(reading)
             },
         )
         .await;
@@ -6480,7 +6488,10 @@ fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
     // comparing two different bodies. Every other dump renders the panel as a
     // store starts, both plans off, which puts the setup line in front of the
     // browser suite.
-    let plans = if matches!(kind, usage::Fixture::Measured | usage::Fixture::Showcase) {
+    let plans = if matches!(
+        kind,
+        usage::Fixture::Measured | usage::Fixture::Showcase | usage::Fixture::PlanEdges
+    ) {
         usage::FIXTURE_PLANS
     } else {
         plan_usage::PlanInputs::OFF
@@ -7060,6 +7071,8 @@ fn run_dump(args: &[String]) -> bool {
             usage::Fixture::Empty
         } else if args.iter().any(|arg| arg == "--unmeasured") {
             usage::Fixture::Unmeasured
+        } else if args.iter().any(|arg| arg == "--plan-edges") {
+            usage::Fixture::PlanEdges
         } else if showcase {
             usage::Fixture::Showcase
         } else {

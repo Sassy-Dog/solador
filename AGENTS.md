@@ -234,7 +234,10 @@ the security design.
   Nothing reads Claude Code's or Codex's sign-in until that provider's opt-in is
   on; the reader runs on each poll, the token is used for one request and
   dropped, and no error message, `Debug` output or test assertion may carry it
-  (`secret.rs`'s redaction is tested). The crate is app-only, and
+  (`secret.rs`'s redaction is tested). The plan's name comes from Claude
+  Code's `~/.claude.json` behind the same gate; that file can hold an API key,
+  so it is a typed parse that keeps `oauthAccount.planDisplayName` and nothing
+  else (`claude::read_plan_name`). The crate is app-only, and
   `scripts/agent-deps-guard.sh` asserts `agent/` never resolves it. A change
   that would write, refresh or rotate either sign-in needs the operator's
   explicit approval first: refreshing a shared OAuth token rotates it for the

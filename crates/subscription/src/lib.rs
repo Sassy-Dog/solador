@@ -1,5 +1,6 @@
-//! The plan's own limit windows for a **Claude** or **Codex** subscription —
-//! the 5-hour session and the weekly allowance, with their reset instants —
+//! The plan's own limits for a **Claude** or **Codex** subscription — its
+//! limit windows (the 5-hour session, the week, any model-scoped week) with
+//! their reset instants, an Enterprise seat's spend cap, and the plan's name —
 //! read the way the subscription itself reports them.
 //!
 //! This is a different reading from `crates/usage`'s Claude token rollups, and
@@ -27,6 +28,13 @@
 //! - **Nothing here decides *whether* to read.** The opt-in lives in the shell
 //!   (`app/src-tauri/src/plan_usage.rs`). This crate only says how.
 //!
+//! The plan's **name** comes from a different file, Claude Code's cached
+//! profile `~/.claude.json`, which is not a credential but sits beside one: it
+//! can hold an API key and the account's identity. Only
+//! `oauthAccount.planDisplayName` is read out of it, through a typed parse
+//! that never holds the rest ([`claude::read_plan_name`]), and only behind the
+//! same opt-in.
+//!
 //! The method is the one `stablyai/orca` uses for the same job. Each module
 //! cites the orca file and line it follows, and says where it parts from
 //! orca.
@@ -40,7 +48,10 @@
 //!
 //! # Unknown is not zero
 //!
-//! - An absent window is no [`PlanWindow`], never a 0% one.
+//! - An absent window is no [`PlanWindow`], never a 0% one. A verified Ultra
+//!   account has no 5-hour window, and an Enterprise seat has none at all.
+//! - An amount with no stated currency is a bare amount, never dollars, and a
+//!   percentage in a field whose unit is ambiguous is not read at all.
 //! - A missing reset instant is `None`, never "now".
 //! - A Codex window that states no length is [`WindowSpan::Unstated`]. It
 //!   never borrows a 5-hour or weekly label it did not state.
@@ -102,20 +113,58 @@ impl Provider {
     }
 }
 
-/// One subscription's limit windows, as the service reported them.
-#[derive(Debug, Clone, PartialEq)]
+/// One subscription's limits, as the service reported them.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlanUsage {
+    /// The plan's name as the owning program displays it (`"Ultra"`,
+    /// `"Enterprise"`, Codex's `"plus"`), or `None` when nothing said. Never
+    /// derived from a tier code: Anthropic renamed Max 20x to Ultra on
+    /// 2026-10-30 while the tier code still read `default_claude_max_20x`.
+    pub plan: Option<String>,
     /// In the order the service presents them: session, then weekly, then any
-    /// model-scoped weekly. Empty when the service answered without any window,
-    /// which is [`NO_WINDOWS_MESSAGE`] and not an error.
+    /// model-scoped weekly. Empty for an Enterprise seat, which has none.
     pub windows: Vec<PlanWindow>,
+    /// A dollar (or other currency) spend against a cap: an Enterprise seat's
+    /// budget, or a plan's extra usage past its windows. `None` when the reply
+    /// carried no spend.
+    pub spend: Option<PlanSpend>,
 }
 
 impl PlanUsage {
+    /// No limit at all: no window and no spend. That is
+    /// [`NO_WINDOWS_MESSAGE`], not an error. A plan name alone is not a
+    /// reading.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.windows.is_empty()
+        self.windows.is_empty() && self.spend.is_none()
     }
+}
+
+/// An amount of money as the service sends it: whole minor units at a stated
+/// exponent, so 50000 at exponent 2 is 500.00.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Money {
+    /// Non-negative, in minor units.
+    pub minor: i64,
+    /// Decimal places, 0 to 6.
+    pub exponent: u8,
+    /// An ISO 4217 code (`"USD"`), or `None` when the reply named none. Never
+    /// defaulted: an unnamed currency is shown as a bare amount.
+    pub currency: Option<String>,
+}
+
+/// A spend against a cap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanSpend {
+    /// What has been spent, or `None` when the reply did not say.
+    pub used: Option<Money>,
+    /// The cap, or `None` when the reply did not say.
+    pub limit: Option<Money>,
+    /// The service's own percentage of the cap, finite and non-negative, when
+    /// it stated one in a field whose unit is known.
+    pub stated_percent: Option<f64>,
+    /// Whether spending past the plan's windows is switched on, when stated.
+    pub enabled: Option<bool>,
 }
 
 /// One limit window.
@@ -159,6 +208,20 @@ pub(crate) fn used_percent(value: Option<&serde_json::Value>) -> Option<f64> {
     value
         .and_then(serde_json::Value::as_f64)
         .filter(|p| p.is_finite() && *p >= 0.0)
+}
+
+/// The longest plan name kept. Real ones are a word or two (`"Ultra"`,
+/// `"Enterprise"`, `"plus"`); anything longer is not a name.
+pub const PLAN_NAME_MAX_CHARS: usize = 40;
+
+/// A plan name as another program wrote it: trimmed, and `None` when blank,
+/// over [`PLAN_NAME_MAX_CHARS`], or carrying a control character.
+pub(crate) fn plan_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let ok = !name.is_empty()
+        && name.chars().count() <= PLAN_NAME_MAX_CHARS
+        && !name.chars().any(char::is_control);
+    ok.then(|| name.to_owned())
 }
 
 /// The 5-hour session window, in minutes.

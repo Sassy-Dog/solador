@@ -745,8 +745,8 @@ app/
 │   ├── src/github/       # the Repos + GitHub Runners panels, and the local
 │   │                     #   git scan behind their LOCAL/WT columns
 │   ├── src/usage.rs      # the Usage panel: Claude tokens + Neon + Sentry
-│   ├── src/plan_usage.rs # its plan rows: the opt-in gate, each provider's
-│   │                     #   schedule, and the Claude/Codex plan sections
+│   ├── src/plan_usage.rs # its plans: the opt-in gate, each provider's
+│   │                     #   schedule, and each plan's row and meters
 │   ├── src/azure.rs      # the Azure Cost panel
 │   ├── src/openclaw.rs   # the OpenClaw panel: the device-key store, the live
 │   │                     #   session, and every string the panel paints
@@ -759,6 +759,8 @@ app/
     ├── settings.js       # the Settings view
     ├── containers.js     # the Containers/VMs panel
     ├── github.js         # the Repos + GitHub Runners panels
+    ├── meter.js          # the one meter the Machines tile and the Usage
+    │                     #   panel's plans both paint
     ├── usage.js          # the Usage panel
     ├── azure.js          # the Azure Cost panel
     └── openclaw.js       # the OpenClaw panel
@@ -783,7 +785,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`localhost`](../crates/localhost) | this machine's metrics; every field the platform can decline is an `Option` |
 | [`github`](../crates/github) | the GitHub client (REST, plus one GraphQL walk for the board's Ready column): workflows, runners, roster/presence |
 | [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats |
-| [`subscription`](../crates/subscription) | the Claude and Codex plans' limit windows: reads each tool's own saved sign-in (read-only) and one undocumented usage endpoint each; app-only |
+| [`subscription`](../crates/subscription) | the Claude and Codex plans' limits (windows, and an Enterprise seat's spend cap) and the plan's name: reads each tool's own saved sign-in (read-only), one undocumented usage endpoint each, and one field of `~/.claude.json`; app-only |
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 | [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
@@ -1469,7 +1471,10 @@ await window.__TAURI__.core.invoke("azure_cost");
   "trailing": "1.2M today",              // "" when no summary exists
   "message": null,                       // or {"text": "reading logs…"} / "no usage data"
                                          //    / "no Claude usage in the last 7 days"
-  "windows": [{"label": "5H", "value": "820k", "valueColor": "#33d17a"}, …],
+  "machineHeading": "THIS MACHINE",      // null when there are no rows under it
+  "windows": [{"label": "LAST 5H", "value": "820k", "valueColor": "#33d17a"}, …],
+  //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
+  //     they cannot be read as the plan meters' 5h / Week
   "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
   "providers": [
     {"id": "neon", "rows": [        // "—" (muted) for any figure that wasn't measured
@@ -1484,18 +1489,30 @@ await window.__TAURI__.core.invoke("azure_cost");
     //     `freshness`. Both are the panel's, in the header; see below.
     {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}}
   ],
-  "plans": [        // one section per plan that is ON, in provider order
-    {"id": "claude-plan", "rows": [
-      {"label": "CLAUDE PLAN (5H)",   "value": "34% · resets in 2h 14m",
-       "valueColor": …, "bar": {"fraction": 0.34, "color": …}},
-      //   ^ each window carries its own bar, coloured at 70/90%; `bar` is null
-      //     with no reading yet, and on "34% · reset since read" (muted)
-      {"label": "CLAUDE PLAN (WEEK)", "value": "41% · resets in 3d 5h", …}
-      //   ^ plus a per-model weekly when the plan reports one:
-      //     "CLAUDE PLAN (WEEK · FABLE)". Before any reading, one row:
-      //     "reading…" while it loads, "—" (muted) after a failure.
+  "plans": [        // one per plan that is ON, in provider order, painted FIRST
+    {"id": "claude-plan",
+     "label": "Claude · Ultra",          // the tool's own plan name, or "Claude"
+     "value": "out in ~1d 1h",           // the tightest verdict: "limit reached"
+     "valueColor": …,                    //   (red), the earliest run-out (amber), the
+     "color": …,                         //   busiest reset (muted), "62% of budget";
+                                         //   `color` is the worst live meter's
+     "detail": "Week · Fable is at 78% and, at this pace, will run out in ~1d 1h, before its reset in 3d 5h.",
+     "metrics": [                        // the Machines tile's meter shape
+      {"label": "Week", "value": "41%", "fraction": 0.41, "color": …,
+       "pace": 0.54,                     // the tick: the share of the window gone
+                                         //   when it was read; null when no pace
+       "note": "resets in 3d 5h · on pace for 76%"},
+      {"label": "Week · Fable", "value": "78%", …,
+       "note": "resets in 3d 5h · out in ~1d 1h at this pace"}
+      //   ^ a `5h` meter only when the reply has a 5-hour window (a verified
+      //     Ultra account has none). A window whose reset has passed since the
+      //     read: `fraction` and `pace` null, note "reset since read". An
+      //     Enterprise seat: one {"label": "Budget", "value": "$312 / $500 · 62%",
+      //     "span": "full", "pace": null, …}; beside windows it is "Extra usage".
     ]},
-    {"id": "codex-plan", "rows": […]}
+    {"id": "codex-plan", "label": "Codex · Plus", …}
+    //   ^ before any reading: "reading…" while it loads, "—" (muted) after a
+    //     failure, and `metrics: []`
   ],
   "plansMessage": null, // or {"text": "Claude and Codex plan limits are off —
                         //    turn on in Settings", "color": …}: ONE muted line
@@ -1665,9 +1682,10 @@ lifting `spend_prior_month` to an `Option` is the same fix, in `crates/azurecost
 rather than here.
 
 Two things the Claude half deliberately does not have. There is **no progress bar
-on the 5H / WEEK rows** — the original's `fiveHourTokenLimit` and `weeklyTokenLimit` are
-both `nil`, a subscription publishes no ceiling, and a bar against an invented
-one is a percentage of a number nobody set. And **no USD**: `crates/usage` prices
+on the LAST 5H / LAST 7D token rows** — the original's `fiveHourTokenLimit` and
+`weeklyTokenLimit` are both `nil`, local logs publish no ceiling, and a bar
+against an invented one is a percentage of a number nobody set. (The plan's own
+limits above them are a different reading, which does publish its ceiling.) And **no USD**: `crates/usage` prices
 every record and the figure is unit-tested, but the account is subscription-based
 so it is never displayed.
 
@@ -1707,7 +1725,9 @@ step that could change the other tool's state:
 |---|---|---|
 | sign-in read | macOS keychain item `Claude Code-credentials` (account `$USER`, via `/usr/bin/security`), else `~/.claude/.credentials.json` | `$CODEX_HOME/auth.json`, else `~/.codex/auth.json` |
 | request | `GET https://api.anthropic.com/api/oauth/usage` (`anthropic-beta: oauth-2025-04-20`) | `GET https://chatgpt.com/backend-api/wham/usage` (`OpenAI-Beta: codex-1`, `ChatGPT-Account-Id`) |
-| windows | `five_hour`, `seven_day`, and any per-model weekly in `limits[]` | `rate_limit.primary_window` / `secondary_window`, named by their length |
+| windows | `five_hour`, `seven_day`, and any per-model weekly in `limits[]`; each only when the reply carries it (a verified Ultra account has no `five_hour`) | `rate_limit.primary_window` / `secondary_window`, named by their length |
+| spend | an Enterprise seat's cap: `spend` (`used`, `limit` or `cap.money`, `percent`, `enabled`), else `extra_usage` (`used_credits`, `monthly_limit`, `currency`, `decimal_places`; never its ambiguous `utilization`) | none |
+| plan name | `oauthAccount.planDisplayName` from `~/.claude.json`, the only field read from that file | the reply's `plan_type` |
 
 **Read-only, and never kept.** Solador never writes, refreshes or rotates either
 sign-in, and never starts `claude` or `codex` (orca's Codex RPC path spawns the
@@ -1729,9 +1749,32 @@ refused prompt is not re-asked every 15 minutes. **Windows and Linux** have no
 keychain step: the file is the only source there, and a Codex configured to keep
 its sign-in in the OS keyring reads as not signed in.
 
+**The plan's name is read, never derived.** The reply names no plan, so after a
+successful Claude read the shell reads Claude Code's cached profile,
+`~/.claude.json`, behind the same opt-in. That file can also hold an API key,
+the account's identity and every project's history, so it is parsed into a
+typed struct naming one field, `oauthAccount.planDisplayName`, and nothing else
+is kept; it is size-checked before it is opened, and a failed parse is "no
+name" with no error text. Tier codes are never mapped to names: Anthropic
+renamed Max 20x to Ultra on 2026-10-30 while the tier still read
+`default_claude_max_20x`.
+
+**One row per plan, one meter per limit, and a pace.** The plan is a row
+(`Claude · Ultra`) with the Machines tile's meters under it (`app/ui/meter.js`).
+Each window's pace is the average since it opened, computed at the reading's own
+time (`last_updated`), never at render: dividing a frozen percentage by a clock
+that keeps running would make a stopped poller look like a slowing burn. It is
+shown from a tenth of the window on (30 minutes of a session, about 17 hours of
+a week) as a tick on the track, and hidden once the reading is stale. The row's
+verdict is the tightest: `limit reached` (red, which raises attention), else
+the earliest run-out (`out in ~1d 1h`, amber, which is a forecast and raises
+none), else the busiest window's reset (its share when it states none). It is
+never blank: a plan whose every window rolled over after its read says `reset
+since read`. A spend cap has no pace, because the reply states no reset for it.
+
 **A plan is not an account.** The reading is whichever account each tool is
-signed in as on this machine, it sits in its own rows, and it is never merged
-into the rollups above it or attributed to a `VendorAccount`.
+signed in as on this machine, it sits in its own block, and it is never merged
+into the rollups below it or attributed to a `VendorAccount`.
 
 **Applied without a restart**, like the GitHub panels: saving or clearing a Neon
 key, a Sentry token, an org id or a slug wakes the usage loop *and* forces its
@@ -2854,8 +2897,11 @@ cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage p
 #   back: TWO header lines, each naming every section — one warning about the
 #   poller and one dating the figures, never joined. Claude's own rollups stay
 #   current, being on a far faster cadence). The measured and stale dumps have
-#   both plans on; `--unmeasured` and `--empty` have both off, so they show the
-#   plans' setup line.
+#   both plans on (Claude an Ultra plan with no 5-hour window and a Fable week
+#   running out early; Codex a session too young to project); `--plan-edges`
+#   has both on too, as an Enterprise seat's budget beside a Codex that failed
+#   before any reading; `--unmeasured` and `--empty` have both off, so they
+#   show the plans' setup line.
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and
@@ -3252,7 +3298,8 @@ and that immediacy is itself the check on the corresponding wake:
 
    The Usage panel is the one surface here that needs **no credential at all** to
    populate: it walks `~/.claude/projects` on this machine. On a machine that has
-   run Claude Code, expect `5H` and `WEEK` token counts, a `TOP PROJECTS (7D)`
+   run Claude Code, expect `LAST 5H` and `LAST 7D` token counts under `THIS
+   MACHINE`, a `TOP PROJECTS (7D)`
    list, and an `N today` trailing label within one rollup cadence (a minute by default). On one that
    has not, expect `no ~/.claude/projects` in the footer with `no usage data`
    above it — also a pass, and the two are different Rust sentences.
@@ -3266,6 +3313,21 @@ and that immediacy is itself the check on the corresponding wake:
    header says `⚠ neon: Add your Neon org ID in Settings` — never a fabricated
    `0.0 CU-h`, and never an unattributed warning that could have come from any
    of the three sections.
+
+   To exercise the plans, tick **Claude plan limits** under Settings →
+   Connections on a machine signed in to Claude Code. Within a poll the
+   panel's first block is `Claude · <plan>` (the name Claude Code itself
+   displays; `Claude` alone when its profile names none) with one meter per
+   limit the reply carries: on a verified Ultra plan, `Week` and `Week ·
+   <model>` and **no `5h` meter**. Once a tenth of the week has passed each
+   meter has a pace tick and a note under it (`resets in 3d 5h · on pace for
+   76%`), and the row's verdict is the tightest of them. On an Enterprise seat
+   expect one full-width `Budget` meter (`$312 / $500 · 62%`), no tick, and
+   `no reset date reported`. The Usage tile on the overview shows the same
+   meters as cards, each plan's verdict in its value slot, and the token
+   counts folded into one `Claude Code · N today` row. None of this has
+   automated coverage across the IPC boundary; the fixtures behind the e2e
+   suite (`--dump-usage`, `--plan-edges`) are Rust's, not the live reply's.
 
 9. **Read the terminal for the OpenClaw panel's own one-line signal** (it prints
    at load, alongside the others):

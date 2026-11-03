@@ -1,0 +1,12 @@
+{
+  "five_hour": null,
+  "seven_day": null,
+  "spend": {
+    "used": { "amount_minor": 31245, "currency": "USD", "exponent": 2 },
+    "limit": { "amount_minor": 50000, "currency": "USD", "exponent": 2 },
+    "percent": 62.49,
+    "enabled": true,
+    "disabled_reason": null,
+    "balance": null
+  }
+}

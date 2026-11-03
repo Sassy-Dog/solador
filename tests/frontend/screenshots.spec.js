@@ -54,7 +54,7 @@ const PAYLOADS = {
  * narrow shot once showed overlapping host cards: a layout computed for 2732px
  * painted into a 900px window. So each viewport below has its own dump, and a
  * width with none is refused, never approximated. The widths are what those
- * viewports measure (1024, 908, 900, 466 and 462 wide, less the page padding; a tile's Full view asks
+ * viewports measure (1024, 908, 900, 472 and 462 wide, less the page padding; a tile's Full view asks
  * at the window's own width too, which is why 900 has a dump); a CSS change that
  * moves them fails here loudly, and the fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
  */
@@ -64,7 +64,7 @@ const COCKPITS = {
   868: "sample-showcase-cockpit-868.json",
   900: "sample-showcase-cockpit-900.json",
   430: "sample-showcase-cockpit-430.json",
-  434: "sample-showcase-cockpit-434.json",
+  440: "sample-showcase-cockpit-440.json",
 };
 
 /** The box `.tile-shot img` crops each panel image into on solador.app (site.css, 311x195 at the 3-up layout). */
@@ -183,7 +183,7 @@ async function expectCpuSectionInCrop(panel) {
  * one card anchored bottom left (`.tile-shot-bottom`): `cover` scales the image
  * to fill the box, and what lies above the bottom `visibleH` rows is cut. The
  * crop must also keep the panel's full width, or a two-column panel (a wider
- * window than 466pt) would cut the providers' values on the right.
+ * window than 472pt) would cut the providers' values on the right.
  */
 async function expectProvidersInBottomCrop(panel) {
   const box = await panel.boundingBox();
@@ -205,28 +205,33 @@ async function expectProvidersInBottomCrop(panel) {
 }
 
 /**
- * The crop's top edge cuts no row and no bar (#699). The Usage card's text no
- * longer names the Codex plan rows, but they show, so the edge must not leave a
- * label-less sliver of one: every child of a plan section lies wholly inside the
- * crop or wholly outside it, in every box.
+ * The crop's top edge cuts no row and no meter (#699). The card is anchored
+ * bottom, so the edge falls somewhere in the body above the providers; wherever
+ * it lands it must not leave a label-less sliver of a row: every row, meter,
+ * heading and rule of the Claude block lies wholly inside the crop or wholly
+ * outside it, in every box.
  */
-async function expectNoPlanRowCutByBottomCrop(panel) {
+async function expectNoRowCutByBottomCrop(panel) {
   const box = await panel.boundingBox();
-  const sections = panel.locator(".pv-section[data-plan]");
-  expect(await sections.count(), "plan sections to check").toBeGreaterThan(0);
-  const kids = panel.locator(".pv-section[data-plan] > *");
+  expect(await panel.locator(".pv-section[data-plan]").count(), "plan sections in the shot").toBeGreaterThan(0);
+  const kids = panel.locator(
+    ".usage-main :is(.pv-row, .pv-item, .pv-heading, .pv-divider, .db-metric, .pv-section > .lbl)",
+  );
   const count = await kids.count();
-  expect(count, "children of the plan sections").toBeGreaterThan(0);
+  expect(count, "rows of the Claude block").toBeGreaterThan(0);
   for (const [w, h] of SHOT_BOXES) {
     const scale = Math.max(w / box.width, h / box.height);
     const cut = box.height - h / scale;
     for (let i = 0; i < count; i++) {
       const k = await kids.nth(i).boundingBox();
+      if (!k) continue; // a rule `display: none` has no box to cut
       const top = k.y - box.y;
       const bottom = top + k.height;
-      expect(
-        bottom <= cut + 0.5 || top >= cut - 0.5,
-        `plan child ${i} (rows ${top.toFixed(1)}-${bottom.toFixed(1)}) is not cut by the ${w}x${h} crop's top edge at ${cut.toFixed(1)}`,
+      if (bottom <= cut + 0.5 || top >= cut - 0.5) continue;
+      const what = await kids.nth(i).evaluate((el) => `${el.className} "${el.textContent.trim()}"`);
+      expect.soft(
+        false,
+        `${what} (${top.toFixed(1)}-${bottom.toFixed(1)}) is cut by the ${w}x${h} crop's top edge at ${cut.toFixed(1)}`,
       ).toBe(true);
     }
   }
@@ -262,10 +267,12 @@ test.describe("at 2x: the shots people look at", () => {
   // two-column rows read as a card (repos, runners), 462 for the rest, where a
   // panel stacks as it did in its old card: Containers keeps the remote host
   // under this machine's, Azure Cost keeps the prior month, projection and
-  // resource groups. Usage is 466, four wider: at 462 the bottom crop's top
-  // edge fell 1pt into the Codex 5H row's own padding, and at 466 it falls just
-  // above that section's divider (#699, expectNoPlanRowCutByBottomCrop), so the
-  // panel is asked for at 434 as well as the overview's widths. Hosts is one card — this machine's — at 900: the whole host
+  // resource groups. Usage is 472, ten wider: its plan meters lead the panel
+  // and the crop is anchored bottom, so the crop's top edge falls in the
+  // top-projects list, whose rows sit flush; at 472 it falls on a boundary
+  // between two of them (expectNoRowCutByBottomCrop, #699), where at 462 and
+  // 466 it cut one. So the panel is asked for at 440 as well as the overview's
+  // widths. Hosts is one card — this machine's — at 900: the whole host
   // grid at 1800 wide and 2x is a 3500px image for a tile that shows a few
   // hundred. Hosts asks Rust for the cockpit at the window's own width (900) as
   // well as the overview's (868), so both have a dump.
@@ -274,7 +281,7 @@ test.describe("at 2x: the shots people look at", () => {
     ["#reposPanel", "repos", 908, "ghWorkflows"],
     ["#runnersPanel", "runners", 908, "ghRunners"],
     ["#containersPanel", "containers", 462, "containers"],
-    ["#usagePanel", "usage", 466, "claudeUsage"],
+    ["#usagePanel", "usage", 472, "claudeUsage"],
     ["#cronsPanel", "crons", 462, "sentryCrons"],
     ["#servicesPanel", "services", 462, "services"],
     ["#azurePanel", "azure-cost", 462, "azureCost"],
@@ -288,7 +295,7 @@ test.describe("at 2x: the shots people look at", () => {
       if (name === "containers") await expectRemoteHostInCrop(panel);
       if (name === "usage") {
         await expectProvidersInBottomCrop(panel);
-        await expectNoPlanRowCutByBottomCrop(panel);
+        await expectNoRowCutByBottomCrop(panel);
       }
       if (name === "hosts") await expectCpuSectionInCrop(panel);
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });

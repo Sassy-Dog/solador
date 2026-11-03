@@ -50,22 +50,39 @@
   that raises attention, and a group holding one leads with it (value
   `1 missing`, red) rather than a load figure, which moves to the line under
   it. Individual rows keep their state colours.
-- **Usage** — Claude token rollups (their own `PanelInterval::ClaudeRollups`, #615); the Claude and Codex
-  **plans' own limit windows** (`CLAUDE PLAN (5H)`, `(WEEK)`, a per-model
-  weekly such as `(WEEK · FABLE)`, each with its reset countdown and a bar
-  coloured like the CPU/RAM meters, 70/90%), **opt-in per provider and off in
-  a fresh store** (15 min by default, see `docs/APP-INTERNALS.md`, **Authentication**); Neon, Sentry +
-  Vercel (hourly by default). Vercel reads the FOCUS billing export: month-to-date spend and what
-  falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
-  (MTD)` from operator-entered rates, and a best-effort `NEON LAST INVOICE` off
-  an undocumented endpoint — that one failing degrades to `—` plus a footer,
-  never the consumption rows. Both plan endpoints are undocumented too, and
-  degrade the same way: the window rows read `—` and the header names the
-  reason. A plan that is off is one muted setup line for every plan that is off
-  (`Claude and Codex plan limits are off — turn on in Settings`), never rows of
-  `—`, and adds nothing to the dashboard. Plan rows are their own block
-  (`crates/subscription`, `app/src-tauri/src/plan_usage.rs`): a plan is not an
-  account, and its figures never merge into the rollups.
+- **Usage** — the Claude and Codex **plans' own limits** lead it, **opt-in per
+  provider and off in a fresh store** (15 min by default, see
+  `docs/APP-INTERNALS.md`, **Authentication**). Each plan is one row named by
+  its provider and plan (`Claude · Ultra`, `Codex · Plus`; the name is the one
+  the tool itself displays, never mapped from a tier code) carrying one meter
+  per limit: `5h`, `Week`, a per-model weekly such as `Week · Fable`, or, for
+  an Enterprise seat with no windows, a `Budget` (`$312 / $500 · 62%`; spend
+  beside windows is `Extra usage`). The meters are the Machines tile's CPU/RAM
+  meters (`app/ui/meter.js`, 70/90%). A meter exists only for a window the
+  reply carries: a verified Ultra account has no 5-hour window, so it has no
+  `5h` meter. Each window also gets a **pace**: the average burn since the
+  window opened, judged at the reading's own time (never at render), shown as
+  a tick on the track once a tenth of the window has passed and hidden once the
+  reading is stale. The row's verdict is the tightest one: `limit reached`
+  (red, the only plan state that raises attention), else the earliest run-out
+  (`out in ~1d 1h`, amber), else the busiest window's reset, and `reset since
+  read` when every window rolled over after its read; never blank. A spend cap
+  has no pace: the reply states no reset for it. Below the plans, under `THIS
+  MACHINE`, Claude Code's token rollups for this machine (`LAST 5H`, `LAST 7D`,
+  top projects; their own `PanelInterval::ClaudeRollups`, #615), which the
+  tile folds into one `Claude Code · 1.2M today` row. Then Neon, Sentry +
+  Vercel (hourly by default). Vercel reads the FOCUS billing export:
+  month-to-date spend and what falls beyond the plan. Neon renders
+  compute/storage MTD, `NEON EST. CHARGES (MTD)` from operator-entered rates,
+  and a best-effort `NEON LAST INVOICE` off an undocumented endpoint — that one
+  failing degrades to `—` plus a footer, never the consumption rows. Both plan
+  endpoints are undocumented too, and degrade the same way: the plan row reads
+  `—` with no meters and the header names the reason. A plan that is off is one
+  muted setup line for every plan that is off (`Claude and Codex plan limits
+  are off — turn on in Settings`), never rows of `—`, and adds nothing to the
+  dashboard. Plans are their own block (`crates/subscription`,
+  `app/src-tauri/src/plan_usage.rs`, `crates/viewmodel/src/plan_usage.rs`): a
+  plan is not an account, and its figures never merge into the rollups.
 - **Azure Cost** — the daily cost export, on its own cadence (4h by default).
 - **Sentry Crons** — every cron monitor environment that is not `ok`, and **how
   long it has been broken** (its own cadence, 1h by default). The age comes from

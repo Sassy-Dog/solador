@@ -421,3 +421,51 @@ fn a_detail_view_for_a_source_with_no_tile_is_dropped_not_kept() {
     let (text, on_disk) = saved(&dir, &store);
     assert_no_legacy_keys(&text, &on_disk);
 }
+
+/// A Usage tile scoped to one of the rows #624 shipped keeps that row after
+/// plans became one row each and the token windows folded into `claude-today`.
+#[test]
+fn a_usage_tile_scoped_to_a_retired_row_keeps_the_row_that_replaced_it() {
+    let usage = |id: &str, scope: &str| {
+        let mut t = tile(id, "claudeUsage");
+        t["scope"] = json!(scope);
+        t
+    };
+    let mut store = old_store(json!({}), None, json!({}));
+    let tiles_json = store["dashboard"]["tiles"].as_array_mut().unwrap();
+    tiles_json.extend([
+        usage("c5", "item:claude-plan:CLAUDE PLAN (5H)"),
+        usage("cw", "item:claude-plan:CLAUDE PLAN (WEEK · FABLE)"),
+        usage("x5", "item:codex-plan:CODEX PLAN (5H)"),
+        usage("t5", "item:claude-5H"),
+        usage("tw", "item:claude-WEEK"),
+        usage("today", "item:claude-today"),
+        usage("neon", "item:neon:COMPUTE"),
+        usage("plans", "plans"),
+        // Another source's look-alike id is not a Usage row.
+        {
+            let mut t = tile("gh", "ghWorkflows");
+            t["scope"] = json!("item:claude-plan:x");
+            t
+        },
+    ]);
+    let (_dir, opened) = open(&store);
+    for (id, scope) in [
+        ("c5", "item:claude-plan"),
+        ("cw", "item:claude-plan"),
+        ("x5", "item:codex-plan"),
+        ("t5", "item:claude-today"),
+        ("tw", "item:claude-today"),
+        ("today", "item:claude-today"),
+        ("neon", "item:neon:COMPUTE"),
+        ("plans", "plans"),
+        ("gh", "item:claude-plan:x"),
+    ] {
+        assert_eq!(by_id(&opened, id).scope, scope, "{id}");
+    }
+
+    let mut data = opened.data().clone();
+    let once = data.clone();
+    data.carry_usage_item_scopes_onto_plan_rows();
+    assert_eq!(data, once, "a second pass changes nothing");
+}

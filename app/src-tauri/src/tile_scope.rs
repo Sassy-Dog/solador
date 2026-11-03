@@ -14,7 +14,7 @@
 //! write goes through [`field_mut`], and a key that is absent or `null` stays
 //! exactly as it was.
 
-use crate::dashboard::{scoped_empty, scoped_row_ids};
+use crate::dashboard::{scoped_empty, scoped_row_ids, CLAUDE_TODAY_ID};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use store::{DashboardLayout, DashboardTile};
@@ -159,19 +159,23 @@ fn scope_groups(payload: &mut Value, key: &str, kept: &BTreeSet<String>) {
 }
 
 fn scope_claude(payload: &mut Value, kept: &BTreeSet<String>, plans_scope: bool) {
-    retain_in(
-        payload,
-        "windows",
-        |v| format!("claude-{}", str_of(v, "label")),
-        kept,
-    );
-    scope_groups(payload, "plans", kept);
+    // A plan is kept by its section id, the id `source_rows` gives its row.
+    retain_in(payload, "plans", |v| str_of(v, "id").to_owned(), kept);
     scope_groups(payload, "providers", kept);
-    if let Some(map) = payload.as_object_mut() {
-        if !kept.iter().any(|id| id.starts_with("claude-")) {
-            map.remove("projects");
+    // The rollups, their projects and their heading are the `claude-today`
+    // row's, kept or dropped together. Matched exactly: `claude-plan` also
+    // starts with `claude-`, and a plans-only tile once kept the projects.
+    if !kept.contains(CLAUDE_TODAY_ID) {
+        if let Some(windows) = array_mut(payload, "windows") {
+            windows.clear();
         }
-        if !plans_scope {
+        if let Some(map) = payload.as_object_mut() {
+            map.remove("projects");
+            map.remove("machineHeading");
+        }
+    }
+    if !plans_scope {
+        if let Some(map) = payload.as_object_mut() {
             map.remove("plansMessage");
         }
     }
@@ -238,6 +242,41 @@ mod tests {
         t.source = source.into();
         t.scope = scope.into();
         t
+    }
+
+    /// `store` carries saved Usage scopes onto the rows that replaced them by
+    /// literal id, because it cannot see this crate. This keeps the two in
+    /// step: renaming a row here fails this test instead of leaving the
+    /// migration to write an id no row has, which empties a scoped tile.
+    #[test]
+    fn the_store_migration_lands_saved_scopes_on_the_rows_this_crate_emits() {
+        let mut data = store::StoreData {
+            dashboard: Some(DashboardLayout {
+                tiles: vec![
+                    tile("claudeUsage", "item:claude-plan:CLAUDE PLAN (5H)"),
+                    tile("claudeUsage", "item:codex-plan:CODEX PLAN (5H)"),
+                    tile("claudeUsage", "item:claude-WEEK"),
+                ],
+                ..default_layout()
+            }),
+            ..store::StoreData::default()
+        };
+        data.carry_usage_item_scopes_onto_plan_rows();
+        let scopes: Vec<String> = data
+            .dashboard
+            .expect("layout")
+            .tiles
+            .into_iter()
+            .map(|t| t.scope)
+            .collect();
+        assert_eq!(
+            scopes,
+            [
+                format!("item:{}", crate::plan_usage::CLAUDE_ID),
+                format!("item:{}", crate::plan_usage::CODEX_ID),
+                format!("item:{CLAUDE_TODAY_ID}"),
+            ]
+        );
     }
 
     fn rows(p: &Value, key: &str) -> Vec<String> {
@@ -355,11 +394,15 @@ mod tests {
 
     fn usage_payload() -> Value {
         json!({"trailing":"1M","projects":[{"name":"p"}],"plansMessage":"off",
-            "windows":[{"label":"Today","value":"1"}],
-            "plans":[{"id":"claude","rows":[{"label":"5H","value":"10%"}]}],
+            "machineHeading":"THIS MACHINE",
+            "windows":[{"label":"LAST 5H","value":"1"}],
+            "plans":[{"id":"claude-plan","label":"Claude · Ultra","value":"resets in 3d",
+                "metrics":[{"label":"Week","value":"10%","fraction":0.1}]}],
             "providers":[{"id":"neon","rows":[{"label":"Compute","value":"1"}]}]})
     }
 
+    /// The plan's real id, `claude-plan`, starts with `claude-`. Matching the
+    /// rollups by that prefix once kept a plans-only tile's projects.
     #[test]
     fn usage_plans_scope_drops_claude_and_providers() {
         let p = usage_payload();
@@ -367,8 +410,12 @@ mod tests {
         assert_eq!(out["windows"], json!([]));
         assert_eq!(out["providers"], json!([]));
         assert!(out.get("projects").is_none());
+        assert!(out.get("machineHeading").is_none());
         assert_eq!(out["plans"], p["plans"]);
         assert_eq!(out["plansMessage"], "off");
+        let one = scope_payload(&tile("claudeUsage", "item:claude-plan"), p.clone());
+        assert_eq!(one["plans"], p["plans"]);
+        assert!(one.get("projects").is_none());
     }
 
     #[test]
@@ -377,6 +424,7 @@ mod tests {
         assert_eq!(out["windows"].as_array().unwrap().len(), 1);
         assert_eq!(out["plans"], json!([]));
         assert_eq!(out["projects"], json!([{"name":"p"}]));
+        assert_eq!(out["machineHeading"], "THIS MACHINE");
         assert!(out.get("plansMessage").is_none());
         let out = scope_payload(&tile("claudeUsage", "providers"), usage_payload());
         assert_eq!(out["providers"].as_array().unwrap().len(), 1);
@@ -619,15 +667,19 @@ mod tests {
             (
                 "claudeUsage",
                 json!({"trailing":"1M","projects":[{"name":"p"}],
-                    "windows":[{"label":"Today"},{"label":"7 days"}],
-                    "plans":[{"id":"claude","rows":[{"label":"5H"},{"label":"7D"}]}],
+                    "windows":[{"label":"LAST 5H"},{"label":"LAST 7D"}],
+                    "plans":[
+                        {"id":"claude-plan","label":"Claude · Ultra","metrics":[{"label":"Week"}]},
+                        {"id":"codex-plan","label":"Codex · Plus","metrics":[]}],
                     "providers":[
                         {"id":"neon","rows":[{"label":"Compute"}]},
                         {"id":"sentry","rows":[{"label":"Compute"}]}]}),
-                Box::new(move |v| item(v, "windows") + nested(v, "plans") + nested(v, "providers")),
-                // The trailing total is a line of its own, not an entry in any
-                // list this module filters.
-                &["claude-today"],
+                // The `claude-today` row stands for the whole rollup block, so
+                // its windows count as one entry.
+                Box::new(move |v| {
+                    usize::from(item(v, "windows") > 0) + item(v, "plans") + nested(v, "providers")
+                }),
+                &[],
             ),
             (
                 "azureCost",

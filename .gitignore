@@ -77,6 +77,7 @@ app/ui/sample-usage.json
 app/ui/sample-usage-unmeasured.json
 app/ui/sample-usage-empty.json
 app/ui/sample-usage-stale.json
+app/ui/sample-usage-plans.json
 app/ui/sample-azure.json
 app/ui/sample-azure-fallback.json
 app/ui/sample-azure-error.json
