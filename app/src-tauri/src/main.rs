@@ -5228,7 +5228,7 @@ fn save_host_connection(
     store.upsert_host(edited);
     if let Err(error) = store.save() {
         store.upsert_host(original);
-        return Err(format!("Could not save connection: {error}"));
+        return Err(format!("Could not save source: {error}"));
     }
     if token.is_empty() {
         return Ok(false);
@@ -5237,7 +5237,7 @@ fn save_host_connection(
         .set_secret(SecretKey::HostToken(id), token)
         .map_err(|error| {
             eprintln!("could not replace the host's token: {error}");
-            "Connection saved, but its token could not be replaced. Try again.".to_owned()
+            "Source saved, but its token could not be replaced. Try again.".to_owned()
         })?;
     Ok(true)
 }
@@ -8987,7 +8987,7 @@ mod tests {
         assert!(card_ids(&scoped).is_empty());
         assert_eq!(
             scoped["tileEmpty"],
-            "This resource has no current reading. Review its connection or choose another scope."
+            "This resource has no current reading. Review its source or choose another scope."
         );
     }
 

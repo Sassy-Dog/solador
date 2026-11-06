@@ -9,7 +9,7 @@ keeps the title it was saved with (an existing "Runners" or "Scheduled Jobs"
 tile stays that until you rename it in Configure; there is no migration). **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings in Detail, and Detail opens the tile's own
 **Full view** (see [Dashboard tiles](#dashboard-tiles)); **Escape**
-returns from a Full view to the overview. Connections and credentials remain
+returns from a Full view to the overview. Sources and credentials remain
 in **Settings**, backed by the OS credential store. Both views share a compact
 toolbar with the logo, app name and actions, without a background frame or
 divider. **Fit window to tiles**, **Edit dashboard** and
@@ -237,7 +237,7 @@ with a **Hide** button, and its hidden mounts beneath with **Unhide**. Those are
 shortcuts. The list's one home is the Machines tile's **Configure** → **Volumes
 shown**, under each machine (including **This machine**): every mount the
 machine last reported as a checkbox, plus any hidden mount it no longer reports,
-so it can still be unhidden. It lives there rather than in Connections because
+so it can still be unhidden. It lives there rather than in Sources because
 hiding a volume changes what the Machines tile judges, not how the machine is
 reached, and it sits beside the limits that judge the volumes that remain. A
 hidden volume is still measured but leaves the Machines tile,
@@ -270,7 +270,7 @@ block saves on its own click (`machine_save_alerts`), not with the tile's
 **Apply** and outside the dashboard's undo history, because the limits are not
 the tile's; saving one machine leaves another's unsaved draft alone. Settings
 carries none of it any more: the machine's address, port, token and pairing stay
-under Connections.
+under Sources.
 
 The limits apply on the next render without restarting or resetting history.
 Overall CPU/RAM colors, the Machines row dot and the attention count use the same limits.
@@ -479,16 +479,16 @@ Failed writes preserve the previous layout and the editable form. **Hidden tiles
 opens a library with each saved tile's scope, size and current preview. **Restore**
 returns it to its saved position. **Remove tile** is available in Configure and
 the hidden library; Undo restores its identity, scope, visibility and position.
-Removing or hiding a tile keeps its connections and monitoring. Layout and connections are separate: the
+Removing or hiding a tile keeps its sources and monitoring. Layout and sources are separate: the
 optional `dashboard` store field holds tile identities, scopes and order, plus a
 revision that rejects stale saves. Stores without it receive the default five
-tiles. An intentionally empty layout stays empty. Existing connections,
+tiles. An intentionally empty layout stays empty. Existing sources,
 credentials and preferences are retained. Layout settings from before tile views (core rows, row spacing, host overflow, Table/List) are copied onto tiles once, on upgrade; a value with no tile to apply to is dropped.
 
 **Add tile** offers Remote machines, Repos needing attention and Linux runners
-as presets, followed by all sources. Each preset opens the same editable draft,
+as presets, followed by all tile types. Each preset opens the same editable draft,
 preview and placement controls; nothing saves until **Add tile** is pressed.
-Presets use existing connections and retain unknown, waiting and failed readings.
+Presets use existing sources and retain unknown, waiting and failed readings.
 
 `dashboard_view` composes the existing cached panel readings; it starts no new
 pollers. Rust owns attention, scope filtering, truncation and the rendered text;
@@ -516,9 +516,9 @@ focuses the resulting tile. Closing the draft makes no layout change, and Undo
 restores the previous order. Hidden tiles retain their stored slots when keeping
 the current position. If a chosen destination disappears, choose another
 position before saving. Preview responses cannot replace a newer scope choice.
-**Manage connection** preserves the draft while Settings is open and refreshes
+**Manage source** preserves the draft while Settings is open and refreshes
 the available scopes on return. Resource links resolve a host or repository's
-saved owner; aggregate links show the relevant connection types. Ambiguous or
+saved owner; aggregate links show the relevant source types. Ambiguous or
 removed owners stay a choice instead of silently selecting another account.
 Empty filtered tiles offer **Choose scope** and retain their original scope.
 Saving uses the explicit **Add tile** / **Apply** button, so Return in a native
@@ -537,7 +537,7 @@ not preserve Keychain recognition across rebuilds. For a native smoke check, use
 the scratch-store procedure below, then hide/restore a tile, duplicate Machines
 with a Remote machines scope, relaunch, and verify the saved view. Open the
 duplicate's **View** → **Detail** and its **Full view**: only its machines, under
-its name and scope note; Escape returns to it. Open connection settings, and confirm Overview
+its name and scope note; Escape returns to it. Open source settings, and confirm Overview
 returns correctly. Click a **Needs Attention** chip for a source with one tile
 (its Detail, in that tile's scope), for one with no tile (the trouble panel and
 **Add tile**) and for one with two tiles (a link to each Detail); none opens
@@ -570,7 +570,7 @@ looks where it acts:
 | # | If the setting… | It lives in… |
 |---|---|---|
 | 1 | changes what a tile shows | that tile's **Configure** |
-| 2 | is about reaching a source (token, account, host, address, or the opt-in to read another program's sign-in) | **Settings → Connections**. The tile's Configure links there instead of copying the control. |
+| 2 | is about reaching a source (token, account, host, address, or the opt-in to read another program's sign-in) | **Settings → Sources**. The tile's Configure links there instead of copying the control. |
 | 3 | is app-wide, with no single tile behind it (crash reporting, updates) | **Settings** |
 | 4 | is shared by several places | can be edited from a tile's Configure, but the control **says it is shared** |
 
@@ -596,20 +596,20 @@ does not fit it yet:
 | Rows to show, repo checklist, Disk strip, runner view (and Repos sorting, by its column headers) | the tile's Configure, or the tile itself | rule 1 |
 | Runner group labels | GitHub Runners tile Configure, marked shared | rule 4 |
 | Container Group Rules | Containers tile Configure, marked shared (#613) | rule 4 |
-| Accounts, tokens, hosts, providers | Settings → Connections | rule 2 |
+| Accounts, tokens, hosts, providers | Settings → Sources | rule 2 |
 | Crash reporting, updates | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
 | Poll cadence of Containers, GitHub (Repos and Runners), Services, Usage (Claude rollups; metered providers; plan limits), Azure Cost and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the GitHub Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
 | CPU core rows, Row spacing, host overflow, Detail / Full view Table-or-List | the tile's Configure → **Full view** / **Detail** page, per tile | rule 1 ([#647](https://github.com/Sassy-Dog/solador/issues/647)) |
 
-### Settings and connections
+### Settings and sources
 
-Settings opens on **Connections**, with one entry per GitHub account, remote
+Settings opens on **Sources**, with one entry per GitHub account, remote
 host, configured usage provider, Azure export, OpenClaw gateway or custom status
 page. Each entry names the panels it feeds. GitHub repos and runners share the
 account editor; Sentry usage and scheduled jobs share the Sentry editor.
-**Add connection** opens the appropriate source form. Providers with one saved
+**Add source** opens the appropriate source form. Providers with one saved
 configuration reopen that same configuration. Local monitoring, Claude Code
 and automatic provider status are listed separately under Automatic sources.
 **Claude Code** is one page for everything read from Claude Code: its local
@@ -619,8 +619,8 @@ saved sign-in for the plan's limit windows (see
 [the plans' own limits](#the-plans-own-limits)). While that box is on, the entry
 reads `Local usage logs · plan limits on`; it stays under Automatic sources
 either way. Codex has no local logs, so its checkbox, **Read Codex's sign-in**,
-is on the **Codex** page in **Add connection**, and Codex is listed as a
-connection only while it is on. Both boxes are off in a fresh store and, like
+is on the **Codex** page in **Add source**, and Codex is listed as a
+source only while it is on. Both boxes are off in a fresh store and, like
 crash reporting, save on the click.
 
 Configuration badges describe the available evidence: **Configured** means setup
@@ -1520,8 +1520,8 @@ await window.__TAURI__.core.invoke("azure_cost");
     //     failure, and `metrics: []`
   ],
   "plansMessage": null, // or {"text": "Claude and Codex plan limits are off —
-                        //    turn on in Settings → Connections (Claude Code,
-                        //    Add connection → Codex)", "color": …}: ONE muted
+                        //    turn on in Settings → Sources (Claude Code,
+                        //    Add source → Codex)", "color": …}: ONE muted
                         //    line naming every plan that is off and where its
                         //    switch is
   "footer": null,   // ONE line for the panel: Claude's own (staleAfter 2.5 rollup cycles, never under 150s)
@@ -1604,7 +1604,7 @@ known count: a bar drawn at a defaulted zero would read "comfortably under quota
 when the truth is "nobody measured". A measured `0` does get its bar, empty.
 
 **The two Neon cost rows are priced by the operator, never by us.** `NEON EST.
-CHARGES (MTD)` is consumption × the rates entered under **Settings → Connections** —
+CHARGES (MTD)` is consumption × the rates entered under **Settings → Sources** —
 `$ per CU-hour` and `$ per GiB-month storage`, both plain non-secret preferences
 — multiplied by `usage::neon::estimate_usd`, which reproduces the Neon console's
 own "Charges to date" arithmetic. The app ships **no price table on purpose**: a
@@ -1720,8 +1720,8 @@ the `Unmeasured` enums above exist to prevent, wearing a different costume.
 
 **The Claude and Codex plans publish their own limit windows, and reading them
 means reading another program's credential — so nothing does until the operator
-says so.** Each provider is a checkbox (Settings → Connections → **Claude
-Code** → **Read Claude Code's sign-in**, and Add connection → **Codex** → **Read
+says so.** Each provider is a checkbox (Settings → Sources → **Claude
+Code** → **Read Claude Code's sign-in**, and Add source → **Codex** → **Read
 Codex's sign-in**), persisted as the non-secret
 `claude_plan_usage_enabled` / `codex_plan_usage_enabled` and `false` in a fresh
 store. Off, the provider is never read and never woken, and the panel shows one
@@ -1925,7 +1925,7 @@ await window.__TAURI__.core.invoke("openclaw");
     // At most one of the next three, mirroring the original panel's if/else chain:
     "pairing": null,            // {title, command, device, blinking, …}
     "connection": null,         // {"text": "connecting…", "dotColor": …}
-    "hint": null,               // {"text": "add a gateway URL in Settings → Connections → OpenClaw"}
+    "hint": null,               // {"text": "add a gateway URL in Settings → Sources → OpenClaw"}
     "agents": {"header": "AGENTS (3)", "rows": [
       {"dot": {"color": "#e09a26", "opacity": 1.0}, "emoji": "🦀",
        "name": "Sebastian", "detail": "anthropic/claude-opus-4-8",
@@ -1989,7 +1989,7 @@ pending, and the **literal** line to paste:
 openclaw devices approve req-7f31
 ```
 
-It is rendered selectable in both the panel and Settings → Connections → OpenClaw, and it is
+It is rendered selectable in both the panel and Settings → Sources → OpenClaw, and it is
 built in Rust. A frontend that assembled it from a request id would be a second
 implementation of the one string whose entire value is being exactly right.
 
@@ -2202,8 +2202,8 @@ live. The gap is now this app's alone to close.
 
 ## Settings
 
-The **Settings** icon opens an in-app view with **Connections**, **Preferences**
-and **About**. Connections holds machine, GitHub account,
+The **Settings** icon opens an in-app view with **Sources**, **Preferences**
+and **About**. Sources holds machine, GitHub account,
 Azure Cost, Usage, Service Health and OpenClaw configuration. A GitHub token is
 an account's, org selection lives on each account, and every tracked repo sits
 on the card of the account that fetches it (with an Unattributed section for
@@ -3143,14 +3143,14 @@ and that immediacy is itself the check on the corresponding wake:
 
 | Touched | Do | Expect |
 |---|---|---|
-| `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Connections → GitHub (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
-| `settings_set_account_org` / Runners | under Settings → Connections → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Connections → GitHub". Watching the same org from a second account is refused with the owner named |
+| `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Sources → GitHub (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| `settings_set_account_org` / Runners | under Settings → Sources → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Sources → GitHub". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. For a repo that is `Waiting`, click its **dashboard** row too: it opens `.../actions/runs/{id}` (or the Actions page when several runs wait). Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
-| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Connections → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
-| `agentRelease` on each host row (`settings_payload` → `hosts_tab`, `agent_release_loop`, #489) | Settings → Connections → the seeded host. Then, against a real agent with `\|$TOKEN` on `SOLADOR_SEED_HOST` | the row carries a persistent line with **no Test press**. With no token (the default smoke run) it reads `Agent version — · not compared with releases`, because no health read can land. With a live agent it reads `Agent v<version> · …` and, while no `agent-v*` release has been published (the feed 404s), `no agent release published yet` in a muted colour — **never** `up to date`, and never amber or red. Amber appears only as `<release> available` beside a host whose CalVer is lower than a verified release. Terminal: one `agent release: …` line at startup, then hourly (`newest verified is …`, `none published yet`, or `the check failed: …`). A line that stays `checking for a newer release…` for more than a few seconds with a network means `agent_release_loop` never ran |
+| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Sources → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| `agentRelease` on each host row (`settings_payload` → `hosts_tab`, `agent_release_loop`, #489) | Settings → Sources → the seeded host. Then, against a real agent with `\|$TOKEN` on `SOLADOR_SEED_HOST` | the row carries a persistent line with **no Test press**. With no token (the default smoke run) it reads `Agent version — · not compared with releases`, because no health read can land. With a live agent it reads `Agent v<version> · …` and, while no `agent-v*` release has been published (the feed 404s), `no agent release published yet` in a muted colour — **never** `up to date`, and never amber or red. Amber appears only as `<release> available` beside a host whose CalVer is lower than a verified release. Terminal: one `agent release: …` line at startup, then hourly (`newest verified is …`, `none published yet`, or `the check failed: …`). A line that stays `checking for a newer release…` for more than a few seconds with a network means `agent_release_loop` never ran |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
-| pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
-| the rules editor (`container_rule_add` / `_set` / `_remove`, #613) | **Edit dashboard** → the Containers tile's **Configure** → **Container Group Rules**: press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern, saved on the click before **Apply**; switching to Hide drops the group-label and expected-count fields; **Delete** removes it. Settings → Connections → This machine has no rules editor at all. A rule that survives a relaunch with Apply never pressed is the intended behaviour; one that needs Apply is the defect |
+| pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Sources → **Add source** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
+| the rules editor (`container_rule_add` / `_set` / `_remove`, #613) | **Edit dashboard** → the Containers tile's **Configure** → **Container Group Rules**: press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern, saved on the click before **Apply**; switching to Hide drops the group-label and expected-count fields; **Delete** removes it. Settings → Sources → This machine has no rules editor at all. A rule that survives a relaunch with Apply never pressed is the intended behaviour; one that needs Apply is the defect |
 | Configure's three pages (`dashboard_save`, `TILE_VIEWS`, #647) | **Edit dashboard** → the Machines tile's **Configure**: the switch at the top reads **This tile** / **Detail** / **Full view**. On **Full view** set *CPU core rows* to `3`, *Host overflow* to **Show as tabs** and *Row spacing* to `8`, then **Apply** from that page; open a GitHub Runners tile's Configure and check its **Detail** and **Full view** pages each offer Table / List | one **Apply** saves all three pages. The Machines tile's Full view (View menu → **Full view**) shows three core rows and, with two hosts and a narrow window, a tab bar; list rows sit 8px apart. A value outside a field's range (*CPU core rows* `9`) is refused by the field before anything is saved, and pressing **Apply** from **This tile** with that value left on **Full view** switches back to **Full view** with the field focused (Rust refuses the same value on `dashboard_save`; it is clamped, not refused, only when read from a hand-edited `store.json`) |
 | Edit from a Full view | open any tile's **Full view** (tile **View** menu), then press **Edit** in the toolbar. Then press Escape, and press **Edit** on the overview | from the Full view, the overview opens with that tile's **Configure** on its **Full view** page; from the overview, **Configure** opens on **This tile** |
 | a failed `cockpit` read in a Machines tile's Full view (`dashboard::COCKPIT_LOAD_FAILED`, #667) | open a Machines tile's Full view while the `cockpit` command is failing (for example with the app's IPC unavailable, or a host list the read cannot build), then let it recover | the Full view shows Rust's sentence in the loading line's place, never a plain "loading"; when the next read succeeds the sentence goes and the host cards show |
@@ -3158,13 +3158,13 @@ and that immediacy is itself the check on the corresponding wake:
 | `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and the section's **Apply**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the GitHub Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
-| `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Connections carry no limits at all |
+| `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Sources carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
 | `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
 | a tile's Full view: a scope that keeps nothing (`tileEmpty`, #656) | add a **Repos** tile scoped to *Attention* while every repo is healthy (or scoped to one repo that you then remove from the account), then open its **Full view** | the tile's own sentence (`This resource has no current reading…` / `No attention items in available readings.`) shows once under the title row, never the source's setup or loading message twice |
 | a tile's Full view: no previous rows when switching from tile to tile (#640, #656) | open one Repos tile's **Full view**, **Escape**, then open a second Repos tile's (a different scope) | the second view shows its own rows, never the first tile's. A real tile read answers within one round trip, so the loading line and a reading that arrives after the switch cannot be seen by hand; `dashboard.spec.js` covers both with a held read |
 | a tile's Full view: the panel commands' `tile` argument (`cockpit` here; the other eight take it the same way) | with the seeded host from step 2: **Edit dashboard** → **Add tile** → **Machines**, set **Show** to *This machine*, **Add tile**, **Done editing**; open that tile's **View** → **Full view** (or **View** → **Detail**, then **Full view**), then **Escape** | the host grid holds only this machine's card, titled with the tile's name, with `Scope: This machine.` under the title row and no `No hosts configured` line. Escape returns to the overview with focus on the tile's **View** button. The seeded host's card in that view, or a refusal sentence on screen, is the defect this row exists to catch |
-| `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
+| `openclaw_wake` | put a gateway URL under Settings → Sources → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 
 ### Procedure
@@ -3313,7 +3313,7 @@ and that immediacy is itself the check on the corresponding wake:
    above it — also a pass, and the two are different Rust sentences.
 
    To exercise the provider half, save a Neon org API key (plus its org id under
-   Settings → Connections) and/or a Sentry `org:read` token and slug. Both apply
+   Settings → Sources) and/or a Sentry `org:read` token and slug. Both apply
    without a relaunch — `settings_save_secret` wakes the usage loop *and* forces
    its provider half — so the sections should appear within seconds. That
    immediacy is itself the check on the wake. A key with no org id is the
@@ -3323,7 +3323,7 @@ and that immediacy is itself the check on the corresponding wake:
    of the three sections.
 
    To exercise the plans, tick **Read Claude Code's sign-in** under Settings →
-   Connections → **Claude Code** on a machine signed in to Claude Code. Within a poll the
+   Sources → **Claude Code** on a machine signed in to Claude Code. Within a poll the
    panel's first block is `Claude · <plan>` (the name Claude Code itself
    displays; `Claude` alone when its profile names none) with one meter per
    limit the reply carries: on a verified Ultra plan, `Week` and `Week ·
@@ -3351,7 +3351,7 @@ and that immediacy is itself the check on the corresponding wake:
    except a successful `invoke("openclaw")`. Idle is deliberately not
    "disconnected": nothing was attempted.
 
-   To exercise the live path, put a gateway URL under **Settings → Connections → OpenClaw**
+   To exercise the live path, put a gateway URL under **Settings → Sources → OpenClaw**
    (`ws://host:7878` or `wss://host`) and press **Save**. It applies without a
    relaunch — the save cuts the *session* short, not a sleep — so the panel
    should move to `connecting…` (amber) within a second or two, and that
@@ -3367,7 +3367,7 @@ and that immediacy is itself the check on the corresponding wake:
    connection line naming the rejection, which is the right answer and also a
    pass for the boundary.
 
-   Settings → Connections → OpenClaw should show a 64-character **Device ID** once a key
+   Settings → Sources → OpenClaw should show a 64-character **Device ID** once a key
    exists, or `Device key is generated on first connect.` before one does — and
    never a blank row, which would claim an identity that has not been minted.
 
@@ -3423,7 +3423,7 @@ and that immediacy is itself the check on the corresponding wake:
     *after* that is diffed against a baseline that never contained it.
 
     So — with the panel already populated — add a repo whose CI has a run parked
-    at a deployment-protection gate under Settings → Connections → GitHub. Saving wakes the
+    at a deployment-protection gate under Settings → Sources → GitHub. Saving wakes the
     loop, and the pass that first sees the gate is not the seeding pass, so it
     delivers: one banner reading `{repo} · needs approval`, body
     `{workflow} · {branch} is parked at an approval gate.` Watch two more passes
@@ -3507,7 +3507,7 @@ zero-credential state — the same argument a sixth and seventh time.
 
 Step 9 passes when `openclaw: first frontend request …` prints and the panel
 carries a heading plus *either* its runtime sections, its connection line, its
-pairing banner, or the muted `add a gateway URL in Settings → Connections → OpenClaw` hint —
+pairing banner, or the muted `add a gateway URL in Settings → Sources → OpenClaw` hint —
 the same argument an eighth time. Every one of those strings is
 `openclaw::view`'s, reachable only through `invoke("openclaw")`. A machine with
 no gateway configured passes; a missing panel does not.
@@ -3549,7 +3549,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. A different footer, `couldn't read runners — GitHub has more than this build will count — …`, means the org registers more runners than the walk will read (`RUNNERS_PAGE_CAP` x 100); the token is fine and the rows are the last good fetch. |
 | The **Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`azure_cost` command, or a script error in `usage.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
-| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Connections shows **Stored** for the credential; if it does, the provider read has not run yet — saving wakes it, so re-save to force a pass. |
+| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows **Stored** for the credential; if it does, the provider read has not run yet — saving wakes it, so re-save to force a pass. |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |

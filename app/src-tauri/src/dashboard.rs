@@ -87,7 +87,7 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
             return Err("Every tile needs its own valid identity.".into());
         }
         if !SOURCES.iter().any(|(id, _)| *id == tile.source) {
-            return Err("That tile source is not supported.".into());
+            return Err("That tile type is not supported.".into());
         }
         if tile.title.trim().is_empty()
             || tile.title.chars().count() > 64
@@ -944,10 +944,10 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "ghWorkflows" => "Repositories watched by your GitHub accounts",
         "ghRunners" => "Self-hosted runners in watched GitHub organizations",
         "services" => "Connected providers and custom status pages",
-        "sentryCrons" => "Scheduled jobs from your Sentry connection",
+        "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
         "claudeUsage" => "Local Claude Code logs, subscription plans and connected cloud providers",
-        "azureCost" => "Cost exports from your Azure connection",
+        "azureCost" => "Cost exports from your Azure source",
         "openclawAgents" => "Activity from your OpenClaw gateway",
         _ => "",
     };
@@ -1224,6 +1224,21 @@ mod detail_table_tests {
         }
     }
 
+    /// "Source" is what Settings calls a thing that feeds a tile, so a tile's
+    /// own words must not call it a connection, or call the kind of tile a
+    /// source. A real network connection is a reading, not a label, and never
+    /// appears here.
+    #[test]
+    fn tile_labels_use_the_settings_word_for_a_source() {
+        let labels = labels();
+        for (key, value) in labels.as_object().unwrap() {
+            let text = value.as_str().unwrap_or_default();
+            assert!(!text.to_lowercase().contains("connection"), "{key}: {text}");
+        }
+        assert_eq!(labels["manage"], "Manage source");
+        assert_eq!(labels["allSources"], "All tiles");
+    }
+
     #[test]
     fn detail_columns_align_sparse_readings_without_repeating_headers() {
         let rows = vec![
@@ -1380,7 +1395,7 @@ fn empty_state<'a>(
         ("Waiting for the first reading…", None)
     } else if tile.scope.starts_with("item:") && matching_empty {
         (
-            "This resource has no current reading. Review its connection or choose another scope.",
+            "This resource has no current reading. Review its source or choose another scope.",
             Some("configure"),
         )
     } else if !tile.selected_repos.is_empty() && matching_empty {
@@ -1505,7 +1520,7 @@ pub fn preview(tile: &DashboardTile, snapshot: &Value) -> Result<Value, String> 
     let source = list(snapshot, "sources")
         .iter()
         .find(|s| s["id"] == tile.source)
-        .ok_or("That tile source is not available.")?;
+        .ok_or("That tile type is not available.")?;
     Ok(tile_view(tile, source))
 }
 
@@ -1780,7 +1795,7 @@ fn labels() -> Value {
         ("catalog", "Add a tile"),
         ("presets", "Start with a preset"),
         ("presetsHint", "Customize its name, scope and placement before adding."),
-        ("allSources", "All sources"),
+        ("allSources", "All tiles"),
         (
             "catalogHint",
             "Choose what to monitor, then set this tile's scope and size.",
@@ -1793,15 +1808,14 @@ fn labels() -> Value {
         ("hiddenEmpty", "No hidden tiles. Tiles you hide will be saved here to restore later."),
         ("hideSaved", "Tile hidden. Restore it from Hidden tiles, or Undo."),
         ("remove", "Remove tile"),
-        ("removeNote", "Removing a tile keeps its connection and monitoring. Undo brings the tile back."),
-        ("removed", "Tile removed. Its connection is still monitored. Undo restores the tile."),
-        ("source", "Source"),
+        ("removeNote", "Removing a tile keeps its source and monitoring. Undo brings the tile back."),
+        ("removed", "Tile removed. Its source is still monitored. Undo restores the tile."),
         ("fullView", "Full view"),
         // The panel commands' own refusal: a tile's Full view that loses its
         // tile says what they would.
         ("tileGone", crate::tile_scope::TILE_GONE),
         ("back", "Overview"),
-        ("manage", "Manage connection"),
+        ("manage", "Manage source"),
         ("editScope", "Choose scope"),
         ("tilePreview", "Tile preview"),
         (
@@ -1839,7 +1853,7 @@ fn labels() -> Value {
         ),
         (
             "scopeNote",
-            "This tile has its own scope; other tiles and connections are unchanged.",
+            "This tile has its own scope; other tiles and sources are unchanged.",
         ),
     ];
     Value::Object(
@@ -3039,7 +3053,7 @@ mod tests {
                 {"id": "codex-plan", "label": "Codex · Plus", "value": "out in ~1d 1h",
                  "valueColor": amber, "color": amber, "detail": "…", "metrics": []}
             ],
-            "plansMessage": {"text": "Codex plan limits are off — turn on in Settings → Connections → Add connection → Codex",
+            "plansMessage": {"text": "Codex plan limits are off — turn on in Settings → Sources → Add source → Codex",
                              "color": muted}
         });
         let source = source_view("claudeUsage", "Usage", &payload);
@@ -3281,7 +3295,9 @@ mod tile_scope_ids_tests {
         );
         assert_eq!(
             scoped_empty(&gone, &payload).as_deref(),
-            Some("This resource has no current reading. Review its connection or choose another scope.")
+            Some(
+                "This resource has no current reading. Review its source or choose another scope."
+            )
         );
         // Everything healthy: `attention` keeps nothing.
         let healthy = json!({"columns":[],"rows":[

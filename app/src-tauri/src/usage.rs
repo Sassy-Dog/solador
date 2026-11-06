@@ -1320,7 +1320,7 @@ mod tests {
         assert_eq!(off["plans"], json!([]));
         assert_eq!(
             off["plansMessage"]["text"],
-            "Claude and Codex plan limits are off — turn on in Settings → Connections (Claude Code, Add connection → Codex)"
+            "Claude and Codex plan limits are off — turn on in Settings → Sources (Claude Code, Add source → Codex)"
         );
 
         let on = super::view(&measured(), QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);

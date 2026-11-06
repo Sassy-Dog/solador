@@ -400,9 +400,9 @@
 - **Usage → Claude and Codex plan limits**: **another program's credential,
   read only while the operator has opted in** (`store.json`'s
   `claude_plan_usage_enabled` / `codex_plan_usage_enabled`, both `false` in a
-  fresh store and on any store written before them; Settings → Connections →
+  fresh store and on any store written before them; Settings → Sources →
   **Claude Code** → **Read Claude Code's sign-in** (the automatic source that
-  also reads the local logs) / Add connection → **Codex** → **Read Codex's
+  also reads the local logs) / Add source → **Codex** → **Read Codex's
   sign-in**, saved on the click like the
   crash-reporting toggle). Claude: the macOS keychain item `Claude
   Code-credentials` (account `$USER`), read by `/usr/bin/security`, else
@@ -541,7 +541,7 @@
   See `app/README.md` for controls, count meanings and responsive behavior.
 - **Where a setting lives**: see `app/README.md`'s section of that name — what
   changes a tile goes in its Configure, what reaches a source in Settings →
-  Connections, what is app-wide in Settings. A shared setting edited from a tile
+  Sources, what is app-wide in Settings. A shared setting edited from a tile
   says it is shared. Its inventory names the follow-up (#616) for the
   settings that do not fit yet.
 - The Machines tile's Configure → **Machine alerts** has the shared CPU/RAM alert

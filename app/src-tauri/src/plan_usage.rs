@@ -83,8 +83,8 @@ const fn plain_name(provider: Provider) -> &'static str {
 
 /// The Settings page every plan switch is on, in the names Settings renders.
 fn settings_section() -> String {
-    use crate::settings::{CONNECTIONS_LABEL, OPEN_LABEL};
-    format!("{OPEN_LABEL} \u{2192} {CONNECTIONS_LABEL}")
+    use crate::settings::{OPEN_LABEL, SOURCES_LABEL};
+    format!("{OPEN_LABEL} \u{2192} {SOURCES_LABEL}")
 }
 
 /// Where the provider's switch is on that page: Claude's is on the Claude Code
@@ -92,10 +92,10 @@ fn settings_section() -> String {
 /// the setup line names it. Built, like [`settings_section`], from the names
 /// Settings renders, so the line cannot point at a name that is not on screen.
 fn settings_place(provider: Provider) -> String {
-    use crate::settings::{ADD_CONNECTION_LABEL, CLAUDE_CODE_TITLE, CODEX_TITLE};
+    use crate::settings::{ADD_SOURCE_LABEL, CLAUDE_CODE_TITLE, CODEX_TITLE};
     match provider {
         Provider::Claude => CLAUDE_CODE_TITLE.to_owned(),
-        Provider::Codex => format!("{ADD_CONNECTION_LABEL} \u{2192} {CODEX_TITLE}"),
+        Provider::Codex => format!("{ADD_SOURCE_LABEL} \u{2192} {CODEX_TITLE}"),
     }
 }
 
@@ -1301,7 +1301,7 @@ mod tests {
         assert!(off.sections.is_empty());
         assert_eq!(
             off.off_line["text"],
-            "Claude and Codex plan limits are off — turn on in Settings → Connections (Claude Code, Add connection → Codex)"
+            "Claude and Codex plan limits are off — turn on in Settings → Sources (Claude Code, Add source → Codex)"
         );
         assert_eq!(off.off_line["color"], color::hex(color::MUTED));
         assert!(!off.loading);
@@ -1316,7 +1316,7 @@ mod tests {
         assert_eq!(codex_off.sections.len(), 1);
         assert_eq!(
             codex_off.off_line["text"],
-            "Codex plan limits are off — turn on in Settings → Connections → Add connection → Codex"
+            "Codex plan limits are off — turn on in Settings → Sources → Add source → Codex"
         );
         assert!(view(
             &PlanSource::default(),

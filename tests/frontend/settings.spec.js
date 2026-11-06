@@ -115,7 +115,7 @@ const tab = (page, id) => ({ click: async () => {
   else await addConnection(page, kind);
 } });
 
-test("Connections is the landing page and each saved source has one editor", async ({ page, baseURL }) => {
+test("Sources is the landing page and each saved source has one editor", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await expect(page.locator('#settingsTabs [data-tab="connections"]')).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".connection-row")).toHaveCount(settings.connections.rows.length);
@@ -205,7 +205,7 @@ test("a rejected save keeps the connection draft and reports the failure", async
   await expect(page.locator("#neon-org-id")).toHaveValue("keep-this-draft");
 });
 
-test("Connections and its editor fit a narrow window without clipped controls", async ({ page, baseURL }) => {
+test("Sources and its editor fit a narrow window without clipped controls", async ({ page, baseURL }) => {
   await page.setViewportSize({width:390,height:900});
   await openSettings(page, baseURL);
   const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
@@ -447,9 +447,9 @@ test("each plan opt-in is off in a fresh store, saves on the spot, and paints Ru
   // The fixture is a store that never opted in: neither plan is a saved
   // connection, and each is off. Claude's switch is on the automatic Claude
   // Code source, beside the local logs it already reads, and nowhere else;
-  // Codex has no local logs, so its switch is a catalog connection.
+  // Codex has no local logs, so its switch is a catalog source.
   expect(settings.connections.rows.some((row) => ["claude", "codexPlan"].includes(row.kind)),
-    "an opt-in that is off claims no connection row").toBe(false);
+    "an opt-in that is off claims no source row").toBe(false);
   expect(settings.connections.catalog.map((entry) => entry.kind)).not.toContain("claudePlan");
   expect(settings.connections.catalog.find((entry) => entry.kind === "codexPlan").title).toBe("Codex");
 
@@ -554,7 +554,7 @@ test("each host row says where its agent stands against the newest verified rele
   expect(byState.behind.agentRelease.text).toContain("available");
 });
 
-test("Connections no longer hosts the container group rules editor (#613)", async ({ page, baseURL }) => {
+test("Sources no longer hosts the container group rules editor (#613)", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   // The editor moved to the Containers tile's Configure; the payload no longer
   // carries it, so nothing here can render a second copy.

@@ -548,7 +548,7 @@ test("plans that are off are one muted setup line, not rows of dashes", async ({
   const mixed = {
     ...healthy,
     plans: healthy.plans.slice(0, 1),
-    plansMessage: { text: "Codex plan limits are off — turn on in Settings → Connections → Add connection → Codex", color: usage.plansMessage.color },
+    plansMessage: { text: "Codex plan limits are off — turn on in Settings → Sources → Add source → Codex", color: usage.plansMessage.color },
   };
   await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), mixed);
   await expect(page.locator("#usageBody .pv-section[data-plan]")).toHaveCount(1);

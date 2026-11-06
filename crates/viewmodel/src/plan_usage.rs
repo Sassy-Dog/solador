@@ -600,7 +600,7 @@ pub fn placeholder_row(label: &str, loading: bool) -> PlanRow {
 /// on. One line however many are off, so turning the feature off costs the
 /// panel one row, not one per provider.
 ///
-/// `section` is the Settings page every switch is on (`Settings → Connections`),
+/// `section` is the Settings page every switch is on (`Settings → Sources`),
 /// and each entry is the provider's name and where its switch is on that page,
 /// so the line says exactly where to go rather than "Settings": the place a
 /// first-time operator looks is the tile's own Configure, which has no such
@@ -1088,19 +1088,19 @@ mod tests {
     /// Off is a setup instruction, never the dash a failure renders.
     #[test]
     fn the_off_line_names_every_provider_that_is_off_and_how_to_turn_it_on() {
-        assert_eq!(off_line("Settings → Connections", &[]), None);
+        assert_eq!(off_line("Settings → Sources", &[]), None);
         assert_eq!(
-            off_line("Settings → Connections", &[("Claude", "Claude Code")]).as_deref(),
-            Some("Claude plan limits are off — turn on in Settings → Connections → Claude Code")
+            off_line("Settings → Sources", &[("Claude", "Claude Code")]).as_deref(),
+            Some("Claude plan limits are off — turn on in Settings → Sources → Claude Code")
         );
         assert_eq!(
             off_line(
-                "Settings → Connections",
-                &[("Claude", "Claude Code"), ("Codex", "Add connection → Codex")]
+                "Settings → Sources",
+                &[("Claude", "Claude Code"), ("Codex", "Add source → Codex")]
             )
             .as_deref(),
             Some(
-                "Claude and Codex plan limits are off — turn on in Settings → Connections (Claude Code, Add connection → Codex)"
+                "Claude and Codex plan limits are off — turn on in Settings → Sources (Claude Code, Add source → Codex)"
             )
         );
     }

@@ -1816,7 +1816,7 @@ async function openSettings(tab) {
     S.catalog = false;
     S.route = route ? S.view.connectionRoute : null;
     // Aggregate tiles don't identify one account/host/provider to edit. Their
-    // links land on Connections so the operator can choose the right source.
+    // links land on Sources so the operator can choose the right one.
     const kinds = { azure: "azure", openclaw: "openclaw", services: "services" };
     const kind = kinds[tab];
     if (kind) {
