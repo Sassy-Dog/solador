@@ -776,7 +776,7 @@ pub fn view(
         "openLabel": OPEN_LABEL,
         "closeLabel": "Done",
         "tabs": [
-            { "id": "connections", "title": CONNECTIONS_LABEL },
+            { "id": "connections", "title": SOURCES_LABEL },
             { "id": "general", "title": "Preferences" },
             { "id": "about", "title": "About" },
         ],
@@ -839,7 +839,7 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
                 target = editor("host", Some(host.id));
             }
             (
-                "Machine connections",
+                "Machine sources",
                 if route.scope == "remote" {
                     &["host"]
                 } else {
@@ -878,19 +878,19 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
                     }
                 }
             }
-            ("GitHub connections", &["account"])
+            ("GitHub sources", &["account"])
         }
         "sentryCrons" => {
             target = editor("sentry", None);
-            ("Scheduled jobs connection", &["sentry"])
+            ("Scheduled jobs source", &["sentry"])
         }
         "azureCost" => {
             target = editor("azure", None);
-            ("Azure Cost connection", &["azure"])
+            ("Azure Cost source", &["azure"])
         }
         "openclawAgents" => {
             target = editor("openclaw", None);
-            ("OpenClaw connection", &["openclaw"])
+            ("OpenClaw source", &["openclaw"])
         }
         "claudeUsage" => {
             // Every Claude row opens Claude Code, which holds both the log
@@ -914,7 +914,7 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
                 }
             }
             (
-                "Usage connections",
+                "Usage sources",
                 match route.scope.as_str() {
                     "providers" => &["neon", "sentry", "vercel"],
                     "plans" => &["claude", "codexPlan"],
@@ -936,25 +936,40 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             }) {
                 target = editor("services", None);
             }
-            ("Service health connections", &["vendor", "services"])
+            ("Service health sources", &["vendor", "services"])
         }
-        _ => (CONNECTIONS_LABEL, &[]),
+        _ => (SOURCES_LABEL, &[]),
     };
     json!({"editor":target,"kinds":kinds,"heading":heading,
-        "help":"Choose the connection that supplies this tile. Tile names and placement stay on the overview."})
+        "help":"Choose the source that supplies this tile. Tile names and placement stay on the overview."})
 }
 
-/// The Connections tab's title and its page's heading. Named once, like the
-/// three below, because the Usage panel's setup line sends the operator here
-/// by these names (`plan_usage::settings_place`).
-pub const CONNECTIONS_LABEL: &str = "Connections";
+/// The Sources tab's title and its page's heading. Named once, like the three
+/// below, because the Usage panel's setup line sends the operator here by these
+/// names (`plan_usage::settings_place`).
+///
+/// **Only the words are "source".** The code keeps `connection` for this
+/// concept (`connections_section`, the `connections` payload key, the
+/// `connections` tab id, `connectionsTab`), because `source` in code already
+/// means what a tile shows (`dashboard::SOURCES`, `tile.source`), and one word
+/// must not name both. A saved tab id or payload key never reaches the screen.
+pub const SOURCES_LABEL: &str = "Sources";
 /// The automatic source that holds everything read from Claude Code: its local
 /// logs and its plan opt-in.
 pub const CLAUDE_CODE_TITLE: &str = "Claude Code";
-/// Codex's plan opt-in, a catalog connection until it is on.
+/// Codex's plan opt-in, a catalog source until it is on.
 pub const CODEX_TITLE: &str = "Codex";
 /// The button, and the heading of the catalog it opens.
-pub const ADD_CONNECTION_LABEL: &str = "Add connection";
+pub const ADD_SOURCE_LABEL: &str = "Add source";
+
+/// The Sources page's one-line count.
+fn connections_summary(count: usize, attention: usize) -> String {
+    match attention {
+        0 => format!("{count} configured"),
+        1 => format!("{count} configured \u{b7} 1 needs attention"),
+        many => format!("{count} configured \u{b7} {many} need attention"),
+    }
+}
 
 /// Configuration status is deliberately distinct from liveness. A saved token
 /// proves that setup exists, not that its provider accepted the last request.
@@ -1070,7 +1085,7 @@ fn connections_section(
             ));
         }
     }
-    // Codex's plan opt-in is a connection only once it is on. Off, it is
+    // Codex's plan opt-in is a source row only once it is on. Off, it is
     // offered in the catalog and claims nothing here. Claude's is not a row at
     // all: it is a switch on the automatic Claude Code source, beside the local
     // logs that source already reads, so one entry holds everything Solador
@@ -1142,17 +1157,16 @@ fn connections_section(
         .count();
     let count = rows.len();
     json!({
-        "heading": CONNECTIONS_LABEL,
-        "summary": if attention == 0 { format!("{count} configured") }
-            else { format!("{count} configured · {attention} needs attention") },
+        "heading": SOURCES_LABEL,
+        "summary": connections_summary(count, attention),
         "attentionCount": if attention == 0 { String::new() } else { attention.to_string() },
         "rows": rows,
-        "empty": "Add a connection to start monitoring a remote host or provider.",
-        "addLabel": ADD_CONNECTION_LABEL,
-        "backLabel": "← Connections",
-        "allLabel": "All connections",
-        "catalogHeading": ADD_CONNECTION_LABEL,
-        "catalogHelp": "One connection can feed several tiles.",
+        "empty": "Add a source to start monitoring a remote host or provider.",
+        "addLabel": ADD_SOURCE_LABEL,
+        "backLabel": "← Sources",
+        "allLabel": "All sources",
+        "catalogHeading": ADD_SOURCE_LABEL,
+        "catalogHelp": "One source can feed several tiles.",
         "catalog": [
             {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners"},
             {"kind":"host", "title":"Remote host", "feeds":"Machines, containers and virtual machines"},
@@ -1181,11 +1195,11 @@ fn connections_section(
         "replaceLabel": "Replace…", "addCredentialLabel": "Add credential…",
         "cancelLabel": "Cancel", "saveLabel": "Save changes",
         "saveFailed": "Could not save these changes. Try again.",
-        "monitorLabel": "Monitor this connection",
+        "monitorLabel": "Monitor this source",
         "unsavedHeading": "Keep your changes?",
         "unsavedHelp": "This editor has unsaved changes.",
         "keepLabel": "Keep editing", "discardLabel": "Discard changes",
-        "hostNameLabel": "Connection name", "hostAddressLabel": "Address", "hostPortLabel": "Agent port",
+        "hostNameLabel": "Source name", "hostAddressLabel": "Address", "hostPortLabel": "Agent port",
     })
 }
 
@@ -2838,6 +2852,51 @@ mod tests {
         assert_eq!(vm["connections"]["automatic"].as_array().unwrap().len(), 3);
     }
 
+    #[test]
+    fn the_connections_summary_agrees_with_its_count() {
+        assert_eq!(connections_summary(3, 0), "3 configured");
+        assert_eq!(
+            connections_summary(3, 1),
+            "3 configured · 1 needs attention"
+        );
+        assert_eq!(
+            connections_summary(10, 3),
+            "10 configured · 3 need attention"
+        );
+    }
+
+    /// Settings says Sources, and an empty store's page follows: its labels
+    /// and catalog. Saved rows and `connection_route`'s editors are not
+    /// visited. The code keeps `connection` (see `SOURCES_LABEL`), so this
+    /// reads values only: a key or a tab id never reaches the screen.
+    #[test]
+    fn an_empty_sources_page_never_says_connection() {
+        fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+            match value {
+                Value::String(text) => out.push(text),
+                Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+                Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+                _ => {}
+            }
+        }
+        let vm = view_of(
+            &Settings::default(),
+            &[],
+            &[],
+            &StoredSecrets::default(),
+            &facts(),
+        );
+        let mut found = Vec::new();
+        strings(&vm["connections"], &mut found);
+        assert!(!found.is_empty());
+        for text in found {
+            assert!(!text.to_lowercase().contains("connection"), "{text}");
+        }
+        assert_eq!(vm["connections"]["heading"], "Sources");
+        assert_eq!(vm["tabs"][0]["id"], "connections");
+        assert_eq!(vm["tabs"][0]["title"], "Sources");
+    }
+
     /// Claude's plan opt-in is a switch on the automatic Claude Code source,
     /// never a catalog entry or a row of its own; Codex's is offered in the
     /// catalog and becomes a row only once on. A default store claims no plan
@@ -3056,7 +3115,7 @@ mod tests {
         assert_eq!(rows[0]["tokenStored"], true);
         assert!(
             rows[0].get("volumes").is_none() && rows[0].get("machineAlerts").is_none(),
-            "volumes and alert limits are the Machines tile's Configure (#612), not a connection's"
+            "volumes and alert limits are the Machines tile's Configure (#612), not a source's"
         );
         assert_eq!(rows[0]["id"], hosts[0].id.to_string());
 

@@ -245,7 +245,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               const asked = layout.tiles.find(t => t.id === args.tile);
               if (!asked) throw "That tile is no longer on the overview.";
               if (asked.hidden) throw "That tile is hidden, so it has no views.";
-              if (asked.source !== panelSource[command]) throw "That tile shows a different source.";
+              if (asked.source !== panelSource[command]) throw "That tile shows something else.";
               // A reading for the tile, as tile_scope hands it back. The rows are
               // the unscoped fixture's unless a test says the scope kept nothing
               // (`tileEmpty` is Rust's sentence; the test supplies the words) or
@@ -1829,7 +1829,7 @@ test("removing a visible tile keeps source alerts, persists, and Undo restores i
   const original = await openDashboard(page, baseURL);
   await action(page, "edit").click();
   await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
-  await expect(page.locator(".db-removal")).toContainText("keeps its connection and monitoring");
+  await expect(page.locator(".db-removal")).toContainText("keeps its source and monitoring");
   await action(page, "remove").click();
   expect((await savedLayout(page)).tiles).toEqual(original.layout.tiles.filter(t => t.source !== "ghWorkflows"));
   await expect(tile(page, "ghWorkflows")).toHaveCount(0);
@@ -2119,7 +2119,7 @@ test("adding a tile waits for its name, scope and size before saving", async ({ 
   expect((await savedLayout(page)).tiles).toHaveLength(6);
 });
 
-test("a connection detour keeps a new tile's draft and returns to its preview", async ({ page, baseURL }) => {
+test("a source detour keeps a new tile's draft and returns to its preview", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await page.evaluate(() => {
     window.__SETTINGS_ROUTE__ = { editor: { kind: "local", entityId: null }, kinds: ["local"] };
@@ -2141,12 +2141,12 @@ test("a connection detour keeps a new tile's draft and returns to its preview", 
   expect(await savedLayout(page)).toBeNull();
 });
 
-test("resource details open their editor while aggregate links show only relevant connections", async ({ page, baseURL }) => {
+test("resource details open their editor while aggregate links show only relevant sources", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
-  await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:null,kinds:["account"],heading:"GitHub connections",help:"Choose a connection."}; });
+  await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:null,kinds:["account"],heading:"GitHub sources",help:"Choose a source."}; });
   await openDetail(page, "ghWorkflows");
   await action(page, "manage").click();
-  await expect(page.locator("#settingsBody > .connection-heading h2")).toHaveText("GitHub connections");
+  await expect(page.locator("#settingsBody > .connection-heading h2")).toHaveText("GitHub sources");
   await expect(page.locator(".connection-row:not([data-kind='account'])")).toHaveCount(0);
   await page.locator("#settingsClose").click();
   await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:{kind:"sentry"},kinds:["sentry"]}; });
@@ -2346,7 +2346,7 @@ test("a pre-save poll arriving late cannot bring back the old layout", async ({
   await expect(action(page, "undo")).toBeEnabled();
 });
 
-test("details reach the tile's Full view and the source's connection settings", async ({
+test("details reach the tile's Full view and its source's settings", async ({
   page,
   baseURL,
 }) => {

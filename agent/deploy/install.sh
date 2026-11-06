@@ -1362,7 +1362,7 @@ if [ "$VERIFY" = true ]; then
     echo "    launchctl print system/$LAUNCHD_LABEL names the job)."
     if [ "$(env_value "$ENV_FILE" SOLADOR_AGENT_TLS)" = "1" ]; then
         if VERIFY_FINGERPRINT="$("$DEST_BIN" tls-fingerprint 2>&1)"; then
-            echo "    TLS: on — certificate fingerprint (compare it in Solador, Settings > Connections,"
+            echo "    TLS: on — certificate fingerprint (compare it in Solador, Settings > Sources,"
             echo "      \"Check certificate\", and press \"Trust\" only if they match):"
             echo "      $VERIFY_FINGERPRINT"
         else
@@ -2558,7 +2558,7 @@ if [ "$TLS_VALUE" = "1" ]; then
     if TLS_FINGERPRINT="$("$DEST_BIN" tls-fingerprint 2>&1)"; then
         echo "    TLS: on — certificate fingerprint:"
         echo "      $TLS_FINGERPRINT"
-        echo "      To pair this host: in Solador, Settings > Connections, add (or edit) the host,"
+        echo "      To pair this host: in Solador, Settings > Sources, add (or edit) the host,"
         echo "      press \"Check certificate\", compare the fingerprint it shows with the one above,"
         echo "      and press \"Trust\" only if they match. Nothing is pinned until you do."
         echo "      Never delete $TLS_KEY_FILE / $TLS_CERT_FILE unless you mean to re-pair —"
@@ -2577,7 +2577,7 @@ if [ "$TLS_VALUE" = "1" ]; then
         echo "    TLS: on, but the fingerprint could not be read (this should not happen right" >&2
         echo "       after a verified HTTPS health check): $TLS_FINGERPRINT" >&2
         echo "       Inspect by hand:  $DEST_BIN tls-fingerprint" >&2
-        echo "       Pairing in Solador needs it: Settings > Connections > \"Check certificate\"" >&2
+        echo "       Pairing in Solador needs it: Settings > Sources > \"Check certificate\"" >&2
         echo "       shows the fingerprint to compare with that command's output." >&2
     fi
 else

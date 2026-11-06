@@ -269,7 +269,7 @@ and JSON are unchanged either way.
 **The cockpit pairs with a TLS agent, and pins its certificate
 ([#448](https://github.com/Sassy-Dog/solador/issues/448)).** `install.sh`
 defaults a *fresh* install to `SOLADOR_AGENT_TLS=1` (see below), and a cockpit
-that has the pairing half reaches it like this: Settings → Connections → add
+that has the pairing half reaches it like this: Settings → Sources → add
 (or edit) the host → **Check certificate** fetches the certificate the
 address presents *without trusting it* and shows its SHA-256 fingerprint →
 compare that with what `install.sh` printed (or `solador-agent
@@ -554,7 +554,7 @@ first to see what it would change
    prints `401` (serving, and refusing a request without the token), and the
    same URL over `http://` gets no answer at all.
 5. **Pair the LAN address** in that machine's cockpit: Settings → the host (or
-   **Add connection → Remote host**), the LAN IP as its address, **Check
+   **Add source → Remote host**), the LAN IP as its address, **Check
    certificate**, compare the fingerprint with `solador-agent tls-fingerprint`
    on the host, **Trust**, enter the token, and save. **Test** then reads
    `✓ <hostname> · agent v…`. For a system daemon, read the fingerprint as the

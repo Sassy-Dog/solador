@@ -21,7 +21,7 @@ use store::{DashboardLayout, DashboardTile};
 
 pub(crate) const TILE_GONE: &str = "That tile is no longer on the overview.";
 pub(crate) const TILE_HIDDEN: &str = "That tile is hidden, so it has no views.";
-pub(crate) const TILE_WRONG_SOURCE: &str = "That tile shows a different source.";
+pub(crate) const TILE_WRONG_SOURCE: &str = "That tile shows something else.";
 
 /// The tile a Full view was asked for, or why it has none. Checked in order:
 /// missing, hidden, then a different source.
@@ -573,7 +573,8 @@ mod tests {
             // is the tile's own claim and says so; any other scope leaves a
             // source's own message to its panel (key absent), and carries the
             // stock sentence only when there is no message to paint (#656).
-            let item = "This resource has no current reading. Review its connection or choose another scope.";
+            let item =
+                "This resource has no current reading. Review its source or choose another scope.";
             let stock = "No readings are available yet.";
             let expect = |p: &Value, has_message: bool| {
                 let mut p = p.clone();

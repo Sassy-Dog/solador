@@ -79,7 +79,7 @@
   endpoints are undocumented too, and degrade the same way: the plan row reads
   `—` with no meters and the header names the reason. A plan that is off is one
   muted setup line for every plan that is off, naming where each switch is
-  (`Claude plan limits are off — turn on in Settings → Connections → Claude
+  (`Claude plan limits are off — turn on in Settings → Sources → Claude
   Code`), never rows of `—`, and adds nothing to the
   dashboard. Plans are their own block (`crates/subscription`,
   `app/src-tauri/src/plan_usage.rs`, `crates/viewmodel/src/plan_usage.rs`): a

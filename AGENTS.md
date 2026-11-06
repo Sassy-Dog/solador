@@ -146,7 +146,7 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   `runnerFullView`), edited in its Configure; there is no global layout, and no
   Full view of Solador itself (#647).
 - **Where a setting lives**: tile-specific in its Configure, source credentials
-  in Settings → Connections, app-wide in Settings (`app/README.md`).
+  in Settings → Sources, app-wide in Settings (`app/README.md`).
 - **The Tauri IPC boundary is deliberately not automated** (#123 closed on it:
   `tauri-driver` has no macOS support). `app/README.md` carries the five-minute
   manual smoke checklist, and that is the only coverage; a test claiming

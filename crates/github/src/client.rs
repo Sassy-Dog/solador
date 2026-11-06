@@ -107,7 +107,7 @@ impl GitHubError {
         match self {
             GitHubError::NotAuthenticated => {
                 format!(
-                    "{} → Connections → GitHub",
+                    "{} → Sources → GitHub",
                     Fault::CredentialRejected.message(VENDOR)
                 )
             }
@@ -849,7 +849,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.ends_with("Settings → Connections → GitHub"),
+            message.ends_with("Settings → Sources → GitHub"),
             "{message}"
         );
     }
