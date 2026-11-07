@@ -1684,7 +1684,7 @@ currency is USD — a euro total in dollar clothing is a wrong number with right
 digits again.
 
 **An unconfigured provider has no section at all** — no heading, no em dash, no
-layout shift; the panel is pixel-identical to its Claude-only self. The em dash
+layout shift; the panel shows only the providers that are set up. The em dash
 is reserved for "configured, and we could not find out". Azure draws the same
 line in a different colour: **no SAS URL is a muted setup instruction**, a failed
 read is **red** and names the failure, and rendering the first as the second

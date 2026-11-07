@@ -8212,20 +8212,38 @@ mod tests {
     /// not half-applied behind the message.
     #[test]
     fn the_api_part_with_no_key_is_refused_and_changes_nothing() {
-        let (_dir, _rt, app) = test_app();
-        let refusal = save_source_in(
-            &app,
-            "anthropic",
-            &parts(&["api", "subscription", "local"]),
-            Some("   "),
-            true,
-        )
-        .unwrap_err();
-        assert_eq!(refusal, "Enter an Admin API key, or untick API key.");
+        for (kind, ..) in KEYED_SOURCES {
+            let (_dir, _rt, app) = test_app();
+            let ticked = if kind == "anthropic" {
+                parts(&["api", "subscription", "local"])
+            } else {
+                parts(&["api", "subscription"])
+            };
+            let refusal = save_source_in(&app, kind, &ticked, Some("   "), true).unwrap_err();
+            assert_eq!(
+                refusal, "Enter an Admin API key, or untick API key.",
+                "{kind}"
+            );
+            assert_nothing_was_written(&app, kind);
+            assert!(app.store.lock().unwrap().dashboard().is_none(), "{kind}");
+        }
+    }
+
+    /// Neither key is stored and no source flag moved: what a refusal before
+    /// the first write leaves behind.
+    fn assert_nothing_was_written(app: &App, kind: &str) {
+        for (_, key, ..) in KEYED_SOURCES {
+            assert_eq!(
+                app.credentials.secret(key).unwrap(),
+                None,
+                "{kind}: {key:?}"
+            );
+        }
         let store = app.store.lock().unwrap();
-        assert!(!store.settings().claude_plan_usage_enabled);
-        assert!(!store.settings().claude_local_logs_enabled);
-        assert!(store.dashboard().is_none());
+        let settings = store.settings();
+        assert!(!settings.claude_plan_usage_enabled, "{kind}");
+        assert!(!settings.codex_plan_usage_enabled, "{kind}");
+        assert!(!settings.claude_local_logs_enabled, "{kind}");
     }
 
     /// Reopening and pressing Finish must not reset the provider, which would
@@ -8274,29 +8292,32 @@ mod tests {
         assert!(app.store.lock().unwrap().dashboard().is_none());
     }
 
+    /// A typed key and a ticked plan, so a write that ran before the tile
+    /// check would be left behind for this to find.
     #[test]
     fn a_full_dashboard_refuses_the_tile_before_anything_changes() {
-        let (_dir, _rt, app) = test_app();
-        {
-            let mut store = app.store.lock().unwrap();
-            let mut layout = dashboard::default_layout();
-            while layout.tiles.len() < dashboard::MAX_TILES {
-                let mut tile = layout.tiles[0].clone();
-                tile.id = format!("filler-{}", layout.tiles.len());
-                layout.tiles.push(tile);
+        for (kind, ..) in KEYED_SOURCES {
+            let (_dir, _rt, app) = test_app();
+            {
+                let mut store = app.store.lock().unwrap();
+                let mut layout = dashboard::default_layout();
+                while layout.tiles.len() < dashboard::MAX_TILES {
+                    let mut tile = layout.tiles[0].clone();
+                    tile.id = format!("filler-{}", layout.tiles.len());
+                    layout.tiles.push(tile);
+                }
+                persist_dashboard(&mut store, layout, 0).unwrap();
             }
-            persist_dashboard(&mut store, layout, 0).unwrap();
+            let ticked = parts(&["api", "subscription"]);
+            let refusal =
+                save_source_in(&app, kind, &ticked, Some("sk-admin-x"), true).unwrap_err();
+            assert!(refusal.contains("up to 48 tiles"), "{kind}: {refusal}");
+            assert_nothing_was_written(&app, kind);
+            let store = app.store.lock().unwrap();
+            let layout = store.dashboard().unwrap();
+            assert_eq!(layout.tiles.len(), dashboard::MAX_TILES, "{kind}");
+            assert!(!layout.tiles.iter().any(|t| t.source == kind), "{kind}");
         }
-        let refusal =
-            save_source_in(&app, "anthropic", &parts(&["subscription"]), None, true).unwrap_err();
-        assert!(refusal.contains("up to 48 tiles"), "{refusal}");
-        assert!(
-            !app.store
-                .lock()
-                .unwrap()
-                .settings()
-                .claude_plan_usage_enabled
-        );
     }
 
     /// The file is the record. A flag that never reached it must not read as
@@ -8703,64 +8724,72 @@ mod tests {
     /// can, and the tile reads what the last pass found. This is what holds them
     /// together, because a part added to one and not the others lists a source
     /// whose tile asks to be set up, or drops a status row someone is relying on.
+    /// Each of the five parts is on or off by itself, so an answer that read the
+    /// other vendor's part disagrees somewhere.
     #[test]
     fn every_answer_to_whether_a_source_is_added_agrees() {
-        for key_held in [false, true] {
-            for subscription in [false, true] {
-                for logs in [false, true] {
-                    let (_dir, rt, app) = test_app();
-                    {
-                        let mut store = app.store.lock().unwrap();
-                        let settings = store.settings_mut();
-                        settings.service_health_enabled = true;
-                        settings.claude_plan_usage_enabled = subscription;
-                        settings.codex_plan_usage_enabled = subscription;
-                        settings.claude_local_logs_enabled = logs;
-                    }
-                    let app = Arc::new(app);
-                    let context =
-                        format!("key {key_held}, subscription {subscription}, logs {logs}");
-
-                    for (kind, key, spend, card) in KEYED_SOURCES {
-                        if key_held {
-                            app.credentials.set_secret(key, "sk-admin-x").unwrap();
-                        }
-                        rt.block_on(poll_api_spend(&app, key, spend, |_| {
-                            Some(std::future::ready(Ok(::usage::ApiSpendSummary::Unmeasured)))
-                        }));
-                        let added = key_held || subscription || (kind == "anthropic" && logs);
-
-                        let listed = settings_payload(&app)["connections"]["rows"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .any(|row| row["kind"] == kind);
-                        assert_eq!(listed, added, "{kind}'s Sources row, {context}");
-
-                        let tile = card(
-                            &app.usage.lock().unwrap(),
-                            plan_inputs(&app.store),
-                            panel::now_unix(),
-                        );
-                        let setup = settings::not_set_up_message(tile["title"].as_str().unwrap());
-                        assert_eq!(
-                            tile["message"].to_string().contains(&setup),
-                            !added,
-                            "{kind}'s tile, {context}"
-                        );
-                    }
-
-                    let store = app.store.lock().unwrap();
-                    let vendors = services::active_vendors(&store, &*app.credentials);
-                    assert_eq!(
-                        vendors
-                            .iter()
-                            .any(|vendor| vendor.service == services::ServiceId::Anthropic),
-                        key_held || subscription || logs,
-                        "Anthropic's status row, {context}"
-                    );
-                }
+        for bits in 0..32_u8 {
+            let on = |bit: u8| bits & (1 << bit) != 0;
+            let (anthropic_key, claude_plan, local_logs, openai_key, codex_plan) =
+                (on(0), on(1), on(2), on(3), on(4));
+            let (_dir, rt, app) = test_app();
+            {
+                let mut store = app.store.lock().unwrap();
+                let settings = store.settings_mut();
+                settings.service_health_enabled = true;
+                settings.claude_plan_usage_enabled = claude_plan;
+                settings.codex_plan_usage_enabled = codex_plan;
+                settings.claude_local_logs_enabled = local_logs;
             }
+            let app = Arc::new(app);
+            let context = format!(
+                "Anthropic key {anthropic_key}, Claude plan {claude_plan}, local logs \
+                 {local_logs}, OpenAI key {openai_key}, Codex plan {codex_plan}"
+            );
+            let anthropic_added = anthropic_key || claude_plan || local_logs;
+            let vendors = [
+                (anthropic_key, anthropic_added),
+                (openai_key, openai_key || codex_plan),
+            ];
+
+            for ((kind, key, spend, card), (keyed, added)) in KEYED_SOURCES.into_iter().zip(vendors)
+            {
+                if keyed {
+                    app.credentials.set_secret(key, "sk-admin-x").unwrap();
+                }
+                rt.block_on(poll_api_spend(&app, key, spend, |_| {
+                    Some(std::future::ready(Ok(::usage::ApiSpendSummary::Unmeasured)))
+                }));
+
+                let listed = settings_payload(&app)["connections"]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["kind"] == kind);
+                assert_eq!(listed, added, "{kind}'s Sources row, {context}");
+
+                let tile = card(
+                    &app.usage.lock().unwrap(),
+                    plan_inputs(&app.store),
+                    panel::now_unix(),
+                );
+                let setup = settings::not_set_up_message(tile["title"].as_str().unwrap());
+                assert_eq!(
+                    tile["message"].to_string().contains(&setup),
+                    !added,
+                    "{kind}'s tile, {context}"
+                );
+            }
+
+            let store = app.store.lock().unwrap();
+            let vendors = services::active_vendors(&store, &*app.credentials);
+            assert_eq!(
+                vendors
+                    .iter()
+                    .any(|vendor| vendor.service == services::ServiceId::Anthropic),
+                anthropic_added,
+                "Anthropic's status row, {context}"
+            );
         }
     }
 
