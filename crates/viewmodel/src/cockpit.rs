@@ -31,26 +31,30 @@ pub enum PanelKind {
     GhRunners,
     Containers,
     GhWorkflows,
-    ClaudeUsage,
+    Usage,
     OpenclawAgents,
     AzureCost,
     Services,
     SentryCrons,
+    Anthropic,
+    OpenAi,
 }
 
 impl PanelKind {
     /// Every kind, in the original `CaseIterable` declaration order — with the
     /// panels that have no counterpart appended in the order they were added.
-    pub const ALL: [PanelKind; 9] = [
+    pub const ALL: [PanelKind; 11] = [
         PanelKind::Hosts,
         PanelKind::GhRunners,
         PanelKind::Containers,
         PanelKind::GhWorkflows,
-        PanelKind::ClaudeUsage,
+        PanelKind::Usage,
         PanelKind::OpenclawAgents,
         PanelKind::AzureCost,
         PanelKind::Services,
         PanelKind::SentryCrons,
+        PanelKind::Anthropic,
+        PanelKind::OpenAi,
     ];
 
     /// Stable identifier — the original `rawValue`, so persisted layout state and
@@ -61,11 +65,13 @@ impl PanelKind {
             PanelKind::GhRunners => "ghRunners",
             PanelKind::Containers => "containers",
             PanelKind::GhWorkflows => "ghWorkflows",
-            PanelKind::ClaudeUsage => "claudeUsage",
+            PanelKind::Usage => "usage",
             PanelKind::OpenclawAgents => "openclawAgents",
             PanelKind::AzureCost => "azureCost",
             PanelKind::Services => "services",
             PanelKind::SentryCrons => "sentryCrons",
+            PanelKind::Anthropic => "anthropic",
+            PanelKind::OpenAi => "openai",
         }
     }
 
@@ -75,9 +81,9 @@ impl PanelKind {
             PanelKind::GhRunners => "GitHub Runners",
             PanelKind::Containers => "Containers / VMs",
             PanelKind::GhWorkflows => "GitHub Repos",
-            // "Usage", not "Claude Usage": the panel carries per-provider usage
-            // beside the Claude token rollups. The id stays `claudeUsage`.
-            PanelKind::ClaudeUsage => "Usage",
+            // The cloud providers' billing. Claude and Codex have their own
+            // panels, under the vendor's name, as their sources do in Settings.
+            PanelKind::Usage => "Usage",
             PanelKind::OpenclawAgents => "OpenClaw",
             PanelKind::AzureCost => "Azure Cost",
             PanelKind::Services => "Services",
@@ -85,6 +91,8 @@ impl PanelKind {
             // "is the vendor up?" and this one answers "is our own job green?",
             // and naming the source is what keeps the two apart at a glance.
             PanelKind::SentryCrons => "Sentry Crons",
+            PanelKind::Anthropic => "Anthropic",
+            PanelKind::OpenAi => "OpenAI",
         }
     }
 
@@ -136,7 +144,7 @@ impl PanelKind {
             PanelKind::Containers => 400.0,
             PanelKind::AzureCost => 400.0,
             PanelKind::OpenclawAgents => 240.0,
-            PanelKind::ClaudeUsage => 340.0,
+            PanelKind::Usage | PanelKind::Anthropic | PanelKind::OpenAi => 340.0,
             // Five rows of `vendor · status word · dot`. The binding
             // constraint is "Services Degraded" beside the longest vendor
             // name. 240 rather than the ~220 that measures, for the same
@@ -332,10 +340,7 @@ mod tests {
     #[test]
     fn columns_are_capped_at_two_however_wide_the_panel() {
         assert_eq!(panel_columns(PanelKind::GhRunners, 5000.0, SPACING), 2);
-        assert_eq!(
-            panel_columns(PanelKind::ClaudeUsage, f64::INFINITY, SPACING),
-            2
-        );
+        assert_eq!(panel_columns(PanelKind::Usage, f64::INFINITY, SPACING), 2);
     }
 
     /// Same rule as `host_columns`: an unmeasured panel gets one column rather

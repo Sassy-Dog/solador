@@ -336,11 +336,12 @@
   edited in the **Configure of the tile(s) it feeds** (#614; it was Settings →
   Preferences → **Panel Poll Cadence**, #337) — Containers, GitHub Repos *and*
   GitHub Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
-  maps a panel to a list of sources), Service Health, Usage (three: the Claude
-  rollups, the metered providers and the plan limits), Azure Cost and Sentry
+  maps a panel to a list of sources), Service Health, Anthropic (three: the Claude
+  rollups, the plan limits and the metered providers' cadence, which also reads
+  its API spend), OpenAI (two: the plan limits and API spend, the same two keys),
+  Usage (the metered providers), Azure Cost and Sentry
   Crons — under **Poll cadence**, one control per cadence (a
-  source carries a `cadences` list, so a tile fed by three polls shows all
-  three), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
+  source carries a `cadences` list, so a tile fed by two polls shows both), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
   its floor *and why that floor exists* (`app/src-tauri/src/cadence.rs`), and a
   below-floor value is **refused with that reason** rather than clamped to a
@@ -380,7 +381,7 @@
   it that one column reads `—` and everything else is unaffected.
 - **Remote hosts**: per-host bearer token, plus — once paired (#448) — the
   pinned certificate fingerprint, which is public and lives in `store.json`.
-- **Usage → Claude** (the rollups): no credential — and **no account either**. The rollups
+- **Anthropic → Claude Code rollups**: no credential — and **no account either**. The rollups
   are a walk of `~/.claude/projects`, and those logs record what was consumed,
   never who paid for it: a full key survey of a real session file — 50+
   top-level fields including `cwd`, `gitBranch`, `sessionId`, `version`,
@@ -397,14 +398,13 @@
   and must not be modelled as one**: an account id on these rollups would be an
   attribution invented to fill a gap — the unknown-as-zero error in another
   costume. If a number cannot be attributed, say so rather than attributing it.
-- **Usage → Claude and Codex plan limits**: **another program's credential,
+- **Anthropic and OpenAI → plan limits**: **another program's credential,
   read only while the operator has opted in** (`store.json`'s
   `claude_plan_usage_enabled` / `codex_plan_usage_enabled`, both `false` in a
-  fresh store and on any store written before them; Settings → Sources →
-  **Claude Code** → **Read Claude Code's sign-in** (the automatic source that
-  also reads the local logs) / Add source → **Codex** → **Read Codex's
-  sign-in**, saved on the click like the
-  crash-reporting toggle). Claude: the macOS keychain item `Claude
+  fresh store and on any store written before them; **Subscription** in the
+  source's steps, Settings → Sources → Add source, applied at Finish by
+  `settings_save_source`, which changes it only when it differs, so reopening
+  a source neither re-reads a sign-in nor un-parks a refused keychain). Claude: the macOS keychain item `Claude
   Code-credentials` (account `$USER`), read by `/usr/bin/security`, else
   `~/.claude/.credentials.json`; then `GET
   https://api.anthropic.com/api/oauth/usage`. Codex: `$CODEX_HOME/auth.json`,
@@ -417,8 +417,9 @@
   `Debug` that prints `AccessToken(<redacted>)`) for one request and is dropped. An expired
   sign-in is `Fault::SignInExpired` (`run it to refresh`), never
   *unreachable*. Reading the keychain item from another binary may make macOS
-  ask (unverified: `subscription::keychain` explains why it cannot be); a refusal **parks** that provider until its toggle is turned off and on or
-  the app restarts, so a refused prompt is never asked again on a timer.
+  ask (unverified: `subscription::keychain` explains why it cannot be); a refusal **parks** that provider until the app restarts, or until the
+  Subscription part is removed at one Finish and added back at another, so a
+  refused prompt is never asked again on a timer.
   Windows and Linux have no keychain step: the file is the only source, and a
   Codex that keeps its sign-in in the OS keyring reads as not signed in. Like
   the rollups, the reading is machine-local: it is whichever account the tool
@@ -441,6 +442,17 @@
   `utilization` is never read: its unit is ambiguous). An amount with no
   currency is a bare number, never dollars, and no reset date is invented for
   it, so it has no pace.
+- **Anthropic and OpenAI → API spend**: an **Admin API key the operator gave
+  Solador**, kept in the OS credential store (`SecretKey::AnthropicAdminKey`,
+  `OpenAiAdminKey`) and never in `store.json`. `crates/usage::api_spend` asks
+  `GET /v1/organizations/analytics/cost` (Anthropic: `amount` is a decimal
+  string in cents, and figures can lag 24 hours; the endpoint is in beta and is
+  the one Anthropic recommends, while `cost_report` is its legacy API) and `GET
+  /v1/organization/costs` (OpenAI: a currency other than `usd` is an error,
+  never a `$`). Month to date, on `PanelInterval::UsageProviders`. No spend
+  reported is `ApiSpendSummary::Unmeasured`, never `$0`. Both readers were
+  written from the vendors' documentation and have not been run against a live
+  key.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
   normal preference, not a credential-store item.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`

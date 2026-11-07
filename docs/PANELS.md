@@ -50,16 +50,15 @@
   that raises attention, and a group holding one leads with it (value
   `1 missing`, red) rather than a load figure, which moves to the line under
   it. Individual rows keep their state colours.
-- **Usage** — the Claude and Codex **plans' own limits** lead it, **opt-in per
-  provider and off in a fresh store** (15 min by default, see
-  `docs/APP-INTERNALS.md`, **Authentication**). Each plan is one row named by
-  its provider and plan (`Claude · Ultra`, `Codex · Plus`; the name is the one
-  the tool itself displays, never mapped from a tier code) carrying one meter
-  per limit: `5h`, `Week`, a per-model weekly such as `Week · Fable`, or, for
-  an Enterprise seat with no windows, a `Budget` (`$312 / $500 · 62%`; spend
-  beside windows is `Extra usage`). The meters are the Machines tile's CPU/RAM
-  meters (`app/ui/meter.js`, 70/90%). A meter exists only for a window the
-  reply carries: a verified Ultra account has no 5-hour window, so it has no
+- **Anthropic** — Claude's **plan limits** lead it, **opt-in and off in a fresh
+  store** (15 min by default, see `docs/APP-INTERNALS.md`, **Authentication**).
+  The plan is one row named by its provider and plan (`Claude · Ultra`; the name
+  is the one the tool itself displays, never mapped from a tier code) carrying
+  one meter per limit: `5h`, `Week`, a per-model weekly such as `Week · Fable`,
+  or, for an Enterprise seat with no windows, a `Budget` (`$312 / $500 · 62%`;
+  spend beside windows is `Extra usage`). The meters are the Machines tile's
+  CPU/RAM meters (`app/ui/meter.js`, 70/90%). A meter exists only for a window
+  the reply carries: a verified Ultra account has no 5-hour window, so it has no
   `5h` meter. Each window also gets a **pace**: the average burn since the
   window opened, judged at the reading's own time (never at render), shown as
   a tick on the track once a tenth of the window has passed and hidden once the
@@ -67,23 +66,37 @@
   (red, the only plan state that raises attention), else the earliest run-out
   (`out in ~1d 1h`, amber), else the busiest window's reset, and `reset since
   read` when every window rolled over after its read; never blank. A spend cap
-  has no pace: the reply states no reset for it. Below the plans, under `THIS
+  has no pace: the reply states no reset for it. Below the plan, under `THIS
   MACHINE`, Claude Code's token rollups for this machine (`LAST 5H`, `LAST 7D`,
   top projects; their own `PanelInterval::ClaudeRollups`, #615), which the
-  tile folds into one `Claude Code · 1.2M today` row. Then Neon, Sentry +
-  Vercel (hourly by default). Vercel reads the FOCUS billing export:
-  month-to-date spend and what falls beyond the plan. Neon renders
-  compute/storage MTD, `NEON EST. CHARGES (MTD)` from operator-entered rates,
-  and a best-effort `NEON LAST INVOICE` off an undocumented endpoint — that one
-  failing degrades to `—` plus a footer, never the consumption rows. Both plan
-  endpoints are undocumented too, and degrade the same way: the plan row reads
-  `—` with no meters and the header names the reason. A plan that is off is one
-  muted setup line for every plan that is off, naming where each switch is
-  (`Claude plan limits are off — turn on in Settings → Sources → Claude
-  Code`), never rows of `—`, and adds nothing to the
-  dashboard. Plans are their own block (`crates/subscription`,
-  `app/src-tauri/src/plan_usage.rs`, `crates/viewmodel/src/plan_usage.rs`): a
-  plan is not an account, and its figures never merge into the rollups.
+  tile folds into one `Claude Code · 1.2M today` row. The plan endpoint is
+  undocumented, and degrades like any best-effort read: the plan row reads `—`
+  with no meters and the header names the reason. Beside the plan, `API spend
+  (MTD)` from an Admin key, on `PanelInterval::UsageProviders`, with a note
+  saying how far the figure reaches (`counted 3h ago`), which is not when it was
+  read: Anthropic's lag by hours. Each of the three is a part of the source, set
+  up on its own, and **a part that is not set up says nothing**: no row, no
+  warning, no setup line, no walk of the logs, and no `Claude Code` row on the
+  tile. Only a source with no part at all paints a sentence (`Anthropic isn’t set
+  up — add it in Settings → Sources → Add source`), and only once the key read
+  is `Absent`; before that it stays loading. Plans are their own block
+  (`crates/subscription`, `app/src-tauri/src/plan_usage.rs`,
+  `crates/viewmodel/src/plan_usage.rs`): a plan is not an account, and its
+  figures never merge into the rollups.
+- **OpenAI** — Codex's plan limits, read and drawn exactly as Claude's are
+  (`Codex · Plus`), on the same `PanelInterval::PlanUsage` cadence, which is one
+  setting shown on both tiles, and `API spend (MTD)` from an Admin key. Codex has
+  no local logs, so those are its two parts, with the same rule for a part that
+  is not set up.
+- **Usage** — Neon, Sentry + Vercel (hourly by default, `PanelInterval::UsageProviders`).
+  Vercel reads the FOCUS billing export: month-to-date spend and what falls
+  beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES (MTD)`
+  from operator-entered rates, and a best-effort `NEON LAST INVOICE` off an
+  undocumented endpoint — that one failing degrades to `—` plus a footer, never
+  the consumption rows. A provider with no key has no section. Before a pass has
+  read every key the panel is loading, because only a key seen to be missing may
+  paint a setup sentence; with all three missing it says what to add, and a
+  credential store that would not answer says that instead.
 - **Azure Cost** — the daily cost export, on its own cadence (4h by default).
 - **Sentry Crons** — every cron monitor environment that is not `ok`, and **how
   long it has been broken** (its own cadence, 1h by default). The age comes from
@@ -103,8 +116,8 @@
   in either direction fires a desktop notification. **The watched list is
   derived from configuration, never shipped** (#284, wired up in #375):
   `services::active_vendors` answers it every pass from the credentials and
-  accounts already in the cockpit — plus Claude rollups, which are Anthropic's
-  only evidence — and appends the operator's own Atlassian Statuspages
+  accounts already in the cockpit — plus any part of the Anthropic source, each
+  of which is Anthropic's evidence (`anthropic_configured`) — and appends the operator's own Atlassian Statuspages
   (`store.json`'s `status_vendors`). `poll_service_status` reads exactly that
   list through `read_vendor`, and `readings`/`view` render exactly that list, so
   a vendor cannot be polled and then dropped from the panel. A cockpit with
@@ -112,10 +125,9 @@
   empty body under "all clear". `ServiceStatuses::watching` forgets the readings
   of a vendor that leaves the set, which is what stops a re-added vendor
   rendering the status it had when it left — the same rule `StatusWatch` applies
-  to its baseline, and what keeps #297's seed-don't-alert true. Claude rollups
-  appearing or disappearing is an input no edit makes, so a usage pass that
-  sees `claude_present()` change wakes the Services loop
-  (`claude_presence_wakes_services`, #627) — and only then. The panel carries a
+  to its baseline, and what keeps #297's seed-don't-alert true. Finishing a
+  source's steps wakes the Services loop, because any part of it can add or
+  remove a watched vendor. The panel carries a
   **staleness footer** on `ServiceStatuses`' last-success clock against
   `stale_after_for_cadence` of the Services cadence. A pass succeeds when it
   watched nothing or read at least one vendor (one vendor down is its own row);

@@ -23,7 +23,7 @@
 //! This crate is a pure library: it reads and writes its own file and nothing
 //! else. Wiring it into the Tauri shell is a later slice.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -372,6 +372,112 @@ impl StoreData {
             }
         }
     }
+
+    /// One saved Usage tile becomes the tiles that now hold what it showed:
+    /// Usage keeps the cloud providers, Anthropic takes Claude, OpenAI takes
+    /// Codex.
+    ///
+    /// One-shot by construction, like the function above: it rewrites every
+    /// `claudeUsage` tile, and no source it writes is one it reads. That is why
+    /// the id changed. Had it stayed, `all` would read the same before and
+    /// after, and a removed Anthropic tile would return on the next launch. A
+    /// marker in the store would not hold either, because an older build's save
+    /// drops keys it does not know, and bumping [`STORE_VERSION`] stops older
+    /// builds opening the file.
+    ///
+    /// The tile keeps its id and place, and what it gains goes right after it,
+    /// copied field for field, so a hidden tile's additions stay hidden and
+    /// unhiding loses nothing. Nothing is dropped to fit: the app refuses only
+    /// growth past its tile limit, so a dashboard this pushes over can still
+    /// be saved. OpenAI is added only with Codex's plan on, because with it
+    /// off the old tile showed nothing from Codex, and Add a tile offers
+    /// OpenAI later.
+    ///
+    /// One-way. An older build keeps these tiles through a save but shows none
+    /// of them, and refuses every dashboard edit, because it knows none of
+    /// these sources.
+    ///
+    /// The source ids and titles are the app's (`dashboard::SOURCES`), spelled
+    /// out here because this crate cannot see that one; `tile_scope.rs` has the
+    /// test that keeps them equal.
+    pub fn split_usage_tiles(&mut self) {
+        let codex_plan_on = self.settings.codex_plan_usage_enabled;
+        let Some(dashboard) = self.dashboard.as_mut() else {
+            return;
+        };
+        let mut taken: BTreeSet<String> = dashboard.tiles.iter().map(|t| t.id.clone()).collect();
+        let mut tiles = Vec::with_capacity(dashboard.tiles.len());
+        for mut tile in std::mem::take(&mut dashboard.tiles) {
+            if tile.source != "claudeUsage" {
+                tiles.push(tile);
+                continue;
+            }
+            let saved_scope = std::mem::take(&mut tile.scope);
+            let (source, scope, added) = split_usage_scope(&saved_scope, codex_plan_on);
+            tile.source = source.into();
+            scope.clone_into(&mut tile.scope);
+            if tile.title == "Usage" {
+                source_title(source).clone_into(&mut tile.title);
+            }
+            let moved = tile.clone();
+            tiles.push(tile);
+            for (source, scope) in added.into_iter().flatten() {
+                tiles.push(DashboardTile {
+                    id: added_tile_id(&moved.id, source, &mut taken),
+                    source: source.into(),
+                    title: source_title(source).into(),
+                    scope: scope.to_owned(),
+                    ..moved.clone()
+                });
+            }
+        }
+        dashboard.tiles = tiles;
+    }
+}
+
+/// Where a saved Usage tile goes: its new source and scope, and what is added
+/// after it. A scope naming one row stays that row, never broadened to a whole
+/// source. OpenAI has no `plans` scope, and its only row is the plan, so `all`
+/// shows what the old scope showed of Codex.
+fn split_usage_scope(
+    scope: &str,
+    codex_plan_on: bool,
+) -> (&'static str, &str, [Option<(&'static str, &str)>; 2]) {
+    let openai = |scope| codex_plan_on.then_some(("openai", scope));
+    match scope {
+        "all" | "attention" => ("usage", scope, [Some(("anthropic", scope)), openai(scope)]),
+        "providers" => ("usage", "all", [None, None]),
+        "plans" => ("anthropic", scope, [openai("all"), None]),
+        "claude" | "item:claude-plan" | "item:claude-today" => ("anthropic", scope, [None, None]),
+        "item:codex-plan" => ("openai", scope, [None, None]),
+        other => ("usage", other, [None, None]),
+    }
+}
+
+fn source_title(source: &str) -> &'static str {
+    match source {
+        "anthropic" => "Anthropic",
+        "openai" => "OpenAI",
+        _ => "Usage",
+    }
+}
+
+/// `{id}-{source}`, unused and within the 80 characters `dashboard::validate`
+/// allows, because it runs on every save and one bad id would refuse them all.
+fn added_tile_id(id: &str, source: &str, taken: &mut BTreeSet<String>) -> String {
+    let mut attempt = 1;
+    loop {
+        let suffix = match attempt {
+            1 => format!("-{source}"),
+            n => format!("-{source}-{n}"),
+        };
+        let stem: String = id.chars().take(80 - suffix.len()).collect();
+        let candidate = format!("{stem}{suffix}");
+        if taken.insert(candidate.clone()) {
+            return candidate;
+        }
+        attempt += 1;
+    }
 }
 
 /// Reads the retired `layout` key for the one thing that survives it: the first
@@ -584,6 +690,8 @@ impl Store {
                 // Same one-shot shape: a Usage tile scoped to one of the rows
                 // plans became one row each.
                 data.carry_usage_item_scopes_onto_plan_rows();
+                // Last, so it reads the rows that function just settled.
+                data.split_usage_tiles();
                 Ok(Store { path, data })
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -1427,6 +1535,9 @@ mod tests {
             // Both opt-ins on, for the same reason: a *yes* must survive the file.
             claude_plan_usage_enabled: true,
             codex_plan_usage_enabled: true,
+            claude_local_logs_enabled: true,
+            local_monitoring_enabled: true,
+            service_health_enabled: true,
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
             // Same argument as the two notify flags above: an override the file
             // has to carry, so the round trip proves it persisted rather than

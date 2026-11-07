@@ -13,6 +13,8 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
     containers: "containers",
     services: "services",
     crons: "crons",
+    anthropic: "anthropic",
+    openai: "openai",
     usage: "usage",
     azure_cost: "azure",
     openclaw: "openclaw",
@@ -240,7 +242,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             // does. The payload itself is the unscoped fixture: Rust's tests
             // cover what a scope keeps.
             const panelSource = { cockpit:"hosts", repos:"ghWorkflows", runners:"ghRunners", containers:"containers",
-              services:"services", crons:"sentryCrons", usage:"claudeUsage", azure_cost:"azureCost", openclaw:"openclawAgents" };
+              services:"services", crons:"sentryCrons", anthropic:"anthropic", openai:"openai", usage:"usage", azure_cost:"azureCost", openclaw:"openclawAgents" };
             if (args?.tile !== undefined && Object.hasOwn(panelSource, command)) {
               const asked = layout.tiles.find(t => t.id === args.tile);
               if (!asked) throw "That tile is no longer on the overview.";
@@ -682,20 +684,20 @@ test('GPU memory reads VRAM, and a unified machine says so on RAM and VRAM', asy
   await expect(cards.nth(1).locator('.db-metric').nth(3)).toContainText('22.1 / 24 GB');
 });
 
-// A Usage tile in place of the Services one: the default overview has none.
-const withUsageTile = (view) => {
+// An Anthropic tile in place of the Services one: the default overview has none.
+const withAnthropicTile = (view) => {
   const services = view.layout.tiles.find(t => t.source === 'services');
-  Object.assign(services, {id:'overview-claudeUsage', source:'claudeUsage', title:'Usage'});
+  Object.assign(services, {id:'overview-anthropic', source:'anthropic', title:'Anthropic'});
 };
 
-test('the Usage tile leads with each plan as a row of the Machines tile\'s meters', async ({page,baseURL}) => {
-  const view = await openDashboard(page, baseURL, false, withUsageTile);
-  const source = view.sources.find(s => s.id === 'claudeUsage');
+test('the Anthropic tile leads with its plan as a row of the Machines tile\'s meters', async ({page,baseURL}) => {
+  const view = await openDashboard(page, baseURL, false, withAnthropicTile);
+  const source = view.sources.find(s => s.id === 'anthropic');
   const plans = source.rows.filter(r => r.scopes.includes('plans'));
-  expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, 2).map(r => r.id));
+  expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, 1).map(r => r.id));
   expect(source.rows.filter(r => r.label === 'Claude Code'), 'the tokens are one line').toHaveLength(1);
   // A row with meters is a card, as a machine is.
-  const items = tile(page, 'claudeUsage').locator('.db-host');
+  const items = tile(page, 'anthropic').locator('.db-host');
   await expect(items).toHaveCount(plans.length);
   for (const [i, plan] of plans.entries()) {
     const item = items.nth(i);
@@ -708,7 +710,7 @@ test('the Usage tile leads with each plan as a row of the Machines tile\'s meter
     const metrics = item.locator('.db-metric');
     await expect(metrics).toHaveCount(plan.metrics.length);
     for (const [j, m] of plan.metrics.entries()) {
-      const meter = tile(page, 'claudeUsage').getByRole('meter', {name:`${plan.label} ${m.label}`, exact:true});
+      const meter = tile(page, 'anthropic').getByRole('meter', {name:`${plan.label} ${m.label}`, exact:true});
       await expect(meter).toHaveAttribute('aria-valuetext', m.value);
       await expect(meter).toHaveAttribute('aria-description', m.note);
       // The note is the hover title on the tile, not a line under the meter.
@@ -721,7 +723,7 @@ test('the Usage tile leads with each plan as a row of the Machines tile\'s meter
   expect(plans.some(r => r.valueColor === '#e0a03a' && !r.attention)).toBe(true);
 
   // Detail lists each limit as a column of its own.
-  await openDetail(page, 'claudeUsage');
+  await openDetail(page, 'anthropic');
   const headers = await page.locator('#dashboardOverview .db-detail-table thead th').allTextContents();
   for (const label of new Set(plans.flatMap(r => r.metrics.map(m => m.label)))) {
     expect(headers.map(h => h.toLowerCase())).toContain(label.toLowerCase());
@@ -2114,7 +2116,7 @@ test("adding a tile waits for its name, scope and size before saving", async ({ 
   });
   await expect(page.locator(".db-grid > .db-tile")).toHaveCount(6);
   await action(page, "catalog").click();
-  await page.locator('[data-action="add"][data-id="claudeUsage"]').click();
+  await page.locator('[data-action="add"][data-id="usage"]').click();
   await action(page, "close").click();
   expect((await savedLayout(page)).tiles).toHaveLength(6);
 });
@@ -2131,7 +2133,7 @@ test("a source detour keeps a new tile's draft and returns to its preview", asyn
   await page.locator("#dashboard-scope").selectOption("local");
   await page.getByLabel("Position", { exact: true }).selectOption("start");
   await action(page, "manage").click();
-  await expect(page.locator("#settings .connection-heading h2")).toHaveText("This machine");
+  await expect(page.locator("#settings .walk h2")).toHaveText("This machine");
   expect(await page.evaluate(() => window.__CALLS__.find(c => c.command === "settings_view").args)).toEqual({route:{source:"hosts",scope:"local"}});
   await page.locator("#settingsClose").click();
   await expect(page.locator("#dashboard-title")).toHaveValue("My workstation");
@@ -3093,10 +3095,11 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
 });
 
 // The poll cadences moved from Settings into the Configure of the tile(s) they
-// feed (#614, #615). Seven sources carry them, Usage three (its Claude
-// rollups, metered providers and plans' limit windows); GitHub's one cadence is
-// on both its Repos and GitHub Runners tiles; Machines carries none.
-const CADENCE_SOURCES = ["containers", "ghWorkflows", "ghRunners", "services", "claudeUsage", "azureCost", "sentryCrons"];
+// feed (#614, #615). Nine sources carry them: Anthropic two (its Claude rollups
+// and plan limits), Usage its metered providers; the plan-limit cadence is on
+// both AI tiles and GitHub's one on both its Repos and GitHub Runners tiles;
+// Machines carries none.
+const CADENCE_SOURCES = ["containers", "ghWorkflows", "ghRunners", "services", "anthropic", "openai", "usage", "azureCost", "sentryCrons"];
 const cadencesOf = (model, id) => model.sources.find(s => s.id === id).cadences;
 async function configureCadence(page, source, panel = null) {
   await page.locator('#dashboardOverview [data-action="edit"]').click();
@@ -3109,7 +3112,9 @@ test("each source's Configure shows its poll cadence with the floor, the reason 
   const model = await openDashboard(page, baseURL);
   expect(CADENCE_SOURCES.every(id => cadencesOf(model, id)?.length)).toBe(true);
   expect(cadencesOf(model, "hosts")).toBeUndefined();
-  expect(cadencesOf(model, "claudeUsage").map(c => c.id)).toEqual(["claude_rollups", "usage_providers", "plan_usage"]);
+  expect(cadencesOf(model, "anthropic").map(c => c.id).sort()).toEqual(["claude_rollups", "plan_usage", "usage_providers"]);
+  expect(cadencesOf(model, "openai").map(c => c.id).sort()).toEqual(["plan_usage", "usage_providers"]);
+  expect(cadencesOf(model, "usage").map(c => c.id)).toEqual(["usage_providers"]);
   expect(cadencesOf(model, "ghWorkflows").map(c => c.id)).toEqual(["github"]);
   expect(cadencesOf(model, "ghRunners").map(c => c.id)).toEqual(["github"]);
   expect(cadencesOf(model, "services").map(c => c.id)).toEqual(["services"]);
@@ -3275,13 +3280,14 @@ test("one GitHub cadence is on both of its tiles, and a save from either moves b
   }
 });
 
-test("the Usage tile's three cadences each save, and refuse, on their own box", async ({ page, baseURL }) => {
+test("the Anthropic tile's cadences each save, and refuse, on their own box", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
-  const [rollups, providers, plans] = cadencesOf(model, "claudeUsage");
-  expect(rollups.id).toBe("claude_rollups");
-  await configureCadence(page, "claudeUsage");
+  const cadence = id => cadencesOf(model, "anthropic").find(c => c.id === id);
+  const rollups = cadence("claude_rollups");
+  const plans = cadence("plan_usage");
+  await configureCadence(page, "anthropic");
   await expect(page.locator("[data-cadence]")).toHaveCount(3);
-  const providerBox = page.locator(`[data-cadence="${providers.id}"]`);
+  const rollupBox = page.locator(`[data-cadence="${rollups.id}"]`);
   const planBox = page.locator(`[data-cadence="${plans.id}"]`);
   // Enter applies the box it was pressed in, not the first one on the page.
   await planBox.locator("input").fill("600");
@@ -3289,12 +3295,12 @@ test("the Usage tile's three cadences each save, and refuse, on their own box", 
   await expect.poll(() => commandArgs(page, "panel_interval_save"))
     .toEqual([{ panel: plans.id, secs: 600, width: expect.any(Number) }]);
   await expect(planBox.locator(".db-cadence-status")).toHaveText("Set to 600s.");
-  await expect(providerBox.locator(".db-cadence-status")).toHaveText(providers.status);
+  await expect(rollupBox.locator(".db-cadence-status")).toHaveText(rollups.status);
   // A refusal lands beside the box it came from, never its neighbour.
   await planBox.locator("input").fill("30");
   await planBox.locator('[data-action="cadence-apply"]').click();
   await expect(planBox.locator(":scope > .db-action-error")).toContainText(`${plans.min}s floor`);
-  await expect(providerBox.locator(".db-action-error")).toHaveCount(0);
+  await expect(rollupBox.locator(".db-action-error")).toHaveCount(0);
 });
 
 const viewItems = (page, source) => tile(page, source).getByRole("menuitem");

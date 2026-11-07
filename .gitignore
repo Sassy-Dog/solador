@@ -77,7 +77,13 @@ app/ui/sample-usage.json
 app/ui/sample-usage-unmeasured.json
 app/ui/sample-usage-empty.json
 app/ui/sample-usage-stale.json
-app/ui/sample-usage-plans.json
+app/ui/sample-anthropic.json
+app/ui/sample-anthropic-empty.json
+app/ui/sample-anthropic-stale.json
+app/ui/sample-anthropic-plans.json
+app/ui/sample-openai.json
+app/ui/sample-openai-empty.json
+app/ui/sample-openai-plans.json
 app/ui/sample-azure.json
 app/ui/sample-azure-fallback.json
 app/ui/sample-azure-error.json

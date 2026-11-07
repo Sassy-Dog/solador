@@ -5,6 +5,8 @@
 //! - [`neon`] — month-to-date Neon compute + branch storage for one org.
 //! - [`sentry`] — accepted error events for one org over a rolling window, plus
 //!   the cron monitors that are not ok and **how long they have been broken**.
+//! - [`api_spend`] — this month's API spend from Anthropic's and OpenAI's own
+//!   cost APIs, for their sources rather than for Usage.
 //!
 //! Three rules run through the whole crate:
 //!
@@ -25,6 +27,7 @@
 //! storage. Keys and org identifiers are parameters; the cadences, the Keychain
 //! reads and the published state stay in the shell.
 
+pub mod api_spend;
 pub mod claude;
 pub mod neon;
 pub mod sentry;
@@ -34,6 +37,7 @@ pub mod vercel;
 /// when a caller-supplied org identifier lands in a URL path segment.
 mod urlpath;
 
+pub use api_spend::{AnthropicCostClient, ApiSpendError, ApiSpendSummary, OpenAiCostClient};
 pub use claude::{summarize_logs, UsageSummary, UsageTotals};
 pub use neon::{estimate_usd, NeonClient, NeonInvoiceSummary, NeonUsageError, NeonUsageSummary};
 pub use sentry::{

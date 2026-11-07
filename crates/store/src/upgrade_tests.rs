@@ -469,3 +469,291 @@ fn a_usage_tile_scoped_to_a_retired_row_keeps_the_row_that_replaced_it() {
     data.carry_usage_item_scopes_onto_plan_rows();
     assert_eq!(data, once, "a second pass changes nothing");
 }
+
+/// A saved tile of the one Usage source that held Claude, Codex and cloud
+/// billing together.
+fn old_usage(id: &str, scope: &str, title: &str) -> Value {
+    let mut t = tile(id, "claudeUsage");
+    t["scope"] = json!(scope);
+    t["title"] = json!(title);
+    t
+}
+
+fn store_of(tiles: Vec<Value>, settings: Value) -> Value {
+    json!({
+        "version": 3,
+        "settings": settings,
+        "dashboard": {"revision": 5, "tiles": tiles},
+    })
+}
+
+const CODEX_ON: &str = r#"{"codex_plan_usage_enabled":true}"#;
+
+fn settings(json_text: &str) -> Value {
+    serde_json::from_str(json_text).expect("settings json")
+}
+
+/// `(id, source, scope, title)` of every tile, in overview order.
+fn tiles_of(store: &Store) -> Vec<(String, String, String, String)> {
+    store
+        .dashboard()
+        .expect("dashboard")
+        .tiles
+        .iter()
+        .map(|t| {
+            (
+                t.id.clone(),
+                t.source.clone(),
+                t.scope.clone(),
+                t.title.clone(),
+            )
+        })
+        .collect()
+}
+
+fn row(id: &str, source: &str, scope: &str, title: &str) -> (String, String, String, String) {
+    (id.into(), source.into(), scope.into(), title.into())
+}
+
+/// One saved scope, split with Codex's plan off and then on.
+#[test]
+fn every_saved_usage_scope_lands_on_its_new_source() {
+    type Want = &'static [(&'static str, &'static str, &'static str, &'static str)];
+    let cases: [(&str, Want, Want); 10] = [
+        (
+            "all",
+            &[
+                ("u", "usage", "all", "Usage"),
+                ("u-anthropic", "anthropic", "all", "Anthropic"),
+            ],
+            &[
+                ("u", "usage", "all", "Usage"),
+                ("u-anthropic", "anthropic", "all", "Anthropic"),
+                ("u-openai", "openai", "all", "OpenAI"),
+            ],
+        ),
+        (
+            "attention",
+            &[
+                ("u", "usage", "attention", "Usage"),
+                ("u-anthropic", "anthropic", "attention", "Anthropic"),
+            ],
+            &[
+                ("u", "usage", "attention", "Usage"),
+                ("u-anthropic", "anthropic", "attention", "Anthropic"),
+                ("u-openai", "openai", "attention", "OpenAI"),
+            ],
+        ),
+        (
+            "providers",
+            &[("u", "usage", "all", "Usage")],
+            &[("u", "usage", "all", "Usage")],
+        ),
+        (
+            "item:neon:COMPUTE",
+            &[("u", "usage", "item:neon:COMPUTE", "Usage")],
+            &[("u", "usage", "item:neon:COMPUTE", "Usage")],
+        ),
+        (
+            "item:sentry:EVENTS",
+            &[("u", "usage", "item:sentry:EVENTS", "Usage")],
+            &[("u", "usage", "item:sentry:EVENTS", "Usage")],
+        ),
+        (
+            "item:gone",
+            &[("u", "usage", "item:gone", "Usage")],
+            &[("u", "usage", "item:gone", "Usage")],
+        ),
+        (
+            "claude",
+            &[("u", "anthropic", "claude", "Anthropic")],
+            &[("u", "anthropic", "claude", "Anthropic")],
+        ),
+        (
+            "plans",
+            &[("u", "anthropic", "plans", "Anthropic")],
+            // OpenAI has no `plans` scope, and its only row is the plan, so
+            // `all` shows what the old scope showed of Codex.
+            &[
+                ("u", "anthropic", "plans", "Anthropic"),
+                ("u-openai", "openai", "all", "OpenAI"),
+            ],
+        ),
+        (
+            "item:claude-plan",
+            &[("u", "anthropic", "item:claude-plan", "Anthropic")],
+            &[("u", "anthropic", "item:claude-plan", "Anthropic")],
+        ),
+        (
+            "item:codex-plan",
+            &[("u", "openai", "item:codex-plan", "OpenAI")],
+            &[("u", "openai", "item:codex-plan", "OpenAI")],
+        ),
+    ];
+    for (scope, off, on) in cases {
+        for (codex, want) in [(json!({}), off), (settings(CODEX_ON), on)] {
+            let (_dir, opened) = open(&store_of(vec![old_usage("u", scope, "Usage")], codex));
+            let want: Vec<_> = want.iter().map(|w| row(w.0, w.1, w.2, w.3)).collect();
+            assert_eq!(tiles_of(&opened), want, "{scope}");
+        }
+    }
+}
+
+#[test]
+fn a_saved_scope_from_the_oldest_rows_still_reaches_its_new_source() {
+    let (_dir, opened) = open(&store_of(
+        vec![
+            old_usage("p", "item:claude-plan:CLAUDE PLAN (5H)", "Usage"),
+            old_usage("t", "item:claude-WEEK", "Usage"),
+            old_usage("x", "item:codex-plan:CODEX PLAN (5H)", "Usage"),
+        ],
+        json!({}),
+    ));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("p", "anthropic", "item:claude-plan", "Anthropic"),
+            row("t", "anthropic", "item:claude-today", "Anthropic"),
+            row("x", "openai", "item:codex-plan", "OpenAI"),
+        ]
+    );
+}
+
+#[test]
+fn a_split_tile_keeps_its_place_and_its_additions_follow_it() {
+    let (_dir, opened) = open(&store_of(
+        vec![
+            tile("m", "hosts"),
+            old_usage("u", "all", "Usage"),
+            tile("s", "services"),
+        ],
+        settings(CODEX_ON),
+    ));
+    let ids: Vec<String> = tiles_of(&opened).into_iter().map(|t| t.0).collect();
+    assert_eq!(ids, ["m", "u", "u-anthropic", "u-openai", "s"]);
+}
+
+/// Hidden stays hidden, so unhiding gives back everything the one tile showed.
+#[test]
+fn an_added_tile_copies_every_field_of_the_tile_it_came_from() {
+    let mut saved = old_usage("u", "all", "Usage");
+    saved["hidden"] = json!(true);
+    saved["width"] = json!("wide");
+    saved["presentation"] = json!("detailed");
+    saved["rowLimit"] = json!("10");
+    saved["rowGapPx"] = json!(7);
+    saved["detailView"] = json!("list");
+    let (_dir, opened) = open(&store_of(vec![saved], json!({})));
+    let original = by_id(&opened, "u");
+    let added = by_id(&opened, "u-anthropic");
+    assert!(added.hidden && original.hidden);
+    assert_eq!(
+        DashboardTile {
+            id: original.id.clone(),
+            source: original.source.clone(),
+            title: original.title.clone(),
+            ..added.clone()
+        },
+        *original,
+    );
+}
+
+#[test]
+fn each_saved_usage_tile_splits_on_its_own() {
+    let (_dir, opened) = open(&store_of(
+        vec![
+            old_usage("a", "all", "Usage"),
+            old_usage("b", "attention", "Usage"),
+        ],
+        json!({}),
+    ));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("a", "usage", "all", "Usage"),
+            row("a-anthropic", "anthropic", "all", "Anthropic"),
+            row("b", "usage", "attention", "Usage"),
+            row("b-anthropic", "anthropic", "attention", "Anthropic"),
+        ]
+    );
+}
+
+/// Only the default name follows the tile to its new source. A name the
+/// operator chose stays, and an added tile is new, so it takes the source's.
+#[test]
+fn a_chosen_title_stays_on_a_moved_tile() {
+    let (_dir, opened) = open(&store_of(
+        vec![
+            old_usage("c", "claude", "My Claude"),
+            old_usage("k", "all", "Everything"),
+        ],
+        json!({}),
+    ));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("c", "anthropic", "claude", "My Claude"),
+            row("k", "usage", "all", "Everything"),
+            row("k-anthropic", "anthropic", "all", "Anthropic"),
+        ]
+    );
+}
+
+/// `dashboard::validate` refuses an id over 80 characters or a duplicate, and
+/// it runs on every save, so one bad id would refuse every later edit.
+#[test]
+fn an_added_id_stays_short_enough_and_unique() {
+    let long = "x".repeat(80);
+    let (_dir, opened) = open(&store_of(
+        vec![
+            old_usage(&long, "all", "Usage"),
+            tile("u-anthropic", "hosts"),
+            old_usage("u", "all", "Usage"),
+        ],
+        json!({}),
+    ));
+    let ids: Vec<String> = tiles_of(&opened).into_iter().map(|t| t.0).collect();
+    assert_eq!(ids.len(), 5);
+    assert!(ids.iter().all(|id| id.len() <= 80), "{ids:?}");
+    let distinct: std::collections::BTreeSet<&String> = ids.iter().collect();
+    assert_eq!(distinct.len(), ids.len(), "{ids:?}");
+    assert!(ids[1].ends_with("-anthropic"), "{ids:?}");
+    assert!(ids[4].starts_with("u-anthropic"), "{ids:?}");
+}
+
+/// Dropping a tile to fit would lose something it showed.
+#[test]
+fn a_full_dashboard_still_splits() {
+    let mut tiles: Vec<Value> = (0..47).map(|i| tile(&format!("t{i}"), "hosts")).collect();
+    tiles.push(old_usage("u", "all", "Usage"));
+    let (_dir, opened) = open(&store_of(tiles, settings(CODEX_ON)));
+    assert_eq!(opened.dashboard().expect("dashboard").tiles.len(), 50);
+}
+
+#[test]
+fn a_store_with_no_saved_dashboard_has_nothing_to_split() {
+    let (_dir, opened) = open(&json!({"version": 3, "settings": {}}));
+    assert!(opened.dashboard().is_none());
+}
+
+/// Nothing the split writes matches what it reads, which is what makes a
+/// removed tile stay removed. A store marker would not survive an older build's
+/// save, and a version bump would stop older builds opening the file at all.
+#[test]
+fn the_split_runs_once_so_a_removed_tile_stays_removed() {
+    let (dir, mut opened) = open(&store_of(
+        vec![old_usage("u", "all", "Usage")],
+        settings(CODEX_ON),
+    ));
+    let once = opened.data().clone();
+    let mut again = once.clone();
+    again.split_usage_tiles();
+    assert_eq!(again, once, "a second pass changes nothing");
+
+    let mut layout = opened.dashboard().expect("dashboard").clone();
+    layout.tiles.retain(|t| t.source != "anthropic");
+    opened.save_dashboard(layout).expect("save");
+    let reopened = Store::open_in(dir.path(), false).expect("reopen");
+    let sources: Vec<String> = tiles_of(&reopened).into_iter().map(|t| t.1).collect();
+    assert_eq!(sources, ["usage", "openai"]);
+}

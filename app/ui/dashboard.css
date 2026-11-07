@@ -458,18 +458,18 @@
   margin-top: 0;
 }
 /* Layout B: CPU · RAM over GPU · GPU memory, then the Disk strip spanning
-   both columns (`span: "full"` from Rust). The meter rules reach the Usage
-   panel too (`#usagePanel`, which lives in `#fullView`, not the overview):
-   a plan's Week is drawn by the same `meter.js` as a machine's RAM, and must
+   both columns (`span: "full"` from Rust). The meter rules reach the AI
+   panels too (`#anthropicPanel`, `#openaiPanel`, which live in `#fullView`, not
+   the overview): a plan's Week is drawn by the same `meter.js` as a machine's RAM, and must
    look like it. */
-:is(#dashboardOverview, #usagePanel) .db-host-stats {
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-host-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px 16px;
   margin-top: 7px;
 }
-:is(#dashboardOverview, #usagePanel) .db-metric-full { grid-column: 1 / -1; }
-:is(#dashboardOverview, #usagePanel) .db-stat-label {
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-metric-full { grid-column: 1 / -1; }
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-stat-label {
   display: flex;
   justify-content: space-between;
   gap: 5px;
@@ -477,19 +477,19 @@
   color: var(--db-muted);
 }
 /* The Disk strip's label is a mount path: it ellipsizes before the % moves. */
-:is(#dashboardOverview, #usagePanel) .db-stat-label > span {
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-stat-label > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 #dashboardOverview .db-stat-label strong,
-#usagePanel .db-stat-label strong {
+:is(#anthropicPanel, #openaiPanel) .db-stat-label strong {
   color: var(--db-text);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
-:is(#dashboardOverview, #usagePanel) .db-metric { min-width: 0; }
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-metric { min-width: 0; }
 #dashboardOverview .db-acknowledged { color:var(--db-muted); font-size:10px; }
 /* The Disk strip's Hide sits beside the mount: its space is always held so
    nothing moves, and it shows only while the machine's card is hovered or
@@ -503,7 +503,7 @@
 #dashboardOverview .db-warning-control button { flex:none; max-width:100%; white-space:normal; }
 #dashboardOverview .db-warning-control p { flex:1 1 220px; font-size:11px; }
 /* `position: relative` for the pace tick, which is placed inside the track. */
-:is(#dashboardOverview, #usagePanel) .db-meter {
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-meter {
   position: relative;
   height: 5px;
   margin-top: 5px;
@@ -511,7 +511,7 @@
   background: var(--db-line);
   overflow: hidden;
 }
-:is(#dashboardOverview, #usagePanel) .db-meter-fill {
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-meter-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -521,7 +521,7 @@
 /* Where a plan's window stood when it was read (`pace` from Rust): a fill
    that has passed the tick is burning faster than even. Drawn over the fill in
    the text colour so it reads against any of the three. */
-:is(#dashboardOverview, #usagePanel) .db-meter-pace {
+:is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-meter-pace {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -534,13 +534,13 @@
    side in a one-column panel, stacked in the narrow left column of a
    two-column one, where two abreast truncated "Week · Fable". The Machines
    tile keeps its fixed pair. */
-#usagePanel .db-host-stats {
+:is(#anthropicPanel, #openaiPanel) .db-host-stats {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 /* The reset and the pace in words, under a panel meter. The tile keeps it in
    the meter's description and hover title instead. It wraps rather than
    ellipsizes: the projection is its last words, and a cut one hides it. */
-#usagePanel .db-meter-note {
+:is(#anthropicPanel, #openaiPanel) .db-meter-note {
   margin: 3px 0 0;
   font-size: 10px;
   color: var(--db-muted);
@@ -553,7 +553,7 @@
   animation: gh-blink 0.7s ease-in-out infinite alternate;
 }
 @media (prefers-reduced-motion: reduce) {
-  :is(#dashboardOverview, #usagePanel) .db-meter-fill { transition: none; }
+  :is(#dashboardOverview, #anthropicPanel, #openaiPanel) .db-meter-fill { transition: none; }
   #dashboardOverview .db-dot.db-dot-blink { animation: none; }
 }
 #dashboardOverview .db-repo-head {
@@ -998,8 +998,8 @@
 #dashboardOverview .db-row-description { height:33px; overflow:hidden; }
 #dashboardOverview .db-stat-label { min-width:0; white-space:nowrap; }
 #dashboardOverview .db-stat-label strong { overflow:hidden; text-overflow:ellipsis; }
-#usagePanel .db-stat-label { min-width:0; white-space:nowrap; }
-#usagePanel .db-stat-label strong { overflow:hidden; text-overflow:ellipsis; }
+:is(#anthropicPanel, #openaiPanel) .db-stat-label { min-width:0; white-space:nowrap; }
+:is(#anthropicPanel, #openaiPanel) .db-stat-label strong { overflow:hidden; text-overflow:ellipsis; }
 #dashboardOverview .db-tile-footer > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @media (pointer: coarse) {
   #dashboardOverview .db-attention-items { height:44px; }

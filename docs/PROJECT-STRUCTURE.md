@@ -56,6 +56,7 @@
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
 │   ├── usage/              # Claude Code log rollups + Neon + Sentry + Vercel
+│   │                       #   + Anthropic and OpenAI API spend (`api_spend`)
 │   ├── subscription/       # the Claude and Codex plans' limits (windows, and
 │   │                       #   an Enterprise seat's spend cap) and the plan's
 │   │                       #   name: reads each tool's OWN saved sign-in
@@ -96,8 +97,9 @@
 ├── app/
 │   ├── src-tauri/          # Tauri v2 shell: one poll task per host plus this
 │   │                       #   machine (src/local.rs); `cockpit`, `containers`,
-│   │                       #   `repos`/`runners`, `usage`, `azure_cost`,
-│   │                       #   `crons`, `openclaw` + `settings_*` (src/settings.rs)
+│   │                       #   `repos`/`runners`, `usage`, `anthropic`, `openai`,
+│   │                       #   `azure_cost`, `crons`, `openclaw` + `settings_*`
+│   │                       #   (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler
 ├── agent/                  # Per-host metrics agent (workspace member, Linux CI)
 │   ├── src/main.rs         #   the daemon. `src/lib.rs` re-exports the two

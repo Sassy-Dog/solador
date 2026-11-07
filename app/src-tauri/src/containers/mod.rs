@@ -74,6 +74,15 @@ pub const POLL_INTERVAL_SECS: u64 = 10;
 /// a measurement rather than a measurement of absence.
 pub const LOADING_MESSAGE: &str = "looking for containers…";
 
+/// Neither this machine nor any host is added, so there is nothing to look at.
+fn no_machine_message() -> String {
+    use crate::settings::{ADD_SOURCE_LABEL, OPEN_LABEL, SOURCES_LABEL};
+    format!(
+        "No machine to look at \u{2014} add one in \
+         {OPEN_LABEL} \u{2192} {SOURCES_LABEL} \u{2192} {ADD_SOURCE_LABEL}"
+    )
+}
+
 /// Seconds since the UNIX epoch — [`crate::panel::now_unix`], re-exported here
 /// because this panel's callers already reach for it under this name.
 pub use crate::panel::now_unix;
@@ -106,6 +115,11 @@ pub struct ContainersState {
     /// that never happened.
     local_last_success: Option<u64>,
     local_error: Option<String>,
+    /// This machine is not a source, so it has no section.
+    local_is_off: bool,
+    /// Hosts the last pass was told about. Not `remote.len()`, which holds only
+    /// the ones that have answered.
+    configured_hosts: usize,
     /// Remote sections, keyed by host name and only ever written on a
     /// *successful* fetch — a failed poll leaves the previous list in place
     /// rather than emptying the section (`RemoteHostsCoordinator`, the original).
@@ -126,8 +140,23 @@ impl ContainersState {
         self.last_known.clone()
     }
 
+    /// This machine is not a source, so it has no section and keeps nothing.
+    /// Counts as having looked: off is an answer, and a panel waiting on a first
+    /// local pass would say it is looking for as long as the source stays off.
+    pub fn local_off(&mut self, now: u64) {
+        self.local_is_off = true;
+        self.local = Vec::new();
+        self.last_known = BTreeMap::new();
+        self.detected = Vec::new();
+        self.local_error = None;
+        self.local_last_success = None;
+        self.local_last_updated = Some(now);
+        self.last_success.remove(LOCAL_HOST_SCOPE);
+    }
+
     /// Records one local discovery pass.
     pub fn apply_local(&mut self, detected: Vec<LocalRuntime>, outcome: MergeOutcome, now: u64) {
+        self.local_is_off = false;
         self.local_error = outcome.error_message();
         self.local = outcome.merged;
         self.last_known = outcome.last_known;
@@ -157,6 +186,7 @@ impl ContainersState {
     /// Drops sections (and their clocks) for hosts that are no longer
     /// configured, so a removed host cannot leave a ghost section behind.
     pub fn retain_hosts(&mut self, configured: &BTreeSet<String>) {
+        self.configured_hosts = configured.len();
         self.remote.retain(|host, _| configured.contains(host));
         self.last_success
             .retain(|host, _| host == LOCAL_HOST_SCOPE || configured.contains(host));
@@ -186,11 +216,14 @@ pub fn view(
     now: u64,
     cadence_secs: u64,
 ) -> Value {
-    let mut sections = vec![Section {
-        host: LOCAL_HOST_SCOPE,
-        containers: &state.local,
-        no_runtimes: state.detected.is_empty(),
-    }];
+    let mut sections = Vec::new();
+    if !state.local_is_off {
+        sections.push(Section {
+            host: LOCAL_HOST_SCOPE,
+            containers: &state.local,
+            no_runtimes: state.detected.is_empty(),
+        });
+    }
     sections.extend(state.remote.iter().map(|(host, containers)| Section {
         host,
         containers,
@@ -234,6 +267,9 @@ pub fn view(
         "trailing": if looked { json!(trailing_label(state, missing)) } else { json!("") },
         "empty": match (looked, empty) {
             (false, _) => json!({ "message": LOADING_MESSAGE }),
+            (true, true) if state.local_is_off && state.configured_hosts == 0 => {
+                json!({ "message": no_machine_message() })
+            }
             (true, true) => json!({ "message": "no containers detected" }),
             (true, false) => Value::Null,
         },
@@ -540,6 +576,45 @@ mod tests {
         let mut state = ContainersState::new();
         state.apply_local(vec![], parse::merge(vec![], BTreeMap::new()), NOW);
         state
+    }
+
+    /// Off is a finished answer, not a first pass that never lands, or the
+    /// panel would say it is looking for as long as the source is off.
+    #[test]
+    fn with_this_machine_off_the_panel_is_not_looking_and_has_no_local_section() {
+        let (mut state, rules, presence) = fixture_state(NOW);
+        state.apply_remote("hostA".to_owned(), vec![]);
+        state.local_off(NOW);
+        let payload = view(&state, &rules, &presence, NOW, POLL_INTERVAL_SECS);
+        assert_eq!(payload["loading"], false);
+        let hosts: Vec<&str> = payload["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["host"].as_str().unwrap())
+            .collect();
+        assert!(!hosts.contains(&LOCAL_HOST_SCOPE), "{hosts:?}");
+        assert!(payload["footer"].is_null(), "{}", payload["footer"]);
+    }
+
+    /// With nothing to look at, the sentence is the setup instruction rather
+    /// than a measurement of a machine nobody asked it to look at.
+    #[test]
+    fn with_no_machine_at_all_the_panel_says_where_to_add_one() {
+        let mut state = ContainersState::new();
+        state.local_off(NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
+        assert_eq!(payload["empty"]["message"], no_machine_message());
+    }
+
+    /// Adding it back starts from the next pass, with nothing stale in hand.
+    #[test]
+    fn a_local_pass_brings_the_section_back() {
+        let mut state = looked();
+        state.local_off(NOW);
+        state.apply_local(vec![], parse::merge(vec![], BTreeMap::new()), NOW);
+        let payload = view(&state, &[], &BTreeMap::new(), NOW, POLL_INTERVAL_SECS);
+        assert_eq!(payload["empty"]["message"], "no containers detected");
     }
 
     /// The reported bug: every list starts empty, so the panel used to open on a

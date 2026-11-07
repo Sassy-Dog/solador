@@ -24,13 +24,19 @@ Credential Manager on Windows), never in `store.json`.
 | Neon API key | Usage | organization-scoped |
 | Sentry auth token | Usage, Sentry Crons | `org:read` only |
 | Vercel API token | Usage | read |
+| Anthropic Admin API key (`sk-ant-admin…`) | Anthropic | Admin API, read here only for `GET /v1/organizations/analytics/cost`. Only a Console organization can create one. |
+| OpenAI Admin API key | OpenAI | read here only for `GET /v1/organization/costs` |
 | OpenClaw bearer + device key | OpenClaw | gateway-dependent |
+
+An Admin API key can do far more than Solador asks of it, and neither vendor
+offers a narrower one for cost reporting. Solador sends each only to that
+vendor's own endpoint.
 
 ### Borrowed sign-ins (read, never stored)
 
-The Usage panel's **plan limits** are off until you tick **Read Claude Code's
-sign-in** on Settings → Sources → **Claude Code**, or add the **Codex**
-source and tick **Read Codex's sign-in**. While one is on, each poll
+The **plan limits** on the Anthropic and OpenAI tiles are off until you pick
+**Subscription** in that source's steps (Settings → Sources → Add source) and
+press Finish. While one is on, each poll
 reads that tool's *own* saved sign-in, sends one read-only request, and drops
 the token. Nothing is copied into Solador's credential store, and the sign-in
 is never written, refreshed or rotated.

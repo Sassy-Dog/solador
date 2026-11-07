@@ -108,15 +108,15 @@ pub enum PanelInterval {
     GitHub,
     /// The Services tile's third-party status pages.
     Services,
-    /// The Usage panel's Claude token rollups: a local walk of `~/.claude/projects`.
+    /// The Anthropic panel's Claude token rollups: a local walk of `~/.claude/projects`.
     ClaudeRollups,
-    /// The Usage panel's metered providers: Neon, Sentry and Vercel.
+    /// The metered providers: Neon, Sentry, Vercel and API spend.
     UsageProviders,
     /// The Azure Cost panel's daily export read.
     AzureCost,
     /// The Sentry Crons panel.
     Crons,
-    /// The Usage panel's Claude and Codex plan windows (`crates/subscription`).
+    /// The Anthropic and OpenAI panels' plan windows (`crates/subscription`).
     PlanUsage,
 }
 
@@ -253,12 +253,13 @@ impl PanelInterval {
                 key: "claude_rollups",
                 default_secs: DEFAULT_REFRESH_INTERVAL_SECS,
                 floor_secs: 30,
-                label: "Usage \u{2014} Claude token rollups",
+                label: "Anthropic \u{2014} Claude token rollups",
                 floor_reason:
                     "every pass re-reads every session log under ~/.claude/projects, which grow with each conversation",
             },
             // `app/src-tauri/src/usage.rs`'s `PROVIDER_POLL_INTERVAL_SECS = 60 * 60`.
-            // Floor 300s: three vendor APIs (Neon, Sentry, Vercel) on one pass,
+            // Floor 300s: up to five vendor APIs (Neon, Sentry, Vercel and both
+            // vendors' cost APIs) on one pass,
             // each with a rate-limit budget. Consumption figures move on the
             // order of hours, so anything under 5 minutes spends quota to learn
             // nothing — the reasoning already written on that constant.
@@ -266,9 +267,9 @@ impl PanelInterval {
                 key: "usage_providers",
                 default_secs: 60 * 60,
                 floor_secs: 300,
-                label: "Usage — Neon, Sentry, Vercel",
+                label: "Metered usage — Neon, Sentry, Vercel, API spend",
                 floor_reason:
-                    "three vendor APIs answer on one pass, each against a rate-limit budget, and consumption figures move on the order of hours",
+                    "up to five vendor APIs answer on one pass, each against a rate-limit budget, and consumption figures move on the order of hours",
             },
             // `crates/azurecost/src/lib.rs`'s `POLL_INTERVAL = 4 * 60 * 60`.
             // Floor 3600s, and this is the floor that exists to stop a spend
@@ -312,7 +313,7 @@ impl PanelInterval {
                 key: "plan_usage",
                 default_secs: 15 * 60,
                 floor_secs: 300,
-                label: "Usage — Claude and Codex plans",
+                label: "Anthropic and OpenAI — plan limits",
                 floor_reason:
                     "both plan endpoints are private and answer polling with rate limits, and a plan window moves over hours",
             },
@@ -497,6 +498,12 @@ impl ClampOutcome {
     }
 }
 
+/// A key absent from a saved file means the file predates it, and that source
+/// was already running. See [`Settings::claude_local_logs_enabled`].
+const fn on_before_sources_were_added() -> bool {
+    true
+}
+
 /// Every non-secret preference, in one serde-round-trippable struct.
 ///
 /// `#[serde(default)]` on the container is what makes an older (or partial)
@@ -661,6 +668,19 @@ pub struct Settings {
     /// Read Codex's saved ChatGPT sign-in (`~/.codex/auth.json`) to show the
     /// Codex plan's limit windows. Off by default, for the same reasons.
     pub codex_plan_usage_enabled: bool,
+    /// Read Claude Code's local logs for this machine's token rollups.
+    ///
+    /// This and the next two are the sources that once needed no adding. The
+    /// field-level default is what keeps them on for a file from then, while
+    /// [`Settings::default`] leaves a new store with nothing added.
+    #[serde(default = "on_before_sources_were_added")]
+    pub claude_local_logs_enabled: bool,
+    /// Sample this machine for its card and its local containers.
+    #[serde(default = "on_before_sources_were_added")]
+    pub local_monitoring_enabled: bool,
+    /// Watch the status pages of the sources this store has added.
+    #[serde(default = "on_before_sources_were_added")]
+    pub service_health_enabled: bool,
     /// Mount paths hidden from the *local* machine's Volumes section. Remote
     /// hosts carry their own list on [`crate::Host`].
     pub local_hidden_volume_mounts: Vec<String>,
@@ -798,6 +818,9 @@ impl Default for Settings {
             // Off: reading another program's sign-in is opt-in. See the fields.
             claude_plan_usage_enabled: false,
             codex_plan_usage_enabled: false,
+            claude_local_logs_enabled: false,
+            local_monitoring_enabled: false,
+            service_health_enabled: false,
             local_hidden_volume_mounts: Vec::new(),
             // Empty, not pre-filled with the defaults — see the field's note.
             panel_intervals: BTreeMap::new(),
@@ -865,6 +888,27 @@ mod tests {
         );
         assert!(!s.claude_plan_usage_enabled && !s.codex_plan_usage_enabled);
         assert!(s.local_hidden_volume_mounts.is_empty());
+    }
+
+    /// Every source has to be added now, so a new store has none. A file from
+    /// before that keeps what it was already showing: nothing an operator had
+    /// on the screen disappears on upgrade.
+    #[test]
+    fn what_used_to_be_built_in_starts_off_and_stays_on_across_an_upgrade() {
+        let new = Settings::default();
+        assert!(!new.claude_local_logs_enabled);
+        assert!(!new.local_monitoring_enabled);
+        assert!(!new.service_health_enabled);
+
+        let upgraded: Settings = serde_json::from_str("{}").expect("deserialize");
+        assert!(upgraded.claude_local_logs_enabled);
+        assert!(upgraded.local_monitoring_enabled);
+        assert!(upgraded.service_health_enabled);
+
+        let chosen: Settings =
+            serde_json::from_str(r#"{"claude_local_logs_enabled":false}"#).expect("deserialize");
+        assert!(!chosen.claude_local_logs_enabled, "a saved choice stands");
+        assert!(chosen.local_monitoring_enabled);
     }
 
     /// A store file written before crash reporting existed — which is every
@@ -970,6 +1014,9 @@ mod tests {
             crash_reporting_enabled: true,
             claude_plan_usage_enabled: true,
             codex_plan_usage_enabled: true,
+            claude_local_logs_enabled: true,
+            local_monitoring_enabled: true,
+            service_health_enabled: true,
             local_hidden_volume_mounts: vec!["/Volumes/Backup".into()],
             panel_intervals: BTreeMap::from([
                 ("containers".to_owned(), 30),
@@ -1010,6 +1057,10 @@ mod tests {
             s,
             Settings {
                 neon_org_id: "org-abc".into(),
+                // The exception: what_used_to_be_built_in_starts_off_and_stays_on_across_an_upgrade.
+                claude_local_logs_enabled: true,
+                local_monitoring_enabled: true,
+                service_health_enabled: true,
                 ..Settings::default()
             }
         );

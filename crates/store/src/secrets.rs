@@ -68,6 +68,10 @@ pub enum SecretKey {
     SentryUsageToken,
     /// Vercel API token, for the Usage panel's spend rows.
     VercelApiToken,
+    /// Anthropic Admin API key, for the Anthropic source's API spend.
+    AnthropicAdminKey,
+    /// OpenAI Admin API key, for the OpenAI source's API spend.
+    OpenAiAdminKey,
     /// Optional bearer token for the OpenClaw gateway.
     OpenClawBearerToken,
     /// The 32-byte Ed25519 seed behind this install's OpenClaw device identity.
@@ -95,6 +99,8 @@ impl SecretKey {
             SecretKey::NeonApiKey => "neon_api_key".to_owned(),
             SecretKey::SentryUsageToken => "sentry_usage_token".to_owned(),
             SecretKey::VercelApiToken => "vercel_api_token".to_owned(),
+            SecretKey::AnthropicAdminKey => "anthropic_admin_key".to_owned(),
+            SecretKey::OpenAiAdminKey => "openai_admin_key".to_owned(),
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
             SecretKey::OpenClawDeviceKey => "openclaw_device_key".to_owned(),
         }
@@ -124,6 +130,8 @@ impl SecretKey {
             | SecretKey::NeonApiKey
             | SecretKey::SentryUsageToken
             | SecretKey::VercelApiToken
+            | SecretKey::AnthropicAdminKey
+            | SecretKey::OpenAiAdminKey
             | SecretKey::OpenClawBearerToken => true,
             SecretKey::OpenClawDeviceKey => false,
         }
@@ -148,6 +156,8 @@ impl SecretKey {
                 | SecretKey::NeonApiKey
                 | SecretKey::SentryUsageToken
                 | SecretKey::VercelApiToken
+                | SecretKey::AnthropicAdminKey
+                | SecretKey::OpenAiAdminKey
                 | SecretKey::OpenClawBearerToken => true,
                 SecretKey::HostToken(_)
                 | SecretKey::VendorToken(_)
@@ -159,6 +169,8 @@ impl SecretKey {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
+            SecretKey::AnthropicAdminKey,
+            SecretKey::OpenAiAdminKey,
             SecretKey::OpenClawBearerToken,
         ];
         debug_assert!(keys.iter().all(is_static));
@@ -834,6 +846,8 @@ mod tests {
         assert!(SecretKey::NeonApiKey.consolidatable());
         assert!(SecretKey::SentryUsageToken.consolidatable());
         assert!(SecretKey::VercelApiToken.consolidatable());
+        assert!(SecretKey::AnthropicAdminKey.consolidatable());
+        assert!(SecretKey::OpenAiAdminKey.consolidatable());
         assert!(SecretKey::OpenClawBearerToken.consolidatable());
     }
 
@@ -848,6 +862,8 @@ mod tests {
                 "neon_api_key",
                 "sentry_usage_token",
                 "vercel_api_token",
+                "anthropic_admin_key",
+                "openai_admin_key",
                 "openclaw_bearer_token",
             ]
         );

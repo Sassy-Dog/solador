@@ -39,20 +39,21 @@ Windows 10 also needs the WebView2 runtime; Windows 11 already has it.
 
 ## What you get right away
 
-Open it and it does something useful immediately. No account, no sign-up, no
-server, no token, nothing to configure first:
+Solador reads nothing until you add it. Open **Settings → Sources → Add source**,
+and these need no account, no sign-up, no server and no token:
 
 - **This machine** — per-core CPU, memory, disk and network rates, GPU and
-  battery, sparklined at 1 Hz.
-- **Your containers** — whatever `docker`, `podman` or `tart` you already run.
-- **Vendor status** — the public status pages of the vendors your cockpit is
+  battery, sparklined at 1 Hz, and whatever `docker`, `podman` or `tart` you
+  already run.
+- **Service health** — the public status pages of the vendors your cockpit is
   already reading, with a desktop notification when one changes in either
   direction (on by default, and easy to turn off). The list is *derived*, not
-  shipped: connect a GitHub token and GitHub appears, and it is your Claude Code
-  logs — not a key — that put Anthropic there on a fresh install. Add any
-  Atlassian Statuspage of your own in Settings and it is watched alongside them.
-- **Your Claude Code usage** — token rollups folded up from the logs already on
-  your disk. No key, no account, nothing leaves the machine.
+  shipped: add GitHub and GitHub appears, add Anthropic and Anthropic does. Add
+  any Atlassian Statuspage of your own in Settings and it is watched alongside
+  them.
+- **Anthropic, with Local usage picked** — token rollups folded up from the
+  Claude Code logs already on your disk. No key, no account, nothing leaves the
+  machine.
 
 Everything after that is opt-in, one credential at a time. A panel you haven't
 set up shows a muted line saying what it wants — never a red error. *Setup is
@@ -61,7 +62,7 @@ not failure*, and the code says so in as many words.
 ## What it shows
 
 The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
-duplicate and scope them, or add a view of any of the nine sources below.
+duplicate and scope them, or add a view of any of the eleven sources below.
 **Needs attention** includes hidden sources. A tile's **View** menu opens its
 **Detail**, or its own **Full view**: the source's full panel holding only that
 tile's scope, under the tile's name; **Escape** returns to the overview. Both
@@ -88,7 +89,9 @@ carries one splits, and Detail and Full show every runner's labels.
 | **Containers / VMs** | docker, podman and tart, locally and on every host |
 | **GitHub Repos** | running workflows, longest-running elapsed, branch and worktree counts |
 | **GitHub Runners** | your self-hosted runners, with an absence roster for the ones that should be there and aren't |
-| **Usage** | the Claude and Codex plans' own limits (opt-in): the plan's name, a meter per 5-hour and weekly window it has (or an Enterprise seat's dollar budget), and whether the current pace runs out before the reset; then this machine's Claude Code token rollups, plus Neon, Sentry and Vercel consumption |
+| **Anthropic** | whichever you set up: Claude's plan limits (the plan's name, a meter per 5-hour and weekly window it has or an Enterprise seat's dollar budget, and whether the current pace runs out before the reset), your organization's API spend this month, and this machine's Claude Code token rollups |
+| **OpenAI** | Codex's plan limits and your organization's API spend this month, each only if you set it up |
+| **Usage** | Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
 | **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
 | **Service Health** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
@@ -101,6 +104,7 @@ carries one splits, and Detail and Full show every runner's labels.
 |:--:|:--:|
 | ![Repos](site/assets/screenshots/panel-repos.png) | ![GitHub Runners](site/assets/screenshots/panel-runners.png) |
 | ![Containers](site/assets/screenshots/panel-containers.png) | ![Usage](site/assets/screenshots/panel-usage.png) |
+| ![Anthropic](site/assets/screenshots/panel-anthropic.png) | ![OpenAI](site/assets/screenshots/panel-openai.png) |
 | ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Service Health](site/assets/screenshots/panel-services.png) |
 | ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](site/assets/screenshots/panel-openclaw.png) |
 
@@ -118,7 +122,8 @@ Add these in **Settings**, in any order, whenever you feel like it.
 | **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY backlog column. It finds your repos itself, and derives the organizations whose runners it watches — [step-by-step walkthrough](docs/github-setup.md) |
 | **Other machines** | the [agent](agent/) running on that host, plus its address and bearer token |
 | **Usage** | a Neon org key, a Sentry `org:read` token, a Vercel token — each optional and independent |
-| **Claude and Codex plan limits** | nothing to paste: tick **Read Claude Code's sign-in** on Settings → Sources → **Claude Code**, or add **Codex** and tick **Read Codex's sign-in**, and Solador reads that tool's own saved sign-in (on a Mac, Claude Code's keychain item, which macOS may ask you to allow; otherwise `~/.claude/.credentials.json` or `~/.codex/auth.json`), and, for Claude, the plan's name from `~/.claude.json`, keeping that one field and nothing else from the file. It only reads: the sign-in is never copied, stored, refreshed or changed. Both plan endpoints are undocumented and may change. Off until you tick it |
+| **Claude and Codex plan limits** | nothing to paste: Settings → Sources → Add source → **Anthropic** or **OpenAI**, pick **Subscription**, and Solador reads that tool's own saved sign-in (on a Mac, Claude Code's keychain item, which macOS may ask you to allow; otherwise `~/.claude/.credentials.json` or `~/.codex/auth.json`), and, for Claude, the plan's name from `~/.claude.json`, keeping that one field and nothing else from the file. It only reads: the sign-in is never copied, stored, refreshed or changed. Both plan endpoints are undocumented and may change. Off until you pick it and press Finish |
+| **Anthropic and OpenAI API spend** | an Admin API key, in the same steps. Anthropic's starts `sk-ant-admin`, and only a Console organization can create one. OpenAI's comes from your organization's settings. An ordinary API key is refused. Kept in your OS credential store |
 | **Azure Cost** | a daily cost export in blob storage. There is no credential to paste: it signs each read itself with the `az` CLI you're already signed in to |
 | **Sentry Crons** | the same Sentry token as above — one credential, two panels |
 
@@ -318,7 +323,7 @@ palette.
 It ships, it's signed, and it runs all day — and it is still young.
 
 **Working today:** signed and notarized universal macOS builds, a signed Windows
-installer, an update check, and all nine panels.
+installer, an update check, and all eleven panels.
 
 **Rough edges, stated plainly:**
 

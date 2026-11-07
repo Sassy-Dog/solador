@@ -599,29 +599,39 @@ does not fit it yet:
 | Accounts, tokens, hosts, providers | Settings → Sources | rule 2 |
 | Crash reporting, updates | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, GitHub (Repos and Runners), Services, Usage (Claude rollups; metered providers; plan limits), Azure Cost and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
+| Poll cadence of Containers, GitHub (Repos and Runners), Services, Anthropic (local logs; API spend; plan limits), OpenAI (API spend; plan limits), Usage (metered providers), Azure Cost and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the GitHub Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
 | CPU core rows, Row spacing, host overflow, Detail / Full view Table-or-List | the tile's Configure → **Full view** / **Detail** page, per tile | rule 1 ([#647](https://github.com/Sassy-Dog/solador/issues/647)) |
 
 ### Settings and sources
 
 Settings opens on **Sources**, with one entry per GitHub account, remote
-host, configured usage provider, Azure export, OpenClaw gateway or custom status
-page. Each entry names the panels it feeds. GitHub repos and runners share the
-account editor; Sentry usage and scheduled jobs share the Sentry editor.
-**Add source** opens the appropriate source form. Providers with one saved
-configuration reopen that same configuration. Local monitoring, Claude Code
-and automatic provider status are listed separately under Automatic sources.
-**Claude Code** is one page for everything read from Claude Code: its local
-usage logs, which need nothing, and, under **Plan limits**, the **Read Claude
-Code's sign-in** checkbox, which lets the Usage panel read Claude Code's own
-saved sign-in for the plan's limit windows (see
-[the plans' own limits](#the-plans-own-limits)). While that box is on, the entry
-reads `Local usage logs · plan limits on`; it stays under Automatic sources
-either way. Codex has no local logs, so its checkbox, **Read Codex's sign-in**,
-is on the **Codex** page in **Add source**, and Codex is listed as a
-source only while it is on. Both boxes are off in a fresh store and, like
-crash reporting, save on the click.
+host, usage provider, Azure export, OpenClaw gateway, custom status page and
+each of the sources below that you have added. Each entry names the panels it
+feeds. GitHub repos and runners share the account editor; Sentry usage and
+scheduled jobs share the Sentry editor. **Add source** lists every source there
+is, and nothing is built in: a fresh store has no sources and reads nothing. A
+store written before these existed reads This machine, Service health and Claude
+Code's logs as on, because they were.
+
+**This machine**, **Anthropic**, **OpenAI** and **Service health** open as steps,
+and a row reopens the same steps with its choices read back. Anthropic asks what
+to set up: **API key**, **Subscription**, **Local usage**. OpenAI asks the first
+two. Each part picked gets one step, then **Ready** summarises what the source
+will show and offers its tile unless it has one (a hidden tile counts). A source
+with one part skips the question. Nothing is applied until **Finish**, which
+sends everything in one `settings_save_source` call, so Cancel has nothing to
+undo and no sign-in is read before the operator has finished saying they want it
+(see [the plans' own limits](#the-plans-own-limits)). Whatever can refuse (no
+key, a full dashboard) runs before the first write, and a refusal leaves the
+steps open. **Remove source**, on a source already added, unticks everything and
+jumps to Ready, and a stored key is cleared by unticking **API key**. Removing a
+source leaves its tile for the operator to remove. The entry's line says what is
+set up, as `API key · Subscription`. While the credential store won't answer,
+the line says `API key not read` and the source stays a row, because that says
+nothing about whether there is a key. Its **API key** step stays ticked, so a walk
+leaves any key alone, and unticking it is refused. The other sources keep their
+own forms for now.
 
 Configuration badges describe the available evidence: **Configured** means setup
 exists, not that the last network request succeeded. OpenClaw uses its live
@@ -749,8 +759,9 @@ app/
 │   │                     #   presence, and every string it paints
 │   ├── src/github/       # the Repos + GitHub Runners panels, and the local
 │   │                     #   git scan behind their LOCAL/WT columns
-│   ├── src/usage.rs      # the Usage panel: Claude tokens + Neon + Sentry
-│   ├── src/plan_usage.rs # its plans: the opt-in gate, each provider's
+│   ├── src/usage.rs      # the Usage, Anthropic and OpenAI views: Neon + Sentry
+│   │                     #   + Vercel, Claude's rollups, one poller's state
+│   ├── src/plan_usage.rs # the plans: the opt-in gate, each provider's
 │   │                     #   schedule, and each plan's row and meters
 │   ├── src/azure.rs      # the Azure Cost panel
 │   ├── src/openclaw.rs   # the OpenClaw panel: the device-key store, the live
@@ -764,8 +775,9 @@ app/
     ├── settings.js       # the Settings view
     ├── containers.js     # the Containers/VMs panel
     ├── github.js         # the Repos + GitHub Runners panels
-    ├── meter.js          # the one meter the Machines tile and the Usage
-    │                     #   panel's plans both paint
+    ├── meter.js          # the one meter the Machines tile and the AI panels'
+    │                     #   plans both paint
+    ├── ai-sources.js     # the Anthropic and OpenAI panels
     ├── usage.js          # the Usage panel
     ├── azure.js          # the Azure Cost panel
     └── openclaw.js       # the OpenClaw panel
@@ -1031,9 +1043,11 @@ rather than one that was cut. The panel title is unaffected either way: it is
 `flex-shrink:0` (`.panel-hdr .panel-title`), so neither message can take
 anything from it.
 
-`empty` keys on the count of *monitored* hosts, not on the number of cards: the
-local card is always there, so counting cards would answer "is anything
-configured" wrong forever.
+`empty` keys on the count of *monitored* hosts, not on the number of cards: with
+This machine added the local card is there, so counting cards would answer "is
+anything configured" wrong for as long as it is. With This machine removed there
+is no local card, no sampling and no local container poll, and that same `empty`
+line is all a store with no hosts shows.
 
 ## The `containers` command
 
@@ -1375,13 +1389,17 @@ only, never a URL or header), one line when it recovers, and nothing in between.
 answers it from configuration on **every pass**, and `poll_service_status` reads
 exactly that list through `read_vendor`:
 
+- Service health is a source. Until it is added no derived vendor is watched,
+  and a status page the operator added is watched either way.
 - A built-in vendor is watched when its data is already in the cockpit — a
   GitHub account or token, a Vercel or Neon key, an Azure export address. **A
   vendor per page, not per account**: three GitHub accounts derive one row,
   because a status page is one page however many credentials point at it.
-- **Anthropic is the named exception** — there is no Anthropic credential, so
-  its evidence is whether the Usage panel found Claude rollups. "Not walked yet"
-  answers `false`, so the row appears when the data does rather than ahead of it.
+- **Anthropic's evidence is the source itself**: any part added, whether an
+  Admin key, the subscription or the local logs. It follows the source rather
+  than the logs, so an operator with only a subscription has the row. A store
+  from before these switches keeps local logs on, so it has the row even on a
+  machine that never ran Claude Code, until Local usage is unticked.
 - **`Unknown` is not `Absent`.** A credential store that refused to answer
   leaves its vendor out of the pass rather than deriving one from a guess, and
   the pass that does get an answer *seeds* instead of alerting.
@@ -1393,8 +1411,10 @@ exactly that list through `read_vendor`:
   clothes.
 
 Two consequences worth stating plainly. A cockpit with nothing configured
-watches **nothing**, and the panel says so (`NOTHING_WATCHED_MESSAGE`) rather
-than rendering an empty body under "all clear" — five hardcoded vendors are one
+watches **nothing**, and the panel says so rather than rendering an empty body
+under "all clear": the setup sentence while Service health is not added, because
+nothing would appear however much was configured, and
+`NOTHING_WATCHED_MESSAGE` once it is. Five hardcoded vendors are one
 operator's stack, and the empty green panel is the failure this area exists to
 remove. And because the set changes at runtime, `ServiceStatuses::watching`
 **forgets** the readings of a vendor that has left it: re-adding one renders
@@ -1462,25 +1482,29 @@ container the runtimes reported, including the ones rules hid or collapsed (so
 cruft building up stays visible), while `· N missing` counts exactly what the
 rollup can no longer see.
 
-## The `usage` and `azure_cost` commands
+## The `usage`, `anthropic`, `openai` and `azure_cost` commands
 
 ```js
 await window.__TAURI__.core.invoke("usage");
+await window.__TAURI__.core.invoke("anthropic");
+await window.__TAURI__.core.invoke("openai");
 await window.__TAURI__.core.invoke("azure_cost");
 ```
+
+The first three read one poller's state and share nothing else: each carries
+its own `footer`, `freshness`, `loading`, `trailing` and `message`, so a failure
+behind one never reaches another's warning or chip.
 
 ```jsonc
 // usage
 {
-  "id": "claudeUsage", "title": "Usage",
-  "trailing": "1.2M today",              // "" when no summary exists
-  "message": null,                       // or {"text": "reading logs…"} / "no usage data"
-                                         //    / "no Claude usage in the last 7 days"
-  "machineHeading": "THIS MACHINE",      // null when there are no rows under it
-  "windows": [{"label": "LAST 5H", "value": "820k", "valueColor": "#33d17a"}, …],
-  //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
-  //     they cannot be read as the plan meters' 5h / Week
-  "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
+  "id": "usage", "title": "Usage",
+  "trailing": "",                        // always: no one figure leads this panel
+  "message": null,                       // null while any section shows; otherwise
+                                         //    "reading usage…" until a pass has read
+                                         //    every key, the reason when the credential
+                                         //    store would not answer, or the setup
+                                         //    sentence once all three are seen missing
   "providers": [
     {"id": "neon", "rows": [        // "—" (muted) for any figure that wasn't measured
       {"label": "NEON COMPUTE (MTD)",     "value": "12.4 CU-h", "valueColor": …},
@@ -1494,7 +1518,36 @@ await window.__TAURI__.core.invoke("azure_cost");
     //     `freshness`. Both are the panel's, in the header; see below.
     {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}}
   ],
-  "plans": [        // one per plan that is ON, in provider order, painted FIRST
+  "footer": null,   // ONE line for the panel: each metered section's, attributed
+                    // and joined by `merged_footer` — "⚠ neon: stale · updated
+                    // 23h ago ⚠ sentry: stale · updated 23h ago"
+  "freshness": null,// ONE more, beside it and never folded into it: each
+                    // metered section's clock, attributed and joined by
+                    // `merged_freshness` — "neon: as of 23h ago · sentry: as of
+                    // 23h ago". `{text, color}` only, because a panel with
+                    // several sections has no single `state` or age to publish;
+                    // Azure Cost's below is one reading and carries both.
+  "loading": false  // true while a section waits on its first answer, and while
+                    // a key is unread: `Unknown` never paints a setup sentence
+}
+
+// anthropic
+{
+  "id": "anthropic", "title": "Anthropic",
+  "trailing": "1.2M today",              // "" when no summary exists
+  "message": null,                       // the rollups' own state, or "reading logs…"
+                                         //    / "no usage data" / "no Claude usage in
+                                         //    the last 7 days", or, with no part set
+                                         //    up, "Anthropic isn’t set up — add it in
+                                         //    Settings → Sources → Add source". A `plans`
+                                         //    tile drops it, so a tile speaks for what it
+                                         //    shows
+  "machineHeading": "THIS MACHINE",      // null when there are no rows under it
+  "windows": [{"label": "LAST 5H", "value": "820k", "valueColor": "#33d17a"}, …],
+  //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
+  //     they cannot be read as the plan meters' 5h / Week
+  "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
+  "plans": [        // the plan while it is ON, painted FIRST
     {"id": "claude-plan",
      "label": "Claude · Ultra",          // the tool's own plan name, or "Claude"
      "value": "out in ~1d 1h",           // the tightest verdict: "limit reached"
@@ -1514,28 +1567,32 @@ await window.__TAURI__.core.invoke("azure_cost");
       //     read: `fraction` and `pace` null, note "reset since read". An
       //     Enterprise seat: one {"label": "Budget", "value": "$312 / $500 · 62%",
       //     "span": "full", "pace": null, …}; beside windows it is "Extra usage".
-    ]},
-    {"id": "codex-plan", "label": "Codex · Plus", …}
+    ]}
     //   ^ before any reading: "reading…" while it loads, "—" (muted) after a
     //     failure, and `metrics: []`
   ],
-  "plansMessage": null, // or {"text": "Claude and Codex plan limits are off —
-                        //    turn on in Settings → Sources (Claude Code,
-                        //    Add source → Codex)", "color": …}: ONE muted
-                        //    line naming every plan that is off and where its
-                        //    switch is
-  "footer": null,   // ONE line for the panel: Claude's own (staleAfter 2.5 rollup cycles, never under 150s)
-                    // plus each plan's and each metered section's, attributed and joined by
-                    // `merged_footer` — "⚠ neon: stale · updated 23h ago
-                    // ⚠ sentry: stale · updated 23h ago"
-  "freshness": null // ONE more, beside it and never folded into it: each
-                    // metered section's clock, attributed and joined by
-                    // `merged_freshness` — "neon: as of 23h ago · sentry: as of
-                    // 23h ago". `{text, color}` only, because a panel with
-                    // several sections has no single `state` or age to publish;
-                    // Azure Cost's below is one reading and carries both.
-                    // Claude contributes no clock: its rollups are on the
-                    // `ClaudeRollups` cadence, not the providers' cadence.
+  "api": {"id": "anthropic-api", "label": "API spend (MTD)", "value": "$412.80",
+          "valueColor": "#f5e6cd", "note": "counted 3h ago"},
+  //   ^ null until a pass has found an Admin key; `value` is "—" (muted) with no
+  //     figure, and `note` is null when the vendor gave no date. The row's id is
+  //     also the header's attribution, so the tile can keep or clear it.
+  "footer": null,       // ONE line: Claude's own (staleAfter 2.5 rollup cycles,
+                        // never under 150s), then the plan's, attributed
+  "freshness": null,    // the plan's clock. Claude's rollups contribute none:
+                        // they are on the `ClaudeRollups` cadence, and `footer`
+                        // already measures it
+  "loading": false
+}
+
+// openai
+{
+  "id": "openai", "title": "OpenAI",
+  "trailing": "",
+  "message": null,      // or {"text": "OpenAI isn’t set up — add it in Settings →
+                        //    Sources → Add source", "color": …}
+  "plans": [{"id": "codex-plan", "label": "Codex · Plus", …}],
+  "api": null,          // as Anthropic's, with id "openai-api"
+  "footer": null, "freshness": null, "loading": false
 }
 
 // azure_cost
@@ -1705,7 +1762,7 @@ consumed and never who paid for it: a full key survey of a real session file —
 one machine therefore land in the same windows and the same `TOP PROJECTS` rows
 with nothing in the data to tell them apart, and that is *inherent to the
 source* rather than a feature nobody wrote — separating them needs a source that
-knows who paid, and this one does not. Read every figure on the Claude half as
+knows who paid, and this one does not. Read every figure in the rollups as
 "this machine", never as "this subscription". An Anthropic **API-key**
 integration would make those keys `VendorAccount`s whose usage *is*
 attributable — but it has not been built. The vendor-accounts epic
@@ -1720,12 +1777,11 @@ the `Unmeasured` enums above exist to prevent, wearing a different costume.
 
 **The Claude and Codex plans publish their own limit windows, and reading them
 means reading another program's credential — so nothing does until the operator
-says so.** Each provider is a checkbox (Settings → Sources → **Claude
-Code** → **Read Claude Code's sign-in**, and Add source → **Codex** → **Read
-Codex's sign-in**), persisted as the non-secret
-`claude_plan_usage_enabled` / `codex_plan_usage_enabled` and `false` in a fresh
-store. Off, the provider is never read and never woken, and the panel shows one
-muted line for every plan that is off instead of rows of `—`. The mechanism is
+says so.** Each provider is the **Subscription** part of its source (Settings →
+Sources → Add source → **Anthropic** or **OpenAI**), persisted at Finish as the
+non-secret `claude_plan_usage_enabled` / `codex_plan_usage_enabled` and `false` in
+a fresh store. Off, the provider is never read and never woken, and its tile
+says nothing about it. The mechanism is
 the one [stablyai/orca](https://github.com/stablyai/orca) uses, minus every
 step that could change the other tool's state:
 
@@ -2057,7 +2113,7 @@ history series; a sample without CPU usage is not plotted. Inventing a `0.0`
 for a history buffer would draw a spike from a floor nobody measured.
 
 "No hosts configured. Add one in Settings." is therefore about *monitored* hosts
-and still appears beside the local card on a fresh install. It counts the hosts
+and still appears beside the local card when This machine is the only source. It counts the hosts
 configured, never the cards a Machines tile's scope kept, so a tile's Full view
 scoped to *This machine* does not claim there are none.
 
@@ -2227,6 +2283,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `machine_save_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID), from the Machines tile's Configure. Null `thresholds` resets shared defaults or removes that machine's override. Validation (`store::machine_alerts`) and save failures preserve the previous effective values and reject with the sentence; success answers with the re-rendered dashboard |
 | `panel_interval_save` | one panel's poll cadence, by its `panel_intervals` key, from that source's tile Configure. **Refused, not clamped**: a value under the panel's floor writes nothing and rejects with `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose. A value over the largest storable cadence (`u32::MAX` seconds) is refused the same way, through `IntervalRejection::AboveCeiling`; `secs` is a `u64` for that reason, since a narrower type would fail in the IPC decoder in serde's words before Rust ran ([#649](https://github.com/Sassy-Dog/solador/issues/649)). Saves on the click; success wakes that panel's loop and answers with the re-rendered dashboard |
 | `panel_interval_clear` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
+| `settings_save_source` | everything a source's steps chose, in one call at Finish: `kind`, the `parts` still ticked (an empty list is Remove source), the Admin key if one was typed, and `addTile`. Answers `{status, settings, saved}`. `saved: false` keeps the steps open: every refusal comes before the first write and changes nothing, and only an I/O failure can follow a write, when the flag and the tile go back, a key or plan already written stays, and Finish is safe to repeat. The key goes to the credential store, and the argument is never logged |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
 | `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop on a save (check or uncheck); a refusal changes nothing and wakes nothing — the selection is what the runners half of the pass polls |
@@ -2257,8 +2314,8 @@ a portfolio fetch on a credential it has no use for.
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
-| Claude rollups appearing or disappearing, seen by a usage pass | the Services loop, once (`claude_presence_wakes_services`, [#627](https://github.com/Sassy-Dog/solador/issues/627)): Anthropic's row is derived from `claude_present()`, which no edit changes, so nothing else would wake the loop for it. A pass where presence did not change wakes nothing |
-| a plan opt-in, ticked or unticked | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
+| Finish on a source's steps | the Services loop (`wake_services`): any part of a source can add or remove a watched vendor, so the pass does not wait for its cadence |
+| a plan opt-in changed at Finish | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read theirs at render time too, each its own, and their window is 1.5 cycles of it, so the save moves it in the same response ([#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
@@ -2367,8 +2424,9 @@ Two things worth knowing about this surface:
   so a change applies on the next tick. Since
   [#614](https://github.com/Sassy-Dog/solador/issues/614) the control is in the
   Configure of the tile(s) each feeds (**Poll cadence** — Containers, GitHub
-  Repos and Runners, Service Health, Usage (three: its Claude rollups, metered
-  providers and plans), Azure Cost, Sentry Crons), not
+  Repos and Runners, Service Health, Anthropic (three: local logs, API spend and
+  plans), OpenAI (two: API spend and plans), Usage (metered providers), Azure
+  Cost, Sentry Crons), not
   here; it was this tab's **Panel Poll Cadence**
   group ([#337](https://github.com/Sassy-Dog/solador/issues/337)). It says it is
   shared by every tile of that source and the Full view, saves on the click
@@ -2898,18 +2956,20 @@ cargo run -p solador-app -- --dump-repos sample-repos.json         # the Repos p
 cargo run -p solador-app -- --dump-runners sample-runners.json     # the Runners panel
 #   …both take `--empty`, which dumps the no-credential state.
 cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage panel
-#   …plus `--unmeasured` (both providers answering, neither measuring: the em
-#   dash path, with the quota set and the bar therefore suppressed),
-#   `--empty` (no summary, no provider configured) and `--stale` (the same good
-#   read, with the METERED providers' and the plans' last success dated 23h
-#   back: TWO header lines, each naming every section — one warning about the
-#   poller and one dating the figures, never joined. Claude's own rollups stay
-#   current, being on a far faster cadence). The measured and stale dumps have
-#   both plans on (Claude an Ultra plan with no 5-hour window and a Fable week
-#   running out early; Codex a session too young to project); `--plan-edges`
-#   has both on too, as an Enterprise seat's budget beside a Codex that failed
-#   before any reading; `--unmeasured` and `--empty` have both off, so they
-#   show the plans' setup line.
+cargo run -p solador-app -- --dump-anthropic sample-anthropic.json # the Anthropic panel
+cargo run -p solador-app -- --dump-openai sample-openai.json       # the OpenAI panel
+#   …all three take `--unmeasured` (both providers answering, neither measuring:
+#   the em dash path, with the quota set and the bar therefore suppressed),
+#   `--empty` (no summary, every key read and none found) and `--stale` (the
+#   same good read, with the METERED providers' and the plans' last success
+#   dated 23h back: TWO header lines, each naming every section — one warning
+#   about the poller and one dating the figures, never joined. Claude's own
+#   rollups stay current, being on a far faster cadence). The measured and stale
+#   dumps have both plans on (Claude an Ultra plan with no 5-hour window and a
+#   Fable week running out early; Codex a session too young to project);
+#   `--plan-edges` has both on too, as an Enterprise seat's budget beside a
+#   Codex that failed before any reading; `--unmeasured` and `--empty` have both
+#   off, so they show the plans' setup line.
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and
@@ -2969,7 +3029,7 @@ the_panels_have`) precisely so the Playwright suite cannot pass against a
 payload that quietly lost the case it claims to exercise — it carries an
 unknown count beside a genuine zero, an approval gate, a failing repo, an
 unreachable one, and remembered runners in both absence states.
-`--dump-usage` / `--dump-azure` / `--dump-openclaw` carry the same guard
+`--dump-usage` / `--dump-anthropic` / `--dump-openai` / `--dump-azure` / `--dump-openclaw` carry the same guard
 (`the_fixtures_cover_every_rendering_the_panel_has`, one per module): between
 them they pin the quota bar's amber step, its suppression when the count is
 unknown, the em dash beside a measured figure, the amber rollover caption, the
@@ -3061,7 +3121,10 @@ SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
   cargo run -p solador-app                   #    distinctive name
 ```
 
-Then tick these off. Nine terminal lines, seven on-screen reads and one command in
+A scratch store has no sources, so once the window opens add the one the
+on-screen checks read: **Settings → Sources → Add source → This machine → Finish**.
+
+Then tick these off. Eleven terminal lines, seven on-screen reads and one command in
 a second terminal — the terminal half works on a machine whose screen you
 cannot see.
 
@@ -3070,13 +3133,14 @@ cannot see.
 - [ ] **Terminal** — `repos: first frontend request (N repo row(s))` — **0 is a pass**
 - [ ] **Terminal** — `runners: first frontend request (N runner row(s))` — **0 is a pass**
 - [ ] **Terminal** — `usage: first frontend request (N provider section(s))` — **0 is a pass**
+- [ ] **Terminal** — `anthropic: first frontend request (N plan section(s))` — **0 is a pass**
+- [ ] **Terminal** — `openai: first frontend request (N plan section(s))` — **0 is a pass**
 - [ ] **Terminal** — `azure_cost: first frontend request (headline: false)` — **false is a pass**
 - [ ] **Terminal** — `crons: first frontend request (nothing read yet)` — that wording
       **is** the pass with no Sentry token; `all ok` or `N not ok` with one
-- [ ] **Terminal** — `services: first frontend request (N vendor(s)…)` — **0 is a
-      pass**, and so is 1: the watched list is derived from configuration, so the
-      scratch store this run uses watches nothing except Anthropic, which
-      appears only if this machine has Claude Code logs to roll up
+- [ ] **Terminal** — `services: first frontend request (N vendor(s)…)` — **0 is the
+      pass**: the watched list is derived from configuration, and a scratch store
+      has not added Service health
 - [ ] **Terminal** — `openclaw: first frontend request (trailing: "")` — **empty is a pass**
 - [ ] **Screen** — the **local card** leads the host grid with this machine's name, a
       green dot, CPU/memory changing between ticks, and on macOS a `Pressure:` word
@@ -3163,7 +3227,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
 | a tile's Full view: a scope that keeps nothing (`tileEmpty`, #656) | add a **Repos** tile scoped to *Attention* while every repo is healthy (or scoped to one repo that you then remove from the account), then open its **Full view** | the tile's own sentence (`This resource has no current reading…` / `No attention items in available readings.`) shows once under the title row, never the source's setup or loading message twice |
 | a tile's Full view: no previous rows when switching from tile to tile (#640, #656) | open one Repos tile's **Full view**, **Escape**, then open a second Repos tile's (a different scope) | the second view shows its own rows, never the first tile's. A real tile read answers within one round trip, so the loading line and a reading that arrives after the switch cannot be seen by hand; `dashboard.spec.js` covers both with a held read |
-| a tile's Full view: the panel commands' `tile` argument (`cockpit` here; the other eight take it the same way) | with the seeded host from step 2: **Edit dashboard** → **Add tile** → **Machines**, set **Show** to *This machine*, **Add tile**, **Done editing**; open that tile's **View** → **Full view** (or **View** → **Detail**, then **Full view**), then **Escape** | the host grid holds only this machine's card, titled with the tile's name, with `Scope: This machine.` under the title row and no `No hosts configured` line. Escape returns to the overview with focus on the tile's **View** button. The seeded host's card in that view, or a refusal sentence on screen, is the defect this row exists to catch |
+| a tile's Full view: the panel commands' `tile` argument (`cockpit` here; the other ten take it the same way) | with the seeded host from step 2: **Edit dashboard** → **Add tile** → **Machines**, set **Show** to *This machine*, **Add tile**, **Done editing**; open that tile's **View** → **Full view** (or **View** → **Detail**, then **Full view**), then **Escape** | the host grid holds only this machine's card, titled with the tile's name, with `Scope: This machine.` under the title row and no `No hosts configured` line. Escape returns to the overview with focus on the tile's **View** button. The seeded host's card in that view, or a refusal sentence on screen, is the defect this row exists to catch |
 | `openclaw_wake` | put a gateway URL under Settings → Sources → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 
@@ -3195,6 +3259,9 @@ and that immediacy is itself the check on the corresponding wake:
    SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878|$TOKEN" \
      cargo run -p solador-app
    ```
+
+   A scratch store has no sources. Once the window opens, add the one steps 6
+   and 10 read: **Settings → Sources → Add source → This machine → Finish**.
 
    Leave `$TOKEN` unset to exercise the zero-setup case below; set it to the
    agent's real bearer token to exercise the live one.
@@ -3243,11 +3310,12 @@ and that immediacy is itself the check on the corresponding wake:
    happens at load — so it is usually already there):
 
    ```
-   containers: first frontend request (1 section(s))
+   containers: first frontend request (0 section(s))
    ```
 
-   The section count is this machine's own: 1 with no reachable agent, 2 once a
-   host has answered `/v1/containers`. Below the host grid, the **Containers /
+   The section count is 0 on a scratch store, whose first request comes before
+   This machine is added. It is 1 on a store with This machine added and no
+   reachable agent, and 2 once a host has answered `/v1/containers`. Below the host grid, the **Containers /
    VMs** heading should carry a `N total · N up · N stopped` line and a
    **THIS MACHINE** section listing whatever docker/podman/tart report here — or
    the sentence `no container runtimes` if none are installed, which is a pass:
@@ -3287,24 +3355,33 @@ and that immediacy is itself the check on the corresponding wake:
    permission `—` under READY, with the repo still green — a missing
    permission is not an outage.
 
-8. **Read the terminal a last time** for the Usage and Azure Cost panels' own
-   one-line signals (both print at load, alongside the others):
+8. **Read the terminal a last time** for the Usage, Anthropic, OpenAI and Azure
+   Cost panels' own one-line signals (all print at load, alongside the others):
 
    ```
    usage: first frontend request (0 provider section(s))
+   anthropic: first frontend request (0 plan section(s))
+   openai: first frontend request (0 plan section(s))
    azure_cost: first frontend request (headline: false)
    ```
 
+   The dashboard reads these payloads itself, so those lines do not prove the
+   commands are registered. To prove that, add an Anthropic and an OpenAI tile
+   and open each one's **Full view**: an unregistered command leaves it on its
+   failure line, and an upgrade from a store with a saved Usage tile should
+   already have added them.
+
    **Both zero/false is still a pass for the boundary.** With no Neon key and no
-   Sentry token in the scratch keychain the Usage panel is its Claude-only self —
-   the provider sections are *absent*, deliberately, not blank — and with no SAS
+   Sentry token in the scratch keychain the Usage panel has no section —
+   they are *absent*, deliberately, not blank, and the panel says what to add —
+   and with no SAS
    URL the Azure panel is the single sentence `Add an Azure Cost SAS URL in
    Settings`. That sentence is `azure::UNCONFIGURED_MESSAGE`'s and has no path to
    the DOM except a successful `invoke("azure_cost")`. It is preceded by
    `reading export…` until the first pass reads the keychain — same rule as the
    GitHub panels above.
 
-   The Usage panel is the one surface here that needs **no credential at all** to
+   The Anthropic panel is the one surface here that needs **no credential at all** to
    populate: it walks `~/.claude/projects` on this machine. On a machine that has
    run Claude Code, expect `LAST 5H` and `LAST 7D` token counts under `THIS
    MACHINE`, a `TOP PROJECTS (7D)`
@@ -3322,20 +3399,28 @@ and that immediacy is itself the check on the corresponding wake:
    `0.0 CU-h`, and never an unattributed warning that could have come from any
    of the three sections.
 
-   To exercise the plans, tick **Read Claude Code's sign-in** under Settings →
-   Sources → **Claude Code** on a machine signed in to Claude Code. Within a poll the
-   panel's first block is `Claude · <plan>` (the name Claude Code itself
+   To exercise the plans, on a machine signed in to Claude Code, open Settings →
+   Sources → Add source → **Anthropic**, pick only **Subscription**, and press
+   Finish. The steps must not read the sign-in before Finish, the tile must have
+   no `Claude Code` row, and the overview must gain one Anthropic tile. Within a poll the
+   Anthropic panel's first block is `Claude · <plan>` (the name Claude Code itself
    displays; `Claude` alone when its profile names none) with one meter per
    limit the reply carries: on a verified Ultra plan, `Week` and `Week ·
    <model>` and **no `5h` meter**. Once a tenth of the week has passed each
    meter has a pace tick and a note under it (`resets in 3d 5h · on pace for
    76%`), and the row's verdict is the tightest of them. On an Enterprise seat
    expect one full-width `Budget` meter (`$312 / $500 · 62%`), no tick, and
-   `no reset date reported`. The Usage tile on the overview shows the same
-   meters as cards, each plan's verdict in its value slot, and the token
-   counts folded into one `Claude Code · N today` row. None of this has
+   `no reset date reported`. The Anthropic tile on the overview shows the same
+   meters as a card, the plan's verdict in its value slot, and the token
+   counts folded into one `Claude Code · N today` row once **Local usage** is
+   picked too. **Subscription** under **OpenAI** does the same for the OpenAI
+   tile. **API key** takes an Admin key, which must land in the OS credential
+   store and never in `store.json`, and the tile gains `API spend (MTD)`; these
+   readers have only ever been run against the vendors' documentation, so the
+   first real key is the first live test. None of this has
    automated coverage across the IPC boundary; the fixtures behind the e2e
-   suite (`--dump-usage`, `--plan-edges`) are Rust's, not the live reply's.
+   suite (`--dump-anthropic`, `--dump-openai`, `--plan-edges`) are Rust's, not
+   the live reply's.
 
 9. **Read the terminal for the OpenClaw panel's own one-line signal** (it prints
    at load, alongside the others):
@@ -3501,7 +3586,7 @@ sentence — the same argument a fourth and fifth time. A missing panel does not
 pass: both stay hidden until a payload arrives, deliberately, so a broken
 boundary cannot masquerade as an unconfigured one.
 
-Step 8 passes when `usage:` and `azure_cost: first frontend request …` both
+Step 8 passes when `usage:`, `anthropic:`, `openai:` and `azure_cost: first frontend request …` all
 print and both panels carry a heading plus *either* their content or their
 zero-credential state — the same argument a sixth and seventh time.
 
@@ -3548,13 +3633,13 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The **Repos** or **GitHub Runners** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `repos`/`runners` command, or a script error in `github.js`. Both panels stay hidden until a payload arrives, so this cannot be mistaken for "no token configured" — that state renders a visible panel with one sentence in it. Check the webview console. |
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. A different footer, `couldn't read runners — GitHub has more than this build will count — …`, means the org registers more runners than the walk will read (`RUNNERS_PAGE_CAP` x 100); the token is fine and the rows are the last good fetch. |
-| The **Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`azure_cost` command, or a script error in `usage.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
-| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows **Stored** for the credential; if it does, the provider read has not run yet — saving wakes it, so re-save to force a pass. |
+| The **Usage**, **Anthropic**, **OpenAI** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`anthropic`/`openai`/`azure_cost` command, or a script error in `usage.js`/`ai-sources.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
+| The Usage panel shows no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows **Stored** for the credential; if it does, the provider read has not run yet — saving wakes it, so re-save to force a pass. |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |
 | The pairing banner keeps returning after the approve command was run. | Also not a failure. The command has to run **on the gateway host**, and the request id is single-use — a stale one from a previous banner will not clear it. Press **Retry now** and re-read the id from the fresh banner. If the device id in Settings changes between attempts, the credential store is refusing to persist the seed; the terminal says so (`openclaw: could not persist the device key: …`). |
-| The local card is missing, or the grid leads with a remote host. | The local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
+| The local card is missing, or the grid leads with a remote host. | **This machine** was not added, which is where every scratch store starts. Past that, the local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
 | The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. On a platform with no memory-pressure level or no GPU source, `Pressure: —` / `VRAM: —` are correct; on macOS they should read a level word and a VRAM figure — see [This machine leads](#this-machine-leads). |
 | Clicking a repo row does nothing, and the console says `opener.open_url not allowed`. | The **permission** is missing: `opener:allow-open-url` is not in `capabilities/default.json`, or the plugin is not registered on the builder. Not a scope problem — the command was rejected before any URL was looked at. |
 | Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either a glob was narrowed, or something other than `github::actions_url` / `github::run_url` composed the string — the scope's two entries (`.../actions` and `.../actions/runs/*`) and those two composers live in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. For a dashboard `Waiting` row, the entry to check is `.../actions/runs/*`. |

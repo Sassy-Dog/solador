@@ -37,7 +37,7 @@ const callRaw = async (command, args, fixture) => {
 // it was asked for has gone (Escape, or another tile) is dropped as `null`,
 // which every renderer already treats as "paint nothing", and a reading asked
 // for a tile tells the dashboard that tile's first response has landed.
-const PANEL_READS = new Set(["cockpit", "repos", "runners", "containers", "services", "crons", "usage", "azure_cost", "openclaw"]);
+const PANEL_READS = new Set(["cockpit", "repos", "runners", "containers", "services", "crons", "anthropic", "openai", "usage", "azure_cost", "openclaw"]);
 const callRust = async (command, args, fixture) => {
   const dashboard = PANEL_READS.has(command) ? window.soladorDashboard : null;
   const view = dashboard?.fullGeneration?.();
@@ -398,7 +398,9 @@ const PANEL_SECTIONS = {
   containers: "containersPanel",
   ghWorkflows: "reposPanel",
   ghRunners: "runnersPanel",
-  claudeUsage: "usagePanel",
+  anthropic: "anthropicPanel",
+  openai: "openaiPanel",
+  usage: "usagePanel",
   azureCost: "azurePanel",
   services: "servicesPanel",
   sentryCrons: "cronsPanel",
@@ -413,7 +415,7 @@ const PANEL_SECTIONS = {
  * no-op.
  *
  * The count lands as a custom property, which is enough on its own for the
- * panels whose split is pure CSS (Containers', Usage's and Azure Cost's grids).
+ * panels whose split is pure CSS (Containers', the AI panels', Usage's and Azure Cost's grids).
  * Runners is handed a count but paints no split. A panel that has to rebuild
  * its DOM to re-split (Repos, whose columns each carry their own header) also
  * gets an event, so it re-renders now rather than at the far end of its own

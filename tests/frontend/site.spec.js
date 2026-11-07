@@ -326,7 +326,7 @@ test("every screenshot's declared width and height is its file's pixel size", ()
   const imgs = [
     ...html.matchAll(/<img src="(\/assets\/screenshots\/[^"]+\.png)"[^>]*? width="(\d+)" height="(\d+)"/g),
   ];
-  expect(imgs.length).toBe(10);
+  expect(imgs.length).toBe(12);
   for (const [, src, width, height] of imgs) {
     const png = fs.readFileSync(path.join(SITE, src));
     expect(png.subarray(0, 8).toString("hex"), `${src} is a PNG`).toBe("89504e470d0a1a0a");
@@ -339,12 +339,10 @@ test("every screenshot's declared width and height is its file's pixel size", ()
 });
 
 /**
- * The Usage card is the one card anchored bottom left (#685): its text names
- * Neon, Sentry and Vercel consumption, which sit at the bottom of the panel.
- * Every other card is a window onto the panel's top-left. This is what ties
- * `site.css` to the bottom-crop assumption `screenshots.spec.js` checks.
+ * Every card is a window onto its panel's top left, so what a shot shows is
+ * what `screenshots.spec.js` checks against that same corner.
  */
-test("only the Usage card's screenshot is anchored bottom left", async ({ page }) => {
+test("every card's screenshot is anchored top left", async ({ page }) => {
   await openSite(page, "/");
   const anchors = await page.$$eval(".tile-shot img", (imgs) =>
     imgs.map((img) => ({
@@ -353,21 +351,14 @@ test("only the Usage card's screenshot is anchored bottom left", async ({ page }
     })),
   );
   expect(anchors.length).toBeGreaterThan(1);
-  for (const { src, position } of anchors) {
-    expect({ src, position }).toEqual({
-      src,
-      position: src === "/assets/screenshots/panel-usage.png" ? "0% 100%" : "0% 0%",
-    });
-  }
-  expect(anchors.filter((a) => a.src === "/assets/screenshots/panel-usage.png")).toHaveLength(1);
+  for (const { src, position } of anchors) expect({ src, position }).toEqual({ src, position: "0% 0%" });
 });
 
 /**
  * Every card's image box keeps the 3-up aspect, 311:195, at every width (#699),
- * so each card shows the same crop at 3-up, 2-up and 1-up. Usage's image is
- * taller than 311:195, so its `object-fit: cover` scale is set by the box's
- * width, and a box whose height was fixed moved its crop's top edge into the
- * Codex 5H row at 2-up and 1-up.
+ * so each card shows the same crop at 3-up, 2-up and 1-up. A tall image's
+ * `object-fit: cover` scale is set by the box's width, so a box whose height was
+ * fixed would move the crop's edge at 2-up and 1-up.
  * The boxes are measured, not computed: 1280 is 3-up (311 wide), 800 is 2-up
  * (about 330) and 390 is 1-up (about 328).
  */

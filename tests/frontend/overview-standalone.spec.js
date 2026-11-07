@@ -19,7 +19,9 @@ const READS = [
   ["containers", "containers"],
   ["services", "services"],
   ["sentryCrons", "crons"],
-  ["claudeUsage", "usage"],
+  ["anthropic", "anthropic"],
+  ["openai", "openai"],
+  ["usage", "usage"],
   ["azureCost", "azure_cost"],
   ["openclawAgents", "openclaw"],
 ];

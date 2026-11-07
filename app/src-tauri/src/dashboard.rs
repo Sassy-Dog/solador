@@ -30,14 +30,16 @@ pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the 
 /// words: neither is a vendor's failure (#656).
 pub const TILE_READ_FAILED: &str = "Could not read this tile\u{2019}s data for the Full view.";
 
-pub const SOURCES: [(&str, &str); 9] = [
+pub const SOURCES: [(&str, &str); 11] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
     ("ghRunners", "GitHub Runners"),
     ("services", "Service Health"),
     ("sentryCrons", "Sentry Crons"),
     ("containers", "Containers / VMs"),
-    ("claudeUsage", "Usage"),
+    ("anthropic", "Anthropic"),
+    ("openai", "OpenAI"),
+    ("usage", "Usage"),
     ("azureCost", "Azure Cost"),
     ("openclawAgents", "OpenClaw"),
 ];
@@ -67,13 +69,51 @@ pub fn default_layout() -> DashboardLayout {
     DashboardLayout::shipped()
 }
 
+/// `layout` with a tile of `source` appended, sized like Add a tile's draft, or
+/// `None` when it already has one. A hidden tile counts: the operator hid it,
+/// and a second one would undo that.
+pub fn with_source_tile(layout: &DashboardLayout, source: &str) -> Option<DashboardLayout> {
+    if layout.tiles.iter().any(|tile| tile.source == source) {
+        return None;
+    }
+    let title = SOURCES
+        .iter()
+        .find(|(id, _)| *id == source)
+        .map_or(source, |(_, title)| *title);
+    let taken = |id: &str| layout.tiles.iter().any(|tile| tile.id == id);
+    let id = (1..)
+        .map(|n| format!("added-{source}-{n}"))
+        .find(|id| !taken(id))
+        .expect("an unbounded range holds a free id");
+    let mut tile = DashboardTile::new(id, source, title, "all");
+    if source == "hosts" {
+        tile.width = "medium".into();
+    }
+    let mut next = layout.clone();
+    next.tiles.push(tile);
+    Some(next)
+}
+
+/// The most tiles an edit may leave a dashboard with.
+pub const MAX_TILES: usize = 48;
+
+/// Refuses an edit that grows a dashboard past [`MAX_TILES`].
+///
+/// A check on the edit rather than on the layout: the upgrade that splits a
+/// Usage tile never drops one to fit, so a full dashboard can land past the
+/// limit, and a layout check would then refuse every later save, including the
+/// removal that gets it back under.
+pub fn check_tile_count(saved: usize, edited: usize) -> Result<(), String> {
+    if edited > MAX_TILES && edited > saved {
+        return Err(format!("A dashboard can contain up to {MAX_TILES} tiles."));
+    }
+    Ok(())
+}
+
 /// Reject the entire edit rather than silently broadening an invalid scope or
 /// dropping a tile. Unknown resource IDs remain valid, so a disconnected or
 /// removed resource does not turn its tile into an unfiltered one.
 pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
-    if layout.tiles.len() > 48 {
-        return Err("A dashboard can contain up to 48 tiles.".into());
-    }
     let mut ids = BTreeSet::new();
     for tile in &layout.tiles {
         if tile.id.is_empty()
@@ -207,11 +247,9 @@ fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
             ("WINDOWS", "Windows runners"),
         ]),
         "sentryCrons" => choices.push(("active", "Active issues")),
-        "claudeUsage" => choices.extend([
-            ("claude", "Claude Code"),
-            ("plans", "Subscription plans"),
-            ("providers", "Cloud providers"),
-        ]),
+        "anthropic" => {
+            choices.extend([("claude", "Claude Code"), ("plans", "Subscription plan")]);
+        }
         _ => (),
     }
     choices
@@ -236,7 +274,7 @@ fn tint(v: &Value) -> Value {
         json!(color::hex(color::MUTED))
     }
 }
-/// The Usage tile's one row for this machine's Claude Code rollups. Its Full
+/// The Anthropic tile's one row for this machine's Claude Code rollups. Its Full
 /// view keeps the panel's token counts, projects and heading with it.
 pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
 
@@ -545,6 +583,48 @@ fn count(header: &str, one: &str, many: &str, value: &Value) -> Value {
     json!({"label": word, "header": header, "value": value, "fraction": null})
 }
 
+/// API spend's row, while the source has it. It has no scope of its own: `all`
+/// shows it, `item:` picks it, and `plans` and `claude` are the other blocks.
+fn api_row(p: &Value) -> Option<Value> {
+    let api = &p["api"];
+    if api.is_null() {
+        return None;
+    }
+    let mut r = row(
+        string(api, "id"),
+        string(api, "label"),
+        string(api, "value"),
+        tint(&api["valueColor"]),
+        false,
+    );
+    r["detail"] = json!(string(api, "note"));
+    Some(r)
+}
+
+/// One row per plan, carrying the Machines tile's meters. Its id is the plan
+/// section's, never built from its label, which carries a plan name that can
+/// change (Anthropic renamed Max 20x to Ultra). Only red asks for attention:
+/// amber is a pace, and a pace is a forecast.
+fn plan_rows(p: &Value) -> Vec<Value> {
+    list(p, "plans")
+        .iter()
+        .map(|plan| {
+            let mut r = row(
+                string(plan, "id"),
+                string(plan, "label"),
+                string(plan, "value"),
+                tint(&plan["color"]),
+                red(&plan["color"]),
+            );
+            r["valueColor"] = tint(&plan["valueColor"]);
+            r["detail"] = json!(string(plan, "detail"));
+            r["metrics"] = plan["metrics"].clone();
+            add_scope(&mut r, "plans");
+            r
+        })
+        .collect()
+}
+
 fn source_rows(id: &str, p: &Value) -> Vec<Value> {
     match id {
         "hosts" => host_rows(p),
@@ -742,28 +822,11 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 })
             })
             .collect(),
-        "claudeUsage" => {
-            let mut rows = Vec::new();
-            // The plans lead, as they do on the panel: a share of a limit is
-            // the figure an operator acts on. One row per plan carrying the
-            // Machines tile's meters. Its id is the plan section's, never built
-            // from its label, which carries a plan name that can change
-            // (Anthropic renamed Max 20x to Ultra). Only red asks for
-            // attention: amber is a pace, and a pace is a forecast.
-            for plan in list(p, "plans") {
-                let mut r = row(
-                    string(plan, "id"),
-                    string(plan, "label"),
-                    string(plan, "value"),
-                    tint(&plan["color"]),
-                    red(&plan["color"]),
-                );
-                r["valueColor"] = tint(&plan["valueColor"]);
-                r["detail"] = json!(string(plan, "detail"));
-                r["metrics"] = plan["metrics"].clone();
-                add_scope(&mut r, "plans");
-                rows.push(r);
-            }
+        "anthropic" => {
+            // The plan leads, as it does on the panel: a share of a limit is
+            // the figure an operator acts on.
+            let mut rows = plan_rows(p);
+            rows.extend(api_row(p));
             // This machine's rollups are one line on the tile; the panel keeps
             // the 5-hour and 7-day counts and the projects under its "This
             // machine" heading.
@@ -778,6 +841,15 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 add_scope(&mut r, "claude");
                 rows.push(r);
             }
+            rows
+        }
+        "openai" => {
+            let mut rows = plan_rows(p);
+            rows.extend(api_row(p));
+            rows
+        }
+        "usage" => {
+            let mut rows = Vec::new();
             for provider in list(p, "providers") {
                 for v in list(provider, "rows") {
                     let mut r = row(
@@ -792,7 +864,6 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     if red(&provider["bar"]["color"]) || amber(&provider["bar"]["color"]) {
                         r["color"] = provider["bar"]["color"].clone();
                     }
-                    add_scope(&mut r, "providers");
                     r["detail"] = json!(string(provider, "id"));
                     rows.push(r);
                 }
@@ -946,7 +1017,9 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "services" => "Connected providers and custom status pages",
         "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
-        "claudeUsage" => "Local Claude Code logs, subscription plans and connected cloud providers",
+        "anthropic" => "Claude\u{2019}s plan limits, API spend and Claude Code logs",
+        "openai" => "Codex\u{2019}s plan limits and API spend",
+        "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",
         "openclawAgents" => "Activity from your OpenClaw gateway",
         _ => "",
@@ -1003,7 +1076,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
     }
     let has_fields = columns.len() > 1;
     columns.push(json!({"key":"value", "label":match id {
-        "sentryCrons" => "Broken for", "claudeUsage" | "azureCost" => "Value", _ => "Status"
+        "sentryCrons" => "Broken for", "anthropic" | "openai" | "usage" | "azureCost" => "Value", _ => "Status"
     }}));
     if !has_fields {
         columns.push(json!({"key":"context", "label":"Details"}));
@@ -2245,11 +2318,45 @@ mod tests {
                 "Service Health",
                 "Sentry Crons",
                 "Containers / VMs",
+                "Anthropic",
+                "OpenAI",
                 "Usage",
                 "Azure Cost",
                 "OpenClaw",
             ]
         );
+    }
+
+    /// The upgrade splits each Usage tile and never drops one to fit, so a full
+    /// dashboard can land past the limit. Refusing it there would refuse every
+    /// later edit, including the removal that gets it back under.
+    #[test]
+    fn a_dashboard_past_the_tile_limit_saves_until_it_grows() {
+        let tiles = |count: usize| {
+            let mut layout = default_layout();
+            let first = layout.tiles[0].clone();
+            layout.tiles = (0..count)
+                .map(|i| DashboardTile {
+                    id: format!("t{i}"),
+                    ..first.clone()
+                })
+                .collect();
+            layout
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store::Store::open_in(dir.path(), false).unwrap();
+
+        let refused = crate::persist_dashboard(&mut store, tiles(49), 0).unwrap_err();
+        assert_eq!(refused, "A dashboard can contain up to 48 tiles.");
+        crate::persist_dashboard(&mut store, tiles(48), 0).unwrap();
+
+        // What the upgrade leaves behind, which no save could have written.
+        store.save_dashboard(tiles(50)).unwrap();
+        let same = store.dashboard().unwrap().revision;
+        crate::persist_dashboard(&mut store, tiles(50), same).unwrap();
+        crate::persist_dashboard(&mut store, tiles(49), same + 1).unwrap();
+        let refused = crate::persist_dashboard(&mut store, tiles(50), same + 2).unwrap_err();
+        assert_eq!(refused, "A dashboard can contain up to 48 tiles.");
     }
 
     #[test]
@@ -2854,7 +2961,7 @@ mod tests {
         assert_eq!(get("toolkit")["attention"], true);
         assert_eq!(get("flywheel")["attention"], true);
         assert_eq!(get("pipe-fitting")["attention"], false);
-        let services = crate::services::view(&crate::services::fixture_statuses());
+        let services = crate::services::view(&crate::services::fixture_statuses(), true);
         let rows = source_rows("services", &services);
         assert_eq!(
             rows.iter().find(|r| r["label"] == "Neon").unwrap()["attention"],
@@ -3034,8 +3141,7 @@ mod tests {
 
     /// A plan is one Usage row under its own scope, carrying its meters, and it
     /// leads the tile. Only red needs attention: amber is a pace, a forecast.
-    /// The token windows are not rows; `claude-today` stands for them. The
-    /// setup line for a plan that is off is not a reading, so it is not a row.
+    /// The token windows are not rows; `claude-today` stands for them.
     #[test]
     fn plans_are_usage_rows_with_meters_under_their_own_scope() {
         let red = color::hex(color::RED);
@@ -3053,13 +3159,21 @@ mod tests {
                 {"id": "codex-plan", "label": "Codex · Plus", "value": "out in ~1d 1h",
                  "valueColor": amber, "color": amber, "detail": "…", "metrics": []}
             ],
-            "plansMessage": {"text": "Codex plan limits are off — turn on in Settings → Sources → Add source → Codex",
-                             "color": muted}
+            "api": {"id": "anthropic-api", "label": "API spend (MTD)", "value": "$412.80",
+                    "valueColor": muted, "note": "counted 3h ago"}
         });
-        let source = source_view("claudeUsage", "Usage", &payload);
+        let source = source_view("anthropic", "Anthropic", &payload);
         let rows = list(&source, "rows");
         let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
-        assert_eq!(ids, ["claude-plan", "codex-plan", CLAUDE_TODAY_ID]);
+        assert_eq!(
+            ids,
+            [
+                "claude-plan",
+                "codex-plan",
+                "anthropic-api",
+                CLAUDE_TODAY_ID
+            ]
+        );
         assert_eq!(rows[0]["label"], "Claude · Ultra");
         assert_eq!(rows[0]["scopes"], json!(["plans"]));
         assert_eq!(rows[0]["attention"], true);
@@ -3071,11 +3185,52 @@ mod tests {
         assert_eq!(rows[0]["metrics"], json!([week]));
         assert_eq!(rows[1]["attention"], false, "amber is a forecast");
         assert_eq!(rows[1]["color"], amber);
-        assert_eq!(rows[2]["label"], "Claude Code");
+        assert_eq!(rows[2]["label"], "API spend (MTD)");
+        assert_eq!(rows[2]["value"], "$412.80");
+        assert_eq!(rows[2]["detail"], "counted 3h ago");
+        assert_eq!(rows[2]["attention"], false);
+        assert_eq!(rows[3]["label"], "Claude Code");
         assert!(list(&source, "scopes")
             .iter()
             .any(|s| s["value"] == "plans"));
         assert_eq!(source["attentionCount"], 1);
+    }
+
+    /// With local usage off the view publishes no `trailing`, so the tile has
+    /// no Claude Code line: the operator's own request.
+    #[test]
+    fn no_trailing_is_no_claude_code_row() {
+        let source = source_view(
+            "anthropic",
+            "Anthropic",
+            &json!({"trailing": "", "plans": []}),
+        );
+        assert!(list(&source, "rows").is_empty());
+    }
+
+    #[test]
+    fn openai_rows_are_its_plan_then_its_spend() {
+        let payload = json!({
+            "plans": [{"id": "codex-plan", "label": "Codex · Plus", "value": "ok", "metrics": []}],
+            "api": {"id": "openai-api", "label": "API spend (MTD)", "value": "$1.50"},
+        });
+        let source = source_view("openai", "OpenAI", &payload);
+        let rows = list(&source, "rows");
+        let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
+        assert_eq!(ids, ["codex-plan", "openai-api"]);
+        // An offered item, so a tile can be narrowed to the spend alone.
+        assert!(list(&source, "scopes")
+            .iter()
+            .any(|s| s["value"] == "item:openai-api"));
+    }
+
+    /// A tile's hint is the catalog's one-line description of the source.
+    #[test]
+    fn each_ai_tile_says_it_also_carries_api_spend() {
+        for id in ["anthropic", "openai"] {
+            let source = source_view(id, id, &json!({}));
+            assert!(string(&source, "hint").contains("API spend"), "{id}");
+        }
     }
 
     #[test]
@@ -3211,6 +3366,34 @@ mod tile_scope_ids_tests {
 
     fn ids(v: &[&str]) -> BTreeSet<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// The operator hid it on purpose, and a second tile would undo that.
+    #[test]
+    fn a_hidden_tile_already_counts_as_having_one() {
+        let mut layout = default_layout();
+        let mut hidden = DashboardTile::new("mine", "anthropic", "Mine", "all");
+        hidden.hidden = true;
+        layout.tiles.push(hidden);
+        assert!(with_source_tile(&layout, "anthropic").is_none());
+    }
+
+    #[test]
+    fn an_added_tile_is_valid_titled_and_takes_a_free_id() {
+        let mut layout = default_layout();
+        layout.tiles.retain(|tile| tile.source != "hosts");
+        let taken = DashboardTile::new("added-anthropic-1", "usage", "Usage", "all");
+        layout.tiles.push(taken);
+
+        let next = with_source_tile(&layout, "anthropic").unwrap();
+        let added = next.tiles.last().unwrap();
+        assert_eq!(added.title, "Anthropic");
+        assert_eq!(added.id, "added-anthropic-2");
+        validate(&next).unwrap();
+
+        let next = with_source_tile(&layout, "hosts").unwrap();
+        assert_eq!(next.tiles.last().unwrap().width, "medium");
+        validate(&next).unwrap();
     }
 
     #[test]

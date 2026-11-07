@@ -76,6 +76,13 @@ impl LocalHostState {
         }
     }
 
+    /// Keeps nothing from before This machine was turned off, so a stale card
+    /// or a chart with a hole in it cannot reappear when it is added back.
+    pub fn clear(&mut self) {
+        self.histories = HostHistories::new();
+        self.latest = None;
+    }
+
     /// Folds an already-taken sample into the state.
     ///
     /// **An unmeasured value is shown but not plotted.** The rates take care of
@@ -188,7 +195,13 @@ fn lower_unknowns(card: &mut Value, snapshot: &localhost::LocalSnapshot) {
 /// one fixed time slice (`PX_PER_SAMPLE`), so the cadence is part of the charts'
 /// time axis rather than a preference. Sampling blocks (sysinfo reads
 /// `/proc`-equivalents and enumerates mounts), so it runs on the blocking pool.
-pub async fn poll_loop(state: Arc<Mutex<LocalHostState>>, interval: std::time::Duration) {
+///
+/// `enabled` is whether This machine is a source. Off, nothing is sampled.
+pub async fn poll_loop(
+    state: Arc<Mutex<LocalHostState>>,
+    interval: std::time::Duration,
+    enabled: impl Fn() -> bool + Send,
+) {
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Keep delta baselines across samples, without sharing the slow sampler
@@ -196,6 +209,12 @@ pub async fn poll_loop(state: Arc<Mutex<LocalHostState>>, interval: std::time::D
     let mut sampler: Option<localhost::LocalSampler> = None;
     loop {
         tick.tick().await;
+        // Asked every tick, so adding or removing the source applies at once.
+        if !enabled() {
+            state.lock().expect("local state poisoned").clear();
+            sampler = None;
+            continue;
+        }
         let handle = Arc::clone(&state);
         match tokio::task::spawn_blocking(move || {
             let mut sampler = sampler.unwrap_or_default();
@@ -244,6 +263,33 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(readable.unwrap()["connection"]["state"], "connecting");
         assert_eq!(state.lock().unwrap().card()["connection"]["state"], "live");
+    }
+
+    /// This machine turned off keeps nothing, so a stale card or a chart with a
+    /// hole in it cannot reappear when it is added back.
+    #[test]
+    fn clearing_drops_the_reading_and_its_history() {
+        let mut state = LocalHostState::new();
+        state.record(snapshot());
+        state.clear();
+        assert!(state.latest.is_none());
+        assert_eq!(state.card()["connection"]["state"], "connecting");
+    }
+
+    /// Off means off: the sampler must not run at all, which is what a loop
+    /// gated only at render would still be doing.
+    #[tokio::test]
+    async fn the_loop_does_not_sample_while_it_is_off() {
+        let state = Arc::new(Mutex::new(LocalHostState::new()));
+        state.lock().unwrap().record(snapshot());
+        let task = tokio::spawn(poll_loop(
+            Arc::clone(&state),
+            Duration::from_millis(5),
+            || false,
+        ));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        task.abort();
+        assert!(state.lock().unwrap().latest.is_none());
     }
 
     #[test]

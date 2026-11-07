@@ -952,7 +952,11 @@ const ROW_LISTS = [
   { source: "containers", command: "containers", file: "sample-containers.json", list: "#containersBody .cont-section", row: ".cont-row" },
   { source: "ghWorkflows", command: "repos", file: "sample-repos.json", list: "#reposBody .gh-col", row: ".gh-row:not(.gh-head)" },
   { source: "ghRunners", command: "runners", file: "sample-runners.json", list: "#runnersBody .gh-list", row: ".gh-row", tile: { runnerFullView: "list" } },
-  { source: "claudeUsage", command: "usage", file: "sample-usage.json", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
+  { source: "anthropic", command: "anthropic", file: "sample-anthropic.json", list: "#anthropicBody .pv-section", row: ".pv-row, .pv-item" },
+  // One plan and no other list, so the pair here is the plan's row and its
+  // meters, which keep their own 7px margin on top of the spacing.
+  { source: "openai", command: "openai", file: "sample-openai.json", list: "#openaiBody .pv-section", row: ".pv-row, .pv-item, .db-host-stats", margin: 7 },
+  { source: "usage", command: "usage", file: "sample-usage.json", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
   { source: "azureCost", command: "azure_cost", file: "sample-azure.json", list: "#azureBody .pv-section", row: ".pv-item" },
   { source: "services", command: "services", file: "sample-services.json", list: "#servicesBody", row: ".svc-row" },
   { source: "sentryCrons", command: "crons", file: "sample-crons.json", list: "#cronsBody", row: ".cron-row" },
@@ -1011,7 +1015,7 @@ for (const px of [0, 16]) {
         message: `${entry.source} rendered no adjacent row pair to measure`,
       }).toBeGreaterThan(0);
       const gaps = await measureRowGaps(page, entry);
-      expect([...new Set(gaps)], `${entry.source} at rowGapPx:${px}`).toEqual([px]);
+      expect([...new Set(gaps)], `${entry.source} at rowGapPx:${px}`).toEqual([px + (entry.margin ?? 0)]);
     });
   }
 }

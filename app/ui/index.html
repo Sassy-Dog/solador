@@ -89,11 +89,38 @@
       <div class="panel-body" id="runnersBody" tabindex="0" role="region" aria-labelledby="runnersTitle"></div>
     </section>
 
-    <!-- Usage. Claude Code token rollups, plus a Neon and a Sentry section
-         when those providers are configured — an unconfigured one contributes
-         no markup at all, which is why nothing below is a static heading.
-         Every window label, figure, em dash and bar colour is built by usage.js
-         from the `usage` command. -->
+    <!-- Anthropic. Claude's plan limits and this machine's Claude Code rollups. Every figure, em dash and colour is built by
+         ai-sources.js from the `anthropic` command. `.merged`: like Usage's, its
+         clock is attributed ("claude-plan: as of 23h ago"), so it yields width. -->
+    <section class="panel" id="anthropicPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="anthropicTitle"></h2>
+        <span class="panel-asof merged" id="anthropicFreshness" hidden></span>
+        <span class="panel-stale" id="anthropicStale" hidden></span>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="anthropicTrailing"></span>
+      </header>
+      <div class="panel-body" id="anthropicBody" tabindex="0" role="region" aria-labelledby="anthropicTitle"></div>
+    </section>
+
+    <!-- OpenAI. Codex's plan limits. Every figure, em dash and colour is built by
+         ai-sources.js from the `openai` command. `.merged`: like Usage's, its
+         clock is attributed ("claude-plan: as of 23h ago"), so it yields width. -->
+    <section class="panel" id="openaiPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="openaiTitle"></h2>
+        <span class="panel-asof merged" id="openaiFreshness" hidden></span>
+        <span class="panel-stale" id="openaiStale" hidden></span>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="openaiTrailing"></span>
+      </header>
+      <div class="panel-body" id="openaiBody" tabindex="0" role="region" aria-labelledby="openaiTitle"></div>
+    </section>
+
+    <!-- Usage. A Neon, a Sentry and a Vercel section when those providers are
+         configured — an unconfigured one contributes no markup at all, which is
+         why nothing below is a static heading. Every figure, em dash and bar
+         colour is built by usage.js from the `usage` command. -->
     <section class="panel" id="usagePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="usageTitle"></h2>
@@ -304,6 +331,7 @@
   <script src="detail-table.js"></script>
   <script src="github.js"></script>
   <script src="meter.js"></script>
+  <script src="ai-sources.js"></script>
   <script src="usage.js"></script>
   <script src="azure.js"></script>
   <script src="services.js"></script>

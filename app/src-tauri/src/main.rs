@@ -265,7 +265,7 @@ struct App {
     /// credentials and accounts already in the cockpit, so those edits wake
     /// this one (and the GitHub one too, where they also change what it fetches).
     services_wake: tokio::sync::Notify,
-    /// The Usage panel's state: Claude token rollups on
+    /// What the Usage, Anthropic and OpenAI panels render: Claude token rollups on
     /// [`PanelInterval::ClaudeRollups`], Neon, Sentry and Vercel on
     /// [`PanelInterval::UsageProviders`] (hourly by default).
     usage: Mutex<UsageState>,
@@ -648,9 +648,9 @@ impl From<&store::DashboardTile> for HostLook {
 /// rendered, how many hosts are monitored, the width they are sized from and
 /// how the tile wants them laid out.
 ///
-/// `remote_count` is deliberately separate from `cards.len()`: the local card is
-/// always there, so "is anything configured" is a question about *monitored*
-/// hosts and counting cards would answer it wrong forever.
+/// `remote_count` is deliberately separate from `cards.len()`: the local card
+/// may be there, so "is anything configured" is a question about *monitored*
+/// hosts and counting cards would answer it wrong for as long as it is.
 struct CockpitInput {
     cards: Vec<Value>,
     remote_count: usize,
@@ -673,8 +673,9 @@ fn cockpit_payload(input: CockpitInput) -> Value {
     align_core_ladders(&mut cards, columns, look.core_row_span);
     // A cockpit with no monitored host says so in words made here, like every
     // other string the frontend paints -- the local card alone would read as a
-    // finished setup rather than an untouched one. The overview's Machines tile
-    // reads it (`dashboard::source_view`); a tile's Full view paints no copy.
+    // finished setup rather than a first step. The overview's Machines tile
+    // reads it (`dashboard::source_view`). A Full view has only its cards, so
+    // with none it carries this as `tileEmpty` (`cockpit_for_tile`).
     let empty = if remote_count == 0 {
         json!({ "message": "No hosts configured. Add one in Settings." })
     } else {
@@ -1320,11 +1321,17 @@ async fn poll_containers(app: &Arc<App>) {
         .lock()
         .expect("containers state poisoned")
         .last_known();
-    let local = tokio::task::spawn_blocking(containers::local::poll)
-        .await
-        .map(|poll| poll.merge_with(last_known))
-        .map_err(|e| eprintln!("local container discovery failed: {e}"))
-        .ok();
+    // Off means no `docker ps` at all, not a poll that is merely not shown.
+    let local_on = local_monitoring_on(&app.store);
+    let local = if local_on {
+        tokio::task::spawn_blocking(containers::local::poll)
+            .await
+            .map(|poll| poll.merge_with(last_known))
+            .map_err(|e| eprintln!("local container discovery failed: {e}"))
+            .ok()
+    } else {
+        None
+    };
 
     // One in-flight request per host, so a hung agent delays only itself: the
     // client's own 5s timeout is shorter than the 10s cadence, but two
@@ -1406,6 +1413,9 @@ async fn poll_containers(app: &Arc<App>) {
     };
 
     let mut state = app.containers.lock().expect("containers state poisoned");
+    if !local_on {
+        state.local_off(now);
+    }
     if let Some((detected, outcome)) = local {
         state.apply_local(detected, outcome, now);
     }
@@ -1859,20 +1869,12 @@ fn apply_pass_credential(credential: PassCredential, state: &mut GitHubState) {
 /// a panel that flipped from "it's GitHub" back to a red "it's us" on a single
 /// timeout would be the exact misdirection that verdict exists to prevent.
 async fn poll_service_status(app: &Arc<App>) {
-    // Anthropic is the one vendor with no credential to look for, so its
-    // evidence is whether the Usage panel has actually found Claude rollups.
-    // Read here rather than assumed: "not walked yet" must answer `false`, so
-    // the tile appears when the data does rather than ahead of it.
-    let claude_usage_present = {
-        let usage = app.usage.lock().expect("usage state poisoned");
-        usage.claude_present()
-    };
     // One credential read per vendor per pass — the same re-read discipline as
     // the token below, and the reason a Save or Clear in Settings applies on the
     // next pass rather than on the next launch.
     let vendors = {
         let store = app.store.lock().expect("store poisoned");
-        services::active_vendors(&store, &*app.credentials, claude_usage_present)
+        services::active_vendors(&store, &*app.credentials)
     };
 
     // Concurrently: independent hosts, and running them in sequence would make
@@ -2705,9 +2707,11 @@ fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) 
         .forget_absent(&org, &name);
 }
 
-/// Which credentials currently hold a value — the "stored" badges, and nothing
-/// else. A read failure reads as "not stored": the badge is a hint, and an
-/// unreadable keychain must not take the Settings window down with it.
+/// Which credentials currently hold a value — the "stored" badges, and whether
+/// each Admin key is there. A read failure reads as "not stored" for a badge,
+/// which is a hint, and an unreadable keychain must not take the Settings window
+/// down with it. An Admin key decides whether a source exists, so it keeps
+/// the failure as [`settings::StoredKey::Unread`].
 fn stored_secrets(
     credentials: &dyn CredentialStore,
     hosts: &[Host],
@@ -2724,10 +2728,19 @@ fn stored_secrets(
             })
             .is_some_and(|value| !value.is_empty())
     };
+    // Not `present`: these decide whether a source exists, so a failed read
+    // can't pass for an empty store.
+    let stored_key = |key: SecretKey| match read_credential(credentials, key) {
+        Credential::Present(_) => settings::StoredKey::Stored,
+        Credential::Absent => settings::StoredKey::Absent,
+        Credential::Unreadable => settings::StoredKey::Unread,
+    };
     StoredSecrets {
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
         vercel: present(SecretKey::VercelApiToken),
+        anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
+        openai_admin: stored_key(SecretKey::OpenAiAdminKey),
         openclaw: present(SecretKey::OpenClawBearerToken),
         hosts: hosts
             .iter()
@@ -2841,6 +2854,14 @@ fn settings_payload(app: &App) -> Value {
         .clone();
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts(), store.accounts());
+    let tile_sources: Vec<String> = store
+        .dashboard()
+        .cloned()
+        .unwrap_or_else(dashboard::default_layout)
+        .tiles
+        .into_iter()
+        .map(|tile| tile.source)
+        .collect();
     settings::view(
         settings::StoreSections {
             agent_versions: &versions,
@@ -2850,6 +2871,7 @@ fn settings_payload(app: &App) -> Value {
             repos: store.repos(),
             vendors: store.status_vendors(),
             accounts: store.accounts(),
+            tile_sources: &tile_sources,
             certificate_changed: &certificate_changed,
             plain_refused: &plain_refused,
         },
@@ -2949,6 +2971,8 @@ fn dashboard_view_in(width: f64, app: &App) -> Value {
         containers_unscoped(app),
         services_unscoped(app),
         crons_unscoped(app),
+        anthropic_unscoped(app),
+        openai_unscoped(app),
         usage_unscoped(app),
         azure_cost_unscoped(app),
         openclaw_unscoped(app),
@@ -2963,6 +2987,8 @@ fn persist_dashboard(
     expected_revision: u64,
 ) -> Result<store::DashboardLayout, String> {
     dashboard::validate(&layout)?;
+    let saved = store.dashboard().map_or(0, |current| current.tiles.len());
+    dashboard::check_tile_count(saved, layout.tiles.len())?;
     let revision = store.dashboard().map_or(0, |current| current.revision);
     if revision != expected_revision {
         return Err("The dashboard changed while you were editing. Review the current layout and try again.".into());
@@ -3041,13 +3067,23 @@ fn cockpit_for_tile(width: f64, app: &App, id: &str) -> Result<Value, String> {
     let frame = cockpit_frame(app);
     let look = HostLook::from(&tile);
     let payload = frame.payload(width, None, look);
-    let empty = dashboard::scoped_empty(&tile, &payload);
+    let empty = dashboard::scoped_empty(&tile, &payload).or_else(|| no_cards_sentence(&payload));
     let mut scoped = match kept_hosts(&tile, &payload) {
         Some(keep) => frame.payload(width, Some(&keep), look),
         None => payload,
     };
     tile_scope::stamp_empty(&mut scoped, empty);
     Ok(scoped)
+}
+
+/// The overview's sentence, when there is no card to fill a Full view with.
+/// `scoped_empty` leaves a source's `message` to its panel body, and this panel's
+/// body is its cards.
+fn no_cards_sentence(payload: &Value) -> Option<String> {
+    let no_cards = payload["hosts"].as_array().is_some_and(Vec::is_empty);
+    no_cards
+        .then(|| payload["empty"]["message"].as_str().map(str::to_owned))
+        .flatten()
 }
 
 /// The card ids a Machines tile keeps, read from the payload `cockpit_with`
@@ -3146,20 +3182,21 @@ fn cockpit_frame(state: &App) -> CockpitFrame {
         .iter()
         .map(|polled| Arc::clone(&polled.state))
         .collect();
-    let local = state.local.lock().expect("local state poisoned").card();
     // Re-read every frame rather than captured at startup, for the same reason
     // the GitHub loop re-reads its token: that is what makes a Settings edit
     // apply without a relaunch. The store lock is taken after the poll set's is
     // released, matching `poll_containers`'s sequence, and is held for one read.
-    let (alerts, hidden) = {
+    let (alerts, hidden, local_on) = {
         let store = state.store.lock().expect("store poisoned");
         (
             store.settings().machine_alerts.clone(),
             volumes::Hidden::from_store(&store),
+            store.settings().local_monitoring_enabled,
         )
     };
+    let local = local_on.then(|| state.local.lock().expect("local state poisoned").card());
     CockpitFrame {
-        cards: cockpit_cards(Some(local), &hosts),
+        cards: cockpit_cards(local, &hosts),
         configured_remotes: hosts.len(),
         alerts,
         hidden,
@@ -3198,23 +3235,82 @@ fn apply_machine_preferences(
 /// Stamped when the walk returns, not before it starts, like every provider
 /// below: a reading is as old as the moment it was taken.
 async fn poll_claude_rollups(app: &Arc<App>) {
+    rollups_pass(app, read_claude_usage).await;
+}
+
+/// [`poll_claude_rollups`] over any walk, so a test can prove off never walks.
+async fn rollups_pass<W>(app: &Arc<App>, walk: W)
+where
+    W: FnOnce() -> (Option<usage::UsageSummary>, Option<String>) + Send + 'static,
+{
+    let enabled = app
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .claude_local_logs_enabled;
+    if !enabled {
+        app.usage
+            .lock()
+            .expect("usage state poisoned")
+            .clear_claude();
+        return;
+    }
     // Blocking: this walks a directory tree that can hold ~1600 files.
-    let claude = tokio::task::spawn_blocking(read_claude_usage)
+    let claude = tokio::task::spawn_blocking(walk)
         .await
         .map_err(|e| eprintln!("Claude usage walk failed: {e}"))
         .ok();
     if let Some((summary, error)) = claude {
-        apply_claude_pass(
-            &app.usage,
-            &app.services_wake,
-            summary,
-            panel::now_unix(),
-            error,
-        );
+        app.usage
+            .lock()
+            .expect("usage state poisoned")
+            .apply_claude(summary, panel::now_unix(), error);
     }
 }
 
-/// One pass over the Usage panel's metered providers: Neon, Sentry and Vercel.
+/// One vendor's API spend, on the terms of the metered providers below: "no
+/// key" hides the row, and a keychain that will not answer must not.
+///
+/// `request` turns the key into the read. The Admin key lives for this call:
+/// it goes from the credential store to the request and is dropped.
+async fn poll_api_spend<R, F>(
+    app: &Arc<App>,
+    key: SecretKey,
+    state: fn(&mut UsageState) -> &mut usage::ProviderState<::usage::ApiSpendSummary>,
+    request: R,
+) where
+    R: FnOnce(String) -> Option<F>,
+    F: std::future::Future<Output = Result<::usage::ApiSpendSummary, ::usage::ApiSpendError>>,
+{
+    let usage = || app.usage.lock().expect("usage state poisoned");
+    match read_credential(&*app.credentials, key) {
+        Credential::Absent => state(&mut usage()).unconfigure(),
+        Credential::Unreadable => {
+            state(&mut usage()).unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
+        }
+        Credential::Present(secret) => {
+            let Some(read) = request(secret) else {
+                return;
+            };
+            state(&mut usage()).begin();
+            let result = read.await;
+            let mut panel_state = usage();
+            match result {
+                Ok(summary) => state(&mut panel_state).succeeded(
+                    summary,
+                    panel::now_unix(),
+                    summary
+                        .is_unmeasured()
+                        .then(|| ::usage::api_spend::NO_SPEND_MESSAGE.to_owned()),
+                ),
+                Err(e) => state(&mut panel_state).failed(e.user_message()),
+            }
+        }
+    }
+}
+
+/// One pass over the metered providers: Neon, Sentry, Vercel and API spend.
 ///
 /// Each reading is stamped with `panel::now_unix()` as its own read completes.
 /// There is deliberately no pass-start time in scope here: a stamp taken
@@ -3384,6 +3480,27 @@ async fn poll_usage_providers(app: &Arc<App>) {
             }
         }
     }
+
+    poll_api_spend(
+        app,
+        SecretKey::AnthropicAdminKey,
+        UsageState::anthropic_api_mut,
+        |key| {
+            usage::AnthropicCostClient::new(&key)
+                .map(|client| async move { client.month_to_date(github::now_utc()).await })
+        },
+    )
+    .await;
+    poll_api_spend(
+        app,
+        SecretKey::OpenAiAdminKey,
+        UsageState::openai_api_mut,
+        |key| {
+            usage::OpenAiCostClient::new(&key)
+                .map(|client| async move { client.month_to_date(github::now_utc()).await })
+        },
+    )
+    .await;
 }
 
 /// Walks Claude Code's log root, returning the summary and the shell's own
@@ -3523,18 +3640,21 @@ async fn usage_loop(app: Arc<App>) {
 /// The two plan opt-ins and their cadence, as the store holds them now.
 fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
     assert_store_not_held(store);
-    let (claude, codex) = {
+    let (claude, codex, claude_local_logs) = {
         let store = store.lock().expect("store poisoned");
         let settings = store.settings();
         (
             settings.claude_plan_usage_enabled,
             settings.codex_plan_usage_enabled,
+            settings.claude_local_logs_enabled,
         )
     };
     plan_usage::PlanInputs {
         claude,
         codex,
         cadence_secs: panel_interval(store, PanelInterval::PlanUsage).as_secs(),
+        claude_local_logs,
+        spend_cadence_secs: panel_interval(store, PanelInterval::UsageProviders).as_secs(),
     }
 }
 
@@ -3917,9 +4037,7 @@ static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn usage(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(&state, "claudeUsage", tile.as_deref(), || {
-        usage_unscoped(&state)
-    })
+    scope_to_tile(&state, "usage", tile.as_deref(), || usage_unscoped(&state))
 }
 
 /// [`usage`] without a tile: the whole source, as the dashboard reads it.
@@ -3941,16 +4059,63 @@ fn usage_unscoped(state: &App) -> Value {
     // it is what each section's freshness line is measured against, and a
     // shortened interval must re-date those sections now.
     let cadence_secs = panel_interval(&state.store, PanelInterval::UsageProviders).as_secs();
-    // The plan opt-ins, read here rather than by the poller: switching one off
-    // must hide its rows on this frame, not after the next pass drops them.
-    let plans = plan_inputs(&state.store);
     let payload = {
         let panel = state.usage.lock().expect("usage state poisoned");
-        usage::view(&panel, quota, rates, plans, cadence_secs, panel::now_unix())
+        usage::view(&panel, quota, rates, cadence_secs, panel::now_unix())
     };
     FIRST_USAGE_REQUEST.call_once(|| {
         let providers = payload["providers"].as_array().map_or(0, Vec::len);
         eprintln!("usage: first frontend request ({providers} provider section(s))");
+    });
+    payload
+}
+
+/// Guards the Anthropic panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_ANTHROPIC_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn anthropic(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
+    scope_to_tile(&state, "anthropic", tile.as_deref(), || {
+        anthropic_unscoped(&state)
+    })
+}
+
+/// [`anthropic`] without a tile: the whole source, as the dashboard reads it.
+fn anthropic_unscoped(state: &App) -> Value {
+    // The plan opt-in, read here rather than by the poller: switching it off
+    // must hide its row on this frame, not after the next pass drops it.
+    let plans = plan_inputs(&state.store);
+    let payload = {
+        let panel = state.usage.lock().expect("usage state poisoned");
+        usage::anthropic_view(&panel, plans, panel::now_unix())
+    };
+    FIRST_ANTHROPIC_REQUEST.call_once(|| {
+        let plans = payload["plans"].as_array().map_or(0, Vec::len);
+        eprintln!("anthropic: first frontend request ({plans} plan section(s))");
+    });
+    payload
+}
+
+/// Guards the OpenAI panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_OPENAI_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn openai(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
+    scope_to_tile(&state, "openai", tile.as_deref(), || {
+        openai_unscoped(&state)
+    })
+}
+
+/// [`openai`] without a tile: the whole source, as the dashboard reads it.
+fn openai_unscoped(state: &App) -> Value {
+    let plans = plan_inputs(&state.store);
+    let payload = {
+        let panel = state.usage.lock().expect("usage state poisoned");
+        usage::openai_view(&panel, plans, panel::now_unix())
+    };
+    FIRST_OPENAI_REQUEST.call_once(|| {
+        let plans = payload["plans"].as_array().map_or(0, Vec::len);
+        eprintln!("openai: first frontend request ({plans} plan section(s))");
     });
     payload
 }
@@ -3967,9 +4132,15 @@ fn services(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<V
 
 /// [`services`] without a tile: the whole source, as the dashboard reads it.
 fn services_unscoped(state: &App) -> Value {
+    let added = state
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .service_health_enabled;
     let payload = {
         let statuses = state.services.lock().expect("services poisoned");
-        services::view(&statuses)
+        services::view(&statuses, added)
     };
     FIRST_SERVICES_REQUEST.call_once(|| {
         // The row count leads, because `trailing` is deliberately empty when
@@ -4413,41 +4584,6 @@ fn wake_target(panel: PanelInterval) -> WakeTarget {
     }
 }
 
-/// Folds one rollup walk into the usage state and wakes the Services loop if
-/// that changed whether Claude rollups exist.
-///
-/// Anthropic's row in Services is evidence-driven by exactly this, and nothing
-/// edited by hand changes it, so nothing else would wake the Services loop for
-/// it: the row would appear (or go) a whole Services cadence late. Only on a
-/// change -- a wake per usage pass would make the cadence setting a lie.
-/// Presence is read **before** the walk is applied: reading it after would
-/// compare the new state with itself.
-fn apply_claude_pass(
-    usage: &Mutex<UsageState>,
-    services_wake: &tokio::sync::Notify,
-    summary: Option<usage::UsageSummary>,
-    at: u64,
-    error: Option<String>,
-) -> bool {
-    let (was_present, is_present) = {
-        let mut usage = usage.lock().expect("usage state poisoned");
-        let was_present = usage.claude_present();
-        usage.apply_claude(summary, at, error);
-        (was_present, usage.claude_present())
-    };
-    let flipped = claude_presence_wakes_services(was_present, is_present);
-    if flipped {
-        services_wake.notify_one();
-    }
-    flipped
-}
-
-/// Whether a usage pass should wake the Services loop: only when Claude
-/// rollups appeared or disappeared (`services::active_vendors`' fifth input).
-fn claude_presence_wakes_services(was_present: bool, is_present: bool) -> bool {
-    was_present != is_present
-}
-
 /// Hands the staleness windows cached in panel state (GitHub, Claude rollups,
 /// Services) the cadence the store holds *now*.
 ///
@@ -4616,9 +4752,190 @@ fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>
     settings_response(&state, status)
 }
 
-/// One plan opt-in (`provider` is `"claude"` or `"codex"`). Saves on the
-/// spot, like the crash-reporting toggle, and for the same reason: consent is
-/// not a draft.
+/// Everything a source's steps apply, all at once on Finish.
+///
+/// Nothing is written before this: Back and Cancel have nothing to undo, and
+/// reading another program's sign-in stays behind the operator's Finish.
+///
+/// `parts` are the ids still ticked, so an empty list is Remove source. `secret`
+/// is the Admin key the operator typed, if any; the argument is never logged and
+/// goes straight to the credential store.
+#[tauri::command]
+fn settings_save_source(
+    kind: String,
+    parts: Vec<String>,
+    secret: Option<String>,
+    add_tile: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let outcome = save_source_in(&state, &kind, &parts, secret.as_deref(), add_tile);
+    let saved = outcome.is_ok();
+    let status = outcome.unwrap_or_else(|refusal| refusal);
+    let mut response = settings_response(&state, Some(status));
+    response["saved"] = json!(saved);
+    response
+}
+
+/// The one flag a source's steps own, and the part that sets it. A source with
+/// neither a flag nor a local part is derived from its key and its plan alone.
+fn source_flag<'a>(
+    settings: &'a mut store::Settings,
+    kind: &str,
+) -> Option<(&'a mut bool, &'static str)> {
+    match kind {
+        "anthropic" => Some((&mut settings.claude_local_logs_enabled, "local")),
+        "local" => Some((&mut settings.local_monitoring_enabled, "local")),
+        "services" => Some((&mut settings.service_health_enabled, "services")),
+        _ => None,
+    }
+}
+
+/// The layout with a tile of `source` in it, and the revision it was read at, or
+/// `None` when one is already there. Everything [`persist_dashboard`] can refuse
+/// is refused here, so a caller can ask before it writes anything.
+fn layout_with_tile(
+    store: &Store,
+    source: &str,
+) -> Result<Option<(store::DashboardLayout, u64)>, String> {
+    let current = store
+        .dashboard()
+        .cloned()
+        .unwrap_or_else(dashboard::default_layout);
+    let Some(next) = dashboard::with_source_tile(&current, source) else {
+        return Ok(None);
+    };
+    dashboard::validate(&next)?;
+    dashboard::check_tile_count(current.tiles.len(), next.tiles.len())?;
+    Ok(Some((next, current.revision)))
+}
+
+/// [`settings_save_source`], apart from the Tauri state so tests can drive it.
+///
+/// `Err` is the sentence to show, and the steps stay open with the operator's
+/// choices. Every refusal comes before the first write, so it changes nothing.
+/// Only an I/O failure can follow a write, and Finish is safe to repeat after
+/// one: the flag and the tile go back, and a key or plan already written stays.
+fn save_source_in(
+    app: &App,
+    kind: &str,
+    parts: &[String],
+    secret: Option<&str>,
+    add_tile: bool,
+) -> Result<String, String> {
+    let wants = |part: &str| parts.iter().any(|id| id == part);
+    let (title, tile_source, key, plan) = match kind {
+        "anthropic" => (
+            settings::ANTHROPIC_TITLE,
+            "anthropic",
+            Some(SecretKey::AnthropicAdminKey),
+            Some(subscription::Provider::Claude),
+        ),
+        "openai" => (
+            settings::OPENAI_TITLE,
+            "openai",
+            Some(SecretKey::OpenAiAdminKey),
+            Some(subscription::Provider::Codex),
+        ),
+        "local" => (settings::LOCAL_TITLE, "hosts", None, None),
+        "services" => (settings::SERVICES_TITLE, "services", None, None),
+        _ => return Err("Skipped \u{2014} unknown source.".to_owned()),
+    };
+
+    // Whatever can refuse goes first.
+    let secret = secret.map(str::trim).filter(|value| !value.is_empty());
+    let credential = key.map(|key| read_credential(&*app.credentials, key));
+    if wants("api") && secret.is_none() && matches!(credential, Some(Credential::Absent)) {
+        return Err("Enter an Admin API key, or untick API key.".to_owned());
+    }
+    // Unticked means delete, and a store that won't answer can't say whether
+    // there is anything to delete. "Removed" would be a guess.
+    if !wants("api") && matches!(credential, Some(Credential::Unreadable)) {
+        return Err(
+            "Couldn't read the credential store, so a stored API key can't be removed. \
+             Nothing changed."
+                .to_owned(),
+        );
+    }
+    let wants_tile = add_tile && !parts.is_empty();
+    if wants_tile {
+        layout_with_tile(&app.store.lock().expect("store poisoned"), tile_source)?;
+    }
+
+    if let Some(key) = key {
+        let stored = matches!(credential, Some(Credential::Present(_)));
+        let written = match (wants("api"), secret) {
+            (true, Some(value)) => app.credentials.set_secret(key, value),
+            (false, _) if stored => app.credentials.delete_secret(key),
+            _ => Ok(()),
+        };
+        if let Err(e) = written {
+            // `SecretError` carries the account name and never the value.
+            eprintln!("could not store a credential: {e}");
+            return Err(
+                "Failed to save \u{2014} the credential store rejected the write.".to_owned(),
+            );
+        }
+    }
+
+    // Only on a change: a toggle resets the provider, which would un-park a
+    // refused keychain and re-read a sign-in because a walk was reopened.
+    if let Some(provider) = plan {
+        let inputs = plan_inputs(&app.store);
+        if inputs.enabled(provider) != wants("subscription") {
+            let status = set_plan_usage(app, provider_id(provider), wants("subscription"));
+            if let Some(failed) = status.filter(|status| status.starts_with("Failed")) {
+                return Err(failed);
+            }
+        }
+    }
+
+    // One lock and one save, with the tile derived inside it: no dashboard edit
+    // can land between the read and the write.
+    {
+        let mut store = app.store.lock().expect("store poisoned");
+        let previous = source_flag(store.settings_mut(), kind)
+            .map(|(flag, part)| std::mem::replace(flag, wants(part)));
+        let tile = if wants_tile {
+            layout_with_tile(&store, tile_source)
+        } else {
+            Ok(None)
+        };
+        let written = tile.and_then(|tile| match tile {
+            Some((next, revision)) => persist_dashboard(&mut store, next, revision).map(drop),
+            None => store.save().map_err(|error| format!("Failed: {error}")),
+        });
+        if let Err(failed) = written {
+            if let (Some(previous), Some((flag, _))) =
+                (previous, source_flag(store.settings_mut(), kind))
+            {
+                *flag = previous;
+            }
+            return Err(failed);
+        }
+    }
+
+    match kind {
+        "anthropic" => wake_usage(app, UsageWake::Everything),
+        "openai" => wake_usage(app, UsageWake::Providers),
+        "local" => app.containers_wake.notify_one(),
+        _ => {}
+    }
+    // Any of these can add or remove a watched status page.
+    wake_services(app);
+    let word = if parts.is_empty() { "removed" } else { "saved" };
+    Ok(format!("{title} {word}."))
+}
+
+/// The command vocabulary [`apply_plan_usage`] takes.
+const fn provider_id(provider: subscription::Provider) -> &'static str {
+    match provider {
+        subscription::Provider::Claude => "claude",
+        subscription::Provider::Codex => "codex",
+    }
+}
+
+/// One plan opt-in (`provider` is `"claude"` or `"codex"`), applied with the
+/// rest of a source's Finish.
 ///
 /// **Off is applied before the save and regardless of it.** The loop reads the
 /// in-memory store, so a provider switched off is never read again in this
@@ -4629,18 +4946,9 @@ fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>
 /// Either direction resets the provider's in-memory state: off drops its
 /// reading, and on starts clean, which is also what un-parks a provider the
 /// keychain refused.
-#[tauri::command]
-fn settings_set_plan_usage(
-    provider: String,
-    enabled: bool,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let status = set_plan_usage(&state, &provider, enabled);
-    settings_response(&state, status)
-}
-
-/// [`apply_plan_usage`], then a wake for the plan loop unless the provider was
-/// unknown: a refused toggle changed nothing, so there is nothing to re-read.
+///
+/// The wake is skipped when the provider was unknown: a refused toggle changed
+/// nothing, so there is nothing to re-read.
 fn set_plan_usage(app: &App, provider: &str, enabled: bool) -> Option<String> {
     match apply_plan_usage(&app.store, &app.usage, provider, enabled) {
         PlanApply::Skipped(message) => Some(message),
@@ -4671,7 +4979,7 @@ impl PlanApply {
     }
 }
 
-/// The store-mutate-and-reset step of [`settings_set_plan_usage`], apart from
+/// The store-mutate-and-reset step of [`set_plan_usage`], apart from
 /// the Tauri state so tests can drive it. The two locks are taken one after the
 /// other, never nested.
 fn apply_plan_usage(
@@ -6382,8 +6690,10 @@ fn dump_showcase_dashboard() -> Value {
             dump_github_showcase(false),
             dump_github_showcase(true),
             dump_containers_showcase(),
-            services::view(&services::showcase_statuses()),
+            services::view(&services::showcase_statuses(), true),
             dump_crons(crons::Fixture::Healthy, false),
+            dump_anthropic(usage::Fixture::Showcase, false),
+            dump_openai(usage::Fixture::Showcase, false),
             dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA),
             dump_azure(azure::Fixture::Measured, false, SHOWCASE_AZURE_BUDGET),
             dump_openclaw(openclaw::Fixture::Showcase),
@@ -6418,10 +6728,12 @@ fn dump_containers_showcase() -> Value {
 /// rather than one hand-assembled in JS. A hand-built envelope could not
 /// notice `host_columns` or the payload's own key names drifting.
 ///
-/// `hosts` takes the first N of them — 0 is the unconfigured cockpit, which is
-/// a real state with its own rendering. The **local card always leads**, exactly
-/// as it does in the live payload, so `--hosts 0` is a fresh install (one local
-/// card plus the "add a host" line) rather than a blank page.
+/// `hosts` takes the first N of them — 0 is the cockpit with no remote host,
+/// which is a real state with its own rendering. The **local card leads**, as
+/// it does in the live payload once This machine is added, so `--hosts 0` is one
+/// local card plus the "add a host" line. A fresh install has no card at all,
+/// which no dump reaches: `a_machines_tile_with_no_card_says_so_in_its_full_view`
+/// covers that.
 ///
 /// `overflow` is the General tab's preference, so `--tabs` at a stacked width
 /// dumps the tab bar — the one host-grid rendering no other fixture reaches.
@@ -6478,34 +6790,72 @@ const FIXTURE_USAGE_QUOTA: u64 = 10_000;
 /// The e2e fixture's Azure budget, which its projected month lands at 97% of.
 const FIXTURE_AZURE_BUDGET: f64 = 2_000.0;
 
-fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
-    const NOW: u64 = 1_700_000_000;
-    let cadence_secs = u64::from(PanelInterval::UsageProviders.spec().default_secs);
-    let providers_at = if stale { NOW - 23 * 3_600 } else { NOW };
-    // The plan rows show on the fixture that holds a reading of them, stale or
-    // not: the stale dump must keep every row the healthy one has (only its
-    // clocks move), or the browser suite's equal-height check would be
-    // comparing two different bodies. Every other dump renders the panel as a
-    // store starts, both plans off, which puts the setup line in front of the
-    // browser suite.
-    let plans = if matches!(
+/// The instant every Usage, Anthropic and OpenAI dump is rendered at.
+const USAGE_DUMP_NOW: u64 = 1_700_000_000;
+
+/// The hand-made state behind those three dumps. `stale` moves the slow clock,
+/// the metered providers' and the plans', and leaves Claude's walk current.
+fn dump_usage_state(kind: usage::Fixture, stale: bool) -> usage::UsageState {
+    let providers_at = if stale {
+        USAGE_DUMP_NOW - 23 * 3_600
+    } else {
+        USAGE_DUMP_NOW
+    };
+    usage::fixture_state(kind, USAGE_DUMP_NOW, providers_at)
+}
+
+/// Whether This machine is a source right now.
+fn local_monitoring_on(store: &Mutex<Store>) -> bool {
+    assert_store_not_held(store);
+    store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .local_monitoring_enabled
+}
+
+/// The plan rows show on the fixture that holds a reading of them, stale or
+/// not: the stale dump must keep every row the healthy one has (only its clocks
+/// move), or the browser suite's equal-height check would be comparing two
+/// different bodies. Every other dump renders as a store starts, both plans
+/// off, which puts the setup line in front of the browser suite.
+fn dump_plan_inputs(kind: usage::Fixture) -> plan_usage::PlanInputs {
+    if matches!(
         kind,
         usage::Fixture::Measured | usage::Fixture::Showcase | usage::Fixture::PlanEdges
     ) {
         usage::FIXTURE_PLANS
     } else {
         plan_usage::PlanInputs::OFF
-    };
+    }
+}
+
+fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
     usage::view(
-        &usage::fixture_state(kind, NOW, providers_at),
+        &dump_usage_state(kind, stale),
         quota,
         usage::NeonRates {
             usd_per_cu_hour: 0.106,
             usd_per_gib_month: 0.35,
         },
-        plans,
-        cadence_secs,
-        NOW,
+        u64::from(PanelInterval::UsageProviders.spec().default_secs),
+        USAGE_DUMP_NOW,
+    )
+}
+
+fn dump_anthropic(kind: usage::Fixture, stale: bool) -> Value {
+    usage::anthropic_view(
+        &dump_usage_state(kind, stale),
+        dump_plan_inputs(kind),
+        USAGE_DUMP_NOW,
+    )
+}
+
+fn dump_openai(kind: usage::Fixture, stale: bool) -> Value {
+    usage::openai_view(
+        &dump_usage_state(kind, stale),
+        dump_plan_inputs(kind),
+        USAGE_DUMP_NOW,
     )
 }
 
@@ -6598,6 +6948,8 @@ fn dump_settings() -> Value {
         neon: false,
         sentry: true,
         vercel: true,
+        anthropic_admin: settings::StoredKey::Absent,
+        openai_admin: settings::StoredKey::Absent,
         openclaw: false,
         hosts: [live.id].into_iter().collect(),
         accounts: [accounts[0].id].into_iter().collect(),
@@ -6613,6 +6965,9 @@ fn dump_settings() -> Value {
         // show. The default itself is asserted in `crates/store`, where it
         // belongs, and again in the view tests below.
         crash_reporting_enabled: true,
+        // This machine is added and the three other sources with steps are
+        // not, so the fixture has a row to reopen and a catalog entry to add.
+        local_monitoring_enabled: true,
         // Exactly one panel configured, for the same reason: the cadence rows
         // render two ways — an override (whose **Use default** button is live)
         // and a panel nobody has ever set — and a fixture carrying only one of
@@ -6657,6 +7012,11 @@ fn dump_settings() -> Value {
             certificate_changed: &certificate_changed,
             plain_refused: &[],
             accounts: &accounts,
+            tile_sources: &dashboard::default_layout()
+                .tiles
+                .into_iter()
+                .map(|tile| tile.source)
+                .collect::<Vec<_>>(),
         },
         &stored,
         &facts,
@@ -6887,8 +7247,10 @@ fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
         dump_github(false, false),
         dump_github(false, true),
         dump_containers(false),
-        services::view(&services::fixture_statuses()),
+        services::view(&services::fixture_statuses(), true),
         dump_crons(crons::Fixture::Alerting, false),
+        dump_anthropic(usage::Fixture::Measured, false),
+        dump_openai(usage::Fixture::Measured, false),
         dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
         dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
         dump_openclaw(openclaw::Fixture::Connected),
@@ -7066,8 +7428,8 @@ fn run_dump(args: &[String]) -> bool {
         }
         return true;
     }
-    if let Some(path) = dump_flag_path(args, "--dump-usage", "sample-usage.json") {
-        let kind = if empty {
+    let usage_fixture = || {
+        if empty {
             usage::Fixture::Empty
         } else if args.iter().any(|arg| arg == "--unmeasured") {
             usage::Fixture::Unmeasured
@@ -7077,7 +7439,18 @@ fn run_dump(args: &[String]) -> bool {
             usage::Fixture::Showcase
         } else {
             usage::Fixture::Measured
-        };
+        }
+    };
+    if let Some(path) = dump_flag_path(args, "--dump-anthropic", "sample-anthropic.json") {
+        write_json(&path, &dump_anthropic(usage_fixture(), stale));
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-openai", "sample-openai.json") {
+        write_json(&path, &dump_openai(usage_fixture(), stale));
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-usage", "sample-usage.json") {
+        let kind = usage_fixture();
         let quota = if showcase {
             SHOWCASE_USAGE_QUOTA
         } else {
@@ -7131,7 +7504,7 @@ fn run_dump(args: &[String]) -> bool {
             }
             statuses
         };
-        write_json(&path, &services::view(&statuses));
+        write_json(&path, &services::view(&statuses, true));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-crons", "sample-crons.json") {
@@ -7478,7 +7851,12 @@ fn main() {
     // credential — it starts whether or not a GitHub token exists.
     rt.spawn(services_loop(Arc::clone(&app)));
     // This machine, on the host cadence — the card that leads the grid.
-    rt.spawn(local::poll_loop(Arc::clone(&app.local), POLL_INTERVAL));
+    let local_app = Arc::clone(&app);
+    rt.spawn(local::poll_loop(
+        Arc::clone(&app.local),
+        POLL_INTERVAL,
+        move || local_monitoring_on(&local_app.store),
+    ));
     // Usage: Claude on its rollup cadence, Neon, Sentry and Vercel on their own cadence
     // inside the same loop.
     rt.spawn(usage_loop(Arc::clone(&app)));
@@ -7565,6 +7943,8 @@ fn main() {
             runners,
             runners_forget,
             usage,
+            anthropic,
+            openai,
             azure_cost,
             services,
             crons,
@@ -7582,7 +7962,7 @@ fn main() {
             panel_interval_save,
             panel_interval_clear,
             settings_set_crash_reporting,
-            settings_set_plan_usage,
+            settings_save_source,
             settings_save_azure,
             settings_save_providers,
             settings_add_host,
@@ -7745,33 +8125,557 @@ mod tests {
         }
     }
 
-    /// A usage pass wakes Services only when Claude rollups appear or vanish
-    /// (#627), not on every pass.
+    fn parts(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    /// The operator this rework is for: Subscription ticked, nothing else, and
+    /// nothing else may turn on.
     #[test]
-    fn services_wake_only_when_claude_presence_changes() {
-        assert!(claude_presence_wakes_services(false, true), "appeared");
-        assert!(claude_presence_wakes_services(true, false), "disappeared");
-        assert!(
-            !claude_presence_wakes_services(false, false),
-            "still absent"
+    fn a_walk_turns_on_what_was_ticked_and_nothing_else() {
+        let (_dir, _rt, app) = test_app();
+        let status =
+            save_source_in(&app, "anthropic", &parts(&["subscription"]), None, false).unwrap();
+        assert_eq!(status, "Anthropic saved.");
+        let store = app.store.lock().unwrap();
+        assert!(store.settings().claude_plan_usage_enabled);
+        assert!(!store.settings().claude_local_logs_enabled);
+        drop(store);
+        assert!(app
+            .credentials
+            .secret(SecretKey::AnthropicAdminKey)
+            .unwrap()
+            .is_none());
+        assert!(woken(&app.plan_usage_wake), "the plan loop was not told");
+    }
+
+    /// The key goes to the credential store and nowhere else.
+    #[test]
+    fn an_admin_key_is_stored_in_the_credential_store_and_not_the_store_file() {
+        let (dir, _rt, app) = test_app();
+        save_source_in(
+            &app,
+            "openai",
+            &parts(&["api"]),
+            Some(" sk-admin-x "),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::OpenAiAdminKey)
+                .unwrap()
+                .as_deref(),
+            Some("sk-admin-x")
         );
-        assert!(!claude_presence_wakes_services(true, true), "still present");
+        app.store.lock().unwrap().save().unwrap();
+        let on_disk = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .collect::<String>();
+        assert!(!on_disk.is_empty());
+        assert!(!on_disk.contains("sk-admin-x"));
+    }
+
+    /// A stored key is kept by leaving the field empty, and unticking the part
+    /// is what clears it.
+    #[test]
+    fn unticking_the_api_part_clears_the_key_and_leaving_it_empty_keeps_it() {
+        let (_dir, _rt, app) = test_app();
+        let key = SecretKey::AnthropicAdminKey;
+        app.credentials.set_secret(key, "sk-ant-admin01-x").unwrap();
+        save_source_in(&app, "anthropic", &parts(&["api"]), None, false).unwrap();
+        assert!(app.credentials.secret(key).unwrap().is_some());
+        save_source_in(&app, "anthropic", &parts(&[]), None, false).unwrap();
+        assert!(app.credentials.secret(key).unwrap().is_none());
+    }
+
+    /// Refused before anything is written, so the operator's other ticks are
+    /// not half-applied behind the message.
+    #[test]
+    fn the_api_part_with_no_key_is_refused_and_changes_nothing() {
+        let (_dir, _rt, app) = test_app();
+        let refusal = save_source_in(
+            &app,
+            "anthropic",
+            &parts(&["api", "subscription", "local"]),
+            Some("   "),
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(refusal, "Enter an Admin API key, or untick API key.");
+        let store = app.store.lock().unwrap();
+        assert!(!store.settings().claude_plan_usage_enabled);
+        assert!(!store.settings().claude_local_logs_enabled);
+        assert!(store.dashboard().is_none());
+    }
+
+    /// Reopening and pressing Finish must not reset the provider, which would
+    /// un-park a refused keychain and ask macOS all over again.
+    #[test]
+    fn finishing_with_the_subscription_unchanged_leaves_the_plan_alone() {
+        let (_dir, _rt, app) = test_app();
+        save_source_in(&app, "anthropic", &parts(&["subscription"]), None, false).unwrap();
+        app.usage
+            .lock()
+            .unwrap()
+            .plan_mut(subscription::Provider::Claude)
+            .park_for_test();
+        save_source_in(&app, "anthropic", &parts(&["subscription"]), None, false).unwrap();
+        let usage = app.usage.lock().unwrap();
+        assert_eq!(
+            plan_usage::gate(true, usage.plan(subscription::Provider::Claude), 1, 900),
+            plan_usage::Gate::Parked
+        );
+    }
+
+    #[test]
+    fn a_walk_adds_one_tile_and_only_one() {
+        let (_dir, _rt, app) = test_app();
+        save_source_in(&app, "anthropic", &parts(&["subscription"]), None, true).unwrap();
+        save_source_in(&app, "anthropic", &parts(&["subscription"]), None, true).unwrap();
+        let store = app.store.lock().unwrap();
+        let layout = store.dashboard().unwrap();
+        assert_eq!(
+            layout
+                .tiles
+                .iter()
+                .filter(|t| t.source == "anthropic")
+                .count(),
+            1
+        );
+        dashboard::validate(layout).unwrap();
+    }
+
+    /// Unticked, or a source already on the overview, adds nothing.
+    #[test]
+    fn a_walk_leaves_the_overview_alone_when_no_tile_was_asked_for() {
+        let (_dir, _rt, app) = test_app();
+        save_source_in(&app, "anthropic", &parts(&["subscription"]), None, false).unwrap();
+        save_source_in(&app, "local", &parts(&["local"]), None, true).unwrap();
+        assert!(app.store.lock().unwrap().dashboard().is_none());
+    }
+
+    #[test]
+    fn a_full_dashboard_refuses_the_tile_before_anything_changes() {
+        let (_dir, _rt, app) = test_app();
+        {
+            let mut store = app.store.lock().unwrap();
+            let mut layout = dashboard::default_layout();
+            while layout.tiles.len() < dashboard::MAX_TILES {
+                let mut tile = layout.tiles[0].clone();
+                tile.id = format!("filler-{}", layout.tiles.len());
+                layout.tiles.push(tile);
+            }
+            persist_dashboard(&mut store, layout, 0).unwrap();
+        }
+        let refusal =
+            save_source_in(&app, "anthropic", &parts(&["subscription"]), None, true).unwrap_err();
+        assert!(refusal.contains("up to 48 tiles"), "{refusal}");
+        assert!(
+            !app.store
+                .lock()
+                .unwrap()
+                .settings()
+                .claude_plan_usage_enabled
+        );
+    }
+
+    /// The file is the record. A flag that never reached it must not read as
+    /// saved, or the steps close on a choice the next launch will not find.
+    #[test]
+    fn a_store_that_refuses_the_write_answers_unsaved_and_keeps_the_flag_off() {
+        let (_dir, _rt, app) = test_app();
+        break_store_saves(&app);
+        let outcome = save_source_in(&app, "services", &parts(&["services"]), None, false);
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(!app.store.lock().unwrap().settings().service_health_enabled);
+    }
+
+    #[test]
+    fn a_store_that_refuses_the_write_adds_no_tile_and_keeps_the_flag_off() {
+        let (_dir, _rt, app) = test_app();
+        break_store_saves(&app);
+        let outcome = save_source_in(&app, "anthropic", &parts(&["local"]), None, true);
+        assert!(outcome.is_err(), "{outcome:?}");
+        let store = app.store.lock().unwrap();
+        assert!(!store.settings().claude_local_logs_enabled);
+        assert!(store.dashboard().is_none());
+    }
+
+    #[test]
+    fn a_plan_the_store_refuses_is_not_reported_as_saved() {
+        let (_dir, _rt, app) = test_app();
+        break_store_saves(&app);
+        let outcome = save_source_in(&app, "anthropic", &parts(&["subscription"]), None, false);
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(
+            !app.store
+                .lock()
+                .unwrap()
+                .settings()
+                .claude_plan_usage_enabled
+        );
+    }
+
+    /// `validate` is a refusal like the tile limit, so it goes before the first
+    /// write too. A store hand-edited or written by another build can hold a
+    /// layout the next save refuses.
+    #[test]
+    fn a_tile_the_saved_layout_refuses_changes_nothing() {
+        let (_dir, _rt, app) = test_app();
+        {
+            let mut store = app.store.lock().unwrap();
+            let mut layout = dashboard::default_layout();
+            layout
+                .tiles
+                .push(store::DashboardTile::new("mine", "nope", "Mine", "all"));
+            store.save_dashboard(layout).unwrap();
+        }
+        let outcome = save_source_in(
+            &app,
+            "anthropic",
+            &parts(&["api", "local", "subscription"]),
+            Some("sk-ant-admin01-typed"),
+            true,
+        );
+        assert!(outcome.is_err(), "{outcome:?}");
+        let store = app.store.lock().unwrap();
+        assert!(!store.settings().claude_local_logs_enabled);
+        assert!(!store.settings().claude_plan_usage_enabled);
+        drop(store);
+        assert!(matches!(
+            read_credential(&*app.credentials, SecretKey::AnthropicAdminKey),
+            Credential::Absent
+        ));
+    }
+
+    #[test]
+    fn the_services_panel_reads_the_source_when_it_renders() {
+        let (_dir, _rt, app) = test_app();
+        app.services.lock().unwrap().watching(Vec::new());
+        let off = services_unscoped(&app);
+        assert!(off["empty"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Service health isn"));
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .service_health_enabled = true;
+        assert_eq!(
+            services_unscoped(&app)["empty"]["message"],
+            services::NOTHING_WATCHED_MESSAGE
+        );
+    }
+
+    #[test]
+    fn removing_a_source_turns_every_part_off_and_keeps_its_tile() {
+        let (_dir, _rt, app) = test_app();
+        app.credentials
+            .set_secret(SecretKey::AnthropicAdminKey, "k")
+            .unwrap();
+        save_source_in(
+            &app,
+            "anthropic",
+            &parts(&["api", "subscription", "local"]),
+            None,
+            true,
+        )
+        .unwrap();
+        let status = save_source_in(&app, "anthropic", &parts(&[]), None, true).unwrap();
+        assert_eq!(status, "Anthropic removed.");
+        let store = app.store.lock().unwrap();
+        assert!(!store.settings().claude_plan_usage_enabled);
+        assert!(!store.settings().claude_local_logs_enabled);
+        assert!(store
+            .dashboard()
+            .unwrap()
+            .tiles
+            .iter()
+            .any(|tile| tile.source == "anthropic"));
+    }
+
+    /// Remove source sends the same `add_tile` the steps were opened with, and
+    /// a source nobody has any more must not arrive as a new empty tile.
+    #[test]
+    fn removing_a_source_never_adds_its_tile() {
+        let (_dir, _rt, app) = test_app();
+        save_source_in(&app, "anthropic", &parts(&[]), None, true).unwrap();
+        assert!(app.store.lock().unwrap().dashboard().is_none());
+    }
+
+    #[test]
+    fn this_machine_and_service_health_save_their_own_flag() {
+        let (_dir, _rt, app) = test_app();
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .local_monitoring_enabled = false;
+        save_source_in(&app, "local", &parts(&["local"]), None, false).unwrap();
+        save_source_in(&app, "services", &parts(&["services"]), None, false).unwrap();
+        let store = app.store.lock().unwrap();
+        assert!(store.settings().local_monitoring_enabled);
+        assert!(store.settings().service_health_enabled);
+        drop(store);
+        assert!(woken(&app.containers_wake));
+        assert!(woken(&app.services_wake));
+    }
+
+    #[test]
+    fn an_unknown_source_changes_nothing() {
+        let (_dir, _rt, app) = test_app();
+        let refusal = save_source_in(&app, "neon", &parts(&["api"]), None, true).unwrap_err();
+        assert!(refusal.contains("unknown source"), "{refusal}");
+    }
+
+    /// Off never walks the logs, which is the promise the switch makes, and it
+    /// drops what an earlier walk left so nothing can come back with it.
+    #[test]
+    fn local_usage_off_never_walks_and_drops_the_last_walk() {
+        let (_dir, rt, app) = test_app();
+        let app = Arc::new(app);
+        let inputs = |app: &App| plan_inputs(&app.store);
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .claude_local_logs_enabled = true;
+        rt.block_on(rollups_pass(&app, || {
+            (Some(usage::UsageSummary::default()), None)
+        }));
+        let on = usage::anthropic_view(&app.usage.lock().unwrap(), inputs(&app), 1);
+        assert_eq!(on["trailing"], "0 today");
+
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .claude_local_logs_enabled = false;
+        rt.block_on(rollups_pass(&app, || panic!("walked with local usage off")));
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .claude_local_logs_enabled = true;
+        let again = usage::anthropic_view(&app.usage.lock().unwrap(), inputs(&app), 1);
+        assert_eq!(again["trailing"], "", "nothing retained");
+        assert_eq!(again["message"]["text"], usage::LOADING_MESSAGE);
+    }
+
+    /// A key is the source being added: absent says so, stored reads it, a
+    /// failure keeps the last figure, and "nothing yet" carries its own note.
+    #[test]
+    fn a_spend_pass_follows_the_key() {
+        use ::usage::{ApiSpendError, ApiSpendSummary};
+        let (_dir, rt, app) = test_app();
+        let app = Arc::new(app);
+        let measured = ApiSpendSummary::Measured {
+            usd: 2.5,
+            refreshed_at: None,
+        };
+        let pass = |result: Result<ApiSpendSummary, ApiSpendError>| {
+            rt.block_on(poll_api_spend(
+                &app,
+                SecretKey::AnthropicAdminKey,
+                UsageState::anthropic_api_mut,
+                |key| {
+                    assert_eq!(key, "sk-ant-admin01-x");
+                    Some(std::future::ready(result))
+                },
+            ));
+        };
+        let card = |app: &App| {
+            usage::anthropic_view(
+                &app.usage.lock().unwrap(),
+                plan_usage::PlanInputs::OFF,
+                panel::now_unix(),
+            )
+        };
+
+        rt.block_on(poll_api_spend(
+            &app,
+            SecretKey::AnthropicAdminKey,
+            UsageState::anthropic_api_mut,
+            |_| -> Option<std::future::Ready<_>> { panic!("asked with no key") },
+        ));
+        assert!(app
+            .usage
+            .lock()
+            .unwrap()
+            .anthropic_api_mut()
+            .configured
+            .is_absent());
+
+        app.credentials
+            .set_secret(SecretKey::AnthropicAdminKey, "sk-ant-admin01-x")
+            .unwrap();
+        pass(Ok(measured));
+        assert_eq!(card(&app)["api"]["value"], "$2.50");
+
+        pass(Err(ApiSpendError::Unauthorized {
+            vendor: "Anthropic",
+        }));
+        assert_eq!(card(&app)["api"]["value"], "$2.50");
+        assert!(card(&app)["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Admin API key"));
+
+        pass(Ok(ApiSpendSummary::Unmeasured));
+        assert_eq!(card(&app)["api"]["value"], "\u{2014}");
+        assert!(card(&app)["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains(::usage::api_spend::NO_SPEND_MESSAGE));
+
+        // The key goes, and the figure it read goes with it.
+        app.credentials
+            .delete_secret(SecretKey::AnthropicAdminKey)
+            .unwrap();
+        rt.block_on(poll_api_spend(
+            &app,
+            SecretKey::AnthropicAdminKey,
+            UsageState::anthropic_api_mut,
+            |_| -> Option<std::future::Ready<_>> { panic!("asked with no key") },
+        ));
+        assert!(card(&app)["api"].is_null());
+    }
+
+    /// A keychain that won't answer is evidence of nothing, so the figure stays
+    /// and the reason sits beside it.
+    #[test]
+    fn a_spend_pass_keeps_its_figure_when_the_keychain_will_not_answer() {
+        use ::usage::ApiSpendSummary;
+        let (_dir, rt, app) = test_app_over(UnreadableCredentialStore);
+        let app = Arc::new(app);
+        {
+            let mut state = app.usage.lock().unwrap();
+            state.anthropic_api_mut().begin();
+            state.anthropic_api_mut().succeeded(
+                ApiSpendSummary::Measured {
+                    usd: 2.5,
+                    refreshed_at: None,
+                },
+                panel::now_unix(),
+                None,
+            );
+        }
+
+        rt.block_on(poll_api_spend(
+            &app,
+            SecretKey::AnthropicAdminKey,
+            UsageState::anthropic_api_mut,
+            |_| -> Option<std::future::Ready<_>> { panic!("asked with no key") },
+        ));
+
+        let card = usage::anthropic_view(
+            &app.usage.lock().unwrap(),
+            plan_usage::PlanInputs::OFF,
+            panel::now_unix(),
+        );
+        assert_eq!(card["api"]["value"], "$2.50");
+        assert!(card["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains(CREDENTIAL_UNREADABLE_MESSAGE));
+    }
+
+    /// Solador can't tell whether a key is there to delete, so "removed" would
+    /// be a guess, and a wrong one leaves a key in the keychain the operator
+    /// believes is gone. A write here would panic the test store.
+    #[test]
+    fn a_keychain_that_will_not_answer_refuses_removing_a_key_and_changes_nothing() {
+        let (_dir, _rt, app) = test_app_over(UnreadableCredentialStore);
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .claude_local_logs_enabled = true;
+
+        let refusal = save_source_in(&app, "anthropic", &parts(&[]), None, false).unwrap_err();
+
+        assert!(refusal.contains("credential store"), "{refusal}");
+        assert!(
+            app.store
+                .lock()
+                .unwrap()
+                .settings()
+                .claude_local_logs_enabled
+        );
+    }
+
+    /// With nothing added there is no card and so no panel body, and a Full
+    /// view must not be a title over nothing: the overview's sentence comes with
+    /// it. A tile with a card has a body and carries no sentence.
+    #[test]
+    fn a_machines_tile_with_no_card_says_so_in_its_full_view() {
+        let (_dir, _rt, app) = test_app();
+        tile_in(&app, "t-all", "hosts", "all", false);
+        let with_card = cockpit_for_tile(1400.0, &app, "t-all").unwrap();
+        assert!(with_card.get("tileEmpty").is_none());
+
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .local_monitoring_enabled = false;
+        let none = cockpit_for_tile(1400.0, &app, "t-all").unwrap();
+        assert!(none["hosts"].as_array().unwrap().is_empty());
+        assert_eq!(
+            none["tileEmpty"],
+            "No hosts configured. Add one in Settings."
+        );
+    }
+
+    /// The Admin keys decide whether a source exists, so a store that won't
+    /// answer stays apart from one that has none.
+    #[test]
+    fn stored_secrets_keeps_an_unreadable_admin_key_apart_from_a_missing_one() {
+        let unread = stored_secrets(&UnreadableCredentialStore, &[], &[]);
+        assert_eq!(unread.anthropic_admin, settings::StoredKey::Unread);
+        assert_eq!(unread.openai_admin, settings::StoredKey::Unread);
+        let absent = stored_secrets(&MemoryCredentialStore::new(), &[], &[]);
+        assert_eq!(absent.anthropic_admin, settings::StoredKey::Absent);
+    }
+
+    /// A source that was not added has no card, and adding it brings one.
+    #[test]
+    fn this_machine_has_a_card_only_while_it_is_added() {
+        let (_dir, _rt, app) = test_app();
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .local_monitoring_enabled = false;
+        assert!(cockpit_frame(&app).cards.is_empty());
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .local_monitoring_enabled = true;
+        assert_eq!(cockpit_frame(&app).cards.len(), 1);
     }
 
     /// A real `App` over a throwaway store: the same constructor startup uses,
     /// so the wake and cadence wiring under test is the wiring that ships.
     /// The runtime and directory are returned to keep them alive.
     fn test_app() -> (tempfile::TempDir, tokio::runtime::Runtime, App) {
+        test_app_over(MemoryCredentialStore::new())
+    }
+
+    fn test_app_over(
+        credentials: impl CredentialStore + Send + Sync + 'static,
+    ) -> (tempfile::TempDir, tokio::runtime::Runtime, App) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open_in(dir.path(), false).unwrap();
+        let mut store = Store::open_in(dir.path(), false).unwrap();
+        store.settings_mut().local_monitoring_enabled = true;
         let rt = tokio::runtime::Runtime::new().unwrap();
         let reporting = start_crash_reporting(&store);
-        let app = new_app(
-            store,
-            MemoryCredentialStore::new(),
-            rt.handle().clone(),
-            reporting,
-        );
+        let app = new_app(store, credentials, rt.handle().clone(), reporting);
         (dir, rt, app)
     }
 
@@ -8074,34 +8978,6 @@ mod tests {
             stale(&usage_unscoped(&app)),
             "providers clear moves it back"
         );
-    }
-
-    /// The usage pass seam (#627): Services wakes exactly when presence flips,
-    /// in both directions, and the permit is really stored on the loop's own
-    /// `Notify`. Deleting the wake, or reading presence after applying the
-    /// walk, fails this.
-    #[test]
-    fn a_usage_pass_wakes_services_only_when_claude_presence_flips() {
-        let usage = Mutex::new(UsageState::new());
-        let wake = tokio::sync::Notify::new();
-        let walk = |present: bool| {
-            apply_claude_pass(
-                &usage,
-                &wake,
-                present.then(usage::UsageSummary::default),
-                1,
-                None,
-            )
-        };
-
-        assert!(!walk(false), "absent -> absent");
-        assert!(!woken(&wake));
-        assert!(walk(true), "absent -> present");
-        assert!(woken(&wake), "and the Services loop was actually woken");
-        assert!(!walk(true), "present -> present");
-        assert!(!woken(&wake), "no wake on a pass that changed nothing");
-        assert!(walk(false), "present -> absent");
-        assert!(woken(&wake));
     }
 
     /// A save moves the GitHub, Claude-rollup and Services windows before any
@@ -8816,12 +9692,12 @@ mod tests {
     /// with its own `*_unscoped` builder (`cockpit` with its own `Some(id)` arm).
     /// A command that names a neighbour's source, drops its tile or borrows a
     /// neighbour's builder, which the frontend's double and `scope_to_tile`'s
-    /// own tests would all accept, fails here. So does a tenth command that
+    /// own tests would all accept, fails here. So does a twelfth command that
     /// scopes a tile without a row in the table.
     #[test]
     fn each_panel_command_scopes_its_tile_to_its_own_source() {
         // Command, the function whose body makes the call, and the call's text.
-        let table: [(&str, &str, &str); 9] = [
+        let table: [(&str, &str, &str); 11] = [
             ("cockpit", "cockpit_for_tile", "tile_from_store(app, id, \""),
             ("repos", "repos", "scope_to_tile(&state, \""),
             ("runners", "runners", "scope_to_tile(&state, \""),
@@ -8829,6 +9705,8 @@ mod tests {
             ("services", "services", "scope_to_tile(&state, \""),
             ("crons", "crons", "scope_to_tile(&state, \""),
             ("usage", "usage", "scope_to_tile(&state, \""),
+            ("anthropic", "anthropic", "scope_to_tile(&state, \""),
+            ("openai", "openai", "scope_to_tile(&state, \""),
             ("azure_cost", "azure_cost", "scope_to_tile(&state, \""),
             ("openclaw", "openclaw", "scope_to_tile(&state, \""),
         ];
@@ -8839,7 +9717,9 @@ mod tests {
             ("containers", "containers"),
             ("services", "services"),
             ("crons", "sentryCrons"),
-            ("usage", "claudeUsage"),
+            ("usage", "usage"),
+            ("anthropic", "anthropic"),
+            ("openai", "openai"),
             ("azure_cost", "azureCost"),
             ("openclaw", "openclawAgents"),
         ];
@@ -8881,9 +9761,9 @@ mod tests {
                 && cockpit.contains("Some(id) => cockpit_for_tile("),
             "the cockpit command scopes a Machines tile with its own tile"
         );
-        // The nine are all of them. Every function that calls into the scoping
+        // The eleven are all of them. Every function that calls into the scoping
         // is a row above, `cockpit`, or the scoping itself, whatever it calls its
-        // tile: a tenth command that scopes one is a new row here.
+        // tile: a twelfth command that scopes one is a new row here.
         let mut callers = std::collections::BTreeSet::new();
         let mut current = "";
         for line in source.lines() {
@@ -10294,8 +11174,8 @@ mod tests {
         assert!(!narrow["hostTabs"].is_null());
     }
 
-    /// A tab bar over a single card is chrome around nothing — and a fresh
-    /// install is exactly that: the local card, alone.
+    /// A tab bar over a single card is chrome around nothing — and a store
+    /// with only This machine added is exactly that: the local card, alone.
     #[test]
     fn a_lone_host_gets_no_tab_bar_however_narrow_the_window() {
         let vm = tabbed_payload(tab_cards(&["mac-studio"]), 0, 320.0);
@@ -11758,7 +12638,7 @@ mod tests {
         );
 
         // …and no *remote* hosts at all is the unconfigured cockpit: the local
-        // card still leads it, because this machine is always there.
+        // card still leads it, because the dump has This machine added.
         let none = stacked_dump(1000.0, 0);
         let cards = none["hosts"].as_array().expect("hosts array");
         assert_eq!(cards.len(), 1);
@@ -11778,14 +12658,17 @@ mod tests {
         assert_eq!(dump_local_card()["hostName"], "mac-studio");
     }
 
-    /// The showcase Usage payload keeps both plan sections and carries the
-    /// Vercel reading (#685): the plan condition in `dump_usage` must hold for
+    /// The showcase carries a plan on each AI tile and the Vercel reading on
+    /// Usage (#685): the plan condition in `dump_plan_inputs` must hold for
     /// `Showcase`, or the README's full image silently loses its plan rows.
     #[test]
-    fn the_showcase_usage_dump_has_both_plans_and_three_providers() {
-        let dump = dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA);
-        assert_eq!(dump["plans"].as_array().expect("plans").len(), 2);
-        assert_eq!(dump["providers"].as_array().expect("providers").len(), 3);
+    fn the_showcase_dumps_have_each_plan_and_three_providers() {
+        let anthropic = dump_anthropic(usage::Fixture::Showcase, false);
+        assert_eq!(anthropic["plans"].as_array().expect("plans").len(), 1);
+        let openai = dump_openai(usage::Fixture::Showcase, false);
+        assert_eq!(openai["plans"].as_array().expect("plans").len(), 1);
+        let usage = dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA);
+        assert_eq!(usage["providers"].as_array().expect("providers").len(), 3);
     }
 
     /// The showcase is what solador.app and the README show, and its claim is
