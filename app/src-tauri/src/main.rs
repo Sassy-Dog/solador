@@ -3269,17 +3269,16 @@ where
     }
 }
 
+/// Where a vendor's API spend sits in [`UsageState`].
+type SpendState = fn(&mut UsageState) -> &mut usage::ProviderState<::usage::ApiSpendSummary>;
+
 /// One vendor's API spend, on the terms of the metered providers below: "no
 /// key" hides the row, and a keychain that will not answer must not.
 ///
 /// `request` turns the key into the read. The Admin key lives for this call:
 /// it goes from the credential store to the request and is dropped.
-async fn poll_api_spend<R, F>(
-    app: &Arc<App>,
-    key: SecretKey,
-    state: fn(&mut UsageState) -> &mut usage::ProviderState<::usage::ApiSpendSummary>,
-    request: R,
-) where
+async fn poll_api_spend<R, F>(app: &Arc<App>, key: SecretKey, state: SpendState, request: R)
+where
     R: FnOnce(String) -> Option<F>,
     F: std::future::Future<Output = Result<::usage::ApiSpendSummary, ::usage::ApiSpendError>>,
 {
@@ -3295,6 +3294,12 @@ async fn poll_api_spend<R, F>(
             };
             state(&mut usage()).begin();
             let result = read.await;
+            // Both readers are unproven against a live key, and the panel's
+            // sentence is the stock one. Before the lock: `eprintln!` panics on
+            // a closed stderr.
+            if let Err(e) = &result {
+                eprintln!("API spend: {e}");
+            }
             let mut panel_state = usage();
             match result {
                 Ok(summary) => state(&mut panel_state).succeeded(
@@ -4827,13 +4832,19 @@ fn save_source_in(
         "anthropic" => (
             settings::ANTHROPIC_TITLE,
             "anthropic",
-            Some(SecretKey::AnthropicAdminKey),
+            Some((
+                SecretKey::AnthropicAdminKey,
+                UsageState::anthropic_api_mut as SpendState,
+            )),
             Some(subscription::Provider::Claude),
         ),
         "openai" => (
             settings::OPENAI_TITLE,
             "openai",
-            Some(SecretKey::OpenAiAdminKey),
+            Some((
+                SecretKey::OpenAiAdminKey,
+                UsageState::openai_api_mut as SpendState,
+            )),
             Some(subscription::Provider::Codex),
         ),
         "local" => (settings::LOCAL_TITLE, "hosts", None, None),
@@ -4843,7 +4854,7 @@ fn save_source_in(
 
     // Whatever can refuse goes first.
     let secret = secret.map(str::trim).filter(|value| !value.is_empty());
-    let credential = key.map(|key| read_credential(&*app.credentials, key));
+    let credential = key.map(|(key, _)| read_credential(&*app.credentials, key));
     if wants("api") && secret.is_none() && matches!(credential, Some(Credential::Absent)) {
         return Err("Enter an Admin API key, or untick API key.".to_owned());
     }
@@ -4861,7 +4872,7 @@ fn save_source_in(
         layout_with_tile(&app.store.lock().expect("store poisoned"), tile_source)?;
     }
 
-    if let Some(key) = key {
+    if let Some((key, spend)) = key {
         let stored = matches!(credential, Some(Credential::Present(_)));
         let written = match (wants("api"), secret) {
             (true, Some(value)) => app.credentials.set_secret(key, value),
@@ -4874,6 +4885,10 @@ fn save_source_in(
             return Err(
                 "Failed to save \u{2014} the credential store rejected the write.".to_owned(),
             );
+        }
+        // The figure goes with the key, rather than when a pass reaches it.
+        if stored && !wants("api") {
+            spend(&mut app.usage.lock().expect("usage state poisoned")).unconfigure();
         }
     }
 
@@ -8608,6 +8623,96 @@ mod tests {
         );
     }
 
+    /// The key's figure goes when the key does, not when the next pass gets past
+    /// the other providers and reaches it.
+    #[test]
+    fn removing_a_key_hides_its_spend_on_the_same_frame() {
+        let (_dir, _rt, app) = test_app();
+        app.credentials
+            .set_secret(SecretKey::AnthropicAdminKey, "sk-ant-admin01-x")
+            .unwrap();
+        {
+            let mut state = app.usage.lock().unwrap();
+            state.anthropic_api_mut().begin();
+            state.anthropic_api_mut().succeeded(
+                ::usage::ApiSpendSummary::Measured {
+                    usd: 2.5,
+                    refreshed_at: None,
+                },
+                panel::now_unix(),
+                None,
+            );
+        }
+
+        save_source_in(&app, "anthropic", &parts(&[]), None, false).unwrap();
+
+        let card = usage::anthropic_view(
+            &app.usage.lock().unwrap(),
+            plan_usage::PlanInputs::OFF,
+            panel::now_unix(),
+        );
+        assert!(card["api"].is_null());
+    }
+
+    /// A key the store refused is unsaved, and nothing else in the walk ran.
+    #[test]
+    fn a_key_the_store_refuses_answers_unsaved_and_changes_nothing_else() {
+        for (held, parts_ticked, typed) in [
+            (None, parts(&["api", "local"]), Some("sk-ant-admin01-x")),
+            (Some("sk-ant-admin01-x"), parts(&["local"]), None),
+        ] {
+            let (_dir, _rt, app) = test_app_over(WriteRefusingCredentialStore(held));
+            let refusal =
+                save_source_in(&app, "anthropic", &parts_ticked, typed, false).unwrap_err();
+            assert!(refusal.contains("rejected the write"), "{refusal}");
+            assert!(
+                !app.store
+                    .lock()
+                    .unwrap()
+                    .settings()
+                    .claude_local_logs_enabled
+            );
+        }
+    }
+
+    /// The doc on `save_source_in` promises this. The key is written before the
+    /// save fails, so the second Finish has no key to type and must still land.
+    #[test]
+    fn finish_is_safe_to_repeat_after_a_save_that_failed() {
+        let (_dir, _rt, app) = test_app();
+        let ticked = parts(&["api", "local"]);
+        break_store_saves(&app);
+        save_source_in(&app, "anthropic", &ticked, Some("sk-ant-admin01-x"), false).unwrap_err();
+        assert!(
+            !app.store
+                .lock()
+                .unwrap()
+                .settings()
+                .claude_local_logs_enabled
+        );
+
+        let path = app.store.lock().unwrap().path().to_path_buf();
+        std::fs::remove_dir_all(&path).unwrap();
+        assert_eq!(
+            save_source_in(&app, "anthropic", &ticked, None, false).unwrap(),
+            "Anthropic saved."
+        );
+        assert!(
+            app.store
+                .lock()
+                .unwrap()
+                .settings()
+                .claude_local_logs_enabled
+        );
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::AnthropicAdminKey)
+                .unwrap()
+                .as_deref(),
+            Some("sk-ant-admin01-x")
+        );
+    }
+
     /// With nothing added there is no card and so no panel body, and a Full
     /// view must not be a title over nothing: the overview's sentence comes with
     /// it. A tile with a card has a body and carries no sentence.
@@ -11774,6 +11879,40 @@ mod tests {
 
         fn set_secret_bytes(&self, _key: SecretKey, _value: &[u8]) -> Result<(), SecretError> {
             unreachable!("no path under test writes a credential")
+        }
+    }
+
+    /// A credential store that answers reads, holding `self.0` under every key,
+    /// and refuses every write.
+    struct WriteRefusingCredentialStore(Option<&'static str>);
+
+    impl WriteRefusingCredentialStore {
+        fn refusal() -> SecretError {
+            SecretError::CorruptBlob {
+                account: "solador-secrets".to_owned(),
+            }
+        }
+    }
+
+    impl CredentialStore for WriteRefusingCredentialStore {
+        fn secret(&self, _key: SecretKey) -> Result<Option<String>, SecretError> {
+            Ok(self.0.map(str::to_owned))
+        }
+
+        fn set_secret(&self, _key: SecretKey, _value: &str) -> Result<(), SecretError> {
+            Err(Self::refusal())
+        }
+
+        fn delete_secret(&self, _key: SecretKey) -> Result<(), SecretError> {
+            Err(Self::refusal())
+        }
+
+        fn secret_bytes(&self, _key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
+            Ok(None)
+        }
+
+        fn set_secret_bytes(&self, _key: SecretKey, _value: &[u8]) -> Result<(), SecretError> {
+            Err(Self::refusal())
         }
     }
 

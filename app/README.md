@@ -3197,7 +3197,7 @@ cannot see.
       instance over the hand-off socket. Quit the app and the same command
       exits `4`, `Solador isn't running`.
 
-All seventeen ticked ⇒ every registered command round-tripped through the ACL and
+All nineteen ticked ⇒ every registered command round-tripped through the ACL and
 the IPC transport, and the command line reached the app. **A zero, a `false` or
 an empty string is a pass**: those are Rust's own unconfigured sentences, and none of them has a path to the DOM except a
 successful `invoke`. What fails this test is a *missing line* or a blank panel.
@@ -3381,8 +3381,11 @@ and that immediacy is itself the check on the corresponding wake:
    `reading export…` until the first pass reads the keychain — same rule as the
    GitHub panels above.
 
-   The Anthropic panel is the one surface here that needs **no credential at all** to
-   populate: it walks `~/.claude/projects` on this machine. On a machine that has
+   A scratch store has no sources, so the Anthropic panel starts as the sentence
+   `Anthropic isn't set up — add it in Settings → Sources → Add source`, which is
+   also a pass. To read its rollups, open that path, pick **Anthropic**, leave only
+   **Local usage** ticked and press Finish. That part needs **no credential at
+   all** to populate: it walks `~/.claude/projects` on this machine. On a machine that has
    run Claude Code, expect `LAST 5H` and `LAST 7D` token counts under `THIS
    MACHINE`, a `TOP PROJECTS (7D)`
    list, and an `N today` trailing label within one rollup cadence (a minute by default). On one that
@@ -3399,10 +3402,11 @@ and that immediacy is itself the check on the corresponding wake:
    `0.0 CU-h`, and never an unattributed warning that could have come from any
    of the three sections.
 
-   To exercise the plans, on a machine signed in to Claude Code, open Settings →
-   Sources → Add source → **Anthropic**, pick only **Subscription**, and press
+   To exercise the plans, on a machine signed in to Claude Code, open
+   **Anthropic** under Settings → Sources (or Add source → **Anthropic**, on a
+   store that has not added it), leave only **Subscription** ticked, and press
    Finish. The steps must not read the sign-in before Finish, the tile must have
-   no `Claude Code` row, and the overview must gain one Anthropic tile. Within a poll the
+   no `Claude Code` row, and the overview must hold one Anthropic tile. Within a poll the
    Anthropic panel's first block is `Claude · <plan>` (the name Claude Code itself
    displays; `Claude` alone when its profile names none) with one meter per
    limit the reply carries: on a verified Ultra plan, `Week` and `Week ·
@@ -3587,21 +3591,21 @@ pass: both stay hidden until a payload arrives, deliberately, so a broken
 boundary cannot masquerade as an unconfigured one.
 
 Step 8 passes when `usage:`, `anthropic:`, `openai:` and `azure_cost: first frontend request …` all
-print and both panels carry a heading plus *either* their content or their
-zero-credential state — the same argument a sixth and seventh time.
+print and each panel carries a heading plus *either* its content or its
+zero-credential state — the same argument a sixth to ninth time.
 
 Step 9 passes when `openclaw: first frontend request …` prints and the panel
 carries a heading plus *either* its runtime sections, its connection line, its
 pairing banner, or the muted `add a gateway URL in Settings → Sources → OpenClaw` hint —
-the same argument an eighth time. Every one of those strings is
+the same argument a tenth time. Every one of those strings is
 `openclaw::view`'s, reachable only through `invoke("openclaw")`. A machine with
 no gateway configured passes; a missing panel does not.
 
 Step 10 passes when the **first** card in the grid is this machine, named after
-this machine, with a green dot. It is the one card no configuration can produce
-and no configuration can remove, so it is also the cheapest read on the whole
-procedure: a grid that leads with `ubu-01` means either the local sampler never
-started or step 1 was skipped.
+this machine, with a green dot. It is the one card a seeded host can't produce,
+so it is also the cheapest read on the whole procedure: a grid that leads with
+`ubu-01` means the local sampler never started, step 1 was skipped, or This
+machine was not added in step 2.
 
 Step 11 is the only part of this procedure whose pass condition is **outside the
 app**: a browser window at the right URL, and a banner in Notification Center.

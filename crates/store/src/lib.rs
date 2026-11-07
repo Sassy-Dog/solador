@@ -158,6 +158,7 @@ pub struct StoreData {
     /// Schema version — see [`STORE_VERSION`].
     pub version: u32,
     /// Non-secret scalar preferences.
+    #[serde(default = "Settings::before_sources_were_added")]
     pub settings: Settings,
     /// Watched hosts, in user-visible order.
     pub hosts: Vec<Host>,
@@ -1995,7 +1996,7 @@ mod tests {
         .expect("write");
 
         let store = Store::open_in(dir.path(), false).expect("open");
-        assert_eq!(store.settings(), &Settings::default());
+        assert_eq!(store.settings(), &Settings::before_sources_were_added());
         assert!(store.hosts().is_empty());
         assert!(
             store.repos().is_empty(),

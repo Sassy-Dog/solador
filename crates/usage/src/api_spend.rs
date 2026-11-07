@@ -76,7 +76,7 @@ pub enum ApiSpendError {
     Unauthorized { vendor: &'static str },
     #[error("{vendor} returned HTTP {status}")]
     Http { vendor: &'static str, status: u16 },
-    #[error("unreachable: {reason}")]
+    #[error("{vendor} unreachable: {reason}")]
     Unreachable {
         vendor: &'static str,
         reason: String,

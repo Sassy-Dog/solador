@@ -504,6 +504,19 @@ const fn on_before_sources_were_added() -> bool {
     true
 }
 
+impl Settings {
+    /// A file with no `settings` section at all, which means what a key missing
+    /// from one means. [`Settings::default`] is a new store, which has no file.
+    pub(crate) fn before_sources_were_added() -> Self {
+        Settings {
+            claude_local_logs_enabled: on_before_sources_were_added(),
+            local_monitoring_enabled: on_before_sources_were_added(),
+            service_health_enabled: on_before_sources_were_added(),
+            ..Settings::default()
+        }
+    }
+}
+
 /// Every non-secret preference, in one serde-round-trippable struct.
 ///
 /// `#[serde(default)]` on the container is what makes an older (or partial)

@@ -757,3 +757,14 @@ fn the_split_runs_once_so_a_removed_tile_stays_removed() {
     let sources: Vec<String> = tiles_of(&reopened).into_iter().map(|t| t.1).collect();
     assert_eq!(sources, ["usage", "openai"]);
 }
+
+/// A section missing from a file means what a key missing from it means. Only a
+/// new store, which has no file, starts with nothing added.
+#[test]
+fn a_file_with_no_settings_section_keeps_what_used_to_be_built_in() {
+    let data: StoreData = serde_json::from_str(r#"{"version": 3}"#).expect("deserialize");
+    assert!(data.settings.claude_local_logs_enabled);
+    assert!(data.settings.local_monitoring_enabled);
+    assert!(data.settings.service_health_enabled);
+    assert!(!StoreData::default().settings.local_monitoring_enabled);
+}
