@@ -54,7 +54,8 @@
           <h2>Install it and open it</h2>
           <p>
             <a href="/download/">Download</a> the signed installer for macOS or
-            Windows. Solador reads nothing until you add it. Under
+            Windows. A fresh install reads nothing until you add it, and an
+            upgrade keeps what it already watched. Under
             <span class="path">Settings → Sources → Add source</span>, these need no token:
           </p>
           <ul>
@@ -200,7 +201,7 @@ Rules:
             <li><strong>Claude and Codex plan limits:</strong> nothing to paste. Pick <em>Subscription</em> in those same steps, and that tile reads the tool's own saved sign-in for the plan's limits: a meter for each 5-hour and weekly window the plan has (or an Enterprise seat's budget), with whether the current pace runs out before the reset. For Claude it also reads the plan's name from <code>~/.claude.json</code>, keeping that one field and nothing else. It only reads: the sign-in is never copied, stored, refreshed or changed. On a Mac, macOS may ask whether Solador may read Claude Code's keychain item. Both plan endpoints are undocumented and may change.</li>
             <li><strong>Azure Cost:</strong> a daily cost export in blob storage. Nothing to paste: each read is signed by the <code>az</code> CLI you are already signed in to.</li>
             <li><strong>OpenClaw:</strong> your gateway's URL. Solador shows the command that approves this device on the gateway, then follows it over a live WebSocket.</li>
-            <li><strong>Status page:</strong> any Atlassian Statuspage you depend on, watched beside the built-in vendors.</li>
+            <li><strong>Status page:</strong> any Atlassian Statuspage you depend on, watched beside the vendors your other sources add.</li>
           </ul>
           <p>
             Credentials go to your OS credential store (Keychain on macOS,

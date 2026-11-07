@@ -4817,9 +4817,11 @@ fn layout_with_tile(
 /// [`settings_save_source`], apart from the Tauri state so tests can drive it.
 ///
 /// `Err` is the sentence to show, and the steps stay open with the operator's
-/// choices. Every refusal comes before the first write, so it changes nothing.
-/// Only an I/O failure can follow a write, and Finish is safe to repeat after
-/// one: the flag and the tile go back, and a key or plan already written stays.
+/// choices. Every refusal is checked before the first write, so it changes
+/// nothing. Only a failure can follow a write: an I/O error, or a dashboard edit
+/// that filled the last slot while Finish ran, because the tile is derived again
+/// inside the save's lock. Finish is safe to repeat after either: the flag and
+/// the tile go back, and a key or plan already written stays.
 fn save_source_in(
     app: &App,
     kind: &str,

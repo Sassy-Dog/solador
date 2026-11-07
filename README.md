@@ -39,8 +39,9 @@ Windows 10 also needs the WebView2 runtime; Windows 11 already has it.
 
 ## What you get right away
 
-Solador reads nothing until you add it. Open **Settings → Sources → Add source**,
-and these need no account, no sign-up, no server and no token:
+A fresh install of Solador reads nothing until you add it, and an upgrade keeps
+what it already watched. Open **Settings → Sources → Add source**, and these
+need no account, no sign-up, no server and no token:
 
 - **This machine** — per-core CPU, memory, disk and network rates, GPU and
   battery, sparklined at 1 Hz, and whatever `docker`, `podman` or `tart` you

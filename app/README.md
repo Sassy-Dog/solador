@@ -801,7 +801,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
 | [`localhost`](../crates/localhost) | this machine's metrics; every field the platform can decline is an `Option` |
 | [`github`](../crates/github) | the GitHub client (REST, plus one GraphQL walk for the board's Ready column): workflows, runners, roster/presence |
-| [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats |
+| [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats, Vercel spend, and Anthropic and OpenAI API spend (`api_spend`) |
 | [`subscription`](../crates/subscription) | the Claude and Codex plans' limits (windows, and an Enterprise seat's spend cap) and the plan's name: reads each tool's own saved sign-in (read-only), one undocumented usage endpoint each, and one field of `~/.claude.json`; app-only |
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |

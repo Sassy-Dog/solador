@@ -181,6 +181,8 @@ struct AnthropicRow {
 struct AnthropicCost {
     /// A decimal string in cents: `"41280.000000"` is $412.80.
     amount: String,
+    /// `"USD"`. Anything else is refused, as OpenAI's is.
+    currency: String,
 }
 
 /// Reads an organization's cost from Anthropic.
@@ -245,10 +247,16 @@ impl AnthropicCostClient {
             }
             let reply: AnthropicPage = body(VENDOR, request).await?;
             for row in &reply.data {
-                cents +=
-                    row.cost.amount.parse::<f64>().map_err(|_| {
-                        undecodable(VENDOR, "a cost amount was not a decimal string")
-                    })?;
+                if !row.cost.currency.eq_ignore_ascii_case("usd") {
+                    return Err(undecodable(VENDOR, "a cost was not in USD"));
+                }
+                cents += row
+                    .cost
+                    .amount
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|amount| amount.is_finite())
+                    .ok_or_else(|| undecodable(VENDOR, "a cost amount was not a decimal string"))?;
             }
             if reply.has_more {
                 page = Some(
@@ -518,6 +526,29 @@ mod tests {
             client.month_to_date(at(NOW)).await,
             Err(ApiSpendError::DecodeFailed { .. })
         ));
+    }
+
+    /// The OpenAI reader's rule, on Anthropic's wire: no rate means no `$` on
+    /// another currency. And `str::parse` reads `"NaN"` and `"inf"` as numbers,
+    /// so the string amount needs a finite check that serde's never does.
+    #[tokio::test]
+    async fn anthropic_refuses_a_currency_other_than_usd_and_an_amount_that_is_not_finite() {
+        let mut euros = anthropic_reply("41280.000000");
+        euros["data"][0]["cost"]["currency"] = "EUR".into();
+        for reply in [euros, anthropic_reply("NaN"), anthropic_reply("inf")] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+                .mount(&server)
+                .await;
+            let client = AnthropicCostClient::with_base_url(&server.uri(), "k").unwrap();
+            let read = client.month_to_date(at(NOW)).await;
+            assert!(
+                matches!(read, Err(ApiSpendError::DecodeFailed { .. })),
+                "{}: {read:?}",
+                reply["data"][0]["cost"]
+            );
+        }
     }
 
     /// An ordinary API key is the likely mistake, so the sentence names the kind
