@@ -8308,7 +8308,13 @@ mod tests {
                 }
                 persist_dashboard(&mut store, layout, 0).unwrap();
             }
-            let ticked = parts(&["api", "subscription"]);
+            // Every part ticked, so each flag the check reads would be written
+            // on: an unticked part's write leaves its flag off either way.
+            let ticked = if kind == "anthropic" {
+                parts(&["api", "subscription", "local"])
+            } else {
+                parts(&["api", "subscription"])
+            };
             let refusal =
                 save_source_in(&app, kind, &ticked, Some("sk-admin-x"), true).unwrap_err();
             assert!(refusal.contains("up to 48 tiles"), "{kind}: {refusal}");
@@ -8752,15 +8758,20 @@ mod tests {
                 (openai_key, openai_key || codex_plan),
             ];
 
-            for ((kind, key, spend, card), (keyed, added)) in KEYED_SOURCES.into_iter().zip(vendors)
-            {
+            // Both keys are in place before either vendor is read, so one
+            // answering from the other's key is caught as well.
+            for ((_, key, _, _), (keyed, _)) in KEYED_SOURCES.into_iter().zip(vendors) {
                 if keyed {
                     app.credentials.set_secret(key, "sk-admin-x").unwrap();
                 }
+            }
+            for (_, key, spend, _) in KEYED_SOURCES {
                 rt.block_on(poll_api_spend(&app, key, spend, |_| {
                     Some(std::future::ready(Ok(::usage::ApiSpendSummary::Unmeasured)))
                 }));
+            }
 
+            for ((kind, _, _, card), (_, added)) in KEYED_SOURCES.into_iter().zip(vendors) {
                 let listed = settings_payload(&app)["connections"]["rows"]
                     .as_array()
                     .unwrap()

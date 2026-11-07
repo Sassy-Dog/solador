@@ -28,9 +28,10 @@
 //! is unknown rather than drawn at a defaulted zero — a full-looking green bar
 //! nobody measured is worse than no bar.
 //!
-//! **An unconfigured provider has no section at all.** No Neon key means the
-//! panel is pixel-identical to its Claude-only self: no heading, no em dash, no
-//! layout shift. The em dash is for "configured, and we could not find out".
+//! **An unconfigured provider has no section at all.** No Neon key means no
+//! Neon heading, no em dash and no layout shift: the panel shows only the
+//! providers that are set up. The em dash is for "configured, and we could not
+//! find out".
 //!
 //! **Three clocks, one warning line.** Claude reads local files on its own
 //! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon,
