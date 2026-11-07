@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { advance, gotoTileFull } from "./tile-full.js";
+import { advance, gotoTileFull, PANEL_SOURCE_READS } from "./tile-full.js";
 
 test.beforeEach(async ({ page, baseURL }) => {
   // Served under the app's real CSP (csp_server.py) rather than no policy at
@@ -962,6 +962,10 @@ const ROW_LISTS = [
   { source: "sentryCrons", command: "crons", file: "sample-crons.json", list: "#cronsBody", row: ".cron-row" },
   { source: "openclawAgents", command: "openclaw", file: "sample-openclaw.json", list: "#openclawBody .oc-section", row: ".oc-row, .oc-agent" },
 ];
+
+test("every panel's rows are measured", () => {
+  expect(ROW_LISTS.map(({ source }) => source).sort()).toEqual(PANEL_SOURCE_READS.map(([source]) => source).sort());
+});
 
 /**
  * Every measurable gap between two adjacent rows of the same list.

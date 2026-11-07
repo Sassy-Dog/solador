@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { stubTileIpc, openTileFull } from "./tile-full.js";
+import { stubTileIpc, openTileFull, SOURCE_READS } from "./tile-full.js";
 
 // Same CSP guard as layout.spec.js: the page is served under the app's real
 // policy (csp_server.py), and a blocked style or script surfaces as a console
@@ -229,26 +229,13 @@ test("Sources and its editor fit a narrow window without clipped controls", asyn
  * (#647), so each source's tile is opened, Settings opened over it and closed.
  */
 test("closing Settings brings a tile's Full view current, not just the host cards", async ({ page, baseURL }) => {
-  const sources = [
-    ["hosts", "cockpit"],
-    ["ghWorkflows", "repos"],
-    ["ghRunners", "runners"],
-    ["containers", "containers"],
-    ["services", "services"],
-    ["sentryCrons", "crons"],
-    ["anthropic", "anthropic"],
-    ["openai", "openai"],
-    ["usage", "usage"],
-    ["azureCost", "azure_cost"],
-    ["openclawAgents", "openclaw"],
-  ];
   await stubTileIpc(page, baseURL, {
-    sources: sources.map(([source]) => source),
+    sources: SOURCE_READS.map(([source]) => source),
     cockpit: await fixture(baseURL, "sample-cockpit.json"),
     answers: { settings_view: await fixture(baseURL, "sample-settings.json") },
   });
   await page.goto("/index.html");
-  for (const [source, command] of sources) {
+  for (const [source, command] of SOURCE_READS) {
     await openTileFull(page, source);
     await page.locator(SETTINGS_BUTTON).click();
     await expect(page.locator("#settings")).toBeVisible();

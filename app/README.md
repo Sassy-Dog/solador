@@ -136,9 +136,9 @@ the toolbar's button alone. By id (built from `getElementById` and `$()` in
   Machines tile's Full view (`renderCockpit`) and `gridWidth` need them.
 - Each panel's section and title ids (`containersPanel`/`containersTitle`,
   `reposPanel`, `runnersPanel`, `usagePanel`, `azurePanel`, `servicesPanel`,
-  `cronsPanel`, `openclawPanel`, and their `…Title`): `fullSections` and
-  `sourceTitles` in `dashboard.js` map tiles to them, and each renderer writes to
-  fixed ids inside.
+  `cronsPanel`, `openclawPanel`, and their `…Title`): `PANEL_SECTIONS` in `app.js`
+  and `sourceTitles` in `dashboard.js` map tiles to them, and each renderer writes
+  to fixed ids inside.
 - `#settings` and its children (`settingsBody`, `settingsClose`, `settingsTabs`,
   `settingsTitle`, `settingsStatus`, `settingsConfirm`): Settings' own surface.
 

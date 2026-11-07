@@ -200,10 +200,12 @@ Deploy, CSP and screenshot detail: `docs/WEBSITE.md`.
 2. Add a `PanelKind` case — **including its `min_width`** — in
    `crates/viewmodel/src/cockpit.rs`. Skipping it does not compile (the `match`
    is exhaustive), and `every_panel_kind_declares_a_positive_min_width` fails on
-   a zero. Add the kind to `PanelKind::ALL` too; nothing enforces that, and the
-   tests that iterate `ALL` never see a kind left out.
+   a zero. Add the kind to `PanelKind::ALL` and `dashboard::SOURCES` too:
+   `panel_kinds_and_tile_sources_are_one_list` fails if they differ.
 3. Add the Tauri command in `app/src-tauri/src/`.
-4. Add the frontend renderer in `app/ui/`.
+4. Add the frontend renderer in `app/ui/`, then `SOURCE_READS` in
+   `tests/frontend/tile-full.js`. A spec fails until that list, `PANEL_READS` and
+   `PANEL_SECTIONS` all match the sources Rust declares.
 
 ### Working on the Agent
 Source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`); deploy via

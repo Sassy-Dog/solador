@@ -15,6 +15,29 @@ import { expect } from "@playwright/test";
 export const tileIdFor = (source) => `full-${source}`;
 
 /**
+ * Every source a tile's Full view can open: `[source, read command, fixture]`.
+ * The specs that walk every panel share this one list, and
+ * `overview-standalone.spec.js` checks it against the sources Rust declares, so
+ * a new source fails there rather than being skipped by every walk.
+ */
+export const SOURCE_READS = [
+  ["hosts", "cockpit", "cockpit"],
+  ["ghWorkflows", "repos", "repos"],
+  ["ghRunners", "runners", "runners"],
+  ["containers", "containers", "containers"],
+  ["services", "services", "services"],
+  ["sentryCrons", "crons", "crons"],
+  ["anthropic", "anthropic", "anthropic"],
+  ["openai", "openai", "openai"],
+  ["usage", "usage", "usage"],
+  ["azureCost", "azure_cost", "azure"],
+  ["openclawAgents", "openclaw", "openclaw"],
+];
+
+/** The same list without Machines, whose Full view is the host grid, not a panel. */
+export const PANEL_SOURCE_READS = SOURCE_READS.filter(([source]) => source !== "hosts");
+
+/**
  * The dashboard fixture with exactly one tile per source in `sources`, each scoped to `all` so
  * no row a spec expects is filtered out by a fixture scope. The fixture's
  * overview has no Containers, Usage, Azure Cost or OpenClaw tile, so the tile is

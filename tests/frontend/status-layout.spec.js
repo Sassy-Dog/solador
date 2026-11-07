@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { dashboardWithTiles, openTileFull } from './tile-full.js';
+import { dashboardWithTiles, openTileFull, PANEL_SOURCE_READS } from './tile-full.js';
 
 test.beforeEach(async ({ page }) => {
   page.statusErrors = [];
@@ -175,14 +175,8 @@ for (const presentation of ['summary', 'detailed']) test(`all overview sources r
   expect(await bounds(page, '.db-tile, .db-tile-footer')).toEqual(before);
 });
 
-// Each panel in its own tile's Full view: [source, command, fixture file].
-const panelTiles = [
-  ['containers', 'containers', 'containers'], ['ghWorkflows', 'repos', 'repos'], ['ghRunners', 'runners', 'runners'],
-  ['services', 'services', 'services'], ['sentryCrons', 'crons', 'crons'],
-  ['anthropic', 'anthropic', 'anthropic'], ['openai', 'openai', 'openai'], ['usage', 'usage', 'usage'],
-  ['azureCost', 'azure_cost', 'azure'], ['openclawAgents', 'openclaw', 'openclaw'],
-];
-for (const [source, command, file] of panelTiles) {
+// Each panel in its own tile's Full view.
+for (const [source, command, file] of PANEL_SOURCE_READS) {
   test(`${source}'s Full view retains its footprint through failure, empty and recovery frames`, async ({ page, baseURL }) => {
     const frames = await open(page, baseURL, [source]);
     await openTileFull(page, source);

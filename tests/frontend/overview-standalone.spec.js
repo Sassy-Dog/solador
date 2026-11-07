@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { stubTileIpc, openTileFull, tileIdFor, lastArgs, advance } from "./tile-full.js";
+import { stubTileIpc, openTileFull, tileIdFor, lastArgs, advance, SOURCE_READS, PANEL_SOURCE_READS } from "./tile-full.js";
 
 /**
  * The overview and a tile's Full view stand on their own (#646, #647): neither
@@ -11,22 +11,30 @@ import { stubTileIpc, openTileFull, tileIdFor, lastArgs, advance } from "./tile-
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
-/** Every source a tile's Full view can open, with the command it reads. */
-const READS = [
-  ["hosts", "cockpit"],
-  ["ghWorkflows", "repos"],
-  ["ghRunners", "runners"],
-  ["containers", "containers"],
-  ["services", "services"],
-  ["sentryCrons", "crons"],
-  ["anthropic", "anthropic"],
-  ["openai", "openai"],
-  ["usage", "usage"],
-  ["azureCost", "azure_cost"],
-  ["openclawAgents", "openclaw"],
-];
-const PANEL_COMMANDS = READS.map(([, command]) => command).filter((command) => command !== "cockpit");
+const PANEL_COMMANDS = PANEL_SOURCE_READS.map(([, command]) => command);
 const gear = '.db-chrome [data-action="settings"]';
+
+/**
+ * Nothing but this test ties a source Rust declares to the frontend's lists: an
+ * id with no section or read contributes nothing, silently. The per-source walks
+ * below then prove each entry opens.
+ */
+test("the sources Rust declares are the ones the frontend's lists and these specs walk", async ({ page, baseURL }) => {
+  const dashboard = await fixture(baseURL, "sample-dashboard.json");
+  const declared = dashboard.sources.map((source) => source.id).sort();
+  expect(SOURCE_READS.map(([source]) => source).sort()).toEqual(declared);
+
+  await stubTileIpc(page, baseURL, { sources: SOURCE_READS.map(([source]) => source), cockpit: await fixture(baseURL, "sample-cockpit.json"), answers: {} });
+  await page.goto("/index.html");
+  const frontend = await page.evaluate(() => ({
+    reads: [...PANEL_READS],
+    sections: Object.keys(PANEL_SECTIONS),
+    missing: Object.values(PANEL_SECTIONS).filter((id) => !document.getElementById(id)),
+  }));
+  expect(frontend.reads.sort()).toEqual(SOURCE_READS.map(([, command]) => command).sort());
+  expect(frontend.sections.sort()).toEqual(PANEL_SOURCE_READS.map(([source]) => source).sort());
+  expect(frontend.missing).toEqual([]);
+});
 
 test("Settings and a tile's Full view take their Settings label and spacing from the overview, not cockpit", async ({ page, baseURL }) => {
   const errors = [];
@@ -268,15 +276,18 @@ test("a Machines tile removed while its Full view is open shows the tile-gone me
   await expect(page.locator("#dashboardOverview .db-action-error")).toHaveText(dashboard.labels.tileGone);
 });
 
-for (const [source, command] of READS) {
+for (const [source, command] of SOURCE_READS) {
   test(`opening a ${source} tile's Full view reads ${command}${command === "cockpit" ? " with its tile" : " and no other panel, cockpit included"}`, async ({ page, baseURL }) => {
     const cockpit = await fixture(baseURL, "sample-cockpit.json");
-    await stubTileIpc(page, baseURL, { sources: READS.map(([s]) => s), cockpit, answers: {} });
+    const tileKeys = { [tileIdFor(source)]: { title: "A Named Tile" } };
+    await stubTileIpc(page, baseURL, { sources: SOURCE_READS.map(([s]) => s), cockpit, answers: {}, tileKeys });
     await page.goto("/index.html");
     await expect(page.locator(`[data-tile="${tileIdFor(source)}"]`)).toBeVisible();
     // Past the boot reads, which every panel makes once before the overview is up.
     await page.evaluate(() => { window.__CALLS__.length = 0; });
     await openTileFull(page, source);
+    // Named, not visible: this double answers no panel reading, so the body stays hidden.
+    await expect(page.locator("#fullView").getByText("A Named Tile", { exact: true })).toHaveCount(1);
     // The reads the view makes on opening and over the next 1s polls; slower
     // panel timers (10s and up) are not waited for.
     await expect.poll(() => lastArgs(page, command)).toMatchObject({ tile: tileIdFor(source) });

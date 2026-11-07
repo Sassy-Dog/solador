@@ -2306,6 +2306,21 @@ mod tests {
             .any(|c| c["label"] == "Labels"));
     }
 
+    /// One list kept in two places. `PanelKind::ALL` drives `panelColumns` and
+    /// `SOURCES` drives tiles, and a kind in only one of them compiles and shows
+    /// nothing wrong until a panel loses its columns or a tile its source.
+    #[test]
+    fn panel_kinds_and_tile_sources_are_one_list() {
+        let mut kinds: Vec<_> = viewmodel::cockpit::PanelKind::ALL
+            .iter()
+            .map(|kind| kind.id())
+            .collect();
+        let mut sources: Vec<_> = SOURCES.iter().map(|(id, _)| *id).collect();
+        kinds.sort_unstable();
+        sources.sort_unstable();
+        assert_eq!(kinds, sources);
+    }
+
     #[test]
     fn the_default_tile_names_are_the_operators_settled_names() {
         let titles: Vec<_> = SOURCES.iter().map(|(_, t)| *t).collect();
