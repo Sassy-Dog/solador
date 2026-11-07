@@ -8146,6 +8146,15 @@ mod tests {
         ids.iter().map(|id| (*id).to_owned()).collect()
     }
 
+    /// Every part an Admin-key source offers, ticked.
+    fn every_part(kind: &str) -> Vec<String> {
+        if kind == "anthropic" {
+            parts(&["api", "subscription", "local"])
+        } else {
+            parts(&["api", "subscription"])
+        }
+    }
+
     /// The operator this rework is for: Subscription ticked, nothing else, and
     /// nothing else may turn on.
     #[test]
@@ -8214,11 +8223,7 @@ mod tests {
     fn the_api_part_with_no_key_is_refused_and_changes_nothing() {
         for (kind, ..) in KEYED_SOURCES {
             let (_dir, _rt, app) = test_app();
-            let ticked = if kind == "anthropic" {
-                parts(&["api", "subscription", "local"])
-            } else {
-                parts(&["api", "subscription"])
-            };
+            let ticked = every_part(kind);
             let refusal = save_source_in(&app, kind, &ticked, Some("   "), true).unwrap_err();
             assert_eq!(
                 refusal, "Enter an Admin API key, or untick API key.",
@@ -8292,8 +8297,9 @@ mod tests {
         assert!(app.store.lock().unwrap().dashboard().is_none());
     }
 
-    /// A typed key and a ticked plan, so a write that ran before the tile
-    /// check would be left behind for this to find.
+    /// A typed key and every part ticked, so a write that ran before the tile
+    /// check would be left behind for this to find: an unticked part's write
+    /// leaves its flag off either way.
     #[test]
     fn a_full_dashboard_refuses_the_tile_before_anything_changes() {
         for (kind, ..) in KEYED_SOURCES {
@@ -8308,13 +8314,7 @@ mod tests {
                 }
                 persist_dashboard(&mut store, layout, 0).unwrap();
             }
-            // Every part ticked, so each flag the check reads would be written
-            // on: an unticked part's write leaves its flag off either way.
-            let ticked = if kind == "anthropic" {
-                parts(&["api", "subscription", "local"])
-            } else {
-                parts(&["api", "subscription"])
-            };
+            let ticked = every_part(kind);
             let refusal =
                 save_source_in(&app, kind, &ticked, Some("sk-admin-x"), true).unwrap_err();
             assert!(refusal.contains("up to 48 tiles"), "{kind}: {refusal}");
