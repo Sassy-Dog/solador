@@ -8599,79 +8599,166 @@ mod tests {
             .contains(CREDENTIAL_UNREADABLE_MESSAGE));
     }
 
+    type SpendCard = fn(&UsageState, plan_usage::PlanInputs, u64) -> Value;
+
+    /// The two Admin-key sources. `save_source_in` pairs each key with its spend
+    /// state by hand, so the tests below run over both rather than over the
+    /// first.
+    const KEYED_SOURCES: [(&str, SecretKey, SpendState, SpendCard); 2] = [
+        (
+            "anthropic",
+            SecretKey::AnthropicAdminKey,
+            UsageState::anthropic_api_mut,
+            usage::anthropic_view,
+        ),
+        (
+            "openai",
+            SecretKey::OpenAiAdminKey,
+            UsageState::openai_api_mut,
+            usage::openai_view,
+        ),
+    ];
+
     /// Solador can't tell whether a key is there to delete, so "removed" would
     /// be a guess, and a wrong one leaves a key in the keychain the operator
     /// believes is gone. A write here would panic the test store.
     #[test]
     fn a_keychain_that_will_not_answer_refuses_removing_a_key_and_changes_nothing() {
-        let (_dir, _rt, app) = test_app_over(UnreadableCredentialStore);
-        app.store
-            .lock()
-            .unwrap()
-            .settings_mut()
-            .claude_local_logs_enabled = true;
+        for (kind, ..) in KEYED_SOURCES {
+            let (_dir, _rt, app) = test_app_over(UnreadableCredentialStore);
+            {
+                let mut store = app.store.lock().unwrap();
+                let settings = store.settings_mut();
+                settings.claude_local_logs_enabled = true;
+                settings.codex_plan_usage_enabled = true;
+            }
 
-        let refusal = save_source_in(&app, "anthropic", &parts(&[]), None, false).unwrap_err();
+            let refusal = save_source_in(&app, kind, &parts(&[]), None, false).unwrap_err();
 
-        assert!(refusal.contains("credential store"), "{refusal}");
-        assert!(
-            app.store
-                .lock()
-                .unwrap()
-                .settings()
-                .claude_local_logs_enabled
-        );
+            assert!(refusal.contains("credential store"), "{kind}: {refusal}");
+            let store = app.store.lock().unwrap();
+            assert!(store.settings().claude_local_logs_enabled, "{kind}");
+            assert!(store.settings().codex_plan_usage_enabled, "{kind}");
+        }
     }
 
     /// The key's figure goes when the key does, not when the next pass gets past
-    /// the other providers and reaches it.
+    /// the other providers and reaches it, and only that key's: each row here
+    /// starts on screen, so a swapped pair in `save_source_in` shows up as the
+    /// wrong figure surviving.
     #[test]
     fn removing_a_key_hides_its_spend_on_the_same_frame() {
-        let (_dir, _rt, app) = test_app();
-        app.credentials
-            .set_secret(SecretKey::AnthropicAdminKey, "sk-ant-admin01-x")
-            .unwrap();
-        {
-            let mut state = app.usage.lock().unwrap();
-            state.anthropic_api_mut().begin();
-            state.anthropic_api_mut().succeeded(
-                ::usage::ApiSpendSummary::Measured {
-                    usd: 2.5,
-                    refreshed_at: None,
-                },
-                panel::now_unix(),
-                None,
-            );
+        for (kind, key, ..) in KEYED_SOURCES {
+            let (_dir, _rt, app) = test_app();
+            app.credentials.set_secret(key, "sk-admin-x").unwrap();
+            {
+                let mut state = app.usage.lock().unwrap();
+                for (_, _, spend, _) in KEYED_SOURCES {
+                    spend(&mut state).begin();
+                    spend(&mut state).succeeded(
+                        ::usage::ApiSpendSummary::Measured {
+                            usd: 2.5,
+                            refreshed_at: None,
+                        },
+                        panel::now_unix(),
+                        None,
+                    );
+                }
+            }
+
+            save_source_in(&app, kind, &parts(&[]), None, false).unwrap();
+
+            assert_eq!(app.credentials.secret(key).unwrap(), None, "{kind}");
+            let state = app.usage.lock().unwrap();
+            for (other, _, _, card) in KEYED_SOURCES {
+                let inputs = plan_usage::PlanInputs::OFF;
+                let hidden = card(&state, inputs, panel::now_unix())["api"].is_null();
+                assert_eq!(hidden, other == kind, "removing {kind}, reading {other}");
+            }
         }
-
-        save_source_in(&app, "anthropic", &parts(&[]), None, false).unwrap();
-
-        let card = usage::anthropic_view(
-            &app.usage.lock().unwrap(),
-            plan_usage::PlanInputs::OFF,
-            panel::now_unix(),
-        );
-        assert!(card["api"].is_null());
     }
 
     /// A key the store refused is unsaved, and nothing else in the walk ran.
     #[test]
     fn a_key_the_store_refuses_answers_unsaved_and_changes_nothing_else() {
-        for (held, parts_ticked, typed) in [
-            (None, parts(&["api", "local"]), Some("sk-ant-admin01-x")),
-            (Some("sk-ant-admin01-x"), parts(&["local"]), None),
-        ] {
-            let (_dir, _rt, app) = test_app_over(WriteRefusingCredentialStore(held));
-            let refusal =
-                save_source_in(&app, "anthropic", &parts_ticked, typed, false).unwrap_err();
-            assert!(refusal.contains("rejected the write"), "{refusal}");
-            assert!(
-                !app.store
-                    .lock()
-                    .unwrap()
-                    .settings()
-                    .claude_local_logs_enabled
-            );
+        for (kind, other_part) in [("anthropic", "local"), ("openai", "subscription")] {
+            for (held, ticked, typed) in [
+                (None, parts(&["api", other_part]), Some("sk-admin-x")),
+                (Some("sk-admin-x"), parts(&[other_part]), None),
+            ] {
+                let (_dir, _rt, app) = test_app_over(WriteRefusingCredentialStore(held));
+                let refusal = save_source_in(&app, kind, &ticked, typed, false).unwrap_err();
+                assert!(refusal.contains("rejected the write"), "{kind}: {refusal}");
+                let store = app.store.lock().unwrap();
+                assert!(!store.settings().claude_local_logs_enabled, "{kind}");
+                assert!(!store.settings().codex_plan_usage_enabled, "{kind}");
+            }
+        }
+    }
+
+    /// "Is this source added" has answers that can't share a function: the
+    /// Sources row names each part, Service health avoids the keychain where it
+    /// can, and the tile reads what the last pass found. This is what holds them
+    /// together, because a part added to one and not the others lists a source
+    /// whose tile asks to be set up, or drops a status row someone is relying on.
+    #[test]
+    fn every_answer_to_whether_a_source_is_added_agrees() {
+        for key_held in [false, true] {
+            for subscription in [false, true] {
+                for logs in [false, true] {
+                    let (_dir, rt, app) = test_app();
+                    {
+                        let mut store = app.store.lock().unwrap();
+                        let settings = store.settings_mut();
+                        settings.service_health_enabled = true;
+                        settings.claude_plan_usage_enabled = subscription;
+                        settings.codex_plan_usage_enabled = subscription;
+                        settings.claude_local_logs_enabled = logs;
+                    }
+                    let app = Arc::new(app);
+                    let context =
+                        format!("key {key_held}, subscription {subscription}, logs {logs}");
+
+                    for (kind, key, spend, card) in KEYED_SOURCES {
+                        if key_held {
+                            app.credentials.set_secret(key, "sk-admin-x").unwrap();
+                        }
+                        rt.block_on(poll_api_spend(&app, key, spend, |_| {
+                            Some(std::future::ready(Ok(::usage::ApiSpendSummary::Unmeasured)))
+                        }));
+                        let added = key_held || subscription || (kind == "anthropic" && logs);
+
+                        let listed = settings_payload(&app)["connections"]["rows"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|row| row["kind"] == kind);
+                        assert_eq!(listed, added, "{kind}'s Sources row, {context}");
+
+                        let tile = card(
+                            &app.usage.lock().unwrap(),
+                            plan_inputs(&app.store),
+                            panel::now_unix(),
+                        );
+                        let setup = settings::not_set_up_message(tile["title"].as_str().unwrap());
+                        assert_eq!(
+                            tile["message"].to_string().contains(&setup),
+                            !added,
+                            "{kind}'s tile, {context}"
+                        );
+                    }
+
+                    let store = app.store.lock().unwrap();
+                    let vendors = services::active_vendors(&store, &*app.credentials);
+                    assert_eq!(
+                        vendors
+                            .iter()
+                            .any(|vendor| vendor.service == services::ServiceId::Anthropic),
+                        key_held || subscription || logs,
+                        "Anthropic's status row, {context}"
+                    );
+                }
+            }
         }
     }
 

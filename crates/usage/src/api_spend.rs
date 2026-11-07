@@ -160,11 +160,13 @@ fn undecodable(vendor: &'static str, reason: &str) -> ApiSpendError {
     }
 }
 
+/// `data` and `has_more` are required, here and in [`OpenAiPage`]: a reply
+/// without them isn't an empty month, it is one this can't read, and defaulting
+/// them would turn a renamed field into `$0.00`. A vendor's "nothing yet" is a
+/// present, empty `data`.
 #[derive(Deserialize)]
 struct AnthropicPage {
-    #[serde(default)]
     data: Vec<AnthropicRow>,
-    #[serde(default)]
     has_more: bool,
     next_page: Option<String>,
     data_refreshed_at: Option<DateTime<Utc>>,
@@ -272,16 +274,16 @@ impl AnthropicCostClient {
 
 #[derive(Deserialize)]
 struct OpenAiPage {
-    #[serde(default)]
     data: Vec<OpenAiBucket>,
-    #[serde(default)]
     has_more: bool,
     next_page: Option<String>,
 }
 
+/// `results` is what OpenAI's endpoint example and cookbook send, though its
+/// published `UsageTimeBucket` schema spells it `result`. If a live reply ever
+/// follows the schema, this fails out loud rather than reading as a zero day.
 #[derive(Deserialize)]
 struct OpenAiBucket {
-    #[serde(default)]
     results: Vec<OpenAiResult>,
 }
 
@@ -714,6 +716,55 @@ mod tests {
             openai.month_to_date(at(NOW)).await,
             Err(ApiSpendError::DecodeFailed { .. })
         ));
+    }
+
+    /// Neither reader has met a live key, so this is what stands between a field
+    /// the vendor renamed and a wrong figure. Every reply here holds real money
+    /// under a key the reader doesn't know: a default would show `$0.00`, or "no
+    /// spend yet", stamped fresh and with nothing logged.
+    #[tokio::test]
+    async fn a_reply_missing_what_the_reader_needs_fails_rather_than_reading_as_empty() {
+        let spent = serde_json::json!([{"cost": {"amount": "41280.000000"}}]);
+        for reply in [
+            serde_json::json!({}),
+            serde_json::json!({"rows": spent, "has_more": false, "next_page": null}),
+            serde_json::json!({"rows": spent, "has_more": false, "next_page": null,
+                "data_refreshed_at": "2026-11-07T12:00:00Z"}),
+            serde_json::json!({"data": [], "next_page": null, "data_refreshed_at": null}),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+                .mount(&server)
+                .await;
+            let client = AnthropicCostClient::with_base_url(&server.uri(), "k").unwrap();
+            let read = client.month_to_date(at(NOW)).await;
+            assert!(
+                matches!(read, Err(ApiSpendError::DecodeFailed { .. })),
+                "{reply}: {read:?}"
+            );
+        }
+
+        let spent = serde_json::json!([{"amount": {"value": 512.0, "currency": "usd"}}]);
+        for reply in [
+            serde_json::json!({}),
+            serde_json::json!({"buckets": [{"results": spent}], "has_more": false, "next_page": null}),
+            serde_json::json!({"data": [{"result": spent}], "has_more": false, "next_page": null}),
+            serde_json::json!({"data": [{}], "has_more": false, "next_page": null}),
+            serde_json::json!({"data": [], "next_page": null}),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+                .mount(&server)
+                .await;
+            let client = OpenAiCostClient::with_base_url(&server.uri(), "k").unwrap();
+            let read = client.month_to_date(at(NOW)).await;
+            assert!(
+                matches!(read, Err(ApiSpendError::DecodeFailed { .. })),
+                "{reply}: {read:?}"
+            );
+        }
     }
 
     /// Reqwest keeps a custom header across a hop, so a followed redirect would

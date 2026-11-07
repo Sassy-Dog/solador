@@ -1763,12 +1763,13 @@ one machine therefore land in the same windows and the same `TOP PROJECTS` rows
 with nothing in the data to tell them apart, and that is *inherent to the
 source* rather than a feature nobody wrote — separating them needs a source that
 knows who paid, and this one does not. Read every figure in the rollups as
-"this machine", never as "this subscription". An Anthropic **API-key**
-integration would make those keys `VendorAccount`s whose usage *is*
-attributable — but it has not been built. The vendor-accounts epic
-([#283](https://github.com/Sassy-Dog/solador/issues/283)) closed with
-`VendorKind::GitHub` as its only variant, and no open issue tracks adding
-Anthropic; the subscription is not one
+"this machine", never as "this subscription". The Anthropic source's **API key**
+doesn't change that: it is one Admin key in the credential store that
+`crates/usage/src/api_spend.rs` reads one month-to-date figure for the whole
+organization with, not a `VendorAccount` (the vendor-accounts epic,
+[#283](https://github.com/Sassy-Dog/solador/issues/283), closed with
+`VendorKind::GitHub` as its only variant), so it attributes nothing here, and
+per-key attribution doesn't exist. The subscription is not an account either
 and must not be modelled as one, because an account id hung on these rollups
 would be an attribution invented to fill a gap — the same unknown-as-zero error
 the `Unmeasured` enums above exist to prevent, wearing a different costume.

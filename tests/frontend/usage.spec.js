@@ -392,8 +392,8 @@ test("an unconfigured provider contributes no section at all", async ({ page, ba
  * Every cockpit fixture the `fixtures` script dumps is at least 700pt wide, so
  * all of them give Usage two content columns (the second arrives at 696pt,
  * since `PanelKind::Usage::min_width` is 340). `fixtures:showcase` is the
- * exception: its `sample-showcase-cockpit-440.json` (`--width 440`) gives
- * `panelColumns.usage = 1` (floor(456 / 356)), and it is the dump
+ * exception: its `sample-showcase-cockpit-420.json` (`--width 420`) gives
+ * `panelColumns.usage = 1` (floor(436 / 356)), and it is the dump
  * `screenshots.spec.js` shoots the site's Usage panel from. That is why this
  * suite builds the one-column and two-column cases by editing the payload. The
  * Rust tests pin Usage's cap but not its 696pt breakpoint; the payload is the
@@ -432,6 +432,11 @@ test("a third section wraps to its own row and keeps its rule", async ({ page, b
   });
   const third = section(page, usage.providers[2].id);
   await expect(third.locator(".pv-divider")).toBeVisible();
+
+  const top = await section(page, usage.providers[0].id).boundingBox();
+  const wrapped = await third.boundingBox();
+  expect(wrapped.y, "the third section starts below the first row").toBeGreaterThan(top.y + top.height - 1);
+  expect(Math.abs(wrapped.x - top.x), "back in the first column").toBeLessThan(2);
 });
 
 test("a narrow card stacks the sections, with a rule between them", async ({ page, baseURL }) => {

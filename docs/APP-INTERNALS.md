@@ -390,11 +390,12 @@
   are **one machine-local aggregate**, and two subscriptions used on one machine
   are *inherently* unseparable from this source — impossible, not
   unimplemented; per-subscription attribution needs a source that knows who
-  paid. Anthropic **API keys** would be `VendorAccount`s and their usage *would
-  be* attributable — but that integration **has not been built**: the
-  vendor-accounts epic (#283) closed with `VendorKind::GitHub` as its only
-  variant, and nothing currently tracks adding Anthropic. **A subscription is
-  not an account
+  paid. The Anthropic source's **API key** doesn't change that: it is one Admin
+  key in the credential store that `crates/usage/src/api_spend.rs` reads one
+  month-to-date figure for the whole organization with, not a `VendorAccount`
+  (the vendor-accounts epic, #283, closed with `VendorKind::GitHub` as its only
+  variant), so it attributes nothing here, and per-key attribution doesn't
+  exist. **A subscription is not an account
   and must not be modelled as one**: an account id on these rollups would be an
   attribution invented to fill a gap — the unknown-as-zero error in another
   costume. If a number cannot be attributed, say so rather than attributing it.
@@ -450,9 +451,14 @@
   the one Anthropic recommends, while `cost_report` is its legacy API) and `GET
   /v1/organization/costs` (OpenAI: a currency other than `usd` is an error,
   never a `$`). Month to date, on `PanelInterval::UsageProviders`. No spend
-  reported is `ApiSpendSummary::Unmeasured`, never `$0`. Both readers were
-  written from the vendors' documentation and have not been run against a live
-  key.
+  reported is `ApiSpendSummary::Unmeasured`, never `$0`: a vendor's "nothing yet"
+  is a present, empty `data`, and a reply missing a key the reader needs is
+  `Fault::Undecodable`, because a defaulted field would turn a rename into a
+  wrong figure stamped fresh. Both readers were written from the vendors'
+  documentation and have not been run against a live key. OpenAI's own sources
+  disagree on one name: its endpoint example and cookbook say a bucket's list is
+  `results`, which the reader uses, and its published `UsageTimeBucket` schema
+  says `result`.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
   normal preference, not a credential-store item.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`
