@@ -4,25 +4,15 @@
 (function () {
   const root = document.getElementById("dashboardOverview");
   const fullView = document.getElementById("fullView");
-  // Which panel section a tile's Full view stands on, by source. Hosts has no
-  // section: its cards are the grid above the sections.
-  const fullSections = {
-    containers: "containersPanel",
-    ghWorkflows: "reposPanel",
-    ghRunners: "runnersPanel",
-    claudeUsage: "usagePanel",
-    azureCost: "azurePanel",
-    services: "servicesPanel",
-    sentryCrons: "cronsPanel",
-    openclawAgents: "openclawPanel",
-  };
   // Each source's panel title, which a tile's Full view names after the tile.
   const sourceTitles = {
     hosts: "hostsTitle",
     containers: "containersTitle",
     ghWorkflows: "reposTitle",
     ghRunners: "runnersTitle",
-    claudeUsage: "usageTitle",
+    anthropic: "anthropicTitle",
+    openai: "openaiTitle",
+    usage: "usageTitle",
     azureCost: "azureTitle",
     services: "servicesTitle",
     sentryCrons: "cronsTitle",
@@ -2235,7 +2225,7 @@
     root.hidden = true;
     fullView.hidden = false;
     render(true);
-    for (const [source, id] of Object.entries(fullSections))
+    for (const [source, id] of Object.entries(PANEL_SECTIONS))
       document.getElementById(id).toggleAttribute("data-full-active", source === t.source);
     await refreshCockpit();
     await refreshPanels();

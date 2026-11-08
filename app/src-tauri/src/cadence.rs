@@ -9,10 +9,9 @@
 //! Rust's sentences; the webview paints them and decides nothing.
 //!
 //! A source carries a **list** of them, `cadences`, because one tile can be fed
-//! by more than one poll: the Usage tile shows the metered providers and the
-//! plans' limit windows, which are separate requests to separate vendors with
-//! separate floors. Folding them into one number would make one vendor's floor
-//! the other's.
+//! by more than one poll: the Anthropic tile shows local rollups, API spend and
+//! the plan's limit windows, which are separate reads with separate floors.
+//! Folding them into one number would make one read's floor the other's.
 //!
 //! There is deliberately no control for the 1 Hz host poll or the 10s
 //! agent-health poll. Neither has a [`PanelInterval`] to name it, because the
@@ -26,18 +25,20 @@ use store::settings::{interval_label, PanelInterval, Settings};
 /// cannot be added without stating which tiles' Configure host its control.
 ///
 /// A list, because one poll can fill several kinds of tile: `github_loop`'s one
-/// pass is both the Repos tile and the GitHub Runners tile, so they share one cadence
-/// and each shows the same control with the same value.
+/// pass is both the Repos tile and the GitHub Runners tile, one plan poll reads
+/// both Claude's and Codex's, and the metered pass also reads both vendors' API
+/// spend, so each group shares one cadence and each tile shows the same control
+/// with the same value.
 pub fn source_ids(panel: PanelInterval) -> &'static [&'static str] {
     match panel {
         PanelInterval::Containers => &["containers"],
         PanelInterval::GitHub => &["ghWorkflows", "ghRunners"],
         PanelInterval::Services => &["services"],
-        PanelInterval::ClaudeRollups => &["claudeUsage"],
-        PanelInterval::UsageProviders => &["claudeUsage"],
+        PanelInterval::ClaudeRollups => &["anthropic"],
+        PanelInterval::UsageProviders => &["usage", "anthropic", "openai"],
         PanelInterval::AzureCost => &["azureCost"],
         PanelInterval::Crons => &["sentryCrons"],
-        PanelInterval::PlanUsage => &["claudeUsage"],
+        PanelInterval::PlanUsage => &["anthropic", "openai"],
     }
 }
 
@@ -167,21 +168,47 @@ mod tests {
         );
     }
 
-    /// The Usage tile is fed by three polls, so its Configure carries all of
-    /// them, in [`PanelInterval::ALL`]'s order. None overwrites another, which
-    /// is what a single `cadence` key did.
+    /// Each tile's Configure carries the polls that feed it, in
+    /// [`PanelInterval::ALL`]'s order. None overwrites another, which is what a
+    /// single `cadence` key did.
     #[test]
-    fn the_usage_tile_carries_the_rollups_the_providers_and_the_plans_cadences() {
+    fn the_ai_and_usage_tiles_carry_only_the_polls_that_feed_them() {
         let mut all = payloads();
         attach(&mut all, &Settings::default());
-        let usage = all.iter().find(|p| p["id"] == "claudeUsage").unwrap();
-        let ids: Vec<&str> = usage["cadences"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c["id"].as_str().unwrap())
-            .collect();
-        assert_eq!(ids, ["claude_rollups", "usage_providers", "plan_usage"]);
+        let ids = |source: &str| -> Vec<String> {
+            all.iter().find(|p| p["id"] == source).unwrap()["cadences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            ids("anthropic"),
+            ["claude_rollups", "usage_providers", "plan_usage"]
+        );
+        assert_eq!(ids("openai"), ["usage_providers", "plan_usage"]);
+        assert_eq!(ids("usage"), ["usage_providers"]);
+    }
+
+    /// One poll reads both plans, so the Anthropic and OpenAI tiles share one
+    /// key and each names both tiles it moves.
+    #[test]
+    fn the_plan_cadence_is_one_key_on_both_ai_tiles() {
+        let mut settings = Settings::default();
+        settings.set_panel_interval_secs(PanelInterval::PlanUsage, 600);
+        let mut all = payloads();
+        attach(&mut all, &settings);
+        let section = |source: &str| {
+            all.iter().find(|p| p["id"] == source).unwrap()["cadences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == "plan_usage")
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(section("anthropic"), section("openai"));
     }
 
     /// One GitHub poll fills Repos and Runners, so both tiles carry the very

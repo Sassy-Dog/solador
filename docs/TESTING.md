@@ -252,7 +252,10 @@ served, frame 1 is gone — so do not reach for one; hold the frame instead.
 then **Full view** (`tileFull`), the one way in; there is no URL or hook that
 skips the menu. `status-layout` keeps its own multi-frame stub but builds its
 Full-view tiles with the same `dashboardWithTiles` and enters them with the same
-`openTileFull`; its clipping test walks all nine sources' Full views. A tile's
+`openTileFull`; its clipping test walks all eleven sources' Full views. The specs
+that walk every source share `SOURCE_READS` from the same file, and
+`overview-standalone.spec.js` fails if that list, `PANEL_READS` or
+`PANEL_SECTIONS` stops matching the sources Rust declares. A tile's
 Full view is headed by the tile's own name (#640), not the payload's `title`,
 so a heading assertion needs a payload title that differs from the tile's name:
 several fixtures' titles equal it, and an assertion that cannot tell the two
@@ -264,7 +267,7 @@ tile-full.js specs asserts its renderer sends `{tile: <id>}`;
 `{ __frames: [a, b] }` plus `advance(page, command)` holds a multi-frame panel
 answer the way `stubCockpit` does. `layout.spec.js`, `settings.spec.js` and
 `screenshots.spec.js` enter a tile's Full view the same way (`overview.png` and
-the nine `panel-*.png` are the only shots).
+the eleven `panel-*.png` are the only shots).
 
 **The overview and a tile's Full view are tested with a bare `cockpit`
 (#646, #647).** Solador's Full view is gone, so `overview-standalone.spec.js` no

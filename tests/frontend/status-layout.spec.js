@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { dashboardWithTiles, openTileFull } from './tile-full.js';
+import { dashboardWithTiles, openTileFull, PANEL_SOURCE_READS } from './tile-full.js';
 
 test.beforeEach(async ({ page }) => {
   page.statusErrors = [];
@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => { expect(page.statusErrors).toEqual([]); });
 
-const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', usage: 'usage', azure_cost: 'azure', openclaw: 'openclaw' };
+const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', anthropic: 'anthropic', openai: 'openai', usage: 'usage', azure_cost: 'azure', openclaw: 'openclaw' };
 // `sources` replaces the overview's tiles with one `all`-scoped tile per source
 // (ids from tile-full.js), for a test that enters a tile's Full view.
 async function open(page, baseURL, sources = null) {
@@ -175,13 +175,8 @@ for (const presentation of ['summary', 'detailed']) test(`all overview sources r
   expect(await bounds(page, '.db-tile, .db-tile-footer')).toEqual(before);
 });
 
-// Each panel in its own tile's Full view: [source, command, fixture file].
-const panelTiles = [
-  ['containers', 'containers', 'containers'], ['ghWorkflows', 'repos', 'repos'], ['ghRunners', 'runners', 'runners'],
-  ['services', 'services', 'services'], ['sentryCrons', 'crons', 'crons'], ['claudeUsage', 'usage', 'usage'],
-  ['azureCost', 'azure_cost', 'azure'], ['openclawAgents', 'openclaw', 'openclaw'],
-];
-for (const [source, command, file] of panelTiles) {
+// Each panel in its own tile's Full view.
+for (const [source, command, file] of PANEL_SOURCE_READS) {
   test(`${source}'s Full view retains its footprint through failure, empty and recovery frames`, async ({ page, baseURL }) => {
     const frames = await open(page, baseURL, [source]);
     await openTileFull(page, source);
@@ -190,7 +185,7 @@ for (const [source, command, file] of panelTiles) {
     const before = await bounds(page, '.panel');
     // The open tile's panel is laid out; a hidden one would hold still trivially.
     expect(before.some(b => b.width > 0 && b.height > 0), "the tile's own panel is measured").toBe(true);
-    const variants = { empty:['containers','repos','runners','services','crons','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','usage','azure'] };
+    const variants = { empty:['containers','repos','runners','services','crons','anthropic','openai','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','anthropic','usage','azure'] };
     for (const suffix of ['empty', 'error', 'stale']) {
       const changed = structuredClone(frames);
       if (variants[suffix].includes(file)) changed[command] = await (await fetch(`${baseURL}/sample-${file}-${suffix}.json`)).json();
@@ -335,8 +330,8 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   const padding = await page.locator('.db-attention').evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]);
   expect(padding).toEqual(await page.locator('.db-tile').first().evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]));
   // Every source's Full view, as an operator reaches it. The fixture's overview
-  // carries five of the nine sources, so the Full views come from one
-  // `all`-scoped tile per source: all nine panels with every row.
+  // carries some of the sources, so the Full views come from one `all`-scoped
+  // tile per source: every panel with every row.
   const full = dashboardWithTiles(frames.dashboard_view, next.sources.map(s => s.id));
   full.layout.revision += 1;
   await page.evaluate(view => { window.framesForTest.dashboard_view = view; }, full);

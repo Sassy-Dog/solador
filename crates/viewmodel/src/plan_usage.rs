@@ -1,4 +1,4 @@
-//! Every word, colour and figure of the Usage panel's **plan** rows: a Claude
+//! Every word, colour and figure of the Anthropic and OpenAI panels' **plan** rows: a Claude
 //! or Codex subscription's own limits, as `crates/subscription` reads them.
 //!
 //! The types here mirror that crate's without depending on it. It carries an
@@ -596,33 +596,6 @@ pub fn placeholder_row(label: &str, loading: bool) -> PlanRow {
     }
 }
 
-/// The one setup line for every provider that is off, or `None` when all are
-/// on. One line however many are off, so turning the feature off costs the
-/// panel one row, not one per provider.
-///
-/// `section` is the Settings page every switch is on (`Settings → Sources`),
-/// and each entry is the provider's name and where its switch is on that page,
-/// so the line says exactly where to go rather than "Settings": the place a
-/// first-time operator looks is the tile's own Configure, which has no such
-/// switch. The caller supplies every name, because only the caller knows what
-/// Settings calls them; this only joins them.
-#[must_use]
-pub fn off_line(section: &str, off: &[(&str, &str)]) -> Option<String> {
-    let (names, places): (Vec<&str>, Vec<&str>) = off.iter().copied().unzip();
-    let names = match names.as_slice() {
-        [] => return None,
-        [one] => (*one).to_owned(),
-        [init @ .., last] => format!("{} and {last}", init.join(", ")),
-    };
-    let place = match places.as_slice() {
-        [one] => format!(" \u{2192} {one}"),
-        many => format!(" ({})", many.join(", ")),
-    };
-    Some(format!(
-        "{names} plan limits are off \u{2014} turn on in {section}{place}"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1083,25 +1056,5 @@ mod tests {
         let none = placeholder_row("Codex · Plus", false);
         assert_eq!(none.value, NO_READING_VALUE);
         assert_eq!(none.value_color, color::MUTED);
-    }
-
-    /// Off is a setup instruction, never the dash a failure renders.
-    #[test]
-    fn the_off_line_names_every_provider_that_is_off_and_how_to_turn_it_on() {
-        assert_eq!(off_line("Settings → Sources", &[]), None);
-        assert_eq!(
-            off_line("Settings → Sources", &[("Claude", "Claude Code")]).as_deref(),
-            Some("Claude plan limits are off — turn on in Settings → Sources → Claude Code")
-        );
-        assert_eq!(
-            off_line(
-                "Settings → Sources",
-                &[("Claude", "Claude Code"), ("Codex", "Add source → Codex")]
-            )
-            .as_deref(),
-            Some(
-                "Claude and Codex plan limits are off — turn on in Settings → Sources (Claude Code, Add source → Codex)"
-            )
-        );
     }
 }

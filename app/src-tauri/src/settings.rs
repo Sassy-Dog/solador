@@ -73,15 +73,43 @@ fn label_for(version: Option<&str>) -> String {
 /// opened, and the Settings view renders it as its own title.
 pub const OPEN_LABEL: &str = "Settings";
 
+/// What the credential store said about an Admin key.
+///
+/// Three answers rather than a bool, because this one decides whether a source
+/// exists, and a store that won't answer says nothing about that.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StoredKey {
+    #[default]
+    Absent,
+    Stored,
+    /// The store would not answer: there may be a key and there may not.
+    Unread,
+}
+
+impl StoredKey {
+    /// This part on its source's row: whether to name it, and by what.
+    fn row_part(self) -> (bool, &'static str) {
+        match self {
+            StoredKey::Absent => (false, API_PART_TITLE),
+            StoredKey::Stored => (true, API_PART_TITLE),
+            StoredKey::Unread => (true, API_PART_UNREAD_TITLE),
+        }
+    }
+}
+
 /// Which credentials currently hold a value.
 ///
-/// Booleans only, by construction: the badge needs "is something stored", and
-/// a struct that could carry the value is a struct a value can leak out of.
+/// Flags only, by construction: the badge needs "is something stored", and a
+/// struct that could carry the value is a struct a value can leak out of.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StoredSecrets {
     pub neon: bool,
     pub sentry: bool,
     pub vercel: bool,
+    /// Whether each vendor's Admin API key is stored, which is that part of the
+    /// source being added.
+    pub anthropic_admin: StoredKey,
+    pub openai_admin: StoredKey,
     /// Whether an OpenClaw *bearer* token is stored. The device key is not
     /// represented here at all: it is minted by the app, and whether one exists
     /// is answered by the device id the Device Pairing block shows.
@@ -703,6 +731,9 @@ pub struct StoreSections<'a> {
     /// not a missing one: a store that has never had a GitHub token has no
     /// account, and the v1 credential is what the GitHub tab still holds.
     pub accounts: &'a [VendorAccount],
+    /// The source of every tile on the overview, hidden ones included, so a
+    /// source's steps know whether to offer a tile.
+    pub tile_sources: &'a [String],
     /// The hosts whose poll is failing because the certificate their agent
     /// presents is not the one pinned (#448) — a **live** fact, read from the
     /// poll set and not from any file, which is why it rides here beside the
@@ -766,6 +797,7 @@ pub fn view(
         repos,
         vendors,
         accounts,
+        tile_sources: _,
         certificate_changed,
         plain_refused,
         agent_versions,
@@ -795,7 +827,6 @@ pub fn view(
         ),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
-        "planUsage": plan_usage_section(settings),
         "services": services_tab(vendors),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(updates),
@@ -892,35 +923,22 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             target = editor("openclaw", None);
             ("OpenClaw source", &["openclaw"])
         }
-        "claudeUsage" => {
-            // Every Claude row opens Claude Code, which holds both the log
-            // rollups and the plan opt-in: `claude-plan` (and the
-            // `claude-plan:…` per-window id a tile saved before plans became
-            // one row each) starts with `claude-` like the token rows. A Codex
-            // plan row opens Codex's own opt-in.
-            let codex_plan = resource.is_some_and(|id| {
-                id.strip_prefix(crate::plan_usage::CODEX_ID)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
-            });
-            if codex_plan {
-                target = editor("codexPlan", None);
-            } else if route.scope == "claude"
-                || resource.is_some_and(|id| id.starts_with("claude-"))
-            {
-                target = editor("claude", None);
-            } else if let Some((provider, _)) = resource.and_then(|id| id.split_once(':')) {
+        // One source holds everything each vendor's tile reads.
+        "anthropic" => {
+            target = editor("anthropic", None);
+            ("Anthropic source", &["anthropic"])
+        }
+        "openai" => {
+            target = editor("openai", None);
+            ("OpenAI source", &["openai"])
+        }
+        "usage" => {
+            if let Some((provider, _)) = resource.and_then(|id| id.split_once(':')) {
                 if ["neon", "sentry", "vercel"].contains(&provider) {
                     target = editor(provider, None);
                 }
             }
-            (
-                "Usage sources",
-                match route.scope.as_str() {
-                    "providers" => &["neon", "sentry", "vercel"],
-                    "plans" => &["claude", "codexPlan"],
-                    _ => &["neon", "sentry", "vercel", "claude", "codexPlan"],
-                },
-            )
+            ("Usage sources", &["neon", "sentry", "vercel"])
         }
         "services" => {
             if let Some(vendor) = resource.and_then(|id| {
@@ -944,9 +962,8 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
         "help":"Choose the source that supplies this tile. Tile names and placement stay on the overview."})
 }
 
-/// The Sources tab's title and its page's heading. Named once, like the three
-/// below, because the Usage panel's setup line sends the operator here by these
-/// names (`plan_usage::settings_place`).
+/// The Sources tab's title and its page's heading. Named once, because a tile
+/// with nothing added sends the operator here by this name.
 ///
 /// **Only the words are "source".** The code keeps `connection` for this
 /// concept (`connections_section`, the `connections` payload key, the
@@ -954,13 +971,31 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
 /// means what a tile shows (`dashboard::SOURCES`, `tile.source`), and one word
 /// must not name both. A saved tab id or payload key never reaches the screen.
 pub const SOURCES_LABEL: &str = "Sources";
-/// The automatic source that holds everything read from Claude Code: its local
-/// logs and its plan opt-in.
-pub const CLAUDE_CODE_TITLE: &str = "Claude Code";
-/// Codex's plan opt-in, a catalog source until it is on.
-pub const CODEX_TITLE: &str = "Codex";
+/// Everything read about Claude: API spend, the plan's limits and local usage.
+pub const ANTHROPIC_TITLE: &str = "Anthropic";
+/// Everything read about Codex and the OpenAI API.
+pub const OPENAI_TITLE: &str = "OpenAI";
+/// The one sentence a source with no part set up shows on its tile.
+#[must_use]
+pub fn not_set_up_message(title: &str) -> String {
+    format!(
+        "{title} isn\u{2019}t set up \u{2014} add it in \
+         {OPEN_LABEL} \u{2192} {SOURCES_LABEL} \u{2192} {ADD_SOURCE_LABEL}"
+    )
+}
+
+/// This Mac or PC's own metrics and containers.
+pub const LOCAL_TITLE: &str = "This machine";
+/// The status pages of the sources this store has added.
+pub const SERVICES_TITLE: &str = "Service health";
 /// The button, and the heading of the catalog it opens.
 pub const ADD_SOURCE_LABEL: &str = "Add source";
+
+// The names of a source's parts, on its steps and on its row.
+const API_PART_TITLE: &str = "API key";
+const API_PART_UNREAD_TITLE: &str = "API key not read";
+const SUBSCRIPTION_PART_TITLE: &str = "Subscription";
+const LOCAL_PART_TITLE: &str = "Local usage";
 
 /// The Sources page's one-line count.
 fn connections_summary(count: usize, attention: usize) -> String {
@@ -1085,22 +1120,6 @@ fn connections_section(
             ));
         }
     }
-    // Codex's plan opt-in is a source row only once it is on. Off, it is
-    // offered in the catalog and claims nothing here. Claude's is not a row at
-    // all: it is a switch on the automatic Claude Code source, beside the local
-    // logs that source already reads, so one entry holds everything Solador
-    // reads from Claude Code.
-    if s.codex_plan_usage_enabled {
-        rows.push(row(
-            "codexPlan".into(),
-            "codexPlan",
-            None,
-            CODEX_TITLE,
-            "Codex's sign-in".into(),
-            "Usage",
-            status("On", false),
-        ));
-    }
     if !s.azure_storage_account.is_empty() || !s.azure_cost_container.is_empty() {
         let complete = !s.azure_storage_account.is_empty() && !s.azure_cost_container.is_empty();
         rows.push(row(
@@ -1133,6 +1152,66 @@ fn connections_section(
                 "attention": openclaw.pairing.is_some() || tint == color::RED}),
         ));
     }
+    if s.local_monitoring_enabled {
+        rows.push(row(
+            "local".into(),
+            "local",
+            None,
+            LOCAL_TITLE,
+            String::new(),
+            "Machines · Containers / VMs",
+            status("Configured", false),
+        ));
+    }
+    let key_status = |key: StoredKey| {
+        if key == StoredKey::Unread {
+            status("Not read", true)
+        } else {
+            status("Configured", false)
+        }
+    };
+    let anthropic = added_parts(&[
+        stored.anthropic_admin.row_part(),
+        (s.claude_plan_usage_enabled, SUBSCRIPTION_PART_TITLE),
+        (s.claude_local_logs_enabled, LOCAL_PART_TITLE),
+    ]);
+    if !anthropic.is_empty() {
+        rows.push(row(
+            "anthropic".into(),
+            "anthropic",
+            None,
+            ANTHROPIC_TITLE,
+            String::new(),
+            &anthropic,
+            key_status(stored.anthropic_admin),
+        ));
+    }
+    let openai = added_parts(&[
+        stored.openai_admin.row_part(),
+        (s.codex_plan_usage_enabled, SUBSCRIPTION_PART_TITLE),
+    ]);
+    if !openai.is_empty() {
+        rows.push(row(
+            "openai".into(),
+            "openai",
+            None,
+            OPENAI_TITLE,
+            String::new(),
+            &openai,
+            key_status(stored.openai_admin),
+        ));
+    }
+    if s.service_health_enabled {
+        rows.push(row(
+            "services".into(),
+            "services",
+            None,
+            SERVICES_TITLE,
+            String::new(),
+            "Service Health",
+            status("Configured", false),
+        ));
+    }
     for vendor in store.vendors {
         rows.push(row(
             format!("vendor:{}", vendor.id),
@@ -1161,7 +1240,7 @@ fn connections_section(
         "summary": connections_summary(count, attention),
         "attentionCount": if attention == 0 { String::new() } else { attention.to_string() },
         "rows": rows,
-        "empty": "Add a source to start monitoring a remote host or provider.",
+        "empty": "Add a source to start monitoring.",
         "addLabel": ADD_SOURCE_LABEL,
         "backLabel": "← Sources",
         "allLabel": "All sources",
@@ -1170,25 +1249,29 @@ fn connections_section(
         "catalog": [
             {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners"},
             {"kind":"host", "title":"Remote host", "feeds":"Machines, containers and virtual machines"},
+            local_entry(s, store.tile_sources),
+            anthropic_entry(s, stored, store.tile_sources),
+            openai_entry(s, stored, store.tile_sources),
             {"kind":"neon", "title":"Neon", "feeds":"Database usage and estimated charges"},
             {"kind":"sentry", "title":"Sentry", "feeds":"Usage and scheduled jobs"},
             {"kind":"vercel", "title":"Vercel", "feeds":"Billing usage"},
             {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
+            services_entry(s, store.tile_sources),
             {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
-            {"kind":"codexPlan", "title":CODEX_TITLE, "feeds":"The Codex plan's own 5-hour and weekly limits, from Codex's sign-in"},
         ],
-        "automaticHeading": "Automatic sources",
-        "automatic": [
-            {"kind":"local", "title":"This machine", "feeds":"Local monitoring",
-                "help":"Local machine metrics are collected automatically. Container group rules live in the Containers tile\u{2019}s Configure."},
-            {"kind":"claude", "title":CLAUDE_CODE_TITLE,
-                "feeds": if s.claude_plan_usage_enabled { "Local usage logs \u{b7} plan limits on" } else { "Local usage logs" },
-                "localHeading":"Local usage",
-                "help":"Claude Code usage is read from local session logs. No account token is required."},
-            {"kind":"services", "title":"Service health", "feeds":"Connected providers",
-                "help":"Service health follows configured providers automatically. Add a status page to watch another service."},
-        ],
+        "walkLabels": {
+            "step": "{title} \u{b7} step {n} of {total}",
+            "pickHeading": "What do you want to set up?",
+            "nextLabel": "Next", "backLabel": "Back", "cancelLabel": "Cancel", "finishLabel": "Finish",
+            "readyHeading": "Ready",
+            "readyHelp": "This source will show:",
+            "removeHeading": "Nothing is set up",
+            "removeHelp": "Finish removes this source. Its tile stays on the overview until you remove it there.",
+            "notSetUp": "not set up",
+            "removeLabel": "Remove source",
+            "keyRequired": "Enter a key to continue.",
+        },
         "unattributedLabel": "Repositories needing an account",
         "layoutHelp": "Tile names, scope, placement and views are in each tile\u{2019}s Configure.",
         "advancedLabel": "Advanced options",
@@ -1209,7 +1292,7 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         // Where the shared Refresh Interval went (#615), said once so an
         // operator who looks for it is told rather than left to wonder. Each
         // source polls on its own cadence, edited in its tile's Configure.
-        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, Usage, Containers, Azure Cost, Sentry Crons). Host metrics poll every second regardless — that cadence is the charts' time axis.",
+        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, Anthropic, OpenAI, Usage, Containers, Azure Cost, Sentry Crons). Host metrics poll every second regardless — that cadence is the charts' time axis.",
         "crashReporting": crash_reporting_section(settings, crash),
     })
 }
@@ -1250,13 +1333,172 @@ fn crash_reporting_section(settings: &Settings, crash: CrashFacts) -> Value {
     })
 }
 
+/// The names of a source's added parts, in step order, or `""` for none.
+fn added_parts(parts: &[(bool, &str)]) -> String {
+    parts
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, title)| *title)
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ")
+}
+
+/// A tile for a source's Ready step, or the fact that it has one.
+fn tile_offer(source: &str, tile_sources: &[String]) -> Value {
+    let title = crate::dashboard::SOURCES
+        .iter()
+        .find(|(id, _)| *id == source)
+        .map_or("", |(_, title)| *title);
+    let article = if title.starts_with(['A', 'E', 'I', 'O', 'U']) {
+        "an"
+    } else {
+        "a"
+    };
+    json!({
+        "source": source,
+        "label": format!("Add {article} {title} tile"),
+        "present": tile_sources.iter().any(|id| id == source),
+    })
+}
+
+/// One step of a source's walk. `ready` names it on the Ready step.
+fn walk_part(id: &str, title: &str, summary: &str, on: bool, ready: &str, help: &str) -> Value {
+    json!({"id": id, "title": title, "summary": summary, "on": on, "ready": ready, "help": help})
+}
+
+/// The API key step. `stored` says a key exists and never what it is, and the
+/// help names the kind of key, because an ordinary API key is the mistake this
+/// step invites.
+fn api_part(key: StoredKey, help: &str, placeholder: &str) -> Value {
+    // Ticked unless the store said there is none: an unticked key is removed at
+    // Finish, and a store that won't answer can't remove anything.
+    let on = key != StoredKey::Absent;
+    let mut part = walk_part(
+        "api",
+        API_PART_TITLE,
+        "Spend from an Admin API key",
+        on,
+        "API spend",
+        help,
+    );
+    part["secret"] = json!({
+        "label": "Admin API key",
+        "placeholder": placeholder,
+        "stored": on,
+        "storedLabel": if key == StoredKey::Unread {
+            "The credential store didn\u{2019}t answer. Leave this empty to keep any key it holds."
+        } else {
+            "A key is stored. Leave this empty to keep it."
+        },
+    });
+    part
+}
+
+fn subscription_part(plan: &Value, on: bool, summary: &str) -> Value {
+    let mut part = walk_part(
+        "subscription",
+        SUBSCRIPTION_PART_TITLE,
+        summary,
+        on,
+        "Plan limits",
+        plan["help"].as_str().unwrap_or_default(),
+    );
+    part["status"] = plan["status"].clone();
+    part
+}
+
+fn anthropic_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    json!({
+        "kind": "anthropic", "title": ANTHROPIC_TITLE,
+        "feeds": "Plan limits, API spend and local usage",
+        "walk": {
+            "parts": [
+                api_part(
+                    stored.anthropic_admin,
+                    "Month-to-date spend for your organization, read from Anthropic\u{2019}s Admin API. This needs an Admin API key, which starts with sk-ant-admin and which only a Console organization can create. An ordinary API key is refused. Figures lag by hours. The key is kept in your OS credential store.",
+                    "sk-ant-admin01-…",
+                ),
+                subscription_part(
+                    &plan_usage_section(s)["claude"],
+                    s.claude_plan_usage_enabled,
+                    "Your plan\u{2019}s limits",
+                ),
+                walk_part(
+                    "local",
+                    LOCAL_PART_TITLE,
+                    "Tokens from Claude Code\u{2019}s logs",
+                    s.claude_local_logs_enabled,
+                    "Local usage",
+                    "This machine\u{2019}s Claude Code usage, read from its local session logs. No account token is required.",
+                ),
+            ],
+            "tile": tile_offer("anthropic", tile_sources),
+        },
+    })
+}
+
+fn openai_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    json!({
+        "kind": "openai", "title": OPENAI_TITLE,
+        "feeds": "Plan limits and API spend",
+        "walk": {
+            "parts": [
+                api_part(
+                    stored.openai_admin,
+                    "Month-to-date spend for your organization, read from OpenAI\u{2019}s costs API. This needs an Admin API key from your organization\u{2019}s settings. An ordinary API key is refused. The key is kept in your OS credential store.",
+                    "sk-admin-…",
+                ),
+                subscription_part(
+                    &plan_usage_section(s)["codex"],
+                    s.codex_plan_usage_enabled,
+                    "Your Codex plan\u{2019}s limits",
+                ),
+            ],
+            "tile": tile_offer("openai", tile_sources),
+        },
+    })
+}
+
+fn local_entry(s: &Settings, tile_sources: &[String]) -> Value {
+    json!({
+        "kind": "local", "title": LOCAL_TITLE,
+        "feeds": "This computer\u{2019}s metrics and containers",
+        "walk": {
+            "parts": [walk_part(
+                "local",
+                LOCAL_TITLE,
+                "Metrics and containers",
+                s.local_monitoring_enabled,
+                "Metrics and containers",
+                "Samples this computer every second and lists its local containers. Container group rules live in the Containers tile\u{2019}s Configure.",
+            )],
+            "tile": tile_offer("hosts", tile_sources),
+        },
+    })
+}
+
+fn services_entry(s: &Settings, tile_sources: &[String]) -> Value {
+    json!({
+        "kind": "services", "title": SERVICES_TITLE,
+        "feeds": "Status pages of the sources you add",
+        "walk": {
+            "parts": [walk_part(
+                "services",
+                SERVICES_TITLE,
+                "Status of your sources",
+                s.service_health_enabled,
+                "Status of your sources",
+                "Watches the public status pages of the sources you add: GitHub, Anthropic, Vercel, Neon and Azure. Add a Status page source to watch another service.",
+            )],
+            "tile": tile_offer("services", tile_sources),
+        },
+    })
+}
+
 /// The two plan opt-ins: what each reads, whether it is on, and what is never
-/// done with the sign-in.
-///
-/// Saves on the spot like [`crash_reporting_section`], for the same reason:
-/// consent is not a draft. The help is specific about the source because it
-/// is someone else's credential: the operator should know exactly which file
-/// or keychain item is read, and that it is only ever read.
+/// done with the sign-in. The help is specific about the source because it is
+/// someone else's credential: the operator should know exactly which file or
+/// keychain item is read, and that it is only ever read.
 fn plan_usage_section(settings: &Settings) -> Value {
     let cadence = interval_label(settings.panel_interval_secs(PanelInterval::PlanUsage));
     let entry = |enabled: bool, label: &str, holder: &str, help: &str| {
@@ -1277,7 +1519,7 @@ fn plan_usage_section(settings: &Settings) -> Value {
             settings.claude_plan_usage_enabled,
             "Read Claude Code's sign-in",
             "Claude Code",
-            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It also reads the plan's name from Claude Code's ~/.claude.json, keeping that one field and nothing else from the file. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the Usage panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
+            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It also reads the plan's name from Claude Code's ~/.claude.json, keeping that one field and nothing else from the file. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the Anthropic panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
         ),
         "codex": entry(
             settings.codex_plan_usage_enabled,
@@ -2223,42 +2465,36 @@ mod tests {
             data.hosts[0].id.to_string()
         );
         assert_eq!(
-            route("claudeUsage", "item:neon:compute", &data)["editor"]["kind"],
+            route("usage", "item:neon:compute", &data)["editor"]["kind"],
             "neon"
         );
+        assert!(route("usage", "all", &data)["editor"].is_null());
         assert_eq!(
-            route("claudeUsage", "claude", &data)["editor"]["kind"],
-            "claude"
+            route("usage", "all", &data)["kinds"],
+            json!(["neon", "sentry", "vercel"])
         );
-        // Claude's plan row opens Claude Code, where its opt-in sits beside the
-        // log rollups; Codex's opens Codex. The bare id is today's row; the
-        // `:…` form is a per-window id saved before plans were one row each.
-        assert_eq!(
-            route("claudeUsage", "item:claude-plan", &data)["editor"]["kind"],
-            "claude"
-        );
-        assert_eq!(
-            route("claudeUsage", "item:codex-plan", &data)["editor"]["kind"],
-            "codexPlan"
-        );
-        assert_eq!(
-            route("claudeUsage", "item:claude-plan:CLAUDE PLAN (5H)", &data)["editor"]["kind"],
-            "claude"
-        );
-        // A look-alike is not Codex's plan.
-        assert!(route("claudeUsage", "item:codex-planner", &data)["editor"].is_null());
-        assert_eq!(
-            route("claudeUsage", "item:codex-plan:CODEX PLAN (WEEK)", &data)["editor"]["kind"],
-            "codexPlan"
-        );
-        assert_eq!(
-            route("claudeUsage", "item:claude-today", &data)["editor"]["kind"],
-            "claude"
-        );
-        assert_eq!(
-            route("claudeUsage", "plans", &data)["kinds"],
-            json!(["claude", "codexPlan"])
-        );
+        // Each vendor's tile has one source, whatever its scope.
+        for scope in [
+            "all",
+            "attention",
+            "claude",
+            "plans",
+            "item:claude-plan",
+            "item:claude-today",
+        ] {
+            assert_eq!(
+                route("anthropic", scope, &data)["editor"]["kind"],
+                "anthropic",
+                "{scope}"
+            );
+        }
+        for scope in ["all", "attention", "item:codex-plan"] {
+            assert_eq!(
+                route("openai", scope, &data)["editor"]["kind"],
+                "openai",
+                "{scope}"
+            );
+        }
         assert_eq!(
             route("sentryCrons", "active", &data)["editor"]["kind"],
             "sentry"
@@ -2676,6 +2912,8 @@ mod tests {
             neon: false,
             sentry: true,
             vercel: false,
+            anthropic_admin: StoredKey::Absent,
+            openai_admin: StoredKey::Absent,
             openclaw: false,
             hosts: [host.id].into_iter().collect(),
             // The Accounts tab's own tests name their accounts (see
@@ -2746,6 +2984,7 @@ mod tests {
             repos,
             vendors: &[],
             accounts: &[],
+            tile_sources: &[],
             certificate_changed: &[],
             plain_refused: &[],
             agent_versions: &[],
@@ -2848,8 +3087,8 @@ mod tests {
             &facts(),
         );
         assert_eq!(vm["connections"]["rows"], json!([]));
-        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 9);
-        assert_eq!(vm["connections"]["automatic"].as_array().unwrap().len(), 3);
+        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 12);
+        assert!(vm["connections"].get("automatic").is_none());
     }
 
     #[test]
@@ -2897,70 +3136,208 @@ mod tests {
         assert_eq!(vm["tabs"][0]["title"], "Sources");
     }
 
-    /// Claude's plan opt-in is a switch on the automatic Claude Code source,
-    /// never a catalog entry or a row of its own; Codex's is offered in the
-    /// catalog and becomes a row only once on. A default store claims no plan
-    /// source.
-    #[test]
-    fn plan_limits_are_offered_off_and_become_a_row_only_once_on() {
-        let off = view_of(
+    fn empty_view() -> Value {
+        view_of(
             &Settings::default(),
             &[],
             &[],
             &StoredSecrets::default(),
             &facts(),
-        );
-        let kinds: Vec<&str> = off["connections"]["catalog"]
+        )
+    }
+
+    fn catalog_entry(vm: &Value, kind: &str) -> Value {
+        vm["connections"]["catalog"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|e| e["kind"].as_str().unwrap())
-            .collect();
-        assert!(kinds.contains(&"codexPlan") && !kinds.contains(&"claudePlan"));
-        let claude_code = |vm: &Value| {
-            vm["connections"]["automatic"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|e| e["kind"] == "claude")
-                .cloned()
-                .unwrap()
-        };
-        assert_eq!(claude_code(&off)["feeds"], "Local usage logs");
-        assert_eq!(off["connections"]["rows"], json!([]));
-        assert_eq!(off["planUsage"]["claude"]["value"], false);
-        assert_eq!(
-            off["planUsage"]["claude"]["status"],
-            "Off. Nothing is read."
-        );
+            .find(|e| e["kind"] == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("{kind} is not in the catalog"))
+    }
 
+    fn part_ids(entry: &Value) -> Vec<&str> {
+        entry["walk"]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect()
+    }
+
+    fn row_of(vm: &Value, kind: &str) -> Option<Value> {
+        vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["kind"] == kind)
+            .cloned()
+    }
+
+    /// No source is built in: a new store has none, and each one is in Add
+    /// source like any other.
+    #[test]
+    fn every_source_is_added_from_the_catalog() {
+        let vm = empty_view();
+        assert!(vm["connections"].get("automaticHeading").is_none());
+        for kind in ["local", "anthropic", "openai", "services"] {
+            assert!(row_of(&vm, kind).is_none(), "{kind}");
+            catalog_entry(&vm, kind);
+        }
+    }
+
+    /// The steps follow what the operator picks, and each vendor offers only
+    /// what it has.
+    #[test]
+    fn each_source_offers_its_own_parts_to_pick_from() {
+        let vm = empty_view();
+        assert_eq!(
+            part_ids(&catalog_entry(&vm, "anthropic")),
+            ["api", "subscription", "local"]
+        );
+        assert_eq!(
+            part_ids(&catalog_entry(&vm, "openai")),
+            ["api", "subscription"]
+        );
+        assert_eq!(part_ids(&catalog_entry(&vm, "local")), ["local"]);
+        assert_eq!(part_ids(&catalog_entry(&vm, "services")), ["services"]);
+    }
+
+    #[test]
+    fn a_source_with_any_part_on_is_an_ordinary_row_naming_those_parts() {
         let settings = Settings {
             claude_plan_usage_enabled: true,
             ..Settings::default()
         };
-        let on = view_of(&settings, &[], &[], &StoredSecrets::default(), &facts());
-        assert_eq!(on["connections"]["rows"], json!([]));
-        assert_eq!(
-            claude_code(&on)["feeds"],
-            "Local usage logs \u{b7} plan limits on"
-        );
-        assert_eq!(on["planUsage"]["claude"]["value"], true);
-        assert_eq!(
-            on["planUsage"]["claude"]["status"],
-            "On. Reads Claude Code's sign-in every 15 minutes."
-        );
-        assert_eq!(on["planUsage"]["codex"]["value"], false);
+        let vm = view_of(&settings, &[], &[], &StoredSecrets::default(), &facts());
+        let row = row_of(&vm, "anthropic").expect("a row");
+        assert_eq!(row["feeds"], "Subscription");
+        assert_eq!(row["status"]["text"], "Configured");
+        assert!(row["entityId"].is_null());
+        assert!(row_of(&vm, "openai").is_none());
 
-        let codex = Settings {
-            codex_plan_usage_enabled: true,
+        let settings = Settings {
+            claude_plan_usage_enabled: true,
+            claude_local_logs_enabled: true,
             ..Settings::default()
         };
-        let on = view_of(&codex, &[], &[], &StoredSecrets::default(), &facts());
-        let rows = on["connections"]["rows"].as_array().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["kind"], "codexPlan");
-        assert_eq!(rows[0]["title"], "Codex");
-        assert_eq!(rows[0]["status"]["attention"], false);
+        let stored = StoredSecrets {
+            anthropic_admin: StoredKey::Stored,
+            openai_admin: StoredKey::Stored,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&settings, &[], &[], &stored, &facts());
+        assert_eq!(
+            row_of(&vm, "anthropic").unwrap()["feeds"],
+            "API key \u{b7} Subscription \u{b7} Local usage"
+        );
+        assert_eq!(row_of(&vm, "openai").unwrap()["feeds"], "API key");
+    }
+
+    #[test]
+    fn this_machine_and_service_health_are_rows_once_added() {
+        let settings = Settings {
+            local_monitoring_enabled: true,
+            service_health_enabled: true,
+            ..Settings::default()
+        };
+        let vm = view_of(&settings, &[], &[], &StoredSecrets::default(), &facts());
+        assert_eq!(row_of(&vm, "local").unwrap()["title"], "This machine");
+        assert_eq!(row_of(&vm, "services").unwrap()["title"], "Service health");
+    }
+
+    /// A store that won't answer is not "no key". A source whose one part is
+    /// the key stays a row that says so, and its key step stays ticked, so
+    /// Finish leaves the key alone rather than being refused for removing it.
+    #[test]
+    fn an_admin_key_the_store_would_not_read_keeps_its_row_and_its_tick() {
+        let stored = StoredSecrets {
+            anthropic_admin: StoredKey::Unread,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&Settings::default(), &[], &[], &stored, &facts());
+
+        let row = row_of(&vm, "anthropic").expect("the row stays");
+        assert_eq!(row["feeds"], "API key not read");
+        assert_eq!(row["status"]["attention"], true);
+        assert!(row_of(&vm, "openai").is_none(), "an observed absence");
+
+        let part = &catalog_entry(&vm, "anthropic")["walk"]["parts"][0];
+        assert_eq!(part["on"], true);
+        assert_eq!(part["secret"]["stored"], true);
+        assert!(part["secret"]["storedLabel"]
+            .as_str()
+            .unwrap()
+            .contains("credential store"));
+    }
+
+    /// Reopening a source shows what it has, without showing the key.
+    #[test]
+    fn a_walk_reads_back_the_current_choices_and_only_whether_a_key_exists() {
+        let settings = Settings {
+            claude_plan_usage_enabled: true,
+            ..Settings::default()
+        };
+        let stored = StoredSecrets {
+            anthropic_admin: StoredKey::Stored,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&settings, &[], &[], &stored, &facts());
+        let entry = catalog_entry(&vm, "anthropic");
+        let parts = entry["walk"]["parts"].as_array().unwrap();
+        assert_eq!(parts[0]["on"], true);
+        assert_eq!(parts[0]["secret"]["stored"], true);
+        assert_eq!(parts[1]["on"], true);
+        assert_eq!(
+            parts[1]["status"],
+            "On. Reads Claude Code's sign-in every 15 minutes."
+        );
+        assert_eq!(parts[2]["on"], false);
+    }
+
+    /// The likely mistake is an ordinary API key, so the step says which kind.
+    #[test]
+    fn the_key_step_names_the_kind_of_key_it_needs() {
+        let vm = empty_view();
+        for kind in ["anthropic", "openai"] {
+            let entry = catalog_entry(&vm, kind);
+            let help = entry["walk"]["parts"][0]["help"].as_str().unwrap();
+            assert!(help.contains("Admin API key"), "{kind}: {help}");
+            assert!(help.contains("ordinary API key"), "{kind}: {help}");
+        }
+    }
+
+    /// Ready offers a tile only for a source that has none on the overview.
+    #[test]
+    fn a_walk_offers_a_tile_unless_one_exists() {
+        let vm = empty_view();
+        let tile = catalog_entry(&vm, "anthropic")["walk"]["tile"].clone();
+        assert_eq!(tile["label"], "Add an Anthropic tile");
+        assert_eq!(tile["present"], false);
+        assert_eq!(
+            catalog_entry(&vm, "openai")["walk"]["tile"]["label"],
+            "Add an OpenAI tile"
+        );
+        let local = catalog_entry(&vm, "local")["walk"]["tile"].clone();
+        assert_eq!(local["source"], "hosts");
+        assert_eq!(local["label"], "Add a Machines tile");
+
+        let settings = Settings::default();
+        let tiles = ["anthropic".to_owned()];
+        let vm = view(
+            StoreSections {
+                tile_sources: &tiles,
+                ..sections(&settings, &[], &[])
+            },
+            &StoredSecrets::default(),
+            &facts(),
+            CrashFacts::default(),
+            no_updates(),
+        );
+        assert_eq!(
+            catalog_entry(&vm, "anthropic")["walk"]["tile"]["present"],
+            true
+        );
     }
 
     /// The help says what is read, that nothing is stored or refreshed, and
@@ -2974,7 +3351,13 @@ mod tests {
             &StoredSecrets::default(),
             &facts(),
         );
-        let claude = vm["planUsage"]["claude"]["help"].as_str().unwrap();
+        let help = |kind: &str| -> String {
+            catalog_entry(&vm, kind)["walk"]["parts"][1]["help"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let claude = help("anthropic");
         for needle in [
             "Claude Code-credentials",
             ".credentials.json",
@@ -2983,7 +3366,7 @@ mod tests {
         ] {
             assert!(claude.contains(needle), "{needle}: {claude}");
         }
-        let codex = vm["planUsage"]["codex"]["help"].as_str().unwrap();
+        let codex = help("openai");
         for needle in [
             "auth.json",
             "CODEX_HOME",

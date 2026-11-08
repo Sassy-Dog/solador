@@ -27,6 +27,11 @@ const S = {
   editor: null,
   catalog: false,
   route: null,
+  /** A source's steps in progress: `{kind, picked, added, index, secret,
+   *  addTile, problem}`. Everything the operator chose so far lives here and
+   *  nowhere else until Finish, so Cancel has nothing to undo. Dropped with the
+   *  editor; the key, if one was typed, goes with it. */
+  walk: null,
   status: "",
   /** Host id -> its last Test result line. Survives a re-render. */
   tests: new Map(),
@@ -272,6 +277,7 @@ function renderTabs() {
     b.addEventListener("click", () => navigate(() => {
       S.tab = tab.id;
       S.editor = null;
+      S.walk = null;
       S.catalog = false;
       S.route = null;
       S.status = "";
@@ -369,28 +375,6 @@ function crashReportingGroup(c) {
   box.appendChild(field("general-crash-reporting", c.label, toggle));
   box.appendChild(node("p", "help crash-status", c.status));
   box.appendChild(help(c.help));
-  return box;
-}
-
-/** One plan opt-in: a checkbox that reads another app's sign-in only while it
- *  is ticked.
- *
- *  Saves on change, like `crashReportingGroup` and for its reason: this is
- *  consent to read someone else's credential, and an unpressed Apply is no
- *  reason to keep reading after the box is unticked. The status and help are
- *  Rust's sentences; whether the reading succeeded is the Usage panel's to say,
- *  not this group's. `provider` is the command's own vocabulary
- *  (`claude` / `codex`), never a label. */
-function planUsageGroup(plans, provider) {
-  const p = plans[provider];
-  const box = group(plans.heading);
-  const toggle = checkbox(p.value);
-  toggle.addEventListener("change", () =>
-    mutate("settings_set_plan_usage", { provider, enabled: toggle.checked })
-  );
-  box.appendChild(field(`plan-usage-${provider}`, p.label, toggle));
-  box.appendChild(node("p", "help plan-status", p.status));
-  box.appendChild(help(p.help));
   return box;
 }
 
@@ -1635,6 +1619,7 @@ function navigate(next) {
 function showConnections() {
   S.tab = "connections";
   S.editor = null;
+  S.walk = null;
   S.catalog = false;
   S.route = null;
   S.probe = null;
@@ -1648,6 +1633,7 @@ function openConnection(entry) {
     S.tab = "connections";
     S.catalog = false;
     S.editor = { ...entry };
+    S.walk = null;
     S.probe = null;
     S.discover = {};
     S.status = "";
@@ -1704,19 +1690,213 @@ function connectionsTab(t) {
   const list = node("div", "connection-list");
   for (const entry of rows) list.appendChild(connectionButton(entry, "connection-row"));
   if (!rows.length) list.appendChild(help(t.empty));
-  const automatic = node("section", "connection-automatic");
-  automatic.appendChild(node("h3", null, t.automaticHeading));
-  const items = node("div", "connection-auto-grid");
-  for (const entry of t.automatic.filter(matches)) items.appendChild(connectionButton(entry, "connection-option"));
-  automatic.appendChild(items);
-  automatic.hidden = !items.childElementCount;
+  const page = [heading, list];
   if (S.view.accounts.unattributed.length && matches({kind:"account"})) {
-    automatic.hidden = false;
     const orphaned = button(t.unattributedLabel, "connection-orphans");
     orphaned.addEventListener("click", () => openConnection({ kind: "unattributed", title: t.unattributedLabel }));
-    automatic.appendChild(orphaned);
+    page.push(orphaned);
   }
-  return [heading, list, automatic, help(t.layoutHelp)];
+  page.push(help(t.layoutHelp));
+  return page;
+}
+
+// MARK: a source's steps
+
+/** The first draft of a source's steps, from what is on now. A source with one
+ *  part has nothing to ask, so that part starts picked. */
+function startWalk(entry) {
+  const { parts } = entry.walk;
+  return {
+    kind: entry.kind,
+    picked: new Set(parts.filter(part => part.on || parts.length === 1).map(part => part.id)),
+    added: parts.some(part => part.on),
+    index: 0,
+    secret: "",
+    addTile: true,
+    problem: "",
+  };
+}
+
+/** What is asked, in order: which parts (when there is a choice), one step per
+ *  part picked, then Ready. A tick changes this list, so it is derived rather
+ *  than stored. */
+function walkSteps(parts, walk) {
+  return [
+    ...(parts.length > 1 ? ["pick"] : []),
+    ...parts.filter(part => walk.picked.has(part.id)).map(part => part.id),
+    "ready",
+  ];
+}
+
+const pickedParts = (parts, walk) => parts.filter(part => walk.picked.has(part.id));
+
+function walkPickStep(parts, walk, onChange) {
+  const list = node("div", "walk-picks");
+  for (const part of parts) {
+    const row = node("label", "walk-pick");
+    row.dataset.part = part.id;
+    const box = checkbox(walk.picked.has(part.id));
+    box.addEventListener("change", () => {
+      if (box.checked) walk.picked.add(part.id);
+      else walk.picked.delete(part.id);
+      onChange();
+    });
+    const copy = node("span", "walk-pick-copy");
+    copy.append(node("span", "walk-pick-title", part.title), node("span", "walk-pick-summary", part.summary));
+    row.append(box, copy);
+    list.appendChild(row);
+  }
+  return [list];
+}
+
+/** One part. Its status only ever comes from a source that is already on: a
+ *  first walk has read nothing, because reading is what Finish consents to. */
+function walkPartStep(part, walk, labels, onEnter) {
+  const content = [help(part.help)];
+  if (part.on && part.status) content.push(node("p", "help walk-status", part.status));
+  if (part.secret) {
+    const input = textInput("", "password");
+    input.value = walk.secret;
+    input.placeholder = part.secret.placeholder;
+    input.dataset.walkFocus = "true";
+    input.addEventListener("input", () => { walk.secret = input.value; });
+    input.addEventListener("keydown", event => { if (event.key === "Enter") onEnter(); });
+    content.push(field("walk-secret", part.secret.label, input));
+    if (part.secret.stored) content.push(node("p", "help walk-stored", part.secret.storedLabel));
+    if (walk.problem) content.push(node("p", "help walk-problem", labels.keyRequired));
+  }
+  return content;
+}
+
+function walkReadyStep(parts, tile, walk, labels) {
+  if (!walk.picked.size) return [help(labels.removeHelp)];
+  const summary = node("ul", "walk-summary");
+  for (const part of parts) {
+    const on = walk.picked.has(part.id);
+    summary.appendChild(node("li", on ? null : "walk-off",
+      on ? `\u2713 ${part.ready}` : `\u2014 ${part.ready}: ${labels.notSetUp}`));
+  }
+  const content = [help(labels.readyHelp), summary];
+  if (!tile.present) {
+    const offer = node("label", "walk-tile");
+    const box = checkbox(walk.addTile);
+    box.addEventListener("change", () => { walk.addTile = box.checked; });
+    offer.append(box, node("span", null, tile.label));
+    content.push(offer);
+  }
+  return content;
+}
+
+/** Everything chosen goes to Rust in one call, and only here. A refusal leaves
+ *  the steps open with the choices and the key intact. */
+async function finishWalk(entry, control) {
+  const walk = S.walk;
+  const { parts } = entry.walk;
+  control.disabled = true;
+  let result;
+  try {
+    result = await callRust("settings_save_source", {
+      kind: walk.kind,
+      parts: pickedParts(parts, walk).map(part => part.id),
+      secret: walk.picked.has("api") && walk.secret ? walk.secret : null,
+      addTile: walk.addTile,
+    });
+  } catch {
+    control.disabled = false;
+    S.status = S.view.connections.saveFailed;
+    $s("settingsStatus").textContent = S.status;
+    return;
+  }
+  if (result?.saved) {
+    S.walk = null;
+    S.editor = null;
+    S.catalog = false;
+  }
+  apply(result);
+}
+
+/** The steps of a source that has any. Rows carry no `walk`, so a row and Add
+ *  source reach the same catalog entry and open the same steps. */
+function walkEditor(entry) {
+  const labels = S.view.connections.walkLabels;
+  const { parts, tile } = entry.walk;
+  S.walk ||= startWalk(entry);
+  const walk = S.walk;
+  const steps = walkSteps(parts, walk);
+  const step = steps[walk.index];
+  const part = parts.find(item => item.id === step);
+
+  const progress = node("p", "walk-step");
+  const paintProgress = () => {
+    progress.textContent = labels.step
+      .replace("{title}", entry.title)
+      .replace("{n}", walk.index + 1)
+      .replace("{total}", walkSteps(parts, walk).length);
+  };
+  paintProgress();
+
+  const advance = () => {
+    if (part?.secret && !part.secret.stored && !walk.secret.trim()) {
+      walk.problem = labels.keyRequired;
+      render();
+      return;
+    }
+    walk.problem = "";
+    walk.index += 1;
+    render();
+  };
+
+  const forward = step === "ready"
+    ? button(labels.finishLabel, "primary walk-finish")
+    : button(labels.nextLabel, "primary walk-next");
+  forward.dataset.walkFocus = "true";
+  if (step === "ready") forward.addEventListener("click", () => finishWalk(entry, forward));
+  else forward.addEventListener("click", advance);
+  // An added source may have everything unticked: that is how it is removed.
+  const allowForward = () => { forward.disabled = step === "pick" && !walk.picked.size && !walk.added; };
+  allowForward();
+
+  const heading = step === "pick" ? labels.pickHeading
+    : step !== "ready" ? part.title
+    : walk.picked.size ? labels.readyHeading : labels.removeHeading;
+  const content = step === "pick"
+    ? walkPickStep(parts, walk, () => { paintProgress(); allowForward(); })
+    : step === "ready" ? walkReadyStep(parts, tile, walk, labels)
+    : walkPartStep(part, walk, labels, advance);
+
+  const cancel = button(labels.cancelLabel, "walk-cancel");
+  cancel.addEventListener("click", showConnections);
+  const actions = node("div", "row walk-actions");
+  actions.appendChild(cancel);
+  if (walk.added && walk.index === 0) {
+    const remove = button(labels.removeLabel, "discard walk-remove");
+    remove.addEventListener("click", () => {
+      walk.picked.clear();
+      walk.secret = "";
+      walk.problem = "";
+      walk.index = walkSteps(parts, walk).length - 1;
+      render();
+    });
+    actions.appendChild(remove);
+  }
+  actions.appendChild(node("span", "grow"));
+  if (walk.index > 0) {
+    const back = button(labels.backLabel, "walk-back");
+    back.addEventListener("click", () => {
+      walk.problem = "";
+      walk.index -= 1;
+      render();
+    });
+    actions.appendChild(back);
+  }
+  actions.appendChild(forward);
+
+  const page = node("div", "walk");
+  page.dataset.step = step;
+  page.append(progress, node("h2", null, heading), ...content, actions);
+  // A render replaces the page, so keyboard focus would fall back to the top.
+  requestAnimationFrame(() => page.querySelector("[data-walk-focus]")?.focus());
+  return [page];
 }
 
 function connectionEditor() {
@@ -1725,6 +1905,8 @@ function connectionEditor() {
   const current = entry.id ? t.rows.find(row => row.id === entry.id) : null;
   // A removal returns a new persisted list; it cannot strand a stale editor.
   if (entry.entityId && !current) { S.editor = null; return connectionsTab(t); }
+  const stepped = t.catalog.find(item => item.kind === entry.kind && item.walk);
+  if (stepped) return walkEditor(stepped);
   const back = button(t.backLabel, "connection-back");
   back.addEventListener("click", () => navigate(showConnections));
   const heading = node("div", "connection-heading row");
@@ -1760,20 +1942,6 @@ function connectionEditor() {
     for (const repo of accounts.unattributed) orphaned.appendChild(repoRow(accounts, null, repo));
     orphaned.appendChild(help(accounts.unattributedHelp));
     content = [orphaned];
-  } else if (entry.kind === "local") {
-    const hosts = S.view.hosts;
-    content = [help(entry.help)];
-  } else if (entry.kind === "claude") {
-    // One page for everything read from Claude Code: the local logs, which
-    // need nothing, and the plan limits, which need the operator's consent.
-    const local = group(entry.localHeading);
-    local.appendChild(help(entry.help));
-    content = [local, planUsageGroup(S.view.planUsage, "claude")];
-  } else if (entry.kind === "codexPlan") content = [planUsageGroup(S.view.planUsage, "codex")];
-  else if (entry.kind === "services") {
-    const add = button(t.addLabel, "connection-add");
-    add.addEventListener("click", () => openConnection(t.catalog.find(item => item.kind === "vendor")));
-    content = [help(entry.help), actionRow(add)];
   }
   return [back, heading, ...content];
 }
@@ -1813,6 +1981,7 @@ async function openSettings(tab) {
   const chooseRoute = () => {
     S.tab = S.view.tabs.some(t => t.id === tab) ? tab : "connections";
     S.editor = null;
+    S.walk = null;
     S.catalog = false;
     S.route = route ? S.view.connectionRoute : null;
     // Aggregate tiles don't identify one account/host/provider to edit. Their
@@ -1821,13 +1990,12 @@ async function openSettings(tab) {
     const kind = kinds[tab];
     if (kind) {
       const entry = S.view.connections.rows.find(r => r.kind === kind) ||
-        S.view.connections.automatic.find(r => r.kind === kind) ||
         S.view.connections.catalog.find(r => r.kind === kind);
       if (entry) S.editor = { ...entry };
     }
     const target = S.route?.editor;
     if (target) {
-      const entry = [...S.view.connections.rows, ...S.view.connections.automatic, ...S.view.connections.catalog]
+      const entry = [...S.view.connections.rows, ...S.view.connections.catalog]
         .find(item => item.kind === target.kind && (!target.entityId || item.entityId === target.entityId));
       if (entry) S.editor = { ...entry };
       if (target.kind === "unattributed") S.editor = { kind: target.kind, title: S.view.connections.unattributedLabel };
@@ -1878,6 +2046,7 @@ async function finishCloseSettings() {
   stopUpdatePolling();
   $s("settings").hidden = true;
   // Closing must remove a discarded password, not merely hide its input.
+  S.walk = null;
   $s("settingsBody").replaceChildren();
   $s("settingsConfirm").replaceChildren();
   $s("settingsConfirm").hidden = true;

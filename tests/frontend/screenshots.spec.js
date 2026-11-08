@@ -39,6 +39,8 @@ const PAYLOADS = {
   repos: "sample-showcase-repos.json",
   runners: "sample-showcase-runners.json",
   containers: "sample-showcase-containers.json",
+  anthropic: "sample-showcase-anthropic.json",
+  openai: "sample-showcase-openai.json",
   usage: "sample-showcase-usage.json",
   azure_cost: "sample-showcase-azure.json",
   crons: "sample-showcase-crons.json",
@@ -54,8 +56,8 @@ const PAYLOADS = {
  * narrow shot once showed overlapping host cards: a layout computed for 2732px
  * painted into a 900px window. So each viewport below has its own dump, and a
  * width with none is refused, never approximated. The widths are what those
- * viewports measure (1024, 908, 900, 472 and 462 wide, less the page padding; a tile's Full view asks
- * at the window's own width too, which is why 900 has a dump); a CSS change that
+ * viewports measure (1024, 908, 900, 462, 452 and 366 wide, less the page padding; a tile's Full view asks
+ * at the window's own width too, which is why 900 and 366 have a dump); a CSS change that
  * moves them fails here loudly, and the fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
  */
 const COCKPITS = {
@@ -64,7 +66,9 @@ const COCKPITS = {
   868: "sample-showcase-cockpit-868.json",
   900: "sample-showcase-cockpit-900.json",
   430: "sample-showcase-cockpit-430.json",
-  440: "sample-showcase-cockpit-440.json",
+  420: "sample-showcase-cockpit-420.json",
+  366: "sample-showcase-cockpit-366.json",
+  334: "sample-showcase-cockpit-334.json",
 };
 
 /** The box `.tile-shot img` crops each panel image into on solador.app (site.css, 311x195 at the 3-up layout). */
@@ -178,61 +182,23 @@ async function expectCpuSectionInCrop(panel) {
 }
 
 /**
- * The Usage card says "Neon, Sentry and Vercel consumption", so each of those
- * three sections must lie wholly inside the crop the site shows. Usage is the
- * one card anchored bottom left (`.tile-shot-bottom`): `cover` scales the image
- * to fill the box, and what lies above the bottom `visibleH` rows is cut. The
- * crop must also keep the panel's full width, or a two-column panel (a wider
- * window than 472pt) would cut the providers' values on the right.
+ * What a card says must lie wholly inside the crop the site shows: Usage's says
+ * "Neon, Sentry and Vercel consumption", OpenAI's alt says a meter for each
+ * limit. Every card is anchored top left: `cover` scales the image to fill the
+ * box, and what lies below the top `visibleH` is cut. The crop must also keep
+ * the panel's full width, because these panels' values are right-aligned.
  */
-async function expectProvidersInBottomCrop(panel) {
+async function expectWholeInCrop(panel, selectors) {
   const box = await panel.boundingBox();
-  for (const id of ["neon", "sentry", "vercel"]) {
-    await expect(panel.locator(`.pv-section[data-provider="${id}"]`)).toHaveCount(1);
-  }
+  for (const selector of selectors) await expect(panel.locator(selector)).toHaveCount(1);
   for (const [w, h] of SHOT_BOXES) {
     const scale = Math.max(w / box.width, h / box.height);
     const visibleW = w / scale;
     const visibleH = h / scale;
     expect(visibleW, `${w}x${h} shows the panel's full width`).toBeGreaterThanOrEqual(box.width - 0.5);
-    for (const id of ["neon", "sentry", "vercel"]) {
-      const section = await panel.locator(`.pv-section[data-provider="${id}"]`).boundingBox();
-      const top = section.y - box.y;
-      expect(top, `${id} starts inside the ${w}x${h} crop`).toBeGreaterThanOrEqual(box.height - visibleH);
-      expect(top + section.height, `${id} ends inside the ${w}x${h} crop`).toBeLessThanOrEqual(box.height + 0.5);
-    }
-  }
-}
-
-/**
- * The crop's top edge cuts no row and no meter (#699). The card is anchored
- * bottom, so the edge falls somewhere in the body above the providers; wherever
- * it lands it must not leave a label-less sliver of a row: every row, meter,
- * heading and rule of the Claude block lies wholly inside the crop or wholly
- * outside it, in every box.
- */
-async function expectNoRowCutByBottomCrop(panel) {
-  const box = await panel.boundingBox();
-  expect(await panel.locator(".pv-section[data-plan]").count(), "plan sections in the shot").toBeGreaterThan(0);
-  const kids = panel.locator(
-    ".usage-main :is(.pv-row, .pv-item, .pv-heading, .pv-divider, .db-metric, .pv-section > .lbl)",
-  );
-  const count = await kids.count();
-  expect(count, "rows of the Claude block").toBeGreaterThan(0);
-  for (const [w, h] of SHOT_BOXES) {
-    const scale = Math.max(w / box.width, h / box.height);
-    const cut = box.height - h / scale;
-    for (let i = 0; i < count; i++) {
-      const k = await kids.nth(i).boundingBox();
-      if (!k) continue; // a rule `display: none` has no box to cut
-      const top = k.y - box.y;
-      const bottom = top + k.height;
-      if (bottom <= cut + 0.5 || top >= cut - 0.5) continue;
-      const what = await kids.nth(i).evaluate((el) => `${el.className} "${el.textContent.trim()}"`);
-      expect.soft(
-        false,
-        `${what} (${top.toFixed(1)}-${bottom.toFixed(1)}) is cut by the ${w}x${h} crop's top edge at ${cut.toFixed(1)}`,
-      ).toBe(true);
+    for (const selector of selectors) {
+      const section = await panel.locator(selector).boundingBox();
+      expect(section.y - box.y + section.height, `${selector} ends inside the ${w}x${h} crop`).toBeLessThanOrEqual(visibleH + 0.5);
     }
   }
 }
@@ -267,12 +233,12 @@ test.describe("at 2x: the shots people look at", () => {
   // two-column rows read as a card (repos, runners), 462 for the rest, where a
   // panel stacks as it did in its old card: Containers keeps the remote host
   // under this machine's, Azure Cost keeps the prior month, projection and
-  // resource groups. Usage is 472, ten wider: its plan meters lead the panel
-  // and the crop is anchored bottom, so the crop's top edge falls in the
-  // top-projects list, whose rows sit flush; at 472 it falls on a boundary
-  // between two of them (expectNoRowCutByBottomCrop, #699), where at 462 and
-  // 466 it cut one. So the panel is asked for at 440 as well as the overview's
-  // widths. Hosts is one card — this machine's — at 900: the whole host
+  // resource groups. Usage is 452, ten narrower: it is the one panel shorter
+  // than the box's shape, so at 462 `cover` scaled it by its height and cut its
+  // right-aligned values (expectWholeInCrop). OpenAI is 366: one plan is short,
+  // so at 462 the crop kept half its width and cut the second meter; narrow
+  // enough, the meters stack, and wide enough, the API row stays in the box.
+  // Hosts is one card — this machine's — at 900: the whole host
   // grid at 1800 wide and 2x is a 3500px image for a tile that shows a few
   // hundred. Hosts asks Rust for the cockpit at the window's own width (900) as
   // well as the overview's (868), so both have a dump.
@@ -281,7 +247,9 @@ test.describe("at 2x: the shots people look at", () => {
     ["#reposPanel", "repos", 908, "ghWorkflows"],
     ["#runnersPanel", "runners", 908, "ghRunners"],
     ["#containersPanel", "containers", 462, "containers"],
-    ["#usagePanel", "usage", 472, "claudeUsage"],
+    ["#anthropicPanel", "anthropic", 462, "anthropic"],
+    ["#openaiPanel", "openai", 366, "openai"],
+    ["#usagePanel", "usage", 452, "usage"],
     ["#cronsPanel", "crons", 462, "sentryCrons"],
     ["#servicesPanel", "services", 462, "services"],
     ["#azurePanel", "azure-cost", 462, "azureCost"],
@@ -294,8 +262,10 @@ test.describe("at 2x: the shots people look at", () => {
       await expect(panel).toBeVisible();
       if (name === "containers") await expectRemoteHostInCrop(panel);
       if (name === "usage") {
-        await expectProvidersInBottomCrop(panel);
-        await expectNoRowCutByBottomCrop(panel);
+        await expectWholeInCrop(panel, ["neon", "sentry", "vercel"].map((id) => `.pv-section[data-provider="${id}"]`));
+      }
+      if (name === "openai") {
+        await expectWholeInCrop(panel, ['.pv-section[data-plan="codex-plan"]', '.pv-section[data-section="api"]']);
       }
       if (name === "hosts") await expectCpuSectionInCrop(panel);
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });

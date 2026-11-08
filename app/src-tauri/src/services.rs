@@ -251,37 +251,23 @@ impl ActiveVendor {
 /// gets an answer seeds instead of alerting. A locked keychain is silent in
 /// both directions, which is the only honest thing it can be.
 ///
-/// `claude_usage_present` is Anthropic's trigger, and it is the named
-/// exception: there is no Anthropic credential to look for, so the signal is
-/// whether the Usage panel found Claude rollups to show. It must be an answer
-/// the caller has actually established — "not read yet" is `false`, so the tile
-/// appears when the data does rather than ahead of it.
-///
 /// Operator-added vendors (#294) are appended after the derived ones, in the
-/// order the operator arranged them, and a disabled one is not watched.
+/// order the operator arranged them, and a disabled one is not watched. They
+/// are sources in their own right, so they stay with Service health off.
 ///
 /// **Re-derived every pass**, never captured at startup: that is what makes an
 /// add, a remove or an enable-toggle in Settings apply on the next poll rather
 /// than on the next launch — the same rule `poll_github` follows for the token
 /// it fetches with. [`ServiceStatuses::watching`] is where the answer lands,
 /// and [`StatusWatch::observe`] is what forgets a vendor that has left it.
-pub fn active_vendors(
-    store: &Store,
-    credentials: &dyn CredentialStore,
-    claude_usage_present: bool,
-) -> Vec<ActiveVendor> {
+pub fn active_vendors(store: &Store, credentials: &dyn CredentialStore) -> Vec<ActiveVendor> {
     // In `ServiceId::ALL`'s order, so upgrading to a derived list does not also
     // reshuffle the rows of an operator for whom nothing else changed.
     let derived = [
         (ServiceId::GitHub, github_configured(store, credentials)),
         (
             ServiceId::Anthropic,
-            // The one vendor with no credential: usage data is the evidence.
-            if claude_usage_present {
-                Configured::Present
-            } else {
-                Configured::Absent
-            },
+            anthropic_configured(store, credentials),
         ),
         (
             ServiceId::Vercel,
@@ -296,6 +282,8 @@ pub fn active_vendors(
 
     let mut vendors: Vec<ActiveVendor> = derived
         .into_iter()
+        // Service health is a source too: off, nothing is derived.
+        .filter(|_| store.settings().service_health_enabled)
         // `is_present`, never `!is_absent`: `Unknown` is neither.
         .filter(|(_, configured)| configured.is_present())
         .filter_map(|(service, _)| ActiveVendor::builtin(service))
@@ -309,6 +297,18 @@ pub fn active_vendors(
             .map(ActiveVendor::from_record),
     );
     vendors
+}
+
+/// Whether any part of the Anthropic source is added. The two settings answer
+/// without asking the credential store, so a locked keychain only matters for an
+/// operator whose one part is the Admin key.
+fn anthropic_configured(store: &Store, credentials: &dyn CredentialStore) -> Configured {
+    let settings = store.settings();
+    if settings.claude_plan_usage_enabled || settings.claude_local_logs_enabled {
+        Configured::Present
+    } else {
+        credential_configured(credentials, SecretKey::AnthropicAdminKey)
+    }
 }
 
 /// Whether GitHub is configured — **one answer for the vendor**, however many
@@ -751,15 +751,18 @@ pub const NOTHING_WATCHED_MESSAGE: &str =
 ///
 /// Three states, worded apart: no pass yet, a pass that watches nothing, and
 /// rows. Collapsing the first two into "all clear" over an empty body would be
-/// the panel claiming coverage it does not have.
+/// the panel claiming coverage it does not have. `added` is whether the operator
+/// added Service health: a pass that watches nothing because they have not is
+/// the setup sentence, since [`NOTHING_WATCHED_MESSAGE`]'s promise that vendors
+/// appear would be false.
 #[must_use]
-pub fn view(statuses: &ServiceStatuses) -> Value {
-    view_at(statuses, crate::panel::now_unix())
+pub fn view(statuses: &ServiceStatuses, added: bool) -> Value {
+    view_at(statuses, crate::panel::now_unix(), added)
 }
 
 /// [`view`] against an explicit clock, for the footer's tests.
 #[must_use]
-pub fn view_at(statuses: &ServiceStatuses, now: u64) -> Value {
+pub fn view_at(statuses: &ServiceStatuses, now: u64, added: bool) -> Value {
     let kind = PanelKind::Services;
     let watched = statuses.watched();
     let rows: Vec<Value> = watched
@@ -786,6 +789,9 @@ pub fn view_at(statuses: &ServiceStatuses, now: u64) -> Value {
         // clean bill of health. Same shape as the Containers panel's.
         "empty": match watched {
             None => json!({ "message": LOADING_MESSAGE }),
+            Some(_) if rows.is_empty() && !added => {
+                json!({ "message": crate::settings::not_set_up_message(crate::settings::SERVICES_TITLE) })
+            }
             Some(_) if rows.is_empty() => json!({ "message": NOTHING_WATCHED_MESSAGE }),
             Some(_) => Value::Null,
         },
@@ -1394,7 +1400,7 @@ mod tests {
 
     #[test]
     fn the_panel_renders_one_row_per_vendor_in_a_fixed_order() {
-        let vm = view(&fixture_statuses());
+        let vm = view(&fixture_statuses(), true);
         let ids: Vec<&str> = vm["rows"]
             .as_array()
             .expect("rows")
@@ -1415,7 +1421,7 @@ mod tests {
     /// as one. Both are green; only one says "Operational".
     #[test]
     fn azures_quiet_feed_reads_as_no_incidents_not_operational() {
-        let vm = view(&fixture_statuses());
+        let vm = view(&fixture_statuses(), true);
         let row = |id: &str| {
             vm["rows"]
                 .as_array()
@@ -1449,7 +1455,7 @@ mod tests {
     /// own table is a `match` arm rather than a shared constant.
     #[test]
     fn the_chip_and_the_services_row_call_a_healthy_github_the_same_thing() {
-        let vm = view(&fixture_statuses());
+        let vm = view(&fixture_statuses(), true);
         let github = vm["rows"]
             .as_array()
             .expect("rows")
@@ -1467,7 +1473,7 @@ mod tests {
     /// that cannot answer must not report the happy path.
     #[test]
     fn an_unread_vendor_is_unknown_and_never_green() {
-        let vm = view(&fixture_statuses());
+        let vm = view(&fixture_statuses(), true);
         let neon = vm["rows"]
             .as_array()
             .expect("rows")
@@ -1481,7 +1487,7 @@ mod tests {
 
     #[test]
     fn the_trailing_count_agrees_with_the_rows_under_it() {
-        let vm = view(&fixture_statuses());
+        let vm = view(&fixture_statuses(), true);
         let degraded = vm["rows"]
             .as_array()
             .expect("rows")
@@ -1505,7 +1511,11 @@ mod tests {
                 },
             );
         }
-        assert_eq!(view(&calm)["trailing"], "all clear", "never \"0 degraded\"");
+        assert_eq!(
+            view(&calm, true)["trailing"],
+            "all clear",
+            "never \"0 degraded\""
+        );
     }
 
     /// A failed refresh explains why a row is not newer; it never replaces the
@@ -1514,7 +1524,7 @@ mod tests {
     fn a_failed_refresh_keeps_the_row_and_says_why_it_is_stale() {
         let mut statuses = fixture_statuses();
         statuses.failed(ServiceId::GitHub, "couldn't reach the status page");
-        let vm = view(&statuses);
+        let vm = view(&statuses, true);
         let github = vm["rows"]
             .as_array()
             .expect("rows")
@@ -1602,7 +1612,7 @@ mod tests {
             },
         );
 
-        let vm = view(&statuses);
+        let vm = view(&statuses, true);
         let rows = vm["rows"].as_array().expect("rows");
         let row = rows
             .iter()
@@ -1645,7 +1655,7 @@ mod tests {
                 incident: None,
             },
         );
-        assert!(view(&statuses)["rows"]
+        assert!(view(&statuses, true)["rows"]
             .as_array()
             .expect("rows")
             .iter()
@@ -1653,7 +1663,7 @@ mod tests {
 
         // Removed in Settings: the next pass derives the built-ins alone.
         statuses.watching(builtins());
-        let vm = view(&statuses);
+        let vm = view(&statuses, true);
         assert!(
             !vm["rows"]
                 .as_array()
@@ -1690,7 +1700,7 @@ mod tests {
 
         statuses.watching(Vec::new());
         statuses.watching(vec![active]);
-        let row = view(&statuses)["rows"].as_array().expect("rows")[0].clone();
+        let row = view(&statuses, true)["rows"].as_array().expect("rows")[0].clone();
         assert_eq!(
             row["state"], "Unknown",
             "what a page said while nobody was watching is unknown, not the last value we held"
@@ -1761,14 +1771,14 @@ mod tests {
     /// already there.
     #[test]
     fn the_five_built_ins_are_unchanged_by_an_operator_adding_a_vendor() {
-        let before = view(&fixture_statuses());
+        let before = view(&fixture_statuses(), true);
 
         let vendor = railway();
         let mut statuses = fixture_statuses();
         let mut watched = builtins();
         watched.push(ActiveVendor::from_record(&vendor));
         statuses.watching(watched);
-        let after = view(&statuses);
+        let after = view(&statuses, true);
 
         let rows = |vm: &Value| vm["rows"].as_array().expect("rows").clone();
         assert_eq!(
@@ -1788,11 +1798,41 @@ mod tests {
     /// is as much a fabrication as a defaulted number.
     #[test]
     fn before_the_first_pass_the_panel_says_it_is_reading_rather_than_all_clear() {
-        let vm = view(&ServiceStatuses::new());
+        let vm = view(&ServiceStatuses::new(), true);
         assert_eq!(vm["rows"].as_array().expect("rows").len(), 0);
         assert_eq!(vm["trailing"], "");
         assert_eq!(vm["empty"]["message"], LOADING_MESSAGE);
         assert_eq!(vm["loading"], true);
+    }
+
+    /// "Vendors appear as you configure them" is false while Service health is
+    /// not added: nothing would appear, however much the operator configured.
+    #[test]
+    fn a_source_never_added_says_how_to_add_it_rather_than_to_wait() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(Vec::new());
+        let vm = view(&statuses, false);
+        assert_eq!(
+            vm["empty"]["message"],
+            "Service health isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source"
+        );
+        assert_eq!(vm["trailing"], "");
+    }
+
+    /// A status page is its own catalog entry, so it is watched with Service
+    /// health off, and a panel with rows has no setup sentence to show.
+    #[test]
+    fn rows_outrank_the_setup_sentence() {
+        let vm = view(&fixture_statuses(), false);
+        assert!(vm["empty"].is_null());
+        assert!(!vm["rows"].as_array().expect("rows").is_empty());
+    }
+
+    /// The first pass has not looked yet, whichever way the source stands.
+    #[test]
+    fn a_source_never_added_still_loads_until_a_pass_has_looked() {
+        let vm = view(&ServiceStatuses::new(), false);
+        assert_eq!(vm["empty"]["message"], LOADING_MESSAGE);
     }
 
     /// …and a pass that *has* looked and found nothing to watch says a
@@ -1803,7 +1843,7 @@ mod tests {
     fn a_pass_that_watches_nothing_says_so_rather_than_all_clear() {
         let mut statuses = ServiceStatuses::new();
         statuses.watching(Vec::new());
-        let vm = view(&statuses);
+        let vm = view(&statuses, true);
         assert_eq!(vm["rows"].as_array().expect("rows").len(), 0);
         assert_eq!(vm["trailing"], "");
         assert_eq!(vm["empty"]["message"], NOTHING_WATCHED_MESSAGE);
@@ -1819,7 +1859,7 @@ mod tests {
     /// working cockpit.
     #[test]
     fn a_populated_panel_carries_no_empty_sentence() {
-        let vm = view(&fixture_statuses());
+        let vm = view(&fixture_statuses(), true);
         assert!(vm["empty"].is_null(), "{vm}");
         assert_eq!(vm["loading"], false);
         assert_eq!(vm["trailing"], "2 degraded");
@@ -1830,7 +1870,7 @@ mod tests {
     const FOOTER_NOW: u64 = 1_000_000;
 
     fn footer_text(statuses: &ServiceStatuses, now: u64) -> Option<String> {
-        view_at(statuses, now)["footer"]["text"]
+        view_at(statuses, now, true)["footer"]["text"]
             .as_str()
             .map(str::to_owned)
     }
@@ -1840,7 +1880,7 @@ mod tests {
     #[test]
     fn no_footer_before_the_first_pass() {
         let statuses = ServiceStatuses::new();
-        let vm = view_at(&statuses, FOOTER_NOW);
+        let vm = view_at(&statuses, FOOTER_NOW, true);
         assert!(vm["footer"].is_null());
         assert_eq!(vm["empty"]["message"], LOADING_MESSAGE);
     }
@@ -1906,7 +1946,7 @@ mod tests {
         let mut statuses = ServiceStatuses::new();
         statuses.watching(Vec::new());
         statuses.pass_finished(FOOTER_NOW, 0, 0);
-        let vm = view_at(&statuses, FOOTER_NOW + 1);
+        let vm = view_at(&statuses, FOOTER_NOW + 1, true);
         assert!(vm["footer"].is_null());
         assert_eq!(vm["empty"]["message"], NOTHING_WATCHED_MESSAGE);
         assert!(
@@ -2125,7 +2165,9 @@ mod tests {
             // `false`: nothing is stored yet, so `migrate_v1_to_v2` has no
             // token to mint an account for. Each fixture below adds what it
             // needs afterwards.
-            let store = Store::open_in(dir.path(), false).expect("open");
+            let mut store = Store::open_in(dir.path(), false).expect("open");
+            // Service health added: what it derives is these tests' subject.
+            store.settings_mut().service_health_enabled = true;
             Fixture {
                 _dir: dir,
                 store,
@@ -2133,12 +2175,12 @@ mod tests {
             }
         }
 
-        fn vendors(&self, claude_usage_present: bool) -> Vec<ActiveVendor> {
-            active_vendors(&self.store, &self.credentials, claude_usage_present)
+        fn vendors(&self) -> Vec<ActiveVendor> {
+            active_vendors(&self.store, &self.credentials)
         }
 
-        fn labels(&self, claude_usage_present: bool) -> Vec<String> {
-            self.vendors(claude_usage_present)
+        fn labels(&self) -> Vec<String> {
+            self.vendors()
                 .into_iter()
                 .map(|vendor| vendor.label)
                 .collect()
@@ -2177,6 +2219,7 @@ mod tests {
         let mut settings = fixture.store.settings().clone();
         settings.azure_storage_account = "stexample".to_owned();
         settings.azure_cost_container = "cost-exports".to_owned();
+        settings.claude_local_logs_enabled = true;
         fixture.store.set_settings(settings);
         fixture
     }
@@ -2189,7 +2232,7 @@ mod tests {
     #[test]
     fn a_store_with_no_credentials_derives_no_vendors() {
         assert!(
-            empty_store().vendors(false).is_empty(),
+            empty_store().vendors().is_empty(),
             "a first-run store must not watch one operator's vendors on everyone's behalf"
         );
     }
@@ -2197,7 +2240,7 @@ mod tests {
     #[test]
     fn one_github_credential_derives_exactly_one_github_tile() {
         let fixture = store_with_github_accounts(1);
-        let vendors = fixture.vendors(false);
+        let vendors = fixture.vendors();
         assert_eq!(vendors.len(), 1);
         assert_eq!(vendors[0].service, ServiceId::GitHub);
         assert_eq!(vendors[0].label, "GitHub");
@@ -2208,7 +2251,7 @@ mod tests {
     #[test]
     fn three_github_accounts_still_derive_one_tile() {
         assert_eq!(
-            store_with_github_accounts(3).vendors(false).len(),
+            store_with_github_accounts(3).vendors().len(),
             1,
             "three accounts are three credentials and one status page"
         );
@@ -2219,7 +2262,7 @@ mod tests {
     /// today's five is asserted rather than assumed.
     #[test]
     fn a_fully_configured_store_derives_the_five_vendors_shipped_today() {
-        let labels = store_with_all_credentials().labels(true);
+        let labels = store_with_all_credentials().labels();
         for expected in ["GitHub", "Anthropic", "Vercel", "Neon", "Azure"] {
             assert!(labels.contains(&expected.to_owned()), "missing {expected}");
         }
@@ -2231,7 +2274,7 @@ mod tests {
     #[test]
     fn the_derived_order_is_the_one_the_panel_lists_today() {
         let services: Vec<ServiceId> = store_with_all_credentials()
-            .vendors(true)
+            .vendors()
             .into_iter()
             .map(|vendor| vendor.service)
             .collect();
@@ -2254,11 +2297,11 @@ mod tests {
         for id in &ids {
             fixture.store.account_mut(*id).expect("account").enabled = false;
         }
-        assert!(fixture.vendors(false).is_empty());
+        assert!(fixture.vendors().is_empty());
 
         // …and one of them coming back is enough, because one page is one page.
         fixture.store.account_mut(ids[0]).expect("account").enabled = true;
-        assert_eq!(fixture.labels(false), vec!["GitHub".to_owned()]);
+        assert_eq!(fixture.labels(), vec!["GitHub".to_owned()]);
     }
 
     /// A v1 store that has not migrated yet has no account, so the derivation
@@ -2273,16 +2316,59 @@ mod tests {
             fixture.store.accounts().is_empty(),
             "the fixture opens with no token in sight, so no account is minted"
         );
-        assert_eq!(fixture.labels(false), vec!["GitHub".to_owned()]);
+        assert_eq!(fixture.labels(), vec!["GitHub".to_owned()]);
     }
 
-    /// Anthropic is the named exception: it has no credential, so its trigger
-    /// is the presence of Claude usage data.
+    /// Adding any part of Anthropic is the evidence: the operator named it, so
+    /// the status page is worth watching whichever part they chose.
     #[test]
-    fn anthropic_is_derived_from_usage_data_rather_than_a_credential() {
-        let fixture = empty_store();
-        assert!(fixture.vendors(false).is_empty());
-        assert_eq!(fixture.labels(true), vec!["Anthropic".to_owned()]);
+    fn anthropic_is_watched_once_any_part_of_it_is_added() {
+        assert!(empty_store().vendors().is_empty());
+        let mut logs = empty_store();
+        logs.store.settings_mut().claude_local_logs_enabled = true;
+        assert_eq!(logs.labels(), vec!["Anthropic".to_owned()]);
+        let mut plan = empty_store();
+        plan.store.settings_mut().claude_plan_usage_enabled = true;
+        assert_eq!(plan.labels(), vec!["Anthropic".to_owned()]);
+        let key = empty_store();
+        key.store_secret(SecretKey::AnthropicAdminKey, "sk-ant-admin01-x");
+        assert_eq!(key.labels(), vec!["Anthropic".to_owned()]);
+    }
+
+    /// A store from before the switches keeps its local logs on, so it has the
+    /// row whether or not this machine ever ran Claude Code. Unticking Local
+    /// usage is what takes it away.
+    #[test]
+    fn an_upgraded_store_has_the_row_until_local_usage_is_unticked() {
+        let mut upgraded = empty_store();
+        *upgraded.store.settings_mut() = serde_json::from_str("{}").expect("deserialize");
+        assert_eq!(upgraded.labels(), vec!["Anthropic".to_owned()]);
+        upgraded.store.settings_mut().claude_local_logs_enabled = false;
+        assert!(upgraded.vendors().is_empty());
+    }
+
+    /// Service health is a source like any other, so a new store watches
+    /// nothing derived until it is added. A status page the operator added by
+    /// hand is its own source and keeps being watched.
+    #[test]
+    fn with_service_health_off_only_added_status_pages_are_watched() {
+        let mut fixture = store_with_all_credentials();
+        fixture.store.settings_mut().service_health_enabled = false;
+        assert!(fixture.vendors().is_empty());
+    }
+
+    /// A locked keychain says nothing about the Admin key either way.
+    #[test]
+    fn an_unreadable_admin_key_is_not_a_tile_but_a_setting_still_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        store.settings_mut().service_health_enabled = true;
+        assert!(active_vendors(&store, &UnreadableCredentialStore).is_empty());
+        store.settings_mut().claude_plan_usage_enabled = true;
+        assert_eq!(
+            active_vendors(&store, &UnreadableCredentialStore)[0].service,
+            ServiceId::Anthropic
+        );
     }
 
     /// Azure stores no credential — the panel mints a container-scoped SAS per
@@ -2296,13 +2382,13 @@ mod tests {
         settings.azure_storage_account = "stexample".to_owned();
         fixture.store.set_settings(settings.clone());
         assert!(
-            fixture.vendors(false).is_empty(),
+            fixture.vendors().is_empty(),
             "half an address reads no export, so there is nothing to watch yet"
         );
 
         settings.azure_cost_container = "cost-exports".to_owned();
         fixture.store.set_settings(settings);
-        assert_eq!(fixture.labels(false), vec!["Azure".to_owned()]);
+        assert_eq!(fixture.labels(), vec!["Azure".to_owned()]);
     }
 
     /// Operator-added vendors (#294) are appended, carrying the page and the
@@ -2315,7 +2401,7 @@ mod tests {
         let id = vendor.id;
         fixture.store.upsert_status_vendor(vendor);
 
-        let vendors = fixture.vendors(false);
+        let vendors = fixture.vendors();
         assert_eq!(vendors.len(), 2, "appended, not merged: {vendors:?}");
         assert_eq!(vendors[0].service, ServiceId::GitHub, "derived ones lead");
         assert_eq!(vendors[1].service, ServiceId::Custom(id));
@@ -2338,7 +2424,7 @@ mod tests {
             StatusVendor::new("Railway", "https://status.railway.app", "abc123", "API");
         vendor.enabled = false;
         fixture.store.upsert_status_vendor(vendor);
-        assert!(fixture.vendors(false).is_empty());
+        assert!(fixture.vendors().is_empty());
     }
 
     /// A credential store that fails every read — a keychain that will not
@@ -2387,9 +2473,11 @@ mod tests {
     #[test]
     fn an_unreadable_credential_store_derives_only_what_it_did_not_need_to_ask_about() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::open_in(dir.path(), false).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        store.settings_mut().service_health_enabled = true;
+        store.settings_mut().claude_local_logs_enabled = true;
         assert_eq!(
-            active_vendors(&store, &UnreadableCredentialStore, true),
+            active_vendors(&store, &UnreadableCredentialStore),
             vec![ActiveVendor {
                 service: ServiceId::Anthropic,
                 label: "Anthropic".to_owned(),

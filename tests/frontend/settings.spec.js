@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { stubTileIpc, openTileFull } from "./tile-full.js";
+import { stubTileIpc, openTileFull, SOURCE_READS } from "./tile-full.js";
 
 // Same CSP guard as layout.spec.js: the page is served under the app's real
 // policy (csp_server.py), and a blocked style or script surfaces as a console
@@ -52,6 +52,11 @@ async function stubIpc(page, cockpit, settings, probe, updates, discover) {
             // The probe answers in its own shape, not `{status, settings}`: a
             // finding is not a mutation, and the tab renders it without one.
             if (command === "settings_probe_status_vendor") return probe;
+            // A whole source at once, and the one answer that says whether it
+            // was applied. A test that wants a refusal sets this.
+            if (command === "settings_save_source") {
+              return window.__SAVE_SOURCE__ || { status: `${args.kind === "anthropic" ? "Anthropic" : "Source"} saved.`, settings, saved: true };
+            }
             // The discovery probe likewise — ephemeral, never persisted.
             if (command === "settings_discover_repos") return discover;
             // The three updater commands answer in the About tab's own
@@ -79,9 +84,10 @@ const calls = (page, command) =>
   page.evaluate((c) => window.__CALLS__.filter((call) => call.command === c), command);
 
 /** Loads the app with the IPC stub installed and opens Settings. */
-async function openSettings(page, baseURL, probe, updates, discover) {
+async function openSettings(page, baseURL, probe, updates, discover, edit) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
+  edit?.(settings);
   await stubIpc(page, cockpit, settings, probe, updates, discover);
   await page.goto("/index.html");
   await expect(page.locator(SETTINGS_BUTTON)).toBeVisible();
@@ -119,7 +125,6 @@ test("Sources is the landing page and each saved source has one editor", async (
   const settings = await openSettings(page, baseURL);
   await expect(page.locator('#settingsTabs [data-tab="connections"]')).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".connection-row")).toHaveCount(settings.connections.rows.length);
-  await expect(page.locator(".connection-auto-grid .connection-option")).toHaveCount(3);
   for (const entry of settings.connections.rows) {
     const row = page.locator(`.connection-row[data-connection="${entry.id}"]`);
     await expect(row.locator(".connection-title")).toHaveText(entry.title);
@@ -224,24 +229,13 @@ test("Sources and its editor fit a narrow window without clipped controls", asyn
  * (#647), so each source's tile is opened, Settings opened over it and closed.
  */
 test("closing Settings brings a tile's Full view current, not just the host cards", async ({ page, baseURL }) => {
-  const sources = [
-    ["hosts", "cockpit"],
-    ["ghWorkflows", "repos"],
-    ["ghRunners", "runners"],
-    ["containers", "containers"],
-    ["services", "services"],
-    ["sentryCrons", "crons"],
-    ["claudeUsage", "usage"],
-    ["azureCost", "azure_cost"],
-    ["openclawAgents", "openclaw"],
-  ];
   await stubTileIpc(page, baseURL, {
-    sources: sources.map(([source]) => source),
+    sources: SOURCE_READS.map(([source]) => source),
     cockpit: await fixture(baseURL, "sample-cockpit.json"),
     answers: { settings_view: await fixture(baseURL, "sample-settings.json") },
   });
   await page.goto("/index.html");
-  for (const [source, command] of sources) {
+  for (const [source, command] of SOURCE_READS) {
     await openTileFull(page, source);
     await page.locator(SETTINGS_BUTTON).click();
     await expect(page.locator("#settings")).toBeVisible();
@@ -275,7 +269,7 @@ test("closing Settings brings a tile's Full view current, not just the host card
  *
  * This walks every page Settings can render -- the three plain tabs, every
  * catalog kind through the Add flow (including the Add host form the issue
- * reported), the three automatic sources, the unattributed-repos view, and
+ * reported), the key step of a source's steps, the unattributed-repos view, and
  * every already-saved connection's own edit view (including the host edit
  * form) -- and asserts every `input.input` on it carries all three opt-outs.
  * Headless Chromium never applies the macOS setting itself, so this only
@@ -320,10 +314,13 @@ test("every text and password field in Settings opts out of system capitalizatio
     }
   }
 
-  // The automatic sources, each opened by its own fixed connection id.
-  for (const id of ["local", "claude", "services"]) {
-    await openConnection(page, id);
+  // The one text field in a source's steps: its key.
+  for (const kind of ["anthropic", "openai"]) {
+    await addConnection(page, kind);
+    await page.locator('.walk-pick[data-part="api"]').click();
+    await page.locator(".walk-next").click();
     checked += await expectOptedOut();
+    await page.locator(".walk-cancel").click();
   }
 
   // The unattributed-repos view, reached only through its own button
@@ -438,56 +435,257 @@ test("a long connection status is shown whole, at every width", async ({ page, b
   }
 });
 
-test("each plan opt-in is off in a fresh store, saves on the spot, and paints Rust's sentences", async ({
+// MARK: a source's steps
+
+const catalogEntry = (settings, kind) => settings.connections.catalog.find((entry) => entry.kind === kind);
+const partOf = (entry, id) => entry.walk.parts.find((part) => part.id === id);
+const saves = (page) => calls(page, "settings_save_source");
+const pick = (page, part) => page.locator(`.walk-pick[data-part="${part}"]`);
+const next = (page) => page.locator(".walk-next").click();
+const stepHeading = (page) => page.locator(".walk h2");
+const stepLine = (page) => page.locator(".walk-step");
+
+/** A store where Anthropic is added: the row the operator clicks, and the
+ *  choices the steps read back. */
+function withAnthropic(settings) {
+  const entry = catalogEntry(settings, "anthropic");
+  partOf(entry, "api").on = true;
+  partOf(entry, "api").secret.stored = true;
+  partOf(entry, "subscription").on = true;
+  partOf(entry, "subscription").status = "On. Reads Claude Code's sign-in every 15m.";
+  entry.walk.tile.present = true;
+  settings.connections.rows.push({
+    id: "anthropic",
+    kind: "anthropic",
+    title: entry.title,
+    feeds: "API key · Subscription",
+    status: { text: "Configured", attention: false, color: "#8090ac" },
+  });
+}
+
+test("Add source lists every source, and nothing sits in a section of its own", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await expect(page.locator(".connection-automatic")).toHaveCount(0);
+  await page.locator(".connection-add").click();
+  for (const kind of ["local", "anthropic", "openai", "services"]) {
+    await expect(page.locator(`.connection-catalog [data-kind="${kind}"]`)).toHaveCount(1);
+  }
+  await expect(page.locator(".connection-catalog [data-kind]")).toHaveCount(settings.connections.catalog.length);
+});
+
+test("Add source walks through only what was picked, and only Finish applies it", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const entry = catalogEntry(settings, "anthropic");
+  const labels = settings.connections.walkLabels;
+  await addConnection(page, "anthropic");
+
+  await expect(stepHeading(page)).toHaveText(labels.pickHeading);
+  await expect(page.locator(".walk-pick-title")).toHaveText(entry.walk.parts.map((part) => part.title));
+  await expect(page.locator(".walk-next"), "there is nothing to set up yet").toBeDisabled();
+
+  await pick(page, "subscription").click();
+  await expect(stepLine(page)).toHaveText("Anthropic · step 1 of 3");
+  await next(page);
+
+  const subscription = partOf(entry, "subscription");
+  await expect(stepHeading(page)).toHaveText(subscription.title);
+  await expect(stepLine(page)).toHaveText("Anthropic · step 2 of 3");
+  await expect(page.locator(".walk .help")).toHaveText(subscription.help);
+  await expect(page.locator(".walk-status"), "no sign-in has been read, so none is reported").toHaveCount(0);
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(labels.readyHeading);
+  await expect(page.locator(".walk-summary li")).toHaveText([
+    `— API spend: ${labels.notSetUp}`,
+    "✓ Plan limits",
+    `— Local usage: ${labels.notSetUp}`,
+  ]);
+  await expect(page.locator(".walk-tile")).toHaveText(entry.walk.tile.label);
+  await expect(page.locator(".walk-tile input")).toBeChecked();
+  expect(await calls(page, "settings_set_plan_usage"), "the opt-in is part of Finish").toEqual([]);
+  expect(await saves(page), "nothing is applied before Finish").toEqual([]);
+
+  await page.locator(".walk-finish").click();
+  expect(await saves(page)).toEqual([
+    {
+      command: "settings_save_source",
+      args: { kind: "anthropic", parts: ["subscription"], secret: null, addTile: true },
+    },
+  ]);
+  await expect(page.locator(".walk")).toHaveCount(0);
+  await expect(page.locator(".connection-list")).toBeVisible();
+  await expect(page.locator("#settingsStatus")).toHaveText("Anthropic saved.");
+});
+
+test("the tile can be left out", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "openai");
+  await pick(page, "subscription").click();
+  await next(page);
+  await next(page);
+  await page.locator(".walk-tile input").uncheck();
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args.addTile).toBe(false);
+});
+
+test("Cancel and Back change nothing, and Cancel forgets the draft", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await addConnection(page, "anthropic");
+  await pick(page, "local").click();
+  await next(page);
+  await page.locator(".walk-back").click();
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.pickHeading);
+  await expect(pick(page, "local").locator("input"), "Back keeps the choices").toBeChecked();
+
+  await page.locator(".walk-cancel").click();
+  await expect(page.locator(".connection-list")).toBeVisible();
+  expect(await saves(page)).toEqual([]);
+
+  await addConnection(page, "anthropic");
+  await expect(pick(page, "local").locator("input")).toBeChecked({ checked: false });
+});
+
+test("the key step stops on an empty key, and the key leaves only at Finish", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const api = partOf(catalogEntry(settings, "openai"), "api");
+  const labels = settings.connections.walkLabels;
+  await addConnection(page, "openai");
+  await pick(page, "api").click();
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(api.title);
+  await expect(page.locator(".walk .help").first()).toHaveText(api.help);
+  const key = page.locator("#walk-secret");
+  await expect(key).toHaveAttribute("type", "password");
+  await expect(key).toHaveAttribute("placeholder", api.secret.placeholder);
+  await expect(page.locator(".walk-problem")).toHaveCount(0);
+
+  await next(page);
+  await expect(stepHeading(page), "no key, no next step").toHaveText(api.title);
+  await expect(page.locator(".walk-problem")).toHaveText(labels.keyRequired);
+  await expect(page.locator(".walk-problem"), "it reads as a problem, not as help").not.toHaveCSS(
+    "color",
+    await page.locator(".walk .help").first().evaluate((el) => getComputedStyle(el).color),
+  );
+
+  await key.fill("sk-admin-x");
+  await key.press("Enter");
+  await expect(stepHeading(page)).toHaveText(labels.readyHeading);
+  expect(await saves(page)).toEqual([]);
+
+  await page.locator(".walk-back").click();
+  await expect(key, "Back keeps what was typed").toHaveValue("sk-admin-x");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({
+    kind: "openai", parts: ["api"], secret: "sk-admin-x", addTile: true,
+  });
+});
+
+test("a key typed and then unticked is never sent", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "openai");
+  await pick(page, "api").click();
+  await next(page);
+  await page.locator("#walk-secret").fill("sk-admin-x");
+  await page.locator(".walk-back").click();
+  await pick(page, "api").click();
+  await pick(page, "subscription").click();
+  await next(page);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({
+    kind: "openai", parts: ["subscription"], secret: null, addTile: true,
+  });
+});
+
+test("a refused Finish stays on the steps with Rust's sentence", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const refusal = "A dashboard can hold up to 48 tiles.";
+  await page.evaluate(
+    ([status, view]) => { window.__SAVE_SOURCE__ = { status, settings: view, saved: false }; },
+    [refusal, settings],
+  );
+  await addConnection(page, "anthropic");
+  await pick(page, "subscription").click();
+  await next(page);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  await expect(page.locator("#settingsStatus")).toHaveText(refusal);
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.readyHeading);
+  await expect(page.locator(".walk-finish")).toBeEnabled();
+});
+
+test("reopening a source reads back its choices, says a key exists, and keeps it unless asked", async ({
   page,
   baseURL,
 }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withAnthropic);
+  const entry = catalogEntry(settings, "anthropic");
+  const row = page.locator('.connection-row[data-kind="anthropic"]');
+  await expect(row.locator(".connection-feeds")).toHaveText("API key · Subscription");
+  await row.click();
+
+  await expect(pick(page, "api").locator("input")).toBeChecked();
+  await expect(pick(page, "subscription").locator("input")).toBeChecked();
+  await expect(pick(page, "local").locator("input")).toBeChecked({ checked: false });
+  await expect(stepLine(page)).toHaveText("Anthropic · step 1 of 4");
+  await next(page);
+
+  await expect(page.locator(".walk-stored")).toHaveText(partOf(entry, "api").secret.storedLabel);
+  await expect(page.locator("#walk-secret")).toHaveValue("");
+  await next(page);
+
+  await expect(page.locator(".walk-status")).toHaveText(partOf(entry, "subscription").status);
+  await next(page);
+
+  await expect(page.locator(".walk-tile"), "it already has a tile").toHaveCount(0);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toMatchObject({
+    kind: "anthropic", parts: ["api", "subscription"], secret: null,
+  });
+});
+
+test("Remove source unticks everything and jumps to a Ready step that says so", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withAnthropic);
+  const labels = settings.connections.walkLabels;
+  await page.locator('.connection-row[data-kind="anthropic"]').click();
+  await page.locator(".walk-remove").click();
+
+  await expect(stepHeading(page)).toHaveText(labels.removeHeading);
+  await expect(page.locator(".walk .help")).toHaveText(labels.removeHelp);
+  await expect(page.locator(".walk-tile")).toHaveCount(0);
+  expect(await saves(page), "and it is still a draft").toEqual([]);
+
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toMatchObject({ kind: "anthropic", parts: [], secret: null });
+});
+
+test("a source not yet added has nothing to remove", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "anthropic");
+  await expect(page.locator(".walk-remove")).toHaveCount(0);
+});
+
+test("a source with one part skips the question", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  const plans = settings.planUsage;
-  // The fixture is a store that never opted in: neither plan is a saved
-  // connection, and each is off. Claude's switch is on the automatic Claude
-  // Code source, beside the local logs it already reads, and nowhere else;
-  // Codex has no local logs, so its switch is a catalog source.
-  expect(settings.connections.rows.some((row) => ["claude", "codexPlan"].includes(row.kind)),
-    "an opt-in that is off claims no source row").toBe(false);
-  expect(settings.connections.catalog.map((entry) => entry.kind)).not.toContain("claudePlan");
-  expect(settings.connections.catalog.find((entry) => entry.kind === "codexPlan").title).toBe("Codex");
+  const entry = catalogEntry(settings, "services");
+  await addConnection(page, "services");
 
-  const open = {
-    claude: async () => {
-      await openConnection(page, "claude");
-      const claude = settings.connections.automatic.find((entry) => entry.kind === "claude");
-      // One page for everything read from Claude Code: the local logs first.
-      await expect(page.locator(".group > .group-hdr").first()).toHaveText(claude.localHeading);
-      await expect(page.locator(".group").first()).toContainText(claude.help);
-    },
-    codex: () => addConnection(page, "codexPlan"),
-  };
-  for (const provider of ["claude", "codex"]) {
-    const p = plans[provider];
-    expect(p.value, "a fresh store reads nobody's sign-in").toBe(false);
-    await open[provider]();
-    const toggle = page.locator(`#plan-usage-${provider}`);
-    await expect(toggle).toBeChecked({ checked: false });
-    // Both sentences are Rust's, verbatim: what is read (nothing, while off)
-    // and exactly which file or keychain item it would be.
-    await expect(page.locator(".plan-status")).toHaveText(p.status);
-    await expect(page.locator(".plan-status + .help")).toHaveText(p.help);
+  await expect(page.locator(".walk-pick")).toHaveCount(0);
+  await expect(stepHeading(page)).toHaveText(entry.walk.parts[0].title);
+  await expect(stepLine(page)).toHaveText(`${entry.title} · step 1 of 2`);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toMatchObject({ kind: "services", parts: ["services"] });
+});
 
-    // No Apply, for the crash-reporting toggle's reason: ticking the box is
-    // the consent, and unticking it is the withdrawal. One click, one command,
-    // naming the provider in the command's own vocabulary.
-    await toggle.click();
-    expect(await calls(page, "settings_set_plan_usage")).toEqual([
-      { command: "settings_set_plan_usage", args: { provider, enabled: true } },
-    ]);
-    // The stub answers with the unchanged fixture, and the box paints Rust's
-    // answer rather than the click.
-    await expect(toggle).toBeChecked({ checked: false });
-    await page.evaluate(() => {
-      window.__CALLS__ = [];
-    });
-  }
+test("each row's click reaches the steps its catalog entry carries", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  // This machine is added in the fixture, so it is a row with no `walk` of its own.
+  await page.locator('.connection-row[data-kind="local"]').click();
+  await expect(page.locator(".walk")).toBeVisible();
+  await expect(page.locator(".walk-remove")).toBeVisible();
 });
 
 test("the Hosts tab lists every host with its endpoint and token badge", async ({ page, baseURL }) => {
@@ -519,7 +717,7 @@ test("Settings carries no machine alert limits or volume list: they moved to the
   await openConnection(page, `host:${settings.hosts.rows[0].id}`);
   await expect(page.locator(".machine-alerts, .volume-choice, .hidden-row")).toHaveCount(0);
   await tab(page, "connections").click();
-  await page.locator('.connection-automatic [data-kind="local"]').click();
+  await page.locator('.connection-row[data-kind="local"]').click();
   await expect(page.locator(".machine-alerts, .volume-choice")).toHaveCount(0);
 });
 

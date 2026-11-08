@@ -1,4 +1,4 @@
-//! The Usage panel's **plan** rows: a Claude or Codex subscription's own limit
+//! The Anthropic and OpenAI panels' **plan** rows: a subscription's own limit
 //! windows, read from the sign-in Claude Code or Codex already holds.
 //!
 //! Three things live here, and only the first is a decision:
@@ -73,29 +73,11 @@ pub const fn section_id(provider: Provider) -> &'static str {
     }
 }
 
-/// The provider's name, in its plan row and in the setup line.
+/// The provider's name, in its plan row.
 const fn plain_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => "Claude",
         Provider::Codex => "Codex",
-    }
-}
-
-/// The Settings page every plan switch is on, in the names Settings renders.
-fn settings_section() -> String {
-    use crate::settings::{OPEN_LABEL, SOURCES_LABEL};
-    format!("{OPEN_LABEL} \u{2192} {SOURCES_LABEL}")
-}
-
-/// Where the provider's switch is on that page: Claude's is on the Claude Code
-/// source; Codex's is in the catalog while it is off, which is the only time
-/// the setup line names it. Built, like [`settings_section`], from the names
-/// Settings renders, so the line cannot point at a name that is not on screen.
-fn settings_place(provider: Provider) -> String {
-    use crate::settings::{ADD_SOURCE_LABEL, CLAUDE_CODE_TITLE, CODEX_TITLE};
-    match provider {
-        Provider::Claude => CLAUDE_CODE_TITLE.to_owned(),
-        Provider::Codex => format!("{ADD_SOURCE_LABEL} \u{2192} {CODEX_TITLE}"),
     }
 }
 
@@ -200,7 +182,7 @@ fn record_outcome(
         if error.kind == PlanErrorKind::KeychainRefused {
             source.parked = true;
             lines.push(format!(
-                "plan usage: {id} parked until its toggle is flipped"
+                "plan usage: {id} parked until Subscription is removed and added back"
             ));
         }
         source.not_before = error
@@ -399,21 +381,27 @@ pub fn next_wake(
     std::time::Duration::from_secs(soonest.clamp(1, cadence_secs.max(1)))
 }
 
-/// What the Usage panel reads at render time.
+/// What the Anthropic and OpenAI panels read at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanInputs {
     pub claude: bool,
     pub codex: bool,
     /// `PanelInterval::PlanUsage`, what each section's clock is dated against.
     pub cadence_secs: u64,
+    /// Whether this machine's Claude Code logs are read at all.
+    pub claude_local_logs: bool,
+    /// `PanelInterval::UsageProviders`, what API spend's clock is dated against.
+    pub spend_cadence_secs: u64,
 }
 
 impl PlanInputs {
-    /// Both providers off, as every store starts.
+    /// Everything off, as a new store starts.
     pub const OFF: PlanInputs = PlanInputs {
         claude: false,
         codex: false,
         cadence_secs: 15 * 60,
+        claude_local_logs: false,
+        spend_cadence_secs: 60 * 60,
     };
 
     #[must_use]
@@ -425,65 +413,52 @@ impl PlanInputs {
     }
 }
 
-/// The plan block's contribution to the Usage panel.
+/// One provider's contribution to its panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanView {
-    /// One section per provider that is on, in provider order.
+    /// The provider's section while it is on, or nothing.
     pub sections: Vec<Value>,
-    /// The single setup line naming every provider that is off, or `Null`.
-    pub off_line: Value,
-    /// Each section's header warning, for `merged_footer`.
+    /// The section's header warning, for `merged_footer`.
     pub warnings: Vec<Value>,
-    /// Each section's clock, for `merged_freshness`.
+    /// The section's clock, for `merged_freshness`.
     pub clocks: Vec<Value>,
-    /// Any provider that is on and has not answered yet.
+    /// The provider is on and has not answered yet.
     pub loading: bool,
 }
 
-/// The plan block, at render time `now`.
+/// One provider's plan block, at render time `now`. Each provider has its own
+/// tile, so nothing here may speak for the other.
 #[must_use]
-pub fn view(claude: &PlanSource, codex: &PlanSource, inputs: PlanInputs, now: u64) -> PlanView {
+pub fn view(provider: Provider, source: &PlanSource, inputs: PlanInputs, now: u64) -> PlanView {
     let mut plan = PlanView {
         sections: Vec::new(),
-        off_line: Value::Null,
         warnings: Vec::new(),
         clocks: Vec::new(),
         loading: false,
     };
-    let mut off = Vec::new();
-    for (provider, source) in [(Provider::Claude, claude), (Provider::Codex, codex)] {
-        let enabled = inputs.enabled(provider);
-        if !enabled {
-            off.push((plain_name(provider), settings_place(provider)));
-            continue;
-        }
-        let id = section_id(provider);
-        plan.sections
-            .push(section(provider, source, enabled, now, inputs.cadence_secs));
-        // Twice the cadence: one missed read is not yet a stuck poller.
-        plan.warnings.push(attributed_status_footer(
-            id,
-            source.state.last_updated,
-            source.state.last_error.as_deref(),
-            now,
-            inputs.cadence_secs.saturating_mul(2),
-        ));
-        plan.clocks.push(attributed_freshness_payload(
-            id,
-            Freshness::classify(
-                source.state.last_updated.map(|at| now.saturating_sub(at)),
-                inputs.cadence_secs,
-            ),
-        ));
-        plan.loading |= source.is_loading(enabled);
+    let enabled = inputs.enabled(provider);
+    if !enabled {
+        return plan;
     }
-    let off: Vec<(&str, &str)> = off
-        .iter()
-        .map(|(name, place)| (*name, place.as_str()))
-        .collect();
-    if let Some(text) = vm::off_line(&settings_section(), &off) {
-        plan.off_line = json!({ "text": text, "color": color::hex(color::MUTED) });
-    }
+    let id = section_id(provider);
+    plan.sections
+        .push(section(provider, source, enabled, now, inputs.cadence_secs));
+    // Twice the cadence: one missed read is not yet a stuck poller.
+    plan.warnings.push(attributed_status_footer(
+        id,
+        source.state.last_updated,
+        source.state.last_error.as_deref(),
+        now,
+        inputs.cadence_secs.saturating_mul(2),
+    ));
+    plan.clocks.push(attributed_freshness_payload(
+        id,
+        Freshness::classify(
+            source.state.last_updated.map(|at| now.saturating_sub(at)),
+            inputs.cadence_secs,
+        ),
+    ));
+    plan.loading = source.is_loading(enabled);
     plan
 }
 
@@ -1287,45 +1262,32 @@ mod tests {
             claude,
             codex,
             cadence_secs: CADENCE,
+            ..PlanInputs::OFF
         }
     }
 
     #[test]
-    fn off_is_one_setup_line_and_no_section() {
-        let off = view(
-            &PlanSource::default(),
-            &PlanSource::default(),
-            PlanInputs::OFF,
-            NOW,
-        );
+    fn off_is_no_section_and_nothing_to_say() {
+        let source = PlanSource::default();
+        let off = view(Provider::Claude, &source, PlanInputs::OFF, NOW);
         assert!(off.sections.is_empty());
-        assert_eq!(
-            off.off_line["text"],
-            "Claude and Codex plan limits are off — turn on in Settings → Sources (Claude Code, Add source → Codex)"
-        );
-        assert_eq!(off.off_line["color"], color::hex(color::MUTED));
         assert!(!off.loading);
         assert!(off.warnings.iter().all(Value::is_null));
+    }
 
-        let codex_off = view(
-            &PlanSource::default(),
-            &PlanSource::default(),
-            on(true, false),
-            NOW,
-        );
-        assert_eq!(codex_off.sections.len(), 1);
+    /// Each tile answers for its own provider.
+    #[test]
+    fn a_view_says_nothing_about_the_other_provider() {
+        let source = PlanSource::default();
+        let claude_on = on(true, false);
+        let claude = view(Provider::Claude, &source, claude_on, NOW);
+        assert_eq!(claude.sections.len(), 1);
         assert_eq!(
-            codex_off.off_line["text"],
-            "Codex plan limits are off — turn on in Settings → Sources → Add source → Codex"
+            view(Provider::Codex, &source, claude_on, NOW)
+                .sections
+                .len(),
+            0
         );
-        assert!(view(
-            &PlanSource::default(),
-            &PlanSource::default(),
-            on(true, true),
-            NOW
-        )
-        .off_line
-        .is_null());
     }
 
     /// A reading retained from before the toggle went off is not shown: the
@@ -1334,14 +1296,14 @@ mod tests {
     fn a_provider_switched_off_shows_nothing_of_its_last_reading() {
         let mut claude = PlanSource::default();
         claude.state.succeeded(reading(), NOW, None);
-        let off = view(&claude, &PlanSource::default(), PlanInputs::OFF, NOW);
+        let off = view(Provider::Claude, &claude, PlanInputs::OFF, NOW);
         assert!(off.sections.is_empty());
     }
 
     #[test]
     fn on_and_unanswered_reads_loading_not_a_dash() {
         let v = view(
-            &PlanSource::default(),
+            Provider::Claude,
             &PlanSource::default(),
             on(true, false),
             NOW,
@@ -1360,7 +1322,7 @@ mod tests {
         codex
             .state
             .failed("Codex not found — install it and sign in".into());
-        let v = view(&PlanSource::default(), &codex, on(false, true), NOW);
+        let v = view(Provider::Codex, &codex, on(false, true), NOW);
         assert!(!v.loading);
         assert_eq!(v.sections[0]["id"], CODEX_ID);
         assert_eq!(v.sections[0]["value"], vm::NO_READING_VALUE);
@@ -1378,7 +1340,7 @@ mod tests {
         let mut max = reading();
         max.plan = Some("Max".into());
         claude.state.succeeded(max, NOW, None);
-        let v = view(&claude, &PlanSource::default(), on(true, false), NOW);
+        let v = view(Provider::Claude, &claude, on(true, false), NOW);
         let plan = &v.sections[0];
         assert_eq!(plan["label"], "Claude · Max");
         // The Fable week: 93% with 4 of 7 days gone runs out in ~7h 13m.
@@ -1411,20 +1373,15 @@ mod tests {
     fn pace_is_frozen_at_the_read_and_hidden_once_stale() {
         let mut claude = PlanSource::default();
         claude.state.succeeded(reading(), NOW, None);
-        let later = view(
-            &claude,
-            &PlanSource::default(),
-            on(true, false),
-            NOW + CADENCE,
-        );
+        let later = view(Provider::Claude, &claude, on(true, false), NOW + CADENCE);
         let session = &later.sections[0]["metrics"][0];
         let tick = session["pace"].as_f64().unwrap();
         assert!((tick - 166.0 / 300.0).abs() < 1e-9, "{tick}");
         assert_eq!(session["note"], "resets in 1h 59m · on pace for 76%");
 
         let stale = view(
+            Provider::Claude,
             &claude,
-            &PlanSource::default(),
             on(true, false),
             NOW + 2 * CADENCE + 1,
         );
@@ -1456,7 +1413,7 @@ mod tests {
         let state = usage.lock().unwrap();
         let claude = state.plan(Provider::Claude);
         assert_eq!(claude.state.last_error, None);
-        let v = view(claude, &PlanSource::default(), on(true, false), NOW);
+        let v = view(Provider::Claude, claude, on(true, false), NOW);
         let plan = &v.sections[0];
         assert_eq!(plan["label"], "Claude · Enterprise");
         assert_eq!(plan["value"], "62% of budget");
@@ -1476,7 +1433,7 @@ mod tests {
         codex
             .state
             .succeeded(PlanUsage::default(), NOW, Some(NO_WINDOWS_MESSAGE.into()));
-        let v = view(&PlanSource::default(), &codex, on(false, true), NOW);
+        let v = view(Provider::Codex, &codex, on(false, true), NOW);
         assert_eq!(v.sections[0]["value"], vm::NO_READING_VALUE);
         assert_eq!(v.sections[0]["metrics"], json!([]));
         assert!(v.warnings[0]["text"]
@@ -1503,7 +1460,7 @@ mod tests {
             NOW,
             None,
         );
-        let v = view(&PlanSource::default(), &codex, on(false, true), NOW);
+        let v = view(Provider::Codex, &codex, on(false, true), NOW);
         assert_eq!(v.sections[0]["label"], "Codex · Plus");
         let metric = &v.sections[0]["metrics"][0];
         assert_eq!(metric["label"], "Secondary");
@@ -1518,15 +1475,15 @@ mod tests {
         let mut claude = PlanSource::default();
         claude.state.succeeded(reading(), NOW, None);
         let inside = view(
+            Provider::Claude,
             &claude,
-            &PlanSource::default(),
             on(true, false),
             NOW + 2 * CADENCE,
         );
         assert!(inside.warnings[0].is_null());
         let past = view(
+            Provider::Claude,
             &claude,
-            &PlanSource::default(),
             on(true, false),
             NOW + 2 * CADENCE + 1,
         );

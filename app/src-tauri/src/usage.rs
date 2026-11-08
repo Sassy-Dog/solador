@@ -1,14 +1,18 @@
-//! The **Usage** panel: Claude Code token rollups, the Claude and Codex
-//! **plan** windows when the operator has turned those on, and a Neon, Sentry
-//! and Vercel section when those providers are configured.
+//! Three panels share this state. **Usage** is the metered Neon, Sentry and
+//! Vercel sections. **Anthropic** and **OpenAI** show whichever parts of their
+//! source the operator added: a subscription's limit windows, API spend, and,
+//! for Anthropic, this machine's Claude Code rollups.
 //!
-//! The plan block is a different reading from the rollups and is never merged
-//! with them: the rollups are this machine's consumption from local logs, the
-//! plan meters a subscription's utilisation of its own limits
-//! ([`crate::plan_usage`]). The plans lead, because a percentage of a limit is
-//! the figure an operator acts on; the rollups follow under their own
-//! `machineHeading`; the metered providers come last. The plans' sections and
-//! setup line are their own payload keys (`plans`, `plansMessage`).
+//! Those readings are never merged: the rollups are this machine's consumption
+//! from local logs, the plan meters a subscription's utilisation of its own
+//! limits ([`crate::plan_usage`]), and API spend is what an organization was
+//! charged. The plans lead, because a percentage of a limit is the figure an
+//! operator acts on; API spend follows; the rollups come last under their own
+//! `machineHeading`.
+//!
+//! **A part that is not set up says nothing.** The operator chose to leave it
+//! out, so it gets no row, no warning and no setup line. A panel's only setup
+//! sentence is for the source having no part at all.
 //!
 //! Port of `ClaudeUsagePanel`. The data
 //! layer beneath it is [`usage`]; this module is the view side, and it holds to
@@ -24,9 +28,10 @@
 //! is unknown rather than drawn at a defaulted zero — a full-looking green bar
 //! nobody measured is worse than no bar.
 //!
-//! **An unconfigured provider has no section at all.** No Neon key means the
-//! panel is pixel-identical to its Claude-only self: no heading, no em dash, no
-//! layout shift. The em dash is for "configured, and we could not find out".
+//! **An unconfigured provider has no section at all.** No Neon key means no
+//! Neon heading, no em dash and no layout shift: the panel shows only the
+//! providers that are set up. The em dash is for "configured, and we could not
+//! find out".
 //!
 //! **Three clocks, one warning line.** Claude reads local files on its own
 //! rollup cadence (`staleAfter` 2.5 cycles, 150s at the default 60s); Neon,
@@ -71,10 +76,12 @@
 
 use serde_json::{json, Value};
 use usage::{
-    NeonInvoiceSummary, NeonUsageSummary, SentryUsageSummary, UsageTotals, VercelUsageSummary,
+    ApiSpendSummary, NeonInvoiceSummary, NeonUsageSummary, SentryUsageSummary, UsageTotals,
+    VercelUsageSummary,
 };
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
+use viewmodel::format::relative_age;
 use viewmodel::freshness::Freshness;
 
 use crate::panel::{
@@ -92,7 +99,10 @@ pub use usage::claude::default_projects_dir;
 pub use usage::neon::NO_CONSUMPTION_MESSAGE as NEON_NO_CONSUMPTION_MESSAGE;
 pub use usage::sentry::NO_STATS_MESSAGE as SENTRY_NO_STATS_MESSAGE;
 pub use usage::vercel::NO_SPEND_MESSAGE as VERCEL_NO_SPEND_MESSAGE;
-pub use usage::{summarize_logs, NeonClient, SentryClient, UsageSummary, VercelClient};
+pub use usage::{
+    summarize_logs, AnthropicCostClient, NeonClient, OpenAiCostClient, SentryClient, UsageSummary,
+    VercelClient,
+};
 
 /// Claude's `PanelStatusFooter(..., staleAfter: 150)` — 2.5× the default 60s
 /// rollup cadence, so one missed pass is not yet a warning. The window at the
@@ -134,6 +144,9 @@ pub const LOADING_MESSAGE: &str = "reading logs…";
 /// empty week.
 pub const NO_DATA_MESSAGE: &str = "no usage data";
 
+/// The Usage panel before a pass has read every key.
+pub const PROVIDERS_LOADING_MESSAGE: &str = "reading usage…";
+
 /// A summary that walked the logs successfully and found nothing in the window.
 /// Distinct from [`NO_DATA_MESSAGE`]: this one is a measurement.
 pub const EMPTY_MESSAGE: &str = "no Claude usage in the last 7 days";
@@ -163,6 +176,12 @@ const QUOTA_RED_AT: f64 = 1.0;
 const NEON_ID: &str = "neon";
 const SENTRY_ID: &str = "sentry";
 const VERCEL_ID: &str = "vercel";
+/// API spend's ids, on the same terms: each is the section's name in the header
+/// line and its row on the tile.
+pub const ANTHROPIC_API_ID: &str = "anthropic-api";
+pub const OPENAI_API_ID: &str = "openai-api";
+/// Month to date, like every other cost figure in the app.
+pub const API_SPEND_LABEL: &str = "API spend (MTD)";
 
 // MARK: - Formatting
 //
@@ -310,16 +329,25 @@ impl<S> ProviderState<S> {
     /// Deliberately *not* [`unconfigure`](Self::unconfigure): a keychain that
     /// declines to answer would otherwise delete a live section and its retained
     /// figure for a full hour, with nothing on screen to say why. A provider
-    /// that was never configured still stays silent — a hiccup must not conjure
-    /// a section for a provider nobody set up.
+    /// that was never configured still gets no section — a hiccup must not
+    /// conjure one for a provider nobody set up — but one no pass has settled
+    /// keeps the reason, or the panel would wait on it for as long as the
+    /// keychain stays locked. Its section needs `is_present`, so the reason
+    /// shows only in the sentence a panel with no section paints.
     pub fn unreadable(&mut self, error: String) {
-        if self.configured.is_present() {
+        if !self.configured.is_absent() {
             self.last_error = Some(error);
         }
     }
+
+    /// No pass has read this provider's key yet, and none has failed to.
+    #[must_use]
+    pub fn is_undecided(&self) -> bool {
+        self.configured.is_unknown() && self.last_error.is_none()
+    }
 }
 
-/// Everything the Usage panel renders from.
+/// Everything the Usage, Anthropic and OpenAI panels render from.
 #[derive(Debug, Default)]
 pub struct UsageState {
     claude: Option<UsageSummary>,
@@ -349,6 +377,9 @@ pub struct UsageState {
     claude_plan: PlanSource,
     /// The Codex plan's limit windows, behind their own opt-in.
     codex_plan: PlanSource,
+    /// This month's API spend, each from its vendor's Admin key.
+    anthropic_api: ProviderState<ApiSpendSummary>,
+    openai_api: ProviderState<ApiSpendSummary>,
 }
 
 impl UsageState {
@@ -388,21 +419,6 @@ impl UsageState {
         self.claude_loading = false;
     }
 
-    /// Whether a log walk has actually produced Claude rollups.
-    ///
-    /// The Services panel's evidence that Anthropic is worth watching
-    /// (`services::active_vendors`): Anthropic is the one vendor with no
-    /// credential to look for, so the signal is that this machine has Claude
-    /// usage in it. Deliberately reads the *summary* rather than
-    /// `!claude_loading`: a completed walk that found nothing is a machine that
-    /// does not use Claude, and before the first walk this answers `false`
-    /// rather than guessing — the tile appears when the data does, never ahead
-    /// of it.
-    #[must_use]
-    pub fn claude_present(&self) -> bool {
-        self.claude.is_some()
-    }
-
     pub fn neon_mut(&mut self) -> &mut ProviderState<NeonUsageSummary> {
         &mut self.neon
     }
@@ -428,6 +444,24 @@ impl UsageState {
 
     pub fn vercel_mut(&mut self) -> &mut ProviderState<VercelUsageSummary> {
         &mut self.vercel
+    }
+
+    pub fn anthropic_api_mut(&mut self) -> &mut ProviderState<ApiSpendSummary> {
+        &mut self.anthropic_api
+    }
+
+    pub fn openai_api_mut(&mut self) -> &mut ProviderState<ApiSpendSummary> {
+        &mut self.openai_api
+    }
+
+    /// Local usage was turned off, so nothing from the logs is kept. Back to the
+    /// state a first walk starts from, which is what turning it on again needs.
+    pub fn clear_claude(&mut self) {
+        self.claude = None;
+        self.claude_updated = None;
+        self.claude_succeeded = None;
+        self.claude_error = None;
+        self.claude_loading = true;
     }
 
     #[must_use]
@@ -709,7 +743,37 @@ fn vercel_section(
     }
 }
 
-/// The whole panel payload.
+/// The sentence for a Usage panel with no section to show, or `None` while one
+/// is still to come.
+///
+/// Only a provider a pass has seen to be `Absent` may paint a setup instruction,
+/// so this says so only when all three are. A provider that could not be read
+/// says why instead.
+fn no_section_message(state: &UsageState) -> Value {
+    use crate::settings::{ADD_SOURCE_LABEL, OPEN_LABEL, SOURCES_LABEL};
+    let undecided =
+        state.neon.is_undecided() || state.sentry.is_undecided() || state.vercel.is_undecided();
+    let reason = [
+        state.neon.last_error.as_deref(),
+        state.sentry.last_error.as_deref(),
+        state.vercel.last_error.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .next();
+    if undecided {
+        state_message(PROVIDERS_LOADING_MESSAGE)
+    } else if let Some(reason) = reason {
+        state_message(reason)
+    } else {
+        state_message(&format!(
+            "No cloud usage yet \u{2014} add Neon, Sentry or Vercel in \
+             {OPEN_LABEL} \u{2192} {SOURCES_LABEL} \u{2192} {ADD_SOURCE_LABEL}"
+        ))
+    }
+}
+
+/// The Usage panel's payload: the metered providers and nothing else.
 ///
 /// `quota` is the store's `sentry_monthly_event_quota` and `rates` its
 /// `neon_usd_per_cu_hour` / `neon_usd_per_gib_month` — both read at render time
@@ -717,101 +781,20 @@ fn vercel_section(
 /// panel without waiting out an hourly cadence for a number no API call is
 /// involved in.
 ///
-/// `plans` is the two plan opt-ins and their cadence, read at render time for
-/// the same reason: turning a provider off must hide its rows now, not after
-/// the next poll has dropped them.
-///
 /// `cadence_secs` is the operator's cadence for the **metered providers**
 /// (`PanelInterval::UsageProviders`), and it is what each section's clock on the
 /// panel's `freshness` line is classified against. Read at render time for the
-/// same reason as the two
-/// above: a shortened interval must re-date the sections now rather than an hour
-/// from now. Claude's own rollups are not measured against it — they are on the
-/// much faster `PanelInterval::ClaudeRollups` cadence, and their footer already covers that
-/// clock.
+/// same reason as the two above: a shortened interval must re-date the sections
+/// now rather than an hour from now.
 #[must_use]
 pub fn view(
     state: &UsageState,
     quota: u64,
     rates: NeonRates,
-    plans: PlanInputs,
     cadence_secs: u64,
     now: u64,
 ) -> Value {
-    let kind = PanelKind::ClaudeUsage;
-
-    // Three states, in the original's own order: no summary at all (loading, or a log
-    // root we could not locate), a summary that measured nothing, and content.
-    // The heading is `Null` with no rows under it: the message above the body
-    // already names that state, and a heading over nothing would be a second,
-    // emptier way of saying it.
-    let (message, heading, windows, projects) = match &state.claude {
-        None => {
-            let text = if state.claude_loading {
-                LOADING_MESSAGE
-            } else {
-                NO_DATA_MESSAGE
-            };
-            (
-                state_message(text),
-                Value::Null,
-                Value::Array(vec![]),
-                Value::Null,
-            )
-        }
-        Some(summary) if summary.last_7d.total_tokens() == 0 => (
-            state_message(EMPTY_MESSAGE),
-            Value::Null,
-            Value::Array(vec![]),
-            Value::Null,
-        ),
-        Some(summary) => {
-            // `LAST 5H` / `LAST 7D`, never `5H` / `WEEK`: the plan meters
-            // above are `5h` and `Week`, and a token count read as a share of
-            // a limit is the confusion the two labels exist to prevent.
-            let windows = json!([
-                window_row("LAST 5H", &summary.last_5h),
-                window_row("LAST 7D", &summary.last_7d),
-            ]);
-            // Absent, not empty: the original renders the divider and the heading only
-            // `if !summary.projectsLast7d.isEmpty`.
-            let projects = if summary.projects_last_7d.is_empty() {
-                Value::Null
-            } else {
-                json!({
-                    "label": "TOP PROJECTS (7D)",
-                    "rows": summary
-                        .projects_last_7d
-                        .iter()
-                        .take(4)
-                        .map(|item| json!({
-                            "name": item.name,
-                            "value": tokens(item.totals.total_tokens()),
-                            "dotColor": color::hex(color::GREEN_DIM),
-                        }))
-                        .collect::<Vec<_>>(),
-                })
-            };
-            (Value::Null, json!(MACHINE_HEADING), windows, projects)
-        }
-    };
-
-    // "" rather than a fabricated 0: with no summary there is no claim to make
-    // about today, and the original's `trailingLabel` returns the empty string there.
-    let trailing = state.claude.as_ref().map_or_else(String::new, |summary| {
-        format!("{} today", tokens(summary.today.total_tokens()))
-    });
-
-    // The panel's one warning line starts with Claude's own, so the header reads
-    // in the body's order: the rollups first, then each metered section down the
-    // card. Claude's is unattributed — it is the panel's own subject, and
-    // `⚠ claude: no ~/.claude/projects` would name a section that is not one.
-    let mut warnings = vec![status_footer(
-        state.claude_succeeded,
-        state.claude_error.as_deref(),
-        now,
-        state.claude_stale_after_secs(),
-    )];
+    let kind = PanelKind::Usage;
 
     // `is_present`, not `!is_absent`: a provider nobody has looked for yet
     // contributes no markup, exactly as an unconfigured one does. The section
@@ -835,28 +818,234 @@ pub fn view(
             .is_present()
             .then(|| vercel_section(&state.vercel, cadence_secs, now)),
     ];
-    // Claude contributes no clock, only a warning. Its rollups are on the
-    // `ClaudeRollups` cadence rather than `cadence_secs`, so classifying them
-    // against the metered providers' cycle would date a local log walk by a
-    // stranger's edge — and its own 150s window is already what the warning
-    // above measures.
+    let mut warnings: Vec<Value> = Vec::new();
     let mut clocks: Vec<Value> = Vec::new();
     let mut providers: Vec<Value> = Vec::new();
-    // The plan block renders between the rollups and the metered providers,
-    // so its warnings and clocks join the header in that order too.
-    let plan = crate::plan_usage::view(
-        state.plan(Provider::Claude),
-        state.plan(Provider::Codex),
-        plans,
-        now,
-    );
-    warnings.extend(plan.warnings);
-    clocks.extend(plan.clocks);
     for provider in configured.into_iter().flatten() {
         providers.push(provider.section);
         warnings.push(provider.warning);
         clocks.push(provider.freshness);
     }
+
+    json!({
+        "id": kind.id(),
+        "title": kind.title(),
+        // This panel has no one figure of its own to lead with.
+        "trailing": "",
+        // A panel with no section still says why, or its Full view is blank.
+        "message": if providers.is_empty() { no_section_message(state) } else { Value::Null },
+        // ONE line for the whole panel — every metered section's warning, each
+        // naming itself. There is deliberately no `footer` on a section: a
+        // warning under the body is what made the card grow and shove the rest
+        // of the cockpit around (#351), so the payload gives the frontend
+        // nowhere to put one.
+        "footer": merged_footer(&warnings),
+        // And ONE clock line, beside it in the same header and never folded
+        // into it: `footer` says the poller is late, this says how old the
+        // figures are, and between the two edges only this one speaks (#338).
+        // A section carries no `freshness` key for the same reason it carries no
+        // `footer` — the line appeared and disappeared with a missed poll, and
+        // in the body that cost the card a line of height (#355).
+        "freshness": merged_freshness(&clocks),
+        "providers": providers,
+        // Any provider still waiting on its first answer keeps the frontend on
+        // its fast refresh, and so does one no pass has read yet. Published
+        // rather than inferred from the message text, which this boundary never
+        // asks the frontend to read.
+        "loading": state.neon.is_loading()
+            || state.sentry.is_loading()
+            || state.vercel.is_loading()
+            || state.neon.is_undecided()
+            || state.sentry.is_undecided()
+            || state.vercel.is_undecided(),
+    })
+}
+
+/// What this machine's rollups contribute to the Anthropic panel.
+struct Rollups {
+    /// The state line when there is nothing to list, or `Null`.
+    message: Value,
+    heading: Value,
+    windows: Value,
+    projects: Value,
+}
+
+impl Rollups {
+    /// Local usage is off: nothing to say, and nothing retained may show.
+    fn off() -> Self {
+        Rollups {
+            message: Value::Null,
+            heading: Value::Null,
+            windows: Value::Array(vec![]),
+            projects: Value::Null,
+        }
+    }
+
+    /// Three states, in the original's own order: no summary at all (loading, or
+    /// a log root we could not locate), a summary that measured nothing, and
+    /// content. The heading is `Null` with no rows under it: the message above
+    /// the body already names that state, and a heading over nothing would be a
+    /// second, emptier way of saying it.
+    fn of(state: &UsageState) -> Self {
+        let none = |message: &str| Rollups {
+            message: state_message(message),
+            heading: Value::Null,
+            windows: Value::Array(vec![]),
+            projects: Value::Null,
+        };
+        match &state.claude {
+            None if state.claude_loading => none(LOADING_MESSAGE),
+            None => none(NO_DATA_MESSAGE),
+            Some(summary) if summary.last_7d.total_tokens() == 0 => none(EMPTY_MESSAGE),
+            Some(summary) => Rollups {
+                message: Value::Null,
+                heading: json!(MACHINE_HEADING),
+                // `LAST 5H` / `LAST 7D`, never `5H` / `WEEK`: the plan meters
+                // above are `5h` and `Week`, and a token count read as a share
+                // of a limit is the confusion the two labels exist to prevent.
+                windows: json!([
+                    window_row("LAST 5H", &summary.last_5h),
+                    window_row("LAST 7D", &summary.last_7d),
+                ]),
+                // Absent, not empty: the original renders the divider and the
+                // heading only `if !summary.projectsLast7d.isEmpty`.
+                projects: if summary.projects_last_7d.is_empty() {
+                    Value::Null
+                } else {
+                    json!({
+                        "label": "TOP PROJECTS (7D)",
+                        "rows": summary
+                            .projects_last_7d
+                            .iter()
+                            .take(4)
+                            .map(|item| json!({
+                                "name": item.name,
+                                "value": tokens(item.totals.total_tokens()),
+                                "dotColor": color::hex(color::GREEN_DIM),
+                            }))
+                            .collect::<Vec<_>>(),
+                    })
+                },
+            },
+        }
+    }
+}
+
+/// One vendor's API spend for its panel, once a pass has found its Admin key.
+fn api_section(
+    id: &str,
+    state: &ProviderState<ApiSpendSummary>,
+    cadence_secs: u64,
+    now: u64,
+) -> Option<ProviderView> {
+    if !state.configured.is_present() {
+        return None;
+    }
+    let summary = state.summary.as_ref();
+    let mut section = provider_row(API_SPEND_LABEL, usd(summary.and_then(ApiSpendSummary::usd)));
+    section["id"] = json!(id);
+    // How far the figure reaches, which is not when it was read: Anthropic's
+    // lag by hours. The header's clock answers the other question.
+    section["note"] = summary
+        .and_then(ApiSpendSummary::refreshed_at)
+        .map_or(Value::Null, |at| {
+            let age = now.saturating_sub(u64::try_from(at.timestamp()).unwrap_or(now));
+            json!(format!("counted {}", relative_age(age)))
+        });
+    Some(ProviderView {
+        section,
+        warning: attributed_status_footer(
+            id,
+            state.last_updated,
+            state.last_error.as_deref(),
+            now,
+            provider_stale_after_secs(cadence_secs),
+        ),
+        freshness: provider_freshness(id, state, cadence_secs, now),
+    })
+}
+
+/// The sentence for a source with no part to show. Only an `Absent` key may
+/// paint the setup instruction: an unread one may well be stored, and an
+/// unreadable one says why instead.
+fn nothing_added_message(title: &str, api: &ProviderState<ApiSpendSummary>) -> Value {
+    if api.is_undecided() {
+        return state_message(PROVIDERS_LOADING_MESSAGE);
+    }
+    if let Some(reason) = api.last_error.as_deref() {
+        return state_message(reason);
+    }
+    state_message(&crate::settings::not_set_up_message(title))
+}
+
+/// The Anthropic panel's payload: Claude's plan limits, API spend, and this
+/// machine's Claude Code rollups, each only if the operator added it.
+///
+/// `inputs` is read at render time rather than captured by the poller: taking a
+/// part off must hide it now, not after the next poll has dropped it.
+///
+/// Claude's plan clock is dated against `inputs.cadence_secs` and API spend's
+/// against `inputs.spend_cadence_secs`. The rollups contribute no clock, only a
+/// warning: they are on the much faster `PanelInterval::ClaudeRollups` cadence,
+/// and the warning already measures it.
+#[must_use]
+pub fn anthropic_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value {
+    let kind = PanelKind::Anthropic;
+    let logs_on = inputs.claude_local_logs;
+    let Rollups {
+        message,
+        heading,
+        windows,
+        projects,
+    } = if logs_on {
+        Rollups::of(state)
+    } else {
+        Rollups::off()
+    };
+    let plan = crate::plan_usage::view(Provider::Claude, state.plan(Provider::Claude), inputs, now);
+    let api = api_section(
+        ANTHROPIC_API_ID,
+        &state.anthropic_api,
+        inputs.spend_cadence_secs,
+        now,
+    );
+
+    // "" rather than a fabricated 0: with no summary there is no claim to make
+    // about today, and the original's `trailingLabel` returns the empty string
+    // there. The tile's Claude Code line is built from this, so "" is also how
+    // local usage being off removes it.
+    let trailing = state
+        .claude
+        .as_ref()
+        .filter(|_| logs_on)
+        .map_or_else(String::new, |summary| {
+            format!("{} today", tokens(summary.today.total_tokens()))
+        });
+
+    // The panel's one warning line starts with Claude's own, so the header reads
+    // in the body's order. It is unattributed: Claude is the panel's own subject,
+    // and `⚠ claude: no ~/.claude/projects` would name a section that is not one.
+    let mut warnings = Vec::new();
+    if logs_on {
+        warnings.push(status_footer(
+            state.claude_succeeded,
+            state.claude_error.as_deref(),
+            now,
+            state.claude_stale_after_secs(),
+        ));
+    }
+    warnings.extend(plan.warnings);
+    let mut clocks = plan.clocks;
+    let api = api.map(|view| {
+        warnings.push(view.warning);
+        clocks.push(view.freshness);
+        view.section
+    });
+    let message = if logs_on || inputs.claude || api.is_some() {
+        message
+    } else {
+        nothing_added_message(kind.title(), &state.anthropic_api)
+    };
 
     json!({
         "id": kind.id(),
@@ -870,33 +1059,53 @@ pub fn view(
         "machineHeading": heading,
         "windows": windows,
         "projects": projects,
-        // ONE line for the whole panel — Claude's warning and every metered
-        // section's, each naming itself. There is deliberately no `footer` on a
-        // section: a warning under the body is what made the card grow and
-        // shove the rest of the cockpit around (#351), so the payload gives the
-        // frontend nowhere to put one.
         "footer": merged_footer(&warnings),
-        // And ONE clock line, beside it in the same header and never folded
-        // into it: `footer` says the poller is late, this says how old the
-        // figures are, and between the two edges only this one speaks (#338).
-        // A section carries no `freshness` key for the same reason it carries no
-        // `footer` — the line appeared and disappeared with a missed poll, and
-        // in the body that cost the card a line of height (#355).
         "freshness": merged_freshness(&clocks),
-        // The plan windows, one section per provider that is on, and the one
-        // muted setup line for every provider that is off (`Null` when both
-        // are on). Off is an instruction, never the dash a failure renders.
         "plans": plan.sections,
-        "plansMessage": plan.off_line,
-        "providers": providers,
-        // Any half of the panel still waiting on its first answer keeps the
-        // frontend on its fast refresh. Published rather than inferred from the
-        // message text, which this boundary never asks the frontend to read.
-        "loading": state.claude_loading
+        "api": api,
+        "loading": (logs_on && state.claude_loading)
             || plan.loading
-            || state.neon.is_loading()
-            || state.sentry.is_loading()
-            || state.vercel.is_loading(),
+            || state.anthropic_api.is_loading()
+            || state.anthropic_api.is_undecided(),
+    })
+}
+
+/// The OpenAI panel's payload: Codex's plan limits and API spend, each only if
+/// the operator added it.
+#[must_use]
+pub fn openai_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value {
+    let kind = PanelKind::OpenAi;
+    let plan = crate::plan_usage::view(Provider::Codex, state.plan(Provider::Codex), inputs, now);
+    let mut warnings = plan.warnings;
+    let mut clocks = plan.clocks;
+    let api = api_section(
+        OPENAI_API_ID,
+        &state.openai_api,
+        inputs.spend_cadence_secs,
+        now,
+    )
+    .map(|view| {
+        warnings.push(view.warning);
+        clocks.push(view.freshness);
+        view.section
+    });
+    let message = if inputs.codex || api.is_some() {
+        Value::Null
+    } else {
+        nothing_added_message(kind.title(), &state.openai_api)
+    };
+    json!({
+        "id": kind.id(),
+        "title": kind.title(),
+        "trailing": "",
+        "message": message,
+        "footer": merged_footer(&warnings),
+        "freshness": merged_freshness(&clocks),
+        "plans": plan.sections,
+        "api": api,
+        "loading": plan.loading
+            || state.openai_api.is_loading()
+            || state.openai_api.is_undecided(),
     })
 }
 
@@ -907,8 +1116,8 @@ pub fn view(
 pub enum Fixture {
     /// Everything measured: Claude content, both plans (Claude's an Ultra
     /// plan with no 5-hour window and a Fable week running out early, Codex's
-    /// a session too young to project), Neon figures + last invoice, Sentry
-    /// count + bar.
+    /// a session too young to project), both vendors' API spend, Neon figures
+    /// + last invoice, Sentry count + bar.
     Measured,
     /// [`Fixture::Measured`] with every plan meter green and under pace, plus a
     /// Vercel reading, for the website's Usage card and the README's full image
@@ -963,6 +1172,25 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
             for (provider, reading) in plans {
                 state.plan_mut(provider).state.succeeded(reading, at, None);
             }
+            state.anthropic_api.succeeded(
+                ApiSpendSummary::Measured {
+                    usd: 412.80,
+                    refreshed_at: chrono::DateTime::from_timestamp(
+                        i64::try_from(claude_at.saturating_sub(3 * 3_600)).unwrap_or(0),
+                        0,
+                    ),
+                },
+                at,
+                None,
+            );
+            state.openai_api.succeeded(
+                ApiSpendSummary::Measured {
+                    usd: 86.12,
+                    refreshed_at: None,
+                },
+                at,
+                None,
+            );
             state.neon.succeeded(
                 NeonUsageSummary::Measured {
                     compute_unit_hours: 12.4,
@@ -1047,6 +1275,23 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
                 Some(usage::sentry::NO_STATS_MESSAGE.to_owned()),
             );
         }
+    }
+    // A pass reads every key, so what a fixture left alone is a key it found
+    // missing, not one nobody has looked for.
+    if state.neon.configured.is_unknown() {
+        state.neon_unconfigure();
+    }
+    if state.sentry.configured.is_unknown() {
+        state.sentry.unconfigure();
+    }
+    if state.vercel.configured.is_unknown() {
+        state.vercel.unconfigure();
+    }
+    if state.anthropic_api.configured.is_unknown() {
+        state.anthropic_api.unconfigure();
+    }
+    if state.openai_api.configured.is_unknown() {
+        state.openai_api.unconfigure();
     }
     state
 }
@@ -1165,6 +1410,8 @@ pub const FIXTURE_PLANS: PlanInputs = PlanInputs {
     claude: true,
     codex: true,
     cadence_secs: 15 * 60,
+    claude_local_logs: true,
+    spend_cadence_secs: 60 * 60,
 };
 
 /// The Claude half of the fixture: a busy 5h window, a busier week, and four
@@ -1226,28 +1473,45 @@ mod tests {
         .spec()
         .default_secs as u64;
 
+    const LOGS_ONLY: PlanInputs = PlanInputs {
+        claude_local_logs: true,
+        ..PlanInputs::OFF
+    };
+
+    /// The operator this rework is for: the subscription and nothing else.
+    const SUBSCRIPTION_ONLY: PlanInputs = PlanInputs {
+        claude: true,
+        ..PlanInputs::OFF
+    };
+
     fn measured() -> UsageState {
         fixture_state(Fixture::Measured, NOW, NOW)
     }
 
-    /// The panel as every store starts: both plan opt-ins off. A local item
-    /// that shadows the glob-imported [`super::view`], so the tests written
-    /// before the plan block keep describing exactly the panel they always
-    /// did. The plan block's own tests call `super::view` with it on.
-    fn view(state: &UsageState, quota: u64, rates: NeonRates, cadence: u64, now: u64) -> Value {
-        super::view(state, quota, rates, PlanInputs::OFF, cadence, now)
+    fn spend(usd: f64) -> ApiSpendSummary {
+        ApiSpendSummary::Measured {
+            usd,
+            refreshed_at: None,
+        }
     }
 
-    /// The measured fixture with Claude's walk dated `at` instead of `NOW`.
-    ///
-    /// The panel now has **one** warning line, so a test that advances the clock
-    /// past the metered providers' window would otherwise pick up Claude's own
-    /// 150s staleness too — 10 minutes is late for a local log walk — and every
-    /// assertion about a provider would be an assertion about two clocks at
-    /// once. Keeping Claude current is what lets these tests name the exact line
-    /// the header renders rather than matching a substring of it.
-    fn measured_with_claude_at(at: u64) -> UsageState {
-        fixture_state(Fixture::Measured, at, NOW)
+    /// A store with nothing added, after a pass has read both Admin keys.
+    fn nothing_added() -> UsageState {
+        let mut state = UsageState::new();
+        state.anthropic_api.unconfigure();
+        state.openai_api.unconfigure();
+        state
+    }
+
+    /// The Anthropic panel with only local usage set up.
+    fn anthropic(state: &UsageState) -> Value {
+        anthropic_view(state, LOGS_ONLY, NOW)
+    }
+
+    /// The Anthropic panel with its plan on, so a test of the rollups' own
+    /// empty states reads them where the panel shows them.
+    fn anthropic_on(state: &UsageState) -> Value {
+        anthropic_view(state, FIXTURE_PLANS, NOW)
     }
 
     fn section<'a>(payload: &'a Value, id: &str) -> Option<&'a Value> {
@@ -1311,44 +1575,35 @@ mod tests {
 
     // MARK: plan block
 
-    /// Off is one muted setup line and no plan section; on, the measured
-    /// fixture's two plans render as their own sections, and the token
-    /// rollups are untouched either way.
+    /// Off is no plan section; on, the measured fixture's plan renders as its
+    /// own section, and the token rollups are untouched either way.
     #[test]
     fn the_plan_block_is_its_own_reading_beside_the_rollups() {
-        let off = view(&measured(), QUOTA, RATES, CADENCE, NOW);
+        let off = anthropic(&measured());
         assert_eq!(off["plans"], json!([]));
-        assert_eq!(
-            off["plansMessage"]["text"],
-            "Claude and Codex plan limits are off — turn on in Settings → Sources (Claude Code, Add source → Codex)"
-        );
 
-        let on = super::view(&measured(), QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);
-        assert!(on["plansMessage"].is_null());
+        let on = anthropic_on(&measured());
         let ids: Vec<&str> = on["plans"]
             .as_array()
             .unwrap()
             .iter()
             .map(|s| s["id"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            ids,
-            [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
-        );
+        assert_eq!(ids, [crate::plan_usage::CLAUDE_ID]);
         assert_eq!(on["plans"][0]["label"], "Claude · Ultra");
         assert_eq!(on["windows"], off["windows"], "the rollups do not move");
         assert_eq!(on["windows"][0]["label"], "LAST 5H");
         assert_eq!(on["machineHeading"], MACHINE_HEADING);
     }
 
-    /// The measured fixture's plans are the edges the panel must get right: an
+    /// The measured fixture's plans are the edges the panels must get right: an
     /// Ultra plan has no 5-hour window and so no `5h` meter, its Fable week is
     /// burning fast enough to run out before the reset, and a Codex session
     /// opened 20 minutes ago is too young to project.
     #[test]
     fn the_measured_plans_are_an_ultra_week_running_out_and_a_young_session() {
-        let on = super::view(&measured(), QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);
-        let claude = &on["plans"][0];
+        let anthropic = anthropic_on(&measured());
+        let claude = &anthropic["plans"][0];
         let labels: Vec<&str> = claude["metrics"]
             .as_array()
             .unwrap()
@@ -1361,7 +1616,8 @@ mod tests {
         assert_eq!(claude["valueColor"], color::hex(color::AMBER));
         assert_eq!(claude["metrics"][1]["color"], color::hex(color::AMBER));
 
-        let codex = &on["plans"][1];
+        let openai = openai_view(&measured(), FIXTURE_PLANS, NOW);
+        let codex = &openai["plans"][0];
         assert_eq!(codex["label"], "Codex · Plus");
         assert_eq!(codex["metrics"][0]["label"], "5h");
         assert!(codex["metrics"][0]["pace"].is_null());
@@ -1377,57 +1633,401 @@ mod tests {
     #[test]
     fn the_plan_edges_fixture_is_a_budget_and_a_dash() {
         let state = fixture_state(Fixture::PlanEdges, NOW, NOW);
-        let v = super::view(&state, QUOTA, RATES, FIXTURE_PLANS, CADENCE, NOW);
+        let v = anthropic_on(&state);
         let claude = &v["plans"][0];
         assert_eq!(claude["label"], "Claude");
         assert_eq!(claude["value"], "62% of budget");
         assert_eq!(claude["metrics"][0]["label"], "Budget");
         assert_eq!(claude["metrics"][0]["value"], "$312 / $500 · 62%");
         assert_eq!(claude["metrics"][0]["span"], "full");
-        let codex = &v["plans"][1];
+        let openai = openai_view(&state, FIXTURE_PLANS, NOW);
+        let codex = &openai["plans"][0];
         assert_eq!(codex["value"], viewmodel::plan_usage::NO_READING_VALUE);
         assert_eq!(codex["metrics"], json!([]));
-        assert!(v["footer"]["text"]
+        assert!(openai["footer"]["text"]
             .as_str()
             .unwrap()
             .contains("codex-plan: "));
-        assert!(v["providers"].as_array().unwrap().is_empty());
     }
 
     /// A plan's failure reads in the header in body order: after Claude's own
-    /// line, before the metered providers'.
+    /// line, which is the panel's subject and leads.
     #[test]
-    fn a_plan_warning_joins_the_header_between_the_rollups_and_the_providers() {
-        let mut state = measured();
-        state.neon_mut().failed("couldn't reach Neon".into());
+    fn a_plan_warning_follows_the_rollups_warning() {
+        let mut state = fixture_state(Fixture::Empty, NOW, NOW);
         state
-            .plan_mut(Provider::Codex)
+            .plan_mut(Provider::Claude)
             .state
-            .failed("Codex's sign-in has expired — run it to refresh".into());
+            .failed("Claude Code's sign-in has expired".into());
         let inputs = PlanInputs {
-            codex: true,
-            ..PlanInputs::OFF
+            claude: true,
+            ..LOGS_ONLY
         };
-        let payload = super::view(&state, QUOTA, RATES, inputs, CADENCE, NOW);
+        let payload = anthropic_view(&state, inputs, NOW);
         let text = payload["footer"]["text"].as_str().unwrap();
-        let plan = text.find("codex-plan:").expect("plan warning");
-        let neon = text.find("neon:").expect("neon warning");
-        assert!(plan < neon, "{text}");
+        assert!(
+            text.starts_with(&format!("⚠ {NO_LOG_ROOT_MESSAGE}")),
+            "{text}"
+        );
+        assert!(
+            text.contains("claude-plan: Claude Code's sign-in"),
+            "{text}"
+        );
     }
 
     #[test]
-    fn a_plan_that_is_on_and_unanswered_keeps_the_panel_loading() {
+    fn a_plan_that_is_on_and_unanswered_keeps_its_panel_loading() {
         let mut state = fixture_state(Fixture::Measured, NOW, NOW);
         state.plan_mut(Provider::Claude).reset();
-        let inputs = PlanInputs {
+        state.plan_mut(Provider::Codex).reset();
+        let on = PlanInputs {
             claude: true,
+            codex: true,
             ..PlanInputs::OFF
         };
-        assert_eq!(
-            super::view(&state, 0, RATES, inputs, CADENCE, NOW)["loading"],
-            true
+        assert_eq!(anthropic_view(&state, on, NOW)["loading"], true);
+        assert_eq!(openai_view(&state, on, NOW)["loading"], true);
+        assert_eq!(anthropic(&state)["loading"], false);
+        assert_eq!(openai_view(&state, PlanInputs::OFF, NOW)["loading"], false);
+    }
+
+    // MARK: each panel's own data
+
+    /// The three views share one poller and nothing else: a failure in one must
+    /// not reach another's chip or warning, and a figure must not cross over.
+    #[test]
+    fn each_view_warns_only_about_its_own_reading() {
+        let mut state = fixture_state(Fixture::Empty, NOW, NOW);
+        state.neon_mut().begin();
+        state
+            .neon_mut()
+            .failed("Neon API request failed".to_owned());
+        state
+            .plan_mut(Provider::Codex)
+            .state
+            .failed("Codex's sign-in has expired".into());
+        let on = PlanInputs {
+            codex: true,
+            ..LOGS_ONLY
+        };
+
+        let usage = view(&state, QUOTA, RATES, CADENCE, NOW);
+        let line = usage["footer"]["text"].as_str().unwrap();
+        assert!(line.contains("neon: Neon API request failed"), "{line}");
+        assert!(!line.contains(NO_LOG_ROOT_MESSAGE), "{line}");
+        assert!(!line.contains("codex-plan"), "{line}");
+
+        let anthropic = anthropic_view(&state, on, NOW);
+        let line = anthropic["footer"]["text"].as_str().unwrap();
+        assert_eq!(line, format!("⚠ {NO_LOG_ROOT_MESSAGE}"));
+
+        let openai = openai_view(&state, on, NOW);
+        let line = openai["footer"]["text"].as_str().unwrap();
+        assert!(line.contains("codex-plan: Codex's sign-in"), "{line}");
+        assert!(!line.contains("neon"), "{line}");
+    }
+
+    /// A stale plan's clock stays on its own tile; Usage's clock is the metered
+    /// providers' alone.
+    #[test]
+    fn each_view_dates_only_its_own_reading() {
+        let state = fixture_state(Fixture::Measured, NOW, NOW - 7 * 3_600);
+        let line = |v: Value| v["freshness"]["text"].as_str().unwrap_or("").to_owned();
+        let usage = line(view(&state, QUOTA, RATES, CADENCE, NOW));
+        assert!(usage.contains("neon"), "{usage}");
+        assert!(!usage.contains("plan"), "{usage}");
+        let anthropic = line(anthropic_on(&state));
+        assert!(anthropic.contains("claude-plan"), "{anthropic}");
+        assert!(!anthropic.contains("codex-plan"), "{anthropic}");
+        assert!(!anthropic.contains("neon"), "{anthropic}");
+        let openai = line(openai_view(&state, FIXTURE_PLANS, NOW));
+        assert!(openai.contains("codex-plan"), "{openai}");
+        assert!(!openai.contains("claude-plan"), "{openai}");
+    }
+
+    /// Claude's tokens are the Anthropic panel's trailing figure. On Usage they
+    /// would be a figure about something else.
+    #[test]
+    fn only_the_anthropic_panel_says_todays_tokens() {
+        let state = measured();
+        assert_eq!(anthropic(&state)["trailing"], "1.2M today");
+        assert_eq!(openai_view(&state, FIXTURE_PLANS, NOW)["trailing"], "");
+        assert_eq!(view(&state, QUOTA, RATES, CADENCE, NOW)["trailing"], "");
+    }
+
+    /// Usage carries the metered providers and no plan or rollup key at all, so
+    /// nothing downstream can paint Claude's data under the wrong name.
+    #[test]
+    fn usage_carries_no_plan_or_rollup_key() {
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW);
+        assert_eq!(payload["id"], "usage");
+        for key in ["plans", "api", "windows", "projects", "machineHeading"] {
+            assert!(payload.get(key).is_none(), "{key}");
+        }
+    }
+
+    /// OpenAI's source has no provider, and Anthropic's none of Codex's.
+    #[test]
+    fn each_ai_view_carries_only_its_own_plan() {
+        let anthropic = anthropic_on(&measured());
+        assert_eq!(anthropic["id"], "anthropic");
+        assert_eq!(anthropic["title"], "Anthropic");
+        assert_eq!(anthropic["plans"].as_array().unwrap().len(), 1);
+        assert!(anthropic.get("providers").is_none());
+        let openai = openai_view(&measured(), FIXTURE_PLANS, NOW);
+        assert_eq!(openai["id"], "openai");
+        assert_eq!(openai["title"], "OpenAI");
+        assert_eq!(openai["plans"].as_array().unwrap().len(), 1);
+        assert_eq!(openai["plans"][0]["id"], crate::plan_usage::CODEX_ID);
+        assert!(openai.get("providers").is_none());
+        assert!(openai.get("windows").is_none());
+    }
+
+    // MARK: each panel's empty state
+
+    /// A part that is not set up says nothing at all: the operator chose it.
+    #[test]
+    fn a_subscription_only_card_shows_the_plan_and_nothing_about_the_rest() {
+        let mut state = measured();
+        state.apply_claude(None, NOW, Some(NO_LOG_ROOT_MESSAGE.to_owned()));
+        state.anthropic_api.unconfigure();
+        let payload = anthropic_view(&state, SUBSCRIPTION_ONLY, NOW);
+        assert_eq!(payload["plans"].as_array().unwrap().len(), 1);
+        assert!(payload["message"].is_null());
+        assert!(payload["footer"].is_null(), "the logs may not warn");
+        assert!(payload["api"].is_null());
+    }
+
+    /// The Claude Code line is `trailing`: with local usage off there is no row
+    /// for the tile to build, and nothing retained can reach the card.
+    #[test]
+    fn local_usage_off_shows_nothing_from_the_logs() {
+        let payload = anthropic_view(&measured(), SUBSCRIPTION_ONLY, NOW);
+        assert_eq!(payload["trailing"], "");
+        assert!(payload["machineHeading"].is_null());
+        assert_eq!(payload["windows"], json!([]));
+        assert!(payload["projects"].is_null());
+    }
+
+    /// Waiting on a walk that will never run would pin the tile loading.
+    #[test]
+    fn local_usage_off_is_not_waiting_on_a_walk() {
+        let mut state = UsageState::new();
+        state.anthropic_api.unconfigure();
+        let payload = anthropic_view(&state, SUBSCRIPTION_ONLY, NOW);
+        assert_ne!(payload["message"]["text"], LOADING_MESSAGE);
+        state.plan_mut(Provider::Claude).state.succeeded(
+            subscription::PlanUsage::default(),
+            NOW,
+            None,
         );
-        assert_eq!(view(&state, 0, RATES, CADENCE, NOW)["loading"], false);
+        assert_eq!(
+            anthropic_view(&state, SUBSCRIPTION_ONLY, NOW)["loading"],
+            false
+        );
+    }
+
+    /// Turning it back on must not repaint whatever the last walk left.
+    #[test]
+    fn clearing_the_rollups_starts_again_from_a_first_walk() {
+        let mut state = measured();
+        state.clear_claude();
+        let payload = anthropic(&state);
+        assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
+        assert_eq!(payload["trailing"], "");
+    }
+
+    #[test]
+    fn a_source_with_nothing_added_says_where_to_add_it() {
+        let state = nothing_added();
+        assert_eq!(
+            anthropic_view(&state, PlanInputs::OFF, NOW)["message"]["text"],
+            "Anthropic isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source"
+        );
+        assert_eq!(
+            openai_view(&state, PlanInputs::OFF, NOW)["message"]["text"],
+            "OpenAI isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source"
+        );
+    }
+
+    /// Only `Absent` may paint a setup instruction: before the first pass an
+    /// Admin key may well be stored.
+    #[test]
+    fn no_setup_line_until_the_key_has_been_read() {
+        let state = UsageState::new();
+        for payload in [
+            anthropic_view(&state, PlanInputs::OFF, NOW),
+            openai_view(&state, PlanInputs::OFF, NOW),
+        ] {
+            assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+            assert_eq!(payload["loading"], true);
+        }
+    }
+
+    /// A locked keychain is not "not set up", so the card says why instead.
+    #[test]
+    fn an_unreadable_key_says_so_rather_than_offering_setup() {
+        let mut state = UsageState::new();
+        state.anthropic_api.unreadable("keychain locked".to_owned());
+        let payload = anthropic_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], "keychain locked");
+        assert_eq!(payload["loading"], false);
+    }
+
+    /// A walk still running is not a verdict: the rollups may yet have rows.
+    #[test]
+    fn anthropic_keeps_saying_it_is_reading_until_the_walk_lands() {
+        let payload = anthropic(&UsageState::new());
+        assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
+    }
+
+    // MARK: API spend
+
+    #[test]
+    fn api_spend_is_its_own_block_with_its_own_id_and_figure() {
+        let mut state = nothing_added();
+        state.anthropic_api.succeeded(spend(412.8), NOW, None);
+        state.openai_api.succeeded(spend(1.5), NOW, None);
+        let anthropic = anthropic_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(anthropic["api"]["id"], ANTHROPIC_API_ID);
+        assert_eq!(anthropic["api"]["label"], API_SPEND_LABEL);
+        assert_eq!(anthropic["api"]["value"], "$412.80");
+        assert!(anthropic["message"].is_null());
+        let openai = openai_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(openai["api"]["id"], OPENAI_API_ID);
+        assert_eq!(openai["api"]["value"], "$1.50");
+        assert!(openai["message"].is_null());
+    }
+
+    /// Unknown is not zero, and a real zero is not unknown.
+    #[test]
+    fn unmeasured_spend_is_a_dash_and_measured_zero_is_a_zero() {
+        let mut state = nothing_added();
+        state
+            .anthropic_api
+            .succeeded(ApiSpendSummary::Unmeasured, NOW, None);
+        let unknown = anthropic_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(unknown["api"]["value"], "\u{2014}");
+        assert_eq!(unknown["api"]["valueColor"], color::hex(color::MUTED));
+        state.anthropic_api.succeeded(spend(0.0), NOW, None);
+        assert_eq!(
+            anthropic_view(&state, PlanInputs::OFF, NOW)["api"]["value"],
+            "$0.00"
+        );
+    }
+
+    /// Anthropic's figures lag by hours, so the block says how far they reach.
+    #[test]
+    fn anthropic_spend_says_how_far_its_figures_reach() {
+        let mut state = nothing_added();
+        let reach = chrono::DateTime::from_timestamp(NOW as i64 - 3 * 3600, 0).unwrap();
+        state.anthropic_api.succeeded(
+            ApiSpendSummary::Measured {
+                usd: 1.0,
+                refreshed_at: Some(reach),
+            },
+            NOW,
+            None,
+        );
+        assert_eq!(
+            anthropic_view(&state, PlanInputs::OFF, NOW)["api"]["note"],
+            "counted 3h ago"
+        );
+    }
+
+    #[test]
+    fn a_failed_spend_read_warns_under_its_own_name_and_keeps_its_figure() {
+        let mut state = nothing_added();
+        state.anthropic_api.succeeded(spend(9.0), NOW, None);
+        state
+            .anthropic_api
+            .failed("Anthropic rejected it".to_owned());
+        let payload = anthropic_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["api"]["value"], "$9.00");
+        assert!(payload["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("anthropic-api"));
+    }
+
+    #[test]
+    fn a_spend_clock_is_dated_against_the_providers_cadence() {
+        let mut state = nothing_added();
+        state.openai_api.succeeded(spend(1.0), NOW - 7200, None);
+        let inputs = PlanInputs::OFF;
+        let payload = openai_view(&state, inputs, NOW);
+        assert!(payload["freshness"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("openai-api"));
+    }
+
+    #[test]
+    fn openai_with_only_spend_added_has_no_setup_line() {
+        let payload = openai_view(&measured(), PlanInputs::OFF, NOW);
+        assert!(payload["message"].is_null());
+        assert_eq!(payload["plans"], json!([]));
+        assert_eq!(payload["loading"], false);
+    }
+
+    /// Unknown stays unknown. Before a pass has read the keychain, the panel
+    /// has nothing to say about how it is configured, so it must not tell a
+    /// configured operator to set up.
+    #[test]
+    fn usage_paints_no_setup_sentence_before_a_pass_has_read_the_keys() {
+        let payload = view(&UsageState::new(), QUOTA, RATES, CADENCE, NOW);
+        assert_eq!(payload["loading"], true);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+
+        let mut state = UsageState::new();
+        state.neon_unconfigure();
+        state.sentry_mut().unconfigure();
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
+        assert_eq!(payload["loading"], true, "Vercel is still unknown");
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+    }
+
+    /// With every key read and none found, the Full view says what to do rather
+    /// than rendering blank.
+    #[test]
+    fn usage_with_no_provider_says_what_to_add() {
+        let payload = view(
+            &fixture_state(Fixture::Empty, NOW, NOW),
+            QUOTA,
+            RATES,
+            CADENCE,
+            NOW,
+        );
+        assert_eq!(payload["loading"], false);
+        assert_eq!(
+            payload["message"]["text"],
+            "No cloud usage yet — add Neon, Sentry or Vercel in Settings → Sources → Add source"
+        );
+        assert!(payload["providers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn usage_with_a_provider_has_no_message() {
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW);
+        assert!(payload["message"].is_null());
+    }
+
+    /// A locked keychain never reaches `begin` or `unconfigure`, so a provider
+    /// nobody has seen stays `Unknown`. It must settle, or Usage waits for a
+    /// first reading forever and a healthy dashboard never leaves its fast
+    /// refresh. It says what happened, and never that nothing is set up.
+    #[test]
+    fn a_locked_keychain_settles_usage_with_its_reason_and_no_setup_sentence() {
+        let reason = "couldn't read the credential store";
+        let mut state = UsageState::new();
+        state.neon_mut().unreadable(reason.to_owned());
+        state.neon_invoice_mut().unreadable(reason.to_owned());
+        state.sentry_mut().unreadable(reason.to_owned());
+        state.vercel_mut().unreadable(reason.to_owned());
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
+        assert_eq!(payload["loading"], false);
+        assert_eq!(payload["message"]["text"], reason);
+        assert!(payload["providers"].as_array().unwrap().is_empty());
     }
 
     // MARK: formatting
@@ -1479,11 +2079,11 @@ mod tests {
     #[test]
     fn the_claude_stale_window_follows_the_rollup_cadence() {
         let footer = |cadence: Option<u64>, age: u64| {
-            let mut state = measured_with_claude_at(NOW - age);
+            let mut state = fixture_state(Fixture::Measured, NOW - age, NOW);
             if let Some(secs) = cadence {
                 state.set_claude_cadence_secs(secs);
             }
-            view(&state, QUOTA, RATES, CADENCE, NOW)["footer"].clone()
+            anthropic(&state)["footer"].clone()
         };
         for cadence in [None, Some(60)] {
             assert!(footer(cadence, 150).is_null(), "{cadence:?} at the edge");
@@ -1499,7 +2099,7 @@ mod tests {
 
     #[test]
     fn before_the_first_walk_the_panel_says_it_is_reading() {
-        let payload = view(&UsageState::new(), 0, NeonRates::default(), CADENCE, NOW);
+        let payload = anthropic(&UsageState::new());
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_eq!(payload["loading"], true);
         assert_eq!(payload["trailing"], "");
@@ -1550,13 +2150,7 @@ mod tests {
     /// from an empty week, which *is* a measurement.
     #[test]
     fn a_missing_log_root_says_no_usage_data_and_names_itself_in_the_footer() {
-        let payload = view(
-            &fixture_state(Fixture::Empty, NOW, NOW),
-            0,
-            NeonRates::default(),
-            CADENCE,
-            NOW,
-        );
+        let payload = anthropic_on(&fixture_state(Fixture::Empty, NOW, NOW));
         assert_eq!(payload["message"]["text"], NO_DATA_MESSAGE);
         // No `· last ok 0s ago`. There is no log root, so no walk has ever
         // succeeded, and the suffix used to be a reassurance about a reading
@@ -1571,7 +2165,7 @@ mod tests {
     fn a_measured_but_empty_week_says_so_rather_than_rendering_zero_rows() {
         let mut state = UsageState::new();
         state.apply_claude(Some(UsageSummary::default()), NOW, None);
-        let payload = view(&state, 0, NeonRates::default(), CADENCE, NOW);
+        let payload = anthropic_on(&state);
         assert_eq!(payload["message"]["text"], EMPTY_MESSAGE);
         assert!(payload["windows"].as_array().unwrap().is_empty());
         // The trailing label still reports today's measured zero: the walk
@@ -1581,7 +2175,7 @@ mod tests {
 
     #[test]
     fn content_renders_both_windows_and_at_most_four_projects() {
-        let payload = view(&measured(), 0, RATES, CADENCE, NOW);
+        let payload = anthropic(&measured());
         assert!(payload["message"].is_null());
 
         let windows = payload["windows"].as_array().unwrap();
@@ -1606,7 +2200,7 @@ mod tests {
     /// at all — not a null one, which would read as a feature half-wired.
     #[test]
     fn window_rows_carry_no_progress_bar() {
-        let payload = view(&measured(), 0, RATES, CADENCE, NOW);
+        let payload = anthropic(&measured());
         for row in payload["windows"].as_array().unwrap() {
             assert!(row.get("bar").is_none(), "got {row}");
         }
@@ -1618,13 +2212,13 @@ mod tests {
         summary.projects_last_7d.clear();
         let mut state = UsageState::new();
         state.apply_claude(Some(summary), NOW, None);
-        assert!(view(&state, 0, NeonRates::default(), CADENCE, NOW)["projects"].is_null());
+        assert!(anthropic(&state)["projects"].is_null());
     }
 
     // MARK: provider sections
 
     /// An unconfigured provider contributes nothing — no heading, no em dash,
-    /// no divider. The panel is pixel-identical to its Claude-only self.
+    /// no divider.
     #[test]
     fn an_unconfigured_provider_renders_no_section() {
         let payload = view(
@@ -1855,20 +2449,14 @@ mod tests {
     /// the window neither field can express on its own.
     #[test]
     fn each_metered_section_dates_its_figures_once_a_whole_cycle_has_passed() {
-        let live = view(
-            &measured_with_claude_at(NOW + 600),
-            QUOTA,
-            RATES,
-            CADENCE,
-            NOW + 600,
-        );
+        let live = view(&measured(), QUOTA, RATES, CADENCE, NOW + 600);
         assert!(
             live["freshness"].is_null(),
             "current figures paint as they always did"
         );
 
         let at = NOW + CADENCE + 1;
-        let stale = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        let stale = view(&measured(), QUOTA, RATES, CADENCE, at);
         assert_eq!(
             stale["freshness"]["text"],
             "neon: as of 1h ago · sentry: as of 1h ago"
@@ -1893,7 +2481,7 @@ mod tests {
         // assertions below are about where they went rather than about a
         // fixture with nothing to say.
         let at = NOW + 23 * 3_600;
-        let payload = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, at);
         assert_eq!(
             payload["footer"]["text"],
             "⚠ neon: stale · updated 23h ago ⚠ sentry: stale · updated 23h ago"
@@ -1934,7 +2522,7 @@ mod tests {
     #[test]
     fn a_dated_figure_and_a_failure_are_reported_side_by_side() {
         let at = NOW + CADENCE + 1;
-        let mut state = measured_with_claude_at(at);
+        let mut state = measured();
         state
             .neon
             .failed("Neon API request failed (HTTP 500)".to_owned());
@@ -1974,7 +2562,7 @@ mod tests {
     #[test]
     fn two_dated_sections_are_distinguishable_on_the_one_clock_line() {
         let at = NOW + 23 * 3_600;
-        let payload = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, at);
         let line = payload["freshness"]["text"].as_str().expect("a clock line");
         for id in [NEON_ID, SENTRY_ID] {
             assert!(line.contains(&format!("{id}: ")), "{id} is named");
@@ -1989,25 +2577,21 @@ mod tests {
 
     // MARK: footers
 
-    /// Each section is still measured against **its own window** — the whole
-    /// reason the window is an argument. Only the place the resulting line
-    /// lands changed: 10 minutes is stale for Claude (150s) and perfectly fine
-    /// for the hourly providers, so the one header line carries Claude's
-    /// warning and nothing else.
+    /// Each reading is still measured against **its own window**, the whole
+    /// reason the window is an argument: 10 minutes is stale for Claude (150s)
+    /// and perfectly fine for the hourly providers, so only Anthropic warns.
     #[test]
-    fn each_section_carries_its_own_footer_on_its_own_window() {
-        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW + 600);
-        assert_eq!(payload["footer"]["text"], "⚠ stale · updated 10m ago");
-        assert!(
-            !payload["footer"]["text"]
-                .as_str()
-                .unwrap()
-                .contains(&format!("{NEON_ID}:")),
-            "a fresh section must not be named on the line"
-        );
+    fn each_panel_measures_its_reading_on_its_own_window() {
+        let later = NOW + 600;
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, later);
+        assert!(payload["footer"].is_null(), "{}", payload["footer"]);
         for id in [NEON_ID, SENTRY_ID] {
             assert!(section(&payload, id).expect(id)["footer"].is_null(), "{id}");
         }
+        assert_eq!(
+            anthropic_view(&measured(), LOGS_ONLY, later)["footer"]["text"],
+            "⚠ stale · updated 10m ago"
+        );
     }
 
     /// Two sections degrading at once. Hoisted unattributed these were the
@@ -2018,7 +2602,7 @@ mod tests {
     #[test]
     fn two_degraded_sections_are_distinguishable_on_the_one_line() {
         let at = NOW + 23 * 3_600;
-        let payload = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, at);
         assert_eq!(
             payload["footer"]["text"],
             "⚠ neon: stale · updated 23h ago ⚠ sentry: stale · updated 23h ago"
@@ -2031,31 +2615,9 @@ mod tests {
         }
     }
 
-    /// Claude's warning and the sections' share the line, and neither is
-    /// dropped when both are present.
-    #[test]
-    fn claudes_warning_and_a_providers_both_reach_the_header() {
-        let mut state = fixture_state(Fixture::Empty, NOW, NOW);
-        state.neon_mut().begin();
-        state
-            .neon_mut()
-            .failed("Neon API request failed (HTTP 500)".to_owned());
-        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
-        let text = payload["footer"]["text"].as_str().expect("a header line");
-        assert!(text.contains(NO_LOG_ROOT_MESSAGE), "Claude's: {text}");
-        assert!(
-            text.contains("neon: Neon API request failed"),
-            "Neon's: {text}"
-        );
-        assert!(
-            text.starts_with(&format!("⚠ {NO_LOG_ROOT_MESSAGE}")),
-            "the panel's own subject leads, then the sections in body order: {text}"
-        );
-    }
-
     #[test]
     fn a_provider_failure_keeps_the_last_good_figure_and_dates_it() {
-        let mut state = measured_with_claude_at(NOW + 300);
+        let mut state = measured();
         state
             .neon
             .failed("Neon API request failed (HTTP 500)".to_owned());
@@ -2183,16 +2745,13 @@ mod tests {
     /// covering nothing. Asserted here, where a Rust test can see it.
     #[test]
     fn the_fixtures_cover_every_rendering_the_panel_has() {
-        let measured = view(
-            &fixture_state(Fixture::Measured, NOW, NOW),
-            QUOTA,
-            RATES,
-            CADENCE,
-            NOW,
-        );
+        let state = fixture_state(Fixture::Measured, NOW, NOW);
+        let rollups = anthropic(&state);
+        assert!(rollups["message"].is_null(), "content, not a state line");
+        assert_eq!(rollups["windows"].as_array().unwrap().len(), 2);
+        assert!(!rollups["projects"]["rows"].as_array().unwrap().is_empty());
+        let measured = view(&state, QUOTA, RATES, CADENCE, NOW);
         assert!(measured["message"].is_null(), "content, not a state line");
-        assert_eq!(measured["windows"].as_array().unwrap().len(), 2);
-        assert!(!measured["projects"]["rows"].as_array().unwrap().is_empty());
         assert_eq!(measured["providers"].as_array().unwrap().len(), 2);
         assert!(
             !section(&measured, "sentry").expect("sentry")["bar"].is_null(),
@@ -2252,15 +2811,12 @@ mod tests {
             "unpriced/unmeasured fixture must not show an estimate row"
         );
 
-        let empty = view(
-            &fixture_state(Fixture::Empty, NOW, NOW),
-            QUOTA,
-            NeonRates::default(),
-            CADENCE,
-            NOW,
-        );
+        let state = fixture_state(Fixture::Empty, NOW, NOW);
+        let empty = anthropic_on(&state);
         assert_eq!(empty["message"]["text"], NO_DATA_MESSAGE);
-        assert!(empty["providers"].as_array().unwrap().is_empty());
         assert_eq!(empty["trailing"], "");
+        let empty = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);
+        assert!(empty["providers"].as_array().unwrap().is_empty());
+        assert_eq!(empty["loading"], false, "a pass has read every key");
     }
 }

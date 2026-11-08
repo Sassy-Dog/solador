@@ -37,8 +37,8 @@
 
      `.card`, `.panel` and `.group` keep their literal 10, and so do the
      `gap:10px 24px` grids on `#containersBody`/`#reposBody`/`#usageBody`/
-     `#azureBody` and the block wrappers inside them (`.usage-main`,
-     `.usage-plans`, `.usage-providers`, `.az-main`). Every one of those spaces SECTIONS,
+     `#anthropicBody`/`#openaiBody`/`#azureBody` and the block wrappers inside
+     them (`.ai-plans`, `.ai-rollups`, `.az-main`). Every one of those spaces SECTIONS,
      COLUMNS or a card's frame apart, which is a different axis asking a
      different question — and now a fixed one, so pointing them at a preference
      would put them under a control that does not name them. Read this token
@@ -533,9 +533,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 /* "THIS MACHINE": the line between the plan meters above and this machine's
    own token counts below. Ruled only when the plans are above it. */
 .pv-heading { font-size:9px; }
-.usage-plans + .pv-heading { border-top:1px solid var(--line); padding-top:10px; }
+#anthropicPanel:not([data-cols="2"]) .ai-plans + .ai-rollups > .pv-heading {
+  border-top:1px solid var(--line); padding-top:10px;
+}
 .pv-message { font-size:11px; color:var(--muted); margin:0; }
 .pv-divider { border:0; border-top:1px solid var(--line); margin:0; width:100%; }
+.pv-note { font-size:11px; color:var(--muted); }
 .pv-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 /* A named breakdown line (a project, a resource group): dot, name, figure. */
 .pv-item { display:flex; align-items:center; gap:7px; min-width:0; }
@@ -561,41 +564,39 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    only place a line that comes and goes costs no height. */
 
 /* Usage fills the width a tile's Full view gives it, so at `--panel-cols: 2` (from
-   `panel_columns`, the same source as Containers' split) the
-   provider sections move BESIDE Claude's rollups instead of running one airy
-   column across the whole card: two grid items, the Claude block and the
-   providers. Pure CSS, so a resize re-splits it without waiting out the panel's
-   own 10s poll, and the DOM is identical at either count. `align-items:start`
-   keeps the shorter side short. */
+   `panel_columns`, the same source as Containers' split) the sections sit side by
+   side instead of running one airy column across the whole card. Pure CSS, so a
+   resize re-splits it without waiting out the panel's own 10s poll, and the DOM
+   is identical at either count. `align-items:start` keeps the shorter side short. */
 #usageBody {
   display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
   gap:10px 24px; align-items:start;
 }
-.usage-main { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.usage-providers { display:flex; flex-direction:column; gap:10px; min-width:0; }
-/* The plans lead `.usage-main`, above this machine's rollups. Each plan
-   section opens with its own rule; the first has nothing above it to separate
-   from, so its rule is dropped, as the providers' first one is side by side.
-   A setup line above it keeps the rule. */
-.usage-plans { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.usage-main > .usage-plans:first-child > .pv-section:first-child > .pv-divider { display:none; }
 /* A message names a state of the whole panel, so it spans the split. */
 #usageBody > .pv-message { grid-column: 1 / -1; }
-/* Every provider section opens with a rule separating it from the block ABOVE
-   it. Side by side, the first one sits at the top of the right-hand column with
-   nothing above it to separate — the gutter does that job. Keyed on the count
-   `applyPanelColumns` already publishes rather than dropped from the DOM, so
-   which count applies stays a CSS question. The projects section keeps its own
-   rule at either count: that one separates the windows from the projects,
-   inside `.usage-main`. */
-#usagePanel[data-cols="2"] .usage-providers > .pv-section:first-child > .pv-divider {
-  display:none;
+/* Every section opens with a rule separating it from the section ABOVE it. The
+   first has nothing above it, and at two columns neither does the second: the
+   gutter does that job. Keyed on the count `applyPanelColumns` already publishes
+   rather than dropped from the DOM, so which count applies stays a CSS question. */
+#usageBody > .pv-section:first-child > .pv-divider { display:none; }
+#usagePanel[data-cols="2"] #usageBody > .pv-section:nth-child(2) > .pv-divider { display:none; }
+
+/* An AI source's Full view: its plan, and on Anthropic this machine's rollups
+   BESIDE it at `--panel-cols: 2`, two grid items. */
+#anthropicBody, #openaiBody {
+  display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
+  gap:10px 24px; align-items:start;
 }
-/* No configured providers, one grid item — it takes both tracks rather than
-   sitting in the first with an empty one beside it, which is what keeps the
-   Claude-only panel pixel-identical to itself. `:last-child`, not
-   `:only-child`: a message may precede it. */
-#usageBody > .usage-main:last-child { grid-column: 1 / -1; }
+.ai-plans, .ai-rollups { display:flex; flex-direction:column; gap:10px; min-width:0; }
+:is(#anthropicBody, #openaiBody) > .pv-message { grid-column: 1 / -1; }
+/* A plan section opens with its own rule. The first has nothing above it to
+   separate from, so its rule is dropped. A setup line above it keeps the rule. */
+.ai-plans > .pv-section:first-child > .pv-divider { display:none; }
+/* One block takes both tracks rather than sitting in the first with an empty one
+   beside it. `:last-child`, not `:only-child`: a message may precede it. */
+:is(#anthropicBody, #openaiBody) > :is(.ai-plans, .ai-rollups):last-child:not(.ai-plans + .ai-rollups) {
+  grid-column: 1 / -1;
+}
 
 .az-headline { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
 .az-headline .value { font-size:22px; font-weight:700;
@@ -735,9 +736,27 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .connection-feeds { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
 .connection-state { font-size:11px; display:inline-flex; align-items:center; gap:7px; flex-shrink:0; }
 .connection-state::before { content:""; flex:none; width:5px; height:5px; border-radius:50%; background:currentColor; }
-.connection-automatic { margin-top:8px; }
-.connection-automatic h3 { font-size:11px; font-weight:500; color:var(--muted); margin:0 0 12px; }
-.connection-auto-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+/* A source's steps. One column at the width of the fields, because each step
+   asks one thing. */
+.walk { display:flex; flex-direction:column; gap:12px; max-width:560px; min-width:0; }
+.walk h2 { font-size:19px; font-weight:600; margin:0; }
+.walk-step { font-size:11px; color:var(--muted); margin:0; }
+.walk-picks { display:flex; flex-direction:column; gap:8px; }
+.walk-pick { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; cursor:pointer;
+  background:var(--panelAlt); border:1px solid var(--line); border-radius:8px; }
+.walk-pick:has(input:checked) { border-color:var(--green); }
+.walk-pick-copy { min-width:0; }
+.walk-pick-title { display:block; font-size:12px; }
+.walk-pick-summary { display:block; color:var(--muted); font-size:11px; margin-top:4px; }
+.walk .help { font-size:11px; }
+.walk .walk-status { color:var(--ink); }
+.walk .walk-problem { color:var(--amber); }
+.walk-summary { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:7px;
+  font-size:12px; }
+.walk-off { color:var(--muted); }
+.walk-tile { display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer; }
+.walk-tile input { margin-left:0; }
+.walk-actions { margin-top:8px; }
 .connection-catalog { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
 .settings .connection-option { padding:13px; text-align:left; white-space:normal; background:var(--panelAlt); }
 .settings .connection-back { align-self:flex-start; padding:0; border:0; background:transparent;
@@ -757,7 +776,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 @media (max-width:800px) {
   .settings-shell { grid-template-columns:155px minmax(0,1fr); }
   .settings-content { padding:20px 16px; }
-  .connection-auto-grid { grid-template-columns:1fr; }
 }
 @media (max-width:580px) {
   .settings-shell { display:block; min-height:0; }
@@ -859,7 +877,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   align-content:start;
 }
 .panel-body > * { flex-shrink:0; }
-#usageBody, #azureBody, #openclawBody { min-height:300px; }
+#usageBody, #anthropicBody, #openaiBody, #azureBody, #openclawBody { min-height:300px; }
 #reposHealth { height:15px; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #reposHealth[hidden] { display:block !important; visibility:hidden; }
 .svc-state { width:18ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
@@ -889,3 +907,6 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    cold failures; subsequent outages retain the measured live height. */
 .card { min-height:960px; overflow:visible; }
 .card > * { flex-shrink:0; }
+/* Under the copy in a catalog card, so it starts with the text above it. */
+.settings .connection-option .connection-state { min-width:0; max-width:none; justify-content:flex-start;
+  text-align:left; }

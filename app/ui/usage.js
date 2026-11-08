@@ -1,11 +1,8 @@
-// The Usage panel: the Claude and Codex plans' own limits when the operator
-// has turned those on, drawn with the Machines tile's meters (`meter.js`),
-// then Claude Code's token rollups for this machine, plus a Neon, Sentry and
-// Vercel section when those providers are configured. Same discipline as every
-// other panel
-// here: each string, colour and figure arrives from Rust
-// (`app/src-tauri/src/usage.rs`), and this file does layout, wiring, and
-// nothing else.
+// The Usage panel: a Neon, Sentry and Vercel section for each provider that is
+// configured. The Anthropic and OpenAI panels are `ai-sources.js`. Same
+// discipline as every other panel here: each string, colour and figure arrives
+// from Rust (`app/src-tauri/src/usage.rs`), and this file does layout, wiring,
+// and nothing else.
 //
 // In particular there is no formatting and no thresholding here. The muted "—"
 // that means "configured, and we could not find out" is a Rust decision
@@ -15,26 +12,23 @@
 // it. The same goes for the quota bar's green/amber/red: `bar` is either an
 // object with a colour or `null`, and `null` means "do not draw one".
 //
-// Nothing below uses `innerHTML`. Project names come from directory paths on
-// this machine and a webview parses markup, so rows are built with createElement
-// + textContent — the names reach the DOM as text and cannot reach it as markup
-// at all, which is stronger than escaping them.
+// Nothing below uses `innerHTML`: rows are built with createElement +
+// textContent, so a vendor's label reaches the DOM as text and cannot reach it
+// as markup at all, which is stronger than escaping it.
 //
 // Wrapped in an IIFE, and that is load-bearing: classic scripts share one global
 // scope, so a top-level `function render()` here would silently REPLACE app.js's
 // and every host card would stop painting (settings.js learned this the hard
 // way). The only names crossing the boundary are the two app.js exposes —
-// `callRust` and `settingsOpen` — meter.js's `soladorMeter`, and the test hook
-// at the bottom.
+// `callRust` and `settingsOpen` — and the test hook at the bottom.
 (function () {
 
 /** How often the panel asks Rust for a fresh payload.
  *
- *  Faster than either Rust-side cadence (the Claude rollups' own, 30s at the
- *  least; the metered providers', hourly by default) because the payload is not static between
- *  fetches: every footer carries a relative age, and "updated 4m ago" has to
- *  tick up on a clock this side never sees move. Asking every 10s costs one
- *  lock and one JSON build. */
+ *  Faster than the Rust-side cadence (hourly by default) because the payload is
+ *  not static between fetches: every footer carries a relative age, and "updated
+ *  4m ago" has to tick up on a clock this side never sees move. Asking every 10s
+ *  costs one lock and one JSON build. */
 const REFRESH_MS = 10000;
 
 /** How often to ask while the panel is still filling in — see `github.js`. */
@@ -56,15 +50,6 @@ function valueRow(row, extraClass) {
   const value = node("span", "val", row.value);
   value.style.color = row.valueColor;
   el.appendChild(value);
-  return el;
-}
-
-/** A dot-plus-name breakdown line (one project). */
-function itemRow(item) {
-  const el = node("div", "pv-item");
-  const dot = node("span", "dot");
-  dot.style.background = item.dotColor;
-  el.append(dot, node("span", "name", item.name), node("span", "val", item.value));
   return el;
 }
 
@@ -107,7 +92,8 @@ function headerLine(id, line) {
 }
 
 /**
- * One provider section: a divider, its rows, and an optional bar.
+ * One provider section: a divider, its rows, and an optional bar. The first
+ * section's divider is CSS's to hide, since nothing sits above it.
  *
  * **No warning line, and no freshness line either.** A section that degraded
  * used to grow a `.pv-footer` under its rows (#351), and a section whose
@@ -128,102 +114,33 @@ function providerNode(provider) {
   return el;
 }
 
-/**
- * One plan section: a divider, the plan's header row (`Claude · Ultra` and
- * Rust's verdict), then a meter per limit.
- *
- * The meters are the Machines tile's (`meter.js`), so a plan's Week reads the
- * way a machine's RAM does, and each one's reset-and-pace sentence is shown
- * under it: on the panel there is room for the words the tile keeps in a
- * tooltip. A plan with nothing to show yet has no meters at all, not empty
- * ones. `data-plan`, not `data-provider`: a plan is not a provider account,
- * and the suite counts providers by that attribute.
- */
-function planNode(plan) {
-  const el = node("div", "pv-section");
-  el.dataset.plan = plan.id;
-  el.appendChild(node("hr", "pv-divider"));
-  el.appendChild(valueRow(plan, "plan"));
-  if (plan.metrics?.length) {
-    const stats = node("div", "db-host-stats");
-    for (const m of plan.metrics) {
-      stats.appendChild(window.soladorMeter.metricNode(m, plan.label, { showNote: true }).metric);
-    }
-    el.appendChild(stats);
-  }
-  return el;
-}
-
 function renderUsage(payload) {
-  $u("usageTitle").textContent = window.soladorDashboard?.tileHeading?.("claudeUsage") || payload.title;
+  $u("usageTitle").textContent = window.soladorDashboard?.tileHeading?.("usage") || payload.title;
   $u("usageTrailing").textContent = payload.trailing || "";
 
   const children = [];
-  // "reading logs…" / "no usage data" / "no Claude usage in the last 7 days"
-  // are three different Rust sentences, in a colour Rust also chose; this file
-  // knows none of them.
+  // Waiting on a pass, nothing set up, or a credential store that would not
+  // answer: three different Rust sentences, in a colour Rust also chose; this
+  // file knows none of them.
   if (payload.message) {
     const message = node("p", "pv-message", payload.message.text);
     message.style.color = payload.message.color;
     children.push(message);
   }
-  // Claude's own rollups are one block so the provider sections can sit BESIDE
-  // them on a full-width card: `#usageBody` is a grid of `--panel-cols` tracks,
-  // and each of these two wrappers is one grid item. Same DOM at one column,
-  // where they simply stack — which count applies is CSS's, from Rust's
-  // `panel_columns`, never decided here.
-  const main = node("div", "usage-main");
-
-  // The plans lead: a share of a subscription's limit is the figure an
-  // operator acts on. A reading of the plan, not of this machine's logs, so it
-  // is its own block. A plan that is off contributes no section; Rust folds
-  // every plan that is off into one muted setup line, so turning both off
-  // costs one line, not two rows of dashes.
-  const plans = node("div", "usage-plans");
-  if (payload.plansMessage) {
-    const line = node("p", "pv-message", payload.plansMessage.text);
-    line.style.color = payload.plansMessage.color;
-    plans.appendChild(line);
-  }
-  for (const plan of payload.plans || []) plans.appendChild(planNode(plan));
-  if (plans.childElementCount) main.appendChild(plans);
-
-  // Then this machine's own token counts, under Rust's heading, which is
-  // `null` when there are no rows to head.
-  if (payload.machineHeading) main.appendChild(node("div", "lbl pv-heading", payload.machineHeading));
-
-  // Not `window` — that name is the global object inside this loop body.
-  for (const row of payload.windows || []) main.appendChild(valueRow(row, "window"));
-
-  if (payload.projects) {
-    const section = node("div", "pv-section");
-    section.dataset.section = "projects";
-    section.appendChild(node("hr", "pv-divider"));
-    section.appendChild(node("div", "lbl", payload.projects.label));
-    for (const item of payload.projects.rows || []) section.appendChild(itemRow(item));
-    main.appendChild(section);
-  }
-
-  if (main.childElementCount) children.push(main);
-
-  // An unconfigured provider contributes no element at all, so the panel is
-  // pixel-identical to its Claude-only self. That is a Rust decision too: the
-  // section is simply absent from `providers`. The wrapper follows the same
-  // rule: no providers, no second grid item, and `.usage-main` takes the whole
-  // body rather than leaving an empty track beside itself.
-  const providers = node("div", "usage-providers");
-  for (const provider of payload.providers || []) providers.appendChild(providerNode(provider));
-  if (providers.childElementCount) children.push(providers);
+  // An unconfigured provider contributes no element at all: the section is
+  // simply absent from `providers`, a Rust decision. The sections are the grid
+  // items of `#usageBody`, which has `--panel-cols` tracks, so which count
+  // applies is CSS's, from Rust's `panel_columns`, never decided here.
+  for (const provider of payload.providers || []) children.push(providerNode(provider));
 
   $u("usageBody").replaceChildren(...children);
 
-  // ONE warning line for the whole panel, in the header — Claude's own and
-  // every metered section's, already folded together and already attributed by
-  // Rust (`⚠ neon: stale · updated 23h ago`). A line under the body makes the
-  // card taller the moment a rollup — or one Neon read — goes stale.
-  // Nothing is composed here: the join, the separator and each provider's
-  // name are `panel::merged_footer`'s, on the far side of the boundary where a
-  // Rust test can see them.
+  // ONE warning line for the whole panel, in the header — every metered
+  // section's, already folded together and already attributed by Rust
+  // (`⚠ neon: stale · updated 23h ago`). A line under the body makes the card
+  // taller the moment one Neon read goes stale. Nothing is composed here: the
+  // join, the separator and each provider's name are `panel::merged_footer`'s,
+  // on the far side of the boundary where a Rust test can see them.
   headerLine("usageStale", payload.footer);
 
   // …and ONE clock line beside it, from `panel::merged_freshness`
@@ -248,11 +165,11 @@ function renderUsage(payload) {
 }
 
 async function refresh() {
-  if (!panelWanted("claudeUsage")) return false;
+  if (!panelWanted("usage")) return false;
   try {
     // Offline (no Tauri), the dumped-fixture path every other panel uses, so
     // this one opens in a plain browser and in the Playwright suite.
-    const payload = await callRust("usage", window.soladorDashboard?.tileArgs?.("claudeUsage") ?? {}, "sample-usage.json");
+    const payload = await callRust("usage", window.soladorDashboard?.tileArgs?.("usage") ?? {}, "sample-usage.json");
     if (payload) renderUsage(payload);
     return Boolean(payload && payload.loading);
   } catch {

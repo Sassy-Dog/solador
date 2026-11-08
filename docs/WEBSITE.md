@@ -53,7 +53,7 @@ to how `remote::plan` refuses is a change to the prompt.
 `--showcase` dumps — a working morning with exactly one tile out of true, held by
 `the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
 `site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
-from `tests/frontend/og-card.html`. The nine `panel-*.png` are a tile's **Full
+from `tests/frontend/og-card.html`. The eleven `panel-*.png` are a tile's **Full
 view** (View, then Full view) of the showcase readings. Full view lays a panel out
 in columns across the whole window, so the window is sized per panel in
 `tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
@@ -61,26 +61,19 @@ crops each image into a box that keeps the 3-up aspect, 311:195, at every width
 (311x195 at 1280, about 330x207 at 800, about 328x206 at 390; `aspect-ratio`
 on the image, #699) with `object-fit: cover`, so the image's shape decides what the
 card shows, and every card shows the same crop at all three layouts. 908pt for
-Repos and Runners, 462pt for the panels that stack (Containers, Azure Cost,
-Crons, Services, OpenClaw), 472pt for Usage, 900pt for Hosts. Every card is
-anchored top left except Usage, which `.tile-shot-bottom` anchors bottom left: its panel is a
-stack of independent sections, led by the Claude and Codex plan meters, which
-the home page does not claim, and its card text names the Neon, Sentry and
-Vercel consumption at the bottom. The crop's top edge falls in the
-top-projects list above the providers, whose rows sit flush, so the width is
-picked to put it on a boundary between two of them: the generator asserts that
-no row, meter, heading or rule of the Claude block is cut by that edge
-(`expectNoRowCutByBottomCrop`), and 472pt rather than 466pt is what puts it
-there now the plans lead the panel (at 466pt it cut a project row). The limits are claimed on `/setup/` and in
-the README. The showcase Usage payload is `usage::Fixture::Showcase`: the
-measured fixture with every plan meter green and under pace (the showcase's
+Repos and Runners, 462pt for the panels that stack (Containers, Anthropic,
+Azure Cost, Crons, Services, OpenClaw), 452pt for Usage and 366pt for OpenAI,
+which are sized to the box's shape so that `cover` keeps their right-aligned
+values, and 900pt for Hosts. Every
+card is anchored top left. The limits are claimed on `/setup/` and in
+the README. The showcase Anthropic, OpenAI and Usage payloads are `usage::Fixture::Showcase`:
+the measured fixture with every plan meter green and under pace (the showcase's
 one anomaly is a failing repo), plus a Vercel reading, which the e2e suite's
 `Measured` deliberately lacks. Containers keeps the remote host under this machine's
 (the generator asserts it is inside the crop), the generator asserts that Usage's
-Neon, Sentry and Vercel sections sit inside its bottom-anchored crop
-with the panel's full width (a two-column Usage at 908pt fails it), and
-`site.spec.js` asserts only Usage's image is anchored bottom, which ties the CSS
-to that assumption. The Hosts alt names only the CPU section ("overall and
+Neon, Sentry and Vercel sections sit inside the crop with the panel's full
+width (a two-column Usage at 908pt fails it), and `site.spec.js` asserts every
+image is anchored top left, which ties the CSS to that assumption. The Hosts alt names only the CPU section ("overall and
 per-core CPU sparklines"), because the CPU section is the one part of the card
 that the crop is certain to show. The generator asserts that the whole CPU
 section (the overall chart and every core sparkline) lies inside the crop (the
