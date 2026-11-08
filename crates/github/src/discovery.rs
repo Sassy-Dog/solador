@@ -1,19 +1,19 @@
-//! Token-driven repo discovery — the types behind Settings' "choose repos"
-//! picker, and the org derivation the runner-org picker reads.
+//! Token-driven repo discovery — the types behind Settings' repo search,
+//! and the org derivation the runner-org picker reads.
 //!
 //! `GET /user/repos` lists "repositories that the authenticated user has
 //! explicit permission to access", which for a fine-grained PAT is exactly
-//! the repos the token was granted — the list the picker offers checkboxes
+//! the repos the token was granted — the list the search offers checkboxes
 //! over. The org list is **derived from that same result** (the distinct
 //! owners of type `Organization`) rather than fetched: `GET /user/orgs`
 //! answers a fine-grained PAT with `200` and an **empty list**, and
-//! fine-grained PATs are the only token kind this app asks operators for. A
-//! picker built on that endpoint would render empty for every operator who
+//! fine-grained PATs are the only token kind this app asks operators for. An
+//! org list built on that endpoint would render empty for every operator who
 //! followed the app's own setup instructions.
 
 use serde::Deserialize;
 
-/// One repository the token can access, as the picker renders it.
+/// One repository the token can access, as the repo search lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRef {
     /// `owner/name` — the same slug spelling `TrackedRepo` keys on.
@@ -23,7 +23,7 @@ pub struct RepoRef {
     /// Whether the owner is an organization — what the org derivation reads.
     pub owner_is_org: bool,
     /// Archived repos are still offered (the operator may want a read-only
-    /// watch) but the picker tags them.
+    /// watch) but the search tags them.
     pub archived: bool,
 }
 
@@ -31,7 +31,7 @@ pub struct RepoRef {
 /// was cut short at [`crate::client::DISCOVERY_PAGE_CAP`].
 ///
 /// `truncated` exists so a capped walk is **reported, never silent**: a
-/// picker that quietly dropped page eleven would read as "covered
+/// search that quietly dropped page fifty-one would read as "covered
 /// everything" to the one operator with more repos than the cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessibleRepos {
@@ -39,8 +39,8 @@ pub struct AccessibleRepos {
     pub truncated: bool,
 }
 
-/// The wire shape of one `/user/repos` entry — only the fields the picker
-/// reads. Strict on purpose: a page this build cannot read is skew to report
+/// The wire shape of one `/user/repos` entry — only the fields the search
+/// and the org derivation read. Strict on purpose: a page this build cannot read is skew to report
 /// (`DecodeFailed`), not a repo list to guess at.
 #[derive(Debug, Deserialize)]
 pub(crate) struct UserRepoDto {
@@ -57,7 +57,7 @@ struct OwnerDto {
     kind: String,
 }
 
-/// One decoded page into picker rows.
+/// One decoded page into repo rows.
 pub(crate) fn map(dtos: Vec<UserRepoDto>) -> Vec<RepoRef> {
     dtos.into_iter()
         .map(|dto| RepoRef {

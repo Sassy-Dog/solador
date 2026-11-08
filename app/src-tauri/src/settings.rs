@@ -4841,9 +4841,9 @@ mod tests {
         let ask = |query: &str| {
             search_answer(&mine, &found, &repos, &accounts, query)["addByName"].clone()
         };
-        let offer = ask(" rust-lang/cargo ");
-        assert_eq!(offer["slug"], "rust-lang/cargo");
-        assert_eq!(offer["label"], "Add rust-lang/cargo by name");
+        let offer = ask(" globex/ledger ");
+        assert_eq!(offer["slug"], "globex/ledger");
+        assert_eq!(offer["label"], "Add globex/ledger by name");
         assert!(ask("acme/gadget").is_null(), "listed: tick it instead");
         assert!(ask("ACME/Gadget").is_null(), "listed, in any case");
         assert!(ask("beta/elsewhere").is_null(), "already tracked");

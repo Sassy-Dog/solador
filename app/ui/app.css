@@ -359,7 +359,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 
 /* `flex:none` for the same reason `.gh-cell` has it: the width is Rust's
    `REPO_NAME_W` reservation, and a shrinkable reservation is not one — left to
-   flex, the name is the only elastic thing in the row, so the eight fixed
+   flex, the name is the only elastic thing in the row, so the nine fixed
    cells squeeze it to zero in a column that is even slightly tight. Long names
    ellipsize inside the reservation instead. */
 .gh-repo-name { font-size:11px; font-weight:700; white-space:nowrap;

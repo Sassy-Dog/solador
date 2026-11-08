@@ -101,7 +101,7 @@ impl PanelKind {
     /// *its* content has room for them.
     ///
     /// Each figure is the panel's widest fixed content plus its card padding —
-    /// e.g. Repos sums eight fixed numeric columns (232pt), their gaps, the
+    /// e.g. Repos sums nine fixed numeric columns (252pt), their gaps, the
     /// status dot and a 96pt name reservation. Widen a panel's content, widen
     /// this number.
     ///

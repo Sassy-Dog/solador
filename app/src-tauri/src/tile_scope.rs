@@ -397,6 +397,20 @@ mod tests {
         assert_eq!(out["cardOrder"], json!([0]));
     }
 
+    /// A scoped Full view keeps the source's owner label even when the scope
+    /// drops the repo that spelled it first, so the tile and its Full view
+    /// never name one owner two ways.
+    #[test]
+    fn a_scoped_repos_payload_keeps_the_sources_owner_label() {
+        let mut p =
+            json!({"rows":[repo("Acme/anvil","failing",1),repo("acme/zephyr","healthy",9)]});
+        crate::github::attach_owners(&mut p);
+        let out = scope_payload(&tile("ghWorkflows", "healthy"), p);
+        assert_eq!(rows(&out, "repo"), ["acme/zephyr"]);
+        assert_eq!(out["owners"][0]["owner"], "Acme");
+        assert_eq!(out["rows"][0]["owner"], "Acme");
+    }
+
     /// A tile's Full view lays its owners out the way the tile does — on the
     /// unscoped path too, where every row is kept.
     #[test]

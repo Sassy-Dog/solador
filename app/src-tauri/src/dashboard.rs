@@ -2432,6 +2432,10 @@ mod tests {
         for row in list(&view, "rows") {
             assert_eq!(row["owner"], "Acme", "{}", row["id"]);
         }
+        // Detail heads its rows from the source's, so they carry it too.
+        for row in list(&source, "rows") {
+            assert_eq!(row["owner"], "Acme", "{}", row["id"]);
+        }
     }
 
     #[test]

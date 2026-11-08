@@ -1354,7 +1354,7 @@ only in that state. It is built from the run's numeric id, never from the API's
 
 The row is a `div`, not an `<a>`, so github.js spells out what a real link would
 carry for free: `role="link"`, Rust's `linkLabel` as the accessible name (the
-row's own text is eight numbers), a tab stop and an Enter handler. That is
+row's own text is nine numbers), a tab stop and an Enter handler. That is
 *more* than the original panel, whose `onTapGesture` on a `VStack` is invisible to
 VoiceOver and unreachable from a keyboard — parity with a gap is not a reason to
 reproduce the gap.

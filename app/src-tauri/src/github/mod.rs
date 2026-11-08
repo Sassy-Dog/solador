@@ -162,7 +162,7 @@ const MONO_11_CHAR_W: f64 = 6.6;
 const REPO_NAME_CHARS: usize = 14;
 
 /// **Fixed, not a minimum**, for the reason every other column here is
-/// (#206): a name column that grows to its own text drags all eight numeric
+/// (#206): a name column that grows to its own text drags all nine numeric
 /// columns right on exactly the row whose name is longest.
 ///
 /// It is also what stops the numeric block being flung to the panel's far
@@ -249,7 +249,7 @@ pub enum AccountResult {
 ///
 /// A `Failed` or `Unattributed` account contributes its repos as
 /// **unreachable** rows rather than as nothing at all. The panel already has a
-/// rendering for "we could not read this repo" — a muted dot and eight em
+/// rendering for "we could not read this repo" — a muted dot and nine em
 /// dashes — and it is the honest one here: dropping the rows would take a
 /// tracked repo off the board with only a footer line to say so, and a row
 /// that is *present and blank* is much harder to miss than a row that is gone.
@@ -838,7 +838,7 @@ fn approval_url(health: &RepoWorkflowHealth) -> Option<String> {
 ///
 /// The original panel has none — an `onTapGesture` on a `VStack` is invisible to
 /// VoiceOver — so this is not parity, it is the web platform's own floor: a
-/// `role="link"` whose accessible name would otherwise be the row's eight
+/// `role="link"` whose accessible name would otherwise be the row's nine
 /// numbers read aloud in a row.
 fn open_label(slug: &str) -> String {
     format!("Open {slug} on GitHub Actions")
@@ -949,6 +949,18 @@ pub(crate) fn attach_owners(payload: &mut Value) {
         .map(|row| owner_row(row, row["repo"].as_str().unwrap_or_default()))
         .collect();
     let groups = group_by_owner(&owner_rows);
+    // A group's label is its first member's `owner`: the raw spelling on the
+    // source's pass, and the label that pass stamped when a scoped Full view
+    // runs this again over the rows it kept, so the scope never renames it.
+    let labels: Vec<String> = groups
+        .iter()
+        .map(|g| {
+            rows[g.members[0]]["owner"]
+                .as_str()
+                .unwrap_or(&g.owner)
+                .to_owned()
+        })
+        .collect();
     let as_cell = |value: Option<u64>, width: f64, tint: u32| {
         count_cell(
             value.map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
@@ -958,7 +970,8 @@ pub(crate) fn attach_owners(payload: &mut Value) {
     };
     let owners: Vec<Value> = groups
         .iter()
-        .map(|group| {
+        .zip(&labels)
+        .map(|(group, label)| {
             let totals = &group.totals;
             let cells: Vec<Value> = COLUMNS
                 .iter()
@@ -975,7 +988,7 @@ pub(crate) fn attach_owners(payload: &mut Value) {
                 })
                 .collect();
             json!({
-                "owner": group.owner,
+                "owner": label,
                 "dotColor": rows[group.worst]["dotColor"],
                 "totalsText": totals_text(totals),
                 "cells": cells,
@@ -993,9 +1006,9 @@ pub(crate) fn attach_owners(payload: &mut Value) {
     // to an owner by `owner` (a tile's cards, Detail's headings) sees one
     // owner, never a repo left out or a second heading.
     if let Some(rows) = payload["rows"].as_array_mut() {
-        for group in &groups {
+        for (group, label) in groups.iter().zip(&labels) {
             for &i in &group.members {
-                rows[i]["owner"] = json!(group.owner);
+                rows[i]["owner"] = json!(label);
             }
         }
     }
@@ -1190,7 +1203,7 @@ fn health_line(health: &[RepoWorkflowHealth]) -> Value {
     json!({ "text": text, "color": color::hex(color::GREEN) })
 }
 
-/// One repo's row: the dot, the short name, and the eight fixed cells.
+/// One repo's row: the dot, the short name, and the nine fixed cells.
 ///
 /// The local counts are joined by [`git::normalize`]d name, the same key the
 /// original panel joins on — a repo not checked out here simply has no entry, and
@@ -3183,11 +3196,11 @@ mod tests {
             ]
         );
         // REPO is a reservation like every other column: a name column that
-        // grew to its own text would drag all eight numeric columns right on
+        // grew to its own text would drag all nine numeric columns right on
         // the one row whose name is longest (#206).
         assert_eq!(columns[0]["width"], REPO_NAME_W);
 
-        // The eight numeric widths sum to the figure
+        // The nine numeric widths sum to the figure
         // `PanelKind::GhWorkflows.min_width` is built on — widen a column
         // without moving that breakpoint and the panel silently outgrows the
         // width it claims to need.

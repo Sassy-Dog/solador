@@ -1165,12 +1165,12 @@ test("a full owner/name that isn't listed offers Add by name", async ({ page, ba
   await field.fill("acme/claims-api");
   await expect(card.locator('[data-pick="acme/claims-api"]')).toBeVisible();
   await expect(card.locator(".btn.repo-add"), "a listed repo offers no add").toHaveCount(0);
-  await field.fill("rust-lang/cargo");
+  await field.fill("globex/ledger");
   const add = card.locator(".btn.repo-add");
-  await expect(add).toHaveText("Add rust-lang/cargo by name");
+  await expect(add).toHaveText("Add globex/ledger by name");
   await add.click();
   expect(await calls(page, "settings_add_repo")).toEqual([
-    { command: "settings_add_repo", args: { slug: "rust-lang/cargo", accountId: owning.id } },
+    { command: "settings_add_repo", args: { slug: "globex/ledger", accountId: owning.id } },
   ]);
   // Submitted, so cleared, as the old slug field was.
   await expect(field).toHaveValue("");

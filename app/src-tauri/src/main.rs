@@ -12020,9 +12020,9 @@ mod tests {
         );
         // A list that never arrived (a failed walk) still lets a full
         // owner/name be added by name, as the retired modal's field did.
-        let by_name = search_repos(&app, &id.to_string(), "rust-lang/cargo");
+        let by_name = search_repos(&app, &id.to_string(), "globex/ledger");
         assert_eq!(by_name["pending"], json!(true));
-        assert_eq!(by_name["addByName"]["slug"], "rust-lang/cargo");
+        assert_eq!(by_name["addByName"]["slug"], "globex/ledger");
         let unknown = search_repos(&app, "not-a-uuid", "acme");
         assert_eq!(unknown["reason"], UNKNOWN_ACCOUNT_MESSAGE);
         let missing = search_repos(&app, &Uuid::from_u128(77).to_string(), "acme");
