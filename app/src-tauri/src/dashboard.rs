@@ -549,10 +549,15 @@ const UNIFIED_MEMORY_TITLE: &str =
 /// On the row rather than under it (the way a machine's CPU/RAM sit) because
 /// five two-line rows are what stops the default overview fitting a 1024×768
 /// laptop — the e2e suite measures that.
-const ROW_COUNTS: [(&str, &str, &str); 3] = [
+///
+/// DEP's word is a placeholder the strip never paints: the row's accessible
+/// name reads its `title` (`3 from Dependabot`) instead, which Rust sets
+/// whenever the count is known.
+const ROW_COUNTS: [(&str, &str, &str); 4] = [
     (crate::github::COL_ISSUES, "issue", "issues"),
     (crate::github::COL_READY, "ready", "ready"),
     (crate::github::COL_PRS, "PR", "PRs"),
+    (crate::github::COL_DEP, "dep", "dep"),
 ];
 
 /// The widest word each strip column prints, in characters, and the widest
@@ -562,10 +567,11 @@ const ROW_COUNTS: [(&str, &str, &str); 3] = [
 /// here would overflow its slot on every row without moving a number the
 /// e2e alignment test could see. The test below is the link.
 #[cfg(test)]
-const ROW_COUNT_SLOT_CH: [(&str, usize); 3] = [
+const ROW_COUNT_SLOT_CH: [(&str, usize); 4] = [
     (crate::github::COL_ISSUES, 6),
     (crate::github::COL_READY, 5),
     (crate::github::COL_PRS, 3),
+    (crate::github::COL_DEP, 3),
 ];
 #[cfg(test)]
 const ROW_STATUS_SLOT_CH: usize = 10;
@@ -702,18 +708,23 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 ) {
                     entry["title"] = title;
                 }
-                // …and what is left is Detailed's extra, so the three are
+                // DEP's bare number, said in words for a screen reader and a
+                // tooltip — only over a count that was read.
+                if let Some(entry) = r["counts"]
+                    .as_array_mut()
+                    .and_then(|c| c.iter_mut().find(|c| c["header"] == crate::github::COL_DEP))
+                {
+                    if let Some(n) = entry["value"].as_str().filter(|v| v.parse::<u32>().is_ok()) {
+                        entry["title"] = json!(format!("{n} from Dependabot"));
+                    }
+                }
+                // …and what is left is Detailed's extra, so the counts are
                 // never printed twice on one row.
-                let mut details: Vec<Value> = cells
+                let details: Vec<Value> = cells
                     .iter()
                     .filter(|(label, _)| !ROW_COUNTS.iter().any(|(column, _, _)| column == label))
                     .map(|(label, text)| field(label, text))
                     .collect();
-                // Dependabot's share of PRS has no column in the Repos panel;
-                // here it is a Detail column of its own. First among the
-                // details, so the table puts it right after PRS, and in
-                // capitals like every column it sits beside.
-                details.insert(0, field("DEPENDABOT", &v["dependabotPrs"]));
                 r["details"] = json!(details);
                 r
             })
@@ -1093,7 +1104,6 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
                 "RAM" | "GPU mem" => 130,
                 "Disk read" | "Disk write" | "Network down" | "Network up" => 95,
                 "Thermal" => 90,
-                "DEPENDABOT" => 95,
                 "Organization" => 180,
                 "Labels" => 170,
                 "OS" | "Architecture" | "LONGEST" => 120,
@@ -3012,7 +3022,7 @@ mod tests {
                     .iter()
                     .map(|c| string(c, "header").to_owned())
                     .collect::<Vec<_>>(),
-                ["ISSUES", "READY", "PRS"]
+                ["ISSUES", "READY", "PRS", "DEP"]
             );
             assert!(
                 list(row, "metrics").is_empty(),
@@ -3022,30 +3032,37 @@ mod tests {
             assert!(
                 !labels(row, "details")
                     .iter()
-                    .any(|l| ["ISSUES", "READY", "PRS"].contains(&l.as_str())),
+                    .any(|l| ["ISSUES", "READY", "PRS", "DEP"].contains(&l.as_str())),
                 "{}: details repeat a metric",
                 row["label"]
             );
         }
         // pipe-fitting: 9 inclusive − 2 PRs, 3 Ready, 2 PRs.
-        assert_eq!(values(get("pipe-fitting")), ["7", "3", "2"]);
+        // …and 1 of those 2 PRs from Dependabot.
+        assert_eq!(values(get("pipe-fitting")), ["7", "3", "2", "1"]);
         assert_eq!(
             labels(get("pipe-fitting"), "counts"),
-            ["issues", "ready", "PRs"]
+            ["issues", "ready", "PRs", "dep"]
         );
         // A genuine zero is "0", not an em dash — and plural, like the dash.
-        assert_eq!(values(get("widget")), ["4", "0", "0"]);
-        assert_eq!(labels(get("widget"), "counts"), ["issues", "ready", "PRs"]);
-        // Exactly one is singular; `ready` has no plural.
-        assert_eq!(values(get("flywheel")), ["1", "0", "1"]);
-        assert_eq!(labels(get("flywheel"), "counts"), ["issue", "ready", "PR"]);
+        assert_eq!(values(get("widget")), ["4", "0", "0", "0"]);
+        assert_eq!(
+            labels(get("widget"), "counts"),
+            ["issues", "ready", "PRs", "dep"]
+        );
+        // Exactly one is singular; `ready` and `dep` have no plural.
+        assert_eq!(values(get("flywheel")), ["1", "0", "1", "0"]);
+        assert_eq!(
+            labels(get("flywheel"), "counts"),
+            ["issue", "ready", "PR", "dep"]
+        );
         // cogwheel's PAT could not read any side count; toolkit's runs failed.
-        assert_eq!(values(get("cogwheel")), ["—", "—", "—"]);
+        assert_eq!(values(get("cogwheel")), ["—", "—", "—", "—"]);
         assert_eq!(
             labels(get("cogwheel"), "counts"),
-            ["issues", "ready", "PRs"]
+            ["issues", "ready", "PRs", "dep"]
         );
-        assert_eq!(values(get("toolkit")), ["—", "—", "—"]);
+        assert_eq!(values(get("toolkit")), ["—", "—", "—", "—"]);
         // The detail line still names the longest run, found by column label
         // rather than a cell index that moves when a column joins.
         assert!(
@@ -3079,7 +3096,7 @@ mod tests {
         }
         assert_eq!(
             labels(get("widget"), "details"),
-            ["DEPENDABOT", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+            ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
         );
         // Who opened the PRs: a tooltip on the PRs count and a Detail field,
         // both verbatim from the Repos view; nothing over an unknown count.
@@ -3087,15 +3104,14 @@ mod tests {
         assert_eq!(prs("gadget")["title"], "5 open PRs · 3 from Dependabot");
         assert_eq!(prs("flywheel")["title"], "1 open PR · none from Dependabot");
         assert!(prs("cogwheel")["title"].is_null());
-        let dependabot = |name: &'static str| {
-            list(get(name), "details")
-                .iter()
-                .find(|d| d["label"] == "DEPENDABOT")
-                .map(|d| d["value"].clone())
-        };
-        assert_eq!(dependabot("gadget"), Some(json!("3")));
-        assert_eq!(dependabot("cogwheel"), Some(json!("—")));
-        assert_eq!(dependabot("toolkit"), Some(json!("—")));
+        // Dependabot's share is a count of its own, verbatim from the DEP
+        // cell, worded for a screen reader by Rust; nothing over an unknown.
+        let dep = |name: &'static str| list(get(name), "counts")[3].clone();
+        assert_eq!(dep("gadget")["value"], "3");
+        assert_eq!(dep("gadget")["title"], "3 from Dependabot");
+        assert_eq!(dep("cogwheel")["value"], "—");
+        assert!(dep("cogwheel")["title"].is_null());
+        assert_eq!(dep("toolkit")["value"], "—");
     }
 
     /// The CSS slots are hand-copied numbers; this is what ties them to the
@@ -3151,7 +3167,7 @@ mod tests {
             .iter()
             .map(|c| format!("{} {}", c["value"].as_str().unwrap(), string(c, "label")))
             .collect();
-        assert_eq!(strip, ["7 issues", "— ready", "2 PRs"]);
+        assert_eq!(strip, ["7 issues", "— ready", "2 PRs", "1 dep"]);
     }
 
     /// A plan is one Usage row under its own scope, carrying its meters, and it

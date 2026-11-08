@@ -108,7 +108,7 @@ impl PanelKind {
     /// It is also the width **one content column** needs, which is what
     /// [`panel_columns`] reads it as. Repos was 560 while its columns carried
     /// half again the width their labels needed; sizing them to their text
-    /// took it to 440 — 458 since READY joined the row — which is what lets it
+    /// took it to 440 — 458 since READY joined the row, 478 since DEP did — which is what lets it
     /// hold two columns on a display where it previously could not.
     ///
     /// What the number decides today: [`panel_columns`] gives a panel a second
@@ -139,7 +139,7 @@ impl PanelKind {
     pub fn min_width(self) -> f64 {
         match self {
             PanelKind::Hosts => HOST_CARD_MIN_WIDTH,
-            PanelKind::GhWorkflows => 458.0,
+            PanelKind::GhWorkflows => 478.0,
             PanelKind::GhRunners => 400.0,
             PanelKind::Containers => 400.0,
             PanelKind::AzureCost => 400.0,
@@ -329,10 +329,10 @@ mod tests {
         assert_eq!(panel_columns(PanelKind::GhRunners, 816.0, SPACING), 2);
         assert_eq!(panel_columns(PanelKind::Containers, 815.0, SPACING), 1);
         assert_eq!(panel_columns(PanelKind::Containers, 816.0, SPACING), 2);
-        // Repos carries 232pt of fixed numeric columns plus a 96pt name, so
-        // its minimum is 458 and it pairs at 2 * 458 + 16 = 932.
-        assert_eq!(panel_columns(PanelKind::GhWorkflows, 931.0, SPACING), 1);
-        assert_eq!(panel_columns(PanelKind::GhWorkflows, 932.0, SPACING), 2);
+        // Repos carries 252pt of fixed numeric columns plus a 96pt name, so
+        // its minimum is 478 and it pairs at 2 * 478 + 16 = 972.
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 971.0, SPACING), 1);
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 972.0, SPACING), 2);
     }
 
     /// Capped at two: a third column of a short list costs more scanning than

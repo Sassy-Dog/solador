@@ -6718,6 +6718,12 @@ fn dump_showcase_dashboard() -> Value {
     )
 }
 
+/// The Repos panel over three owners of uneven sizes (`--dump-repos --owners`).
+fn dump_github_owners() -> Value {
+    let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
+    github::repos_view(&github::owners_fixture_state(now), now)
+}
+
 fn dump_github_showcase(runners: bool) -> Value {
     let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
     let state = github::showcase_state(now);
@@ -7432,6 +7438,8 @@ fn run_dump(args: &[String]) -> bool {
     if let Some(path) = dump_flag_path(args, "--dump-repos", "sample-repos.json") {
         if showcase {
             write_json(&path, &dump_github_showcase(false));
+        } else if args.iter().any(|arg| arg == "--owners") {
+            write_json(&path, &dump_github_owners());
         } else {
             write_json(&path, &dump_github(empty, false));
         }

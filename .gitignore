@@ -71,6 +71,7 @@ app/ui/sample-containers.json
 app/ui/sample-containers-empty.json
 app/ui/sample-repos.json
 app/ui/sample-repos-empty.json
+app/ui/sample-repos-owners.json
 app/ui/sample-runners.json
 app/ui/sample-runners-empty.json
 app/ui/sample-usage.json
