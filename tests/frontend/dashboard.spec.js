@@ -5,7 +5,7 @@ import { lastArgs } from "./tile-full.js";
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
 async function openDashboard(page, baseURL, expanded = false, prepare = null) {
   const names = {
-    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded ? "dashboard-expanded" : "dashboard",
+    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded === "owners" ? "dashboard-owners" : expanded ? "dashboard-expanded" : "dashboard",
     cockpit: "cockpit",
     settings_view: "settings",
     repos: "repos",
@@ -43,7 +43,10 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
         view.layout = structuredClone(layout);
         const projectTile = (t) => {
             const source = view.sources.find((s) => s.id === t.source);
+            // A tile's own Rust view when the fixture has one (two tiles can
+            // share a source), else the first of its source's.
             const base =
+              original.tiles.find((old) => old.id === t.id) ||
               original.tiles.find((old) => old.source === t.source) || {};
             const scopedRows = source.rows.filter(r => !t.selectedRepos?.length || t.selectedRepos.includes(r.id)).filter(
               (r) =>
@@ -65,14 +68,19 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             const totals = t.source === "hosts" ? "" : ` Totals still cover all of ${source.title}.`;
             const fullNote = t.scope === "all" && !picked ? null :
               `Scope: ${t.scope !== "all" ? scopeLabel : picked === 1 ? "1 selected repo" : `${picked} selected repos`}.${totals}`;
+            // A Repos tile's limit is per owner (dashboard::owner_groups), and
+            // its overflow is each owner's own more line, from Rust's groups.
+            const shown = base.ownerGroups
+              ? Object.values(Object.groupBy(rows, (r) => r.owner.toLowerCase())).flatMap((g) => g.slice(0, limit))
+              : rows.slice(0, limit);
             return {
               ...base,
               ...t,
-              rows: rows.slice(0, limit),
+              rows: shown,
               warnings: source.warnings,
               scopeLabel,
-              moreCount: Math.max(0, rows.length - limit),
-              footer: `${Math.min(rows.length, limit)} shown`,
+              moreCount: base.ownerGroups ? 0 : Math.max(0, rows.length - limit),
+              footer: `${shown.length} shown`,
               empty: source.message,
               views: base.views ?? original.tiles[0].views,
               fullNote,
@@ -285,7 +293,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
   );
   await page.goto("/index.html");
   await expect(page.locator("#dashboardOverview")).toBeVisible();
-  await expect(page.locator(".db-tile")).toHaveCount(5);
+  await expect(page.locator(".db-tile")).toHaveCount(expanded === "owners" ? 2 : 5);
   return fixtures.dashboard_view;
 }
 const action = (page, name) =>
@@ -805,11 +813,13 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   const rows = page.locator('.db-detail-resource');
   await expect(rows).toHaveCount(6);
   await expect(page.locator('#dashboardOverview .db-detail-table')).toBeVisible();
-  // Dependabot's share of PRS is a Detail column of its own, right after PRS.
+  // Dependabot's share of PRS is a count column of its own (DEP), right
+  // after PRS: the same slot the overview row and the Repos panel give it.
   const table = page.locator('#dashboardOverview .db-detail-table');
   const headers = await table.locator('thead th').allTextContents();
-  expect(headers.filter(h => h === 'DEPENDABOT')).toHaveLength(1);
-  const dependabotColumn = headers.indexOf('DEPENDABOT');
+  expect(headers.filter(h => h === 'DEP')).toHaveLength(1);
+  expect(headers).not.toContain('DEPENDABOT');
+  const dependabotColumn = headers.indexOf('DEP');
   expect(headers[dependabotColumn - 1]).toBe('PRS');
   await expect(table.locator('tr.db-detail-resource[data-resource="acme/gadget"] > *').nth(dependabotColumn)).toHaveText('3');
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
@@ -2993,10 +3003,14 @@ test("repo rows carry issues, ready and PRs on the row, in summary and in detail
   const item = (id) => repos.locator(`[data-id="${id}"]`);
   // Every row carries the three counts verbatim from the Rust cells: a real
   // zero is "0", an unreadable count is the em dash.
-  await expect(item("acme/pipe-fitting").locator(".db-row-counts")).toHaveText("7 issues · 3 ready · 2 PRs");
-  // Exactly one is singular; `ready` has no plural.
-  await expect(item("acme/flywheel").locator(".db-row-counts")).toHaveText("1 issue · 0 ready · 1 PR");
-  await expect(item("acme/cogwheel").locator(".db-row-counts")).toHaveText("— issues · — ready · — PRs");
+  await expect(item("acme/pipe-fitting").locator(".db-row-counts")).toHaveText("7 issues · 3 ready · 2 PRs · 1 dep");
+  // Exactly one is singular; `ready` and `dep` have no plural.
+  await expect(item("acme/flywheel").locator(".db-row-counts")).toHaveText("1 issue · 0 ready · 1 PR · 0 dep");
+  await expect(item("acme/cogwheel").locator(".db-row-counts")).toHaveText("— issues · — ready · — PRs · — dep");
+  // Dependabot's share is a column of its own, said in Rust's words.
+  const depCount = (id) => item(id).locator('.db-count[data-header="DEP"]');
+  await expect(depCount("acme/gadget")).toHaveAttribute("title", "3 from Dependabot");
+  await expect(depCount("acme/cogwheel")).not.toHaveAttribute("title");
   // Who opened the PRs is the count's tooltip, in Rust's words, and absent
   // over an unknown count.
   const prsCount = (id) => item(id).locator('.db-count[data-header="PRS"]');
@@ -3032,7 +3046,7 @@ test("repo rows carry issues, ready and PRs on the row, in summary and in detail
   await page.locator("#dashboard-presentation").selectOption("detailed");
   await action(page, "apply").click();
   const row = item("acme/pipe-fitting").locator("xpath=..");
-  await expect(row.locator(".db-extra-metrics .db-muted")).toHaveText(["DEPENDABOT", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]);
+  await expect(row.locator(".db-extra-metrics .db-muted")).toHaveText(["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]);
   await expect(row.locator(".db-row-counts")).toHaveCount(1);
   expect(page.dashboardErrors).toEqual([]);
 });
@@ -3721,4 +3735,108 @@ test("a GitHub Runners tile's Full view is headed by the whole name 'GitHub Runn
   const title = page.locator("#runnersTitle");
   await expect(title).toHaveText("GitHub Runners");
   expect(await untruncated(title), "the Full view heading is not ellipsised").toBe(true);
+});
+
+// Repos by owner. `sample-dashboard-owners.json` is Rust's view of two Repos
+// tiles over three owners of 4, 2 and 18 repos (`dump_owners_dashboard`):
+// `repos-all` is wide and shows every repo, `repos-five` is medium and shows
+// 5 per owner.
+const repoTile = (page, id) => page.locator(`[data-tile="${id}"]`);
+const owners = (locator) => locator.evaluateAll((els) => els.map((e) => e.dataset.owner));
+
+test("Repos tiles show one card per owner, big owners last", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, "owners");
+  const all = repoTile(page, "repos-all");
+  const cards = all.locator(".db-owner-card");
+  await expect(cards).toHaveCount(3);
+  expect(await owners(cards)).toEqual(["acme", "jdoe", "globex"]);
+  const globex = all.locator('.db-owner-card[data-owner="globex"]');
+  await expect(globex).toHaveAttribute("data-span", "true");
+  await expect(globex.locator(".db-owner-col")).toHaveCount(3);
+  await expect(globex.locator(".db-item")).toHaveCount(18);
+  // The two small owners share a row; the big one spans the next.
+  const [acme, jdoe, big] = await Promise.all(
+    ["acme", "jdoe", "globex"].map((o) => all.locator(`.db-owner-card[data-owner="${o}"]`).boundingBox()),
+  );
+  expect(Math.round(acme.y)).toBe(Math.round(jdoe.y));
+  expect(big.y).toBeGreaterThan(acme.y);
+  expect(big.width).toBeGreaterThan(acme.width * 2);
+  await expect(all.locator('.db-owner-card[data-owner="acme"] .db-owner-totals')).toHaveText(
+    "17 issues · 9 PRs · 5 Dependabot · 1 running",
+  );
+  // Each card has its own column header: the counts Rust names for a card
+  // (`cardCounts`), with DEP beside PRS. READY and the status word are
+  // Sections' and Detail's; in a card the dot carries the status, and the
+  // row's accessible name still says it.
+  const acmeCard = all.locator('.db-owner-card[data-owner="acme"]');
+  await expect(acmeCard.locator(".db-repo-head .db-count")).toHaveText(["Issues", "PRs", "Dep"]);
+  await expect(acmeCard.locator(".db-repo-head .db-value")).toHaveCount(0);
+  await expect(acmeCard.locator(".db-item .db-count")).toHaveCount(4 * 3);
+  await expect(all.locator(".db-owner-card .db-item > .db-value")).toHaveCount(0);
+  await expect(acmeCard.locator('.db-item[data-id="acme/cogwheel"]')).toHaveAttribute("aria-label", /Running/);
+  // The strip ends a card row now, and its " · " separators stay hidden.
+  await expect(acmeCard.locator(".db-item .db-row-counts").first()).toHaveCSS("font-size", "0px");
+  expect(page.dashboardErrors).toEqual([]);
+});
+
+test("a half-width Repos tile's cards keep owner and repo names whole", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openDashboard(page, baseURL, "owners");
+  const five = repoTile(page, "repos-five");
+  await expect(five.locator(".db-owner-card")).toHaveCount(3);
+  const cut = (els) => els.filter((el) => el.scrollWidth > el.clientWidth).map((el) => el.textContent);
+  // Two cards share each row of a medium tile, so a card is narrower than a
+  // small tile; the totals wrap under the name rather than squeezing it.
+  expect(await five.locator(".db-owner-name").evaluateAll(cut)).toEqual([]);
+  expect(await five.locator(".db-item-name").evaluateAll(cut)).toEqual([]);
+});
+
+test("a Sections tile lists owners in name order with totals in the count slots", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, "owners");
+  await action(page, "edit").click();
+  await repoTile(page, "repos-all").locator('[data-action="configure"]').click();
+  await page.getByLabel("Layout", { exact: true }).selectOption("sections");
+  await action(page, "apply").click();
+  expect((await savedLayout(page)).tiles.find((t) => t.id === "repos-all").repoLayout).toBe("sections");
+  const all = repoTile(page, "repos-all");
+  await expect(all.locator(".db-owner-card")).toHaveCount(0);
+  expect(await owners(all.locator(".db-owner"))).toEqual(["acme", "globex", "jdoe"]);
+  const acme = all.locator('.db-owner[data-owner="acme"]');
+  await expect(acme.locator('.db-count[data-header="ISSUES"] > strong')).toHaveText("17");
+  await expect(acme.locator('.db-count[data-header="DEP"] > strong')).toHaveText("5");
+  await expect(acme.locator(".db-value")).toHaveText("1 running");
+  // One column header for the whole table, and its numbers line up with
+  // the owners' totals.
+  await expect(all.locator(".db-repo-head")).toHaveCount(1);
+  const right = (l) => l.evaluate((el) => Math.round(el.getBoundingClientRect().right));
+  expect(await right(acme.locator('.db-count[data-header="PRS"] > strong'))).toBe(
+    await right(all.locator('.db-item .db-count[data-header="PRS"] > strong').first()),
+  );
+  expect(page.dashboardErrors).toEqual([]);
+});
+
+test("each owner keeps its header under the row limit", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, "owners");
+  const five = repoTile(page, "repos-five");
+  await expect(five.locator(".db-owner")).toHaveCount(3);
+  const globex = five.locator('.db-owner-card[data-owner="globex"]');
+  await expect(globex.locator(".db-item")).toHaveCount(5);
+  await expect(five.locator('.db-owner-card[data-owner="acme"] .db-owner-more')).toHaveCount(0);
+  const more = globex.locator(".db-owner-more");
+  await expect(more).toHaveText("13 more →");
+  // No second, tile-wide more line.
+  await expect(five.locator(".db-more:not(.db-owner-more)")).toHaveCount(0);
+  await more.click();
+  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+});
+
+test("Detail headings separate owners in both table and list", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, "owners");
+  await repoTile(page, "repos-all").getByRole("button", { name: "View", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Detail", exact: true }).click();
+  const headings = inspector(page).locator(".db-detail-owner");
+  await expect(headings).toHaveText(["acme", "globex", "jdoe"]);
+  await inspector(page).locator('[data-action="detail-view"][data-id="list"]').click();
+  await expect(inspector(page)).toHaveAttribute("data-detail-view", "list");
+  await expect(headings).toHaveText(["acme", "globex", "jdoe"]);
 });

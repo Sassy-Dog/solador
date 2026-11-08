@@ -1647,10 +1647,15 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         format!("{} shown · {problems} need attention", shown.len())
     };
     let full_note = scope_note(tile, string(source, "title"), &scope_label);
+    let card_counts = if by_owner.is_some() {
+        json!(REPO_CARD_COUNTS)
+    } else {
+        Value::Null
+    };
     let (owner_groups, card_order, card_columns) = by_owner
         .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
         .unwrap_or((Value::Null, Value::Null, Value::Null));
-    json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,
+    json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,"cardCounts":card_counts,
         "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
         "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
@@ -1661,6 +1666,16 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
             {"key":"dependabot","label":"Dep","header":crate::github::COL_DEP},{"key":"status","label":"Status","header":null}
         ]) } else {json!([])}})
 }
+
+/// The counts a Repos tile's card shows, by slot: the spec's card columns
+/// (REPO, ISSUES, PRS, DEP; JOBS and LONGEST are the Full view's). READY and
+/// the status word stay in Sections and in Detail; in a card the row's dot
+/// carries the status, and its accessible name still says it.
+const REPO_CARD_COUNTS: [&str; 3] = [
+    crate::github::COL_ISSUES,
+    crate::github::COL_PRS,
+    crate::github::COL_DEP,
+];
 
 /// A Repos tile's rows grouped by owner, as [`tile_view`] lays them out.
 struct OwnerGroups {
@@ -2314,6 +2329,17 @@ mod tests {
     }
 
     /// DEP sorts like any count, and the header names its slot for the CSS.
+    #[test]
+    fn a_repo_card_shows_issues_prs_and_dep_and_no_other_tile_names_any() {
+        // The spec's card columns: REPO, ISSUES, PRS, DEP (JOBS and LONGEST
+        // are the Full view's). READY and the status word stay in Sections;
+        // the row dot carries the status in a card.
+        let view = tile_view(&configured_tile("ghWorkflows", json!({})), &owners_source());
+        assert_eq!(view["cardCounts"], json!(["ISSUES", "PRS", "DEP"]));
+        let runners = tile_view(&configured_tile("ghRunners", json!({})), &owners_source());
+        assert_eq!(runners["cardCounts"], Value::Null);
+    }
+
     #[test]
     fn repos_sort_by_dependabot_and_name_each_header_slot() {
         let tile = configured_tile("ghWorkflows", json!({"sortBy":"dependabot"}));

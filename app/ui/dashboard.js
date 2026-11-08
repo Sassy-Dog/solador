@@ -302,7 +302,10 @@
     heading.append(title, subtitle);
     return heading;
   }
-  function makeRow(row, t, detail = false, interactive = true) {
+  // `cardCounts`: in a Repos owner card, the count slots Rust names for a card
+  // (null everywhere else). The status word is not a card column; the dot
+  // carries it there, and the accessible name below still says it.
+  function makeRow(row, t, detail = false, interactive = true, cardCounts = null) {
     const wrap = node(
       "div",
       row.metrics?.length ? "db-host" : "db-compact-row",
@@ -318,13 +321,14 @@
     if (row.blinking) dot.classList.add("db-dot-blink");
     name.append(dot, node("span", "db-item-name", row.label));
     b.append(name);
-    if (row.counts?.length) {
+    const shownCounts = cardCounts ? (row.counts || []).filter(c => cardCounts.includes(c.header)) : row.counts;
+    if (shownCounts?.length) {
       // Values and singular/plural labels come verbatim from Rust. CSS
       // shows only the numbers beneath shared column headers at every
       // width; the accessible row name below keeps the full count labels.
       const counts = node("span", "db-row-counts");
       b.classList.add("db-item-tabular");
-      row.counts.forEach((c, i) => {
+      shownCounts.forEach((c, i) => {
         if (i) counts.append(" · ");
         const cell = node("span", "db-count");
         cell.dataset.header = c.header;
@@ -335,9 +339,9 @@
       });
       b.append(counts);
     }
-    b.append(colored("span", "db-value", row.value, row.valueColor));
+    if (!cardCounts) b.append(colored("span", "db-value", row.value, row.valueColor));
     b.title = [row.label, row.value, row.detail].filter(Boolean).join(" · ");
-    if (row.counts?.length) b.setAttribute("aria-label", [row.label, ...row.counts.map(c => c.title || `${c.value} ${c.label}`), row.value].join(" · "));
+    if (shownCounts?.length) b.setAttribute("aria-label", [row.label, ...shownCounts.map(c => c.title || `${c.value} ${c.label}`), row.value].join(" · "));
     wrap.append(b);
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");
@@ -379,10 +383,97 @@
     }
     return wrap;
   }
-  function repoHeader(t, interactive = true) {
+  // A Repos tile's owners, as Rust grouped them (`ownerGroups`): each owner's
+  // header, the tile's shown rows that belong to it — Rust already ordered
+  // `rows` owner by owner — and that owner's own more line. Which owners share
+  // a row, which spans and how many columns it splits into are Rust's
+  // (`cardOrder`, `cardColumns`, `splitColumns`); nothing here decides them.
+  function ownerRows(t, group) {
+    return t.rows.filter((r) => r.owner === group.owner);
+  }
+  // Column-major, the way the Repos panel splits a long list (`chunk` in
+  // github.js): down one column and on to the next, in the tile's order.
+  function columnsOf(items, columns) {
+    const per = Math.max(1, Math.ceil(items.length / columns));
+    const out = [];
+    for (let i = 0; i < items.length; i += per) out.push(items.slice(i, i + per));
+    return out;
+  }
+  function ownerHead(group, sections) {
+    const head = node("div", sections ? "db-owner db-item-tabular" : "db-owner");
+    head.dataset.owner = group.owner;
+    head.title = [group.owner, group.totalsText].join(" · ");
+    const name = node("span", "db-row-label");
+    const dot = colored("span", "db-dot", "", group.color);
+    dot.setAttribute("aria-hidden", "true");
+    name.append(dot, node("span", "db-owner-name", group.owner));
+    head.append(name);
+    if (sections) {
+      // The totals sit under the columns they total; READY has none.
+      const counts = node("span", "db-row-counts");
+      group.counts.forEach((c, i) => {
+        if (i) counts.append(" · ");
+        const cell = node("span", "db-count");
+        cell.dataset.header = c.header;
+        cell.append(node("strong", "", c.value));
+        counts.append(cell);
+      });
+      head.append(counts, node("span", "db-value", group.runningLabel || ""));
+    } else head.append(node("span", "db-owner-totals", group.totalsText));
+    return head;
+  }
+  function ownerMore(t, group, interactive) {
+    if (!group.moreLabel) return null;
+    return interactive
+      ? button(group.moreLabel, "details", t.id, "db-more db-owner-more db-plain")
+      : node("p", "db-sub db-owner-more", group.moreLabel);
+  }
+  function paintOwners(box, t, interactive) {
+    const detailed = t.presentation === "detailed";
+    const sections = t.repoLayout === "sections";
+    box.dataset.layout = sections ? "sections" : "cards";
+    if (sections) {
+      box.append(repoHeader(t, interactive));
+      for (const group of t.ownerGroups) {
+        box.append(ownerHead(group, true));
+        for (const row of ownerRows(t, group)) box.append(makeRow(row, t, detailed, interactive));
+        const more = ownerMore(t, group, interactive);
+        if (more) box.append(more);
+      }
+      return;
+    }
+    const cards = node("div", "db-owner-cards");
+    // CSSOM, never a `style=""` attribute: `style-src 'self'` blocks it.
+    cards.style.setProperty("--owner-cols", String(t.cardColumns || 1));
+    for (const index of t.cardOrder || []) {
+      const group = t.ownerGroups[index];
+      if (!group) continue;
+      const card = node("section", "db-owner-card");
+      card.dataset.owner = group.owner;
+      if (group.spans) card.dataset.span = "true";
+      card.append(ownerHead(group, false));
+      const columns = node("div", "db-owner-cols");
+      columns.style.setProperty("--split", String(group.splitColumns || 1));
+      for (const part of columnsOf(ownerRows(t, group), group.splitColumns || 1)) {
+        const column = node("div", "db-owner-col");
+        column.append(repoHeader(t, interactive, t.cardCounts));
+        for (const row of part) column.append(makeRow(row, t, detailed, interactive, t.cardCounts));
+        columns.append(column);
+      }
+      card.append(columns);
+      const more = ownerMore(t, group, interactive);
+      if (more) card.append(more);
+      cards.append(card);
+    }
+    box.append(cards);
+  }
+  // `cardCounts` as in makeRow: a card's head carries only those counts, and
+  // no Status heading because a card has no status column.
+  function repoHeader(t, interactive = true, cardCounts = null) {
     const header = node("div", "db-repo-head db-item-tabular");
     const counts = node("span", "db-row-counts");
     for (const [index, column] of (t.sortColumns || []).entries()) {
+      if (cardCounts && index > 0 && !cardCounts.includes(column.header)) continue;
       const selected = column.key === t.sortBy;
       const control = interactive ? button("", "sort", t.id, "db-sort") : node("span", "db-sort");
       control.dataset.column = column.key;
@@ -405,7 +496,9 @@
       } else {
         if (counts.children.length) counts.append(" · ");
         control.classList.add("db-count");
-        control.dataset.header = column.key.toUpperCase();
+        // Rust names the slot (`header`), so the DEP column's CSS width holds
+        // though it sorts by `dependabot`.
+        control.dataset.header = column.header ?? column.key.toUpperCase();
         counts.append(control);
       }
     }
@@ -484,7 +577,9 @@
           content.append(rows);
         }
         rows.replaceChildren();
-        if (t.sortColumns?.length && t.rows.length) rows.append(repoHeader(t));
+        delete rows.dataset.layout;
+        const byOwner = t.ownerGroups?.length && t.rows.length;
+        if (t.sortColumns?.length && t.rows.length && !byOwner) rows.append(repoHeader(t));
         if (!t.rows.length) {
           rows.append(node("p", "db-sub", t.empty));
           if (t.emptyAction) {
@@ -494,7 +589,8 @@
             rows.append(action);
           }
         }
-        for (const row of t.rows)
+        if (byOwner) paintOwners(rows, t, true);
+        else for (const row of t.rows)
           rows.append(makeRow(row, t, t.presentation === "detailed"));
         if (t.moreCount) {
           const more = button(t.moreLabel, "details", t.id, "db-more db-plain");
@@ -1385,6 +1481,9 @@
             body.append(selectField("showDisk", L("showDisk"), [{value:"true", label:L("diskShown")}, {value:"false", label:L("diskHidden")}], String(t.showDisk !== false)));
           if (t.source === "ghRunners")
             body.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
+          // On this page, not one view's: the tile and its Full view both use it.
+          if (cfg.repoLayout?.sources?.includes(t.source))
+            body.append(configField("repoLayout", cfg.repoLayout, t));
         } else {
           for (const f of cfg.pageFields[page.id] || []) {
             if (f.sources && !f.sources.includes(t.source)) continue;
@@ -1535,9 +1634,11 @@
     content.setAttribute("role", "region");
     content.setAttribute("aria-label", t.title);
     const rows = node("div", "db-tile-rows");
-    if (t.sortColumns?.length && t.rows.length) rows.append(repoHeader(t, false));
+    const byOwner = t.ownerGroups?.length && t.rows.length;
+    if (t.sortColumns?.length && t.rows.length && !byOwner) rows.append(repoHeader(t, false));
     if (!t.rows.length) rows.append(node("p", "db-sub", t.empty));
-    for (const row of t.rows) rows.append(makeRow(row, t, t.presentation === "detailed", false));
+    if (byOwner) paintOwners(rows, t, false);
+    else for (const row of t.rows) rows.append(makeRow(row, t, t.presentation === "detailed", false));
     if (t.moreCount) rows.append(node("p", "db-sub", t.moreLabel));
     content.append(rows);
     card.append(head, content);
@@ -1552,7 +1653,7 @@
       const value = fields.get(name);
       if (value !== null && value !== "") out[name] = Number(value);
     }
-    for (const name of ["hostOverflow", "detailView", "runnerFullView"]) {
+    for (const name of ["hostOverflow", "detailView", "runnerFullView", "repoLayout"]) {
       const value = fields.get(name);
       if (value !== null) out[name] = value;
     }
@@ -1719,7 +1820,13 @@
     active.expanded ||= new Set(active.row ? [active.row] : []);
     body.dataset.detailState = JSON.stringify([view, [...active.expanded]]);
     const list = view === "table" ? detailTable(rows, s) : node("div", "db-detail-grid");
+    let listOwner = null;
     for (const row of view === "list" ? rows : []) {
+      // Repos: each owner's repos under its name, in Rust's owner order.
+      if (row.owner && row.owner !== listOwner) {
+        listOwner = row.owner;
+        list.append(node("h4", "db-detail-owner", row.owner));
+      }
       const item = node("details", "db-detail-resource"),
         summary = node("summary"), head = node("div", "db-row db-detail-title");
       item.dataset.resource = row.id;
@@ -1792,7 +1899,16 @@
       headings.append(cell);
     }
     head.append(headings);
+    let owner = null;
     rows.forEach((row, index) => {
+      if (row.owner && row.owner !== owner) {
+        owner = row.owner;
+        const heading = node("tr", "db-detail-owner-row"), cell = node("th", "db-detail-owner", row.owner);
+        cell.colSpan = columns.length;
+        cell.scope = "colgroup";
+        heading.append(cell);
+        body.append(heading);
+      }
       const tr = node("tr", "db-detail-resource");
       tr.dataset.resource = row.id;
       const expanded = active.expanded.has(row.id), extraId = `db-resource-extra-${index}`;
