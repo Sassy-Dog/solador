@@ -6,7 +6,9 @@
 //! gives that row. Only the rows are filtered. Every other key (`trailing`,
 //! `stats`, `chips`, `footer`, `freshness`, `message`, `health`, section header
 //! counts) is the source-wide total the scope note refers to and is left as is.
-//! The one exception is Anthropic's `message`, which speaks for the rollups.
+//! The exceptions: Anthropic's `message`, which speaks for the rollups, and the
+//! Repos owner groups (`owners`, `cardOrder`), rebuilt from the kept rows so
+//! each owner's header counts exactly the repos under it.
 //!
 //! **Nothing here writes through `IndexMut`.** `value["key"]` on a `&mut Value`
 //! inserts a missing key and turns a `null` into an object, so a runtime whose
@@ -46,13 +48,26 @@ pub(crate) fn find_tile<'a>(
 /// that keeps everything gets the payload back unchanged; one that keeps
 /// nothing gets an empty panel, never the whole list.
 pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
+    // Before the early return below: a tile that keeps every repo still lays
+    // its owners out its own way. Replaced, never added: `repos_view` always
+    // carries the key, and nothing here invents one (see the module note).
+    if tile.source == "ghWorkflows" {
+        if let Some(layout) = field_mut(&mut payload, "layout") {
+            *layout = Value::String(tile.repo_layout.clone());
+        }
+    }
     let Some(kept) = scoped_row_ids(tile, &payload) else {
         return payload;
     };
     // Hosts are cards, filtered (and stamped) by `cockpit_for_tile`.
     let empty = scoped_empty(tile, &payload).filter(|_| tile.source != "hosts");
     match tile.source.as_str() {
-        "ghWorkflows" => retain_rows(&mut payload, |v| str_of(v, "repo").to_owned(), &kept),
+        "ghWorkflows" => {
+            retain_rows(&mut payload, |v| str_of(v, "repo").to_owned(), &kept);
+            if payload.get("owners").is_some() {
+                crate::github::attach_owners(&mut payload);
+            }
+        }
         "ghRunners" => retain_rows(
             &mut payload,
             |v| format!("{}/{}", str_of(v, "org"), str_of(v, "name")),
@@ -349,17 +364,61 @@ mod tests {
         assert_eq!(scope_payload(&tile("services", "all"), p.clone()), p);
     }
 
+    fn repo(slug: &str, status: &str, issues: u64) -> Value {
+        json!({"repo":slug,"name":slug.split('/').nth(1),"status":status,
+            "statusLabel":status,"attention":status != "healthy","cells":[],
+            "dotColor":if status == "healthy" { "#0f0" } else { "#f00" },
+            "sortValues":{"status":if status == "healthy" { 4 } else { 1 },
+                "issues":issues,"prs":0,"dependabot":0,"running":0}})
+    }
+
+    /// The rows are scoped, and so are the owner groups built over them: a
+    /// header counts the repos under it, never the owner's whole portfolio.
+    /// Everything else stays source-wide.
     #[test]
     fn repos_keep_only_the_scoped_repos() {
-        let repo = |name: &str, status: &str| {
-            json!({"repo":format!("o/{name}"),"name":name,"status":status,
-                "statusLabel":status,"attention":status != "healthy","cells":[]})
-        };
-        let p = json!({"columns":[],"health":{"text":"2 of 3"},
-            "rows":[repo("a","healthy"),repo("b","failing"),repo("c","healthy")]});
+        let mut p = json!({"columns":[],"health":{"text":"2 of 3"},"trailing":"1 stuck",
+            "rows":[repo("acme/a","healthy",2),repo("acme/b","failing",3),
+                repo("globex/c","failing",1),repo("acme/d","healthy",0)]});
+        crate::github::attach_owners(&mut p);
+        assert_eq!(p["owners"].as_array().unwrap().len(), 2);
         let out = scope_payload(&tile("ghWorkflows", "healthy"), p.clone());
-        assert_eq!(rows(&out, "repo"), ["o/a", "o/c"]);
+        assert_eq!(rows(&out, "repo"), ["acme/a", "acme/d"]);
         assert_eq!(out["health"], p["health"]);
+        assert_eq!(out["trailing"], p["trailing"]);
+        let owners = out["owners"].as_array().unwrap();
+        assert_eq!(owners.len(), 1, "globex kept no row, so it has no header");
+        assert_eq!(owners[0]["owner"], "acme");
+        assert_eq!(owners[0]["totalsText"], "2 issues · 0 PRs · 0 Dependabot");
+        assert_eq!(
+            owners[0]["dotColor"], "#0f0",
+            "the failed repo was scoped out"
+        );
+        assert_eq!(out["cardOrder"], json!([0]));
+    }
+
+    /// A tile's Full view lays its owners out the way the tile does — on the
+    /// unscoped path too, where every row is kept.
+    #[test]
+    fn a_scoped_repos_payload_carries_the_tiles_layout() {
+        let mut p = json!({"layout":"sections","rows":[repo("acme/a","healthy",1)]});
+        crate::github::attach_owners(&mut p);
+        let mut sections = tile("ghWorkflows", "all");
+        sections.repo_layout = "sections".into();
+        assert_eq!(scope_payload(&sections, p.clone())["layout"], "sections");
+        assert_eq!(
+            scope_payload(&tile("ghWorkflows", "all"), p.clone())["layout"],
+            "cards"
+        );
+        assert_eq!(
+            scope_payload(&tile("ghWorkflows", "healthy"), p.clone())["layout"],
+            "cards"
+        );
+        let payload_without_rows = json!({"layout":"sections","message":{"text":"loading…"}});
+        assert_eq!(
+            scope_payload(&tile("ghWorkflows", "all"), payload_without_rows)["layout"],
+            "cards"
+        );
     }
 
     #[test]

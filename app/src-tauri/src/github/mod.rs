@@ -918,10 +918,10 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // state that carries both — no credential anywhere, several accounts to
         // blame — is exactly the one where suppressing it would hurt.
         "footer": repos_footer(state, now_secs),
-        // The unscoped panel belongs to no tile, so it has no layout setting
-        // of its own; a tile's Full view replaces this with its own choice
+        // The unscoped panel belongs to no tile, so it paints the layout a new
+        // tile gets; a tile's Full view replaces this with its own choice
         // (`tile_scope`).
-        "layout": "sections",
+        "layout": "cards",
     });
     attach_owners(&mut payload);
     payload
@@ -3320,7 +3320,7 @@ mod tests {
         assert_eq!(owners[0]["cells"][DEP]["text"], "1");
         assert_eq!(owners[0]["spans"], false);
         assert_eq!(owners[1]["owner"], "jdoe");
-        assert_eq!(view["layout"], "sections");
+        assert_eq!(view["layout"], "cards");
     }
 
     /// An owner whose only repo could not be read has unknown totals — never
