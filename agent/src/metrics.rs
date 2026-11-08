@@ -535,7 +535,8 @@ impl MetricsState {
 
     /// Whether the sampler has gone stale (no fresh sample within
     /// [`STALE_INTERVALS`] sample intervals) — the signal that the background
-    /// task has died and the served numbers are frozen.
+    /// task has died and the served numbers are frozen. A pass stuck or running
+    /// very slowly on the blocking thread goes stale the same way.
     pub fn is_stale(&self) -> bool {
         self.sample_age() > SAMPLE_INTERVAL * STALE_INTERVALS
     }
@@ -1005,13 +1006,15 @@ mod tests {
 
     /// How long a live-sampler test waits for its first measured snapshot.
     ///
-    /// The work is real: startup (system, network and disk lists), one
-    /// `SAMPLE_INTERVAL`, then a full pass including the process-table and
-    /// disk walks. Measured at ~1.1-1.3 s on an idle or gate-loaded Mac, but
-    /// #725 saw it exceed 15 s on a Mac with 22 mounts and a load near 10, so
-    /// the budget is a multiple of that worst case rather than of the typical
-    /// one. Passing is not slower than the work; only a hung sampler waits it
-    /// out.
+    /// The time to the first snapshot is startup (system, network and disk
+    /// lists), then one `SAMPLE_INTERVAL`, then one full pass; moving the work
+    /// to the blocking pool does not shorten that. It is ~1.1-1.3 s on an idle
+    /// or gate-loaded Mac. Where the `sysinfo` walk itself is slow (#725 saw
+    /// about 4 s per test with `--test-threads=1`, and more than 15 s under
+    /// load, a lower bound because the old test gave up at 15 s) this budget
+    /// is what keeps the test passing. 60 s is unmeasured headroom over that
+    /// lower bound. The test checks that the platform readings are wired into
+    /// the snapshot, not how fast they arrive.
     const FIRST_SNAPSHOT_BUDGET: Duration = Duration::from_secs(60);
 
     async fn first_measured_snapshot() -> Snapshot {
@@ -1029,11 +1032,12 @@ mod tests {
         .expect("the sampler must produce a measured snapshot")
     }
 
-    /// #725: blocking `sysinfo` work must not hold the runtime thread. On this
-    /// current-thread runtime a timer task can only tick while the blocking
-    /// closure runs elsewhere.
+    /// Proves `on_blocking_thread` does not run its closure inline: on this
+    /// current-thread runtime a timer task can only tick while the closure
+    /// runs elsewhere. It does not prove `sampler_loop` uses the helper; a
+    /// regression to an inline `pass()` would leave it green.
     #[tokio::test]
-    async fn blocking_work_leaves_the_runtime_free() {
+    async fn on_blocking_thread_keeps_its_work_off_the_runtime_thread() {
         let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let counter = ticks.clone();
         let ticker = tokio::spawn(async move {
@@ -1050,8 +1054,10 @@ mod tests {
         );
     }
 
-    /// The supervisor in `spawn_sampler` restarts on a panicking task; a panic
-    /// on the blocking thread must therefore surface as one.
+    /// The helper half of panic handling: a panic on the blocking thread is
+    /// re-raised on the awaiting task. It does not exercise the
+    /// `spawn_sampler` supervisor's restart or the rebuild of `Sampler` by
+    /// `Sampler::new`.
     #[tokio::test]
     async fn a_panic_on_the_blocking_thread_panics_the_awaiting_task() {
         let join = tokio::spawn(async {

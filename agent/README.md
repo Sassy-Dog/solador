@@ -73,7 +73,8 @@ Notes:
   ~1s `sysinfo` refreshes by a background sampler. `/v1/snapshot` returns the
   latest sampled values. The `sysinfo` work runs on tokio's blocking pool, not on
   an async worker, so a slow disk walk delays the next sample, never the HTTP
-  listeners (`/v1/health` reports a delayed sample as `samplerStale`).
+  listeners. `/v1/health` reports `samplerStale` once no fresh sample has landed
+  for three sample intervals (`SAMPLE_INTERVAL * STALE_INTERVALS`).
 - Percentages (`totalUsage`, `coreUsages`) are `0–100`.
 - **Measured, or absent** (agent ≥ 0.3.0). A key is only present when this agent
   actually sampled it, so `0.0` always means a *reading* of zero and never "we
