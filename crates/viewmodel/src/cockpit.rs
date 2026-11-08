@@ -223,6 +223,61 @@ pub fn panel_columns(kind: PanelKind, width: f64, spacing: f64) -> usize {
 /// it reclaims, and every panel this applies to is a list.
 pub const PANEL_MAX_COLUMNS: usize = 2;
 
+/// The narrowest card a Repos Full view lays out, in points: the REPO name
+/// plus ISSUES, PRS and DEP, with room to read.
+pub const REPO_CARD_MIN_WIDTH: f64 = 320.0;
+
+/// Never more than four cards to a row, however wide the window.
+pub const REPO_CARD_MAX_COLUMNS: usize = 4;
+
+/// The columns a Repos card shows, as the panel's column labels, in order.
+/// The rest (READY, REMOTE, LOCAL, WT) stay in Sections and in Detail.
+pub const REPO_CARD_FIELDS: [&str; 6] = ["REPO", "ISSUES", "PRS", "DEP", "JOBS", "LONGEST"];
+
+/// A card narrower than this drops LONGEST.
+const REPO_CARD_LONGEST_WIDTH: f64 = 380.0;
+
+/// A card narrower than this drops JOBS too. A running workflow still shows
+/// through the amber row dot and the owner's running total.
+const REPO_CARD_JOBS_WIDTH: f64 = 300.0;
+
+/// How a Repos Full view lays out its owner cards at one width.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoCards {
+    /// Cards to a row, and the columns a spanning owner splits into.
+    pub columns: usize,
+    /// [`REPO_CARD_FIELDS`] with the narrowing ladder applied.
+    pub fields: Vec<&'static str>,
+}
+
+/// The spec's narrowing ladder, decided here so the page only paints it:
+/// as many cards of [`REPO_CARD_MIN_WIDTH`] as fit (the rule
+/// [`panel_columns`] uses, clamped to 1..=[`REPO_CARD_MAX_COLUMNS`]), then
+/// LONGEST and JOBS drop as the card each one leaves narrows.
+pub fn repo_cards(width: f64, spacing: f64) -> RepoCards {
+    let columns = if width.is_nan() || width <= 0.0 {
+        1
+    } else {
+        let fits = ((width + spacing) / (REPO_CARD_MIN_WIDTH + spacing)).floor();
+        if fits >= 1.0 {
+            (fits as usize).min(REPO_CARD_MAX_COLUMNS)
+        } else {
+            1
+        }
+    };
+    let card = (width - spacing * (columns - 1) as f64) / columns as f64;
+    let fields = REPO_CARD_FIELDS
+        .iter()
+        .copied()
+        .filter(|&field| match field {
+            "LONGEST" => card >= REPO_CARD_LONGEST_WIDTH,
+            "JOBS" => card >= REPO_CARD_JOBS_WIDTH,
+            _ => true,
+        })
+        .collect();
+    RepoCards { columns, fields }
+}
+
 /// Minimum height of the tabbed host container, in points.
 ///
 /// `HostsPanel.tabbedHosts`'s `.frame(minHeight: 780)` in the original, and it carries
@@ -432,6 +487,27 @@ mod tests {
 
     /// Every panel declares its own breakpoint. A new kind that forgets one
     /// would split against a zero minimum and never leave a cramped column.
+    #[test]
+    fn repo_cards_fit_by_width_and_narrow_longest_first() {
+        let all: Vec<&str> = REPO_CARD_FIELDS.to_vec();
+        let no_longest: Vec<&str> = REPO_CARD_FIELDS[..5].to_vec();
+        let no_jobs: Vec<&str> = REPO_CARD_FIELDS[..4].to_vec();
+        // 800: two cards of 392, every field.
+        let cards = repo_cards(800.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (2, all));
+        // 700: two cards of 342, LONGEST goes first.
+        let cards = repo_cards(700.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (2, no_longest.clone()));
+        // 1500: four cards of 363.
+        let cards = repo_cards(1500.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (4, no_longest));
+        // 290: one card under 300, so JOBS goes too.
+        let cards = repo_cards(290.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (1, no_jobs));
+        // Never more than four, however wide.
+        assert_eq!(repo_cards(5000.0, 16.0).columns, REPO_CARD_MAX_COLUMNS);
+    }
+
     #[test]
     fn every_panel_kind_declares_a_positive_min_width() {
         for kind in PanelKind::ALL {

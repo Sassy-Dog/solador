@@ -379,6 +379,35 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   gap:10px 24px; align-items:start;
 }
 .gh-col { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
+
+/* Repos by owner. Rust decides every count here: cards to a row
+   (--card-cols), which owner spans it, the tables a spanning owner splits
+   into (--split) and the columns a card keeps; these rules only lay out what
+   they are handed. */
+.gh-cards { grid-column:1 / -1; display:grid; gap:12px;
+  grid-template-columns: repeat(var(--card-cols, 1), minmax(0, 1fr)); align-items:start; }
+.gh-card { min-width:0; border:1px solid var(--line);
+  border-radius:8px; padding:8px 10px; }
+.gh-card[data-span="true"] { grid-column:1 / -1; }
+.gh-card-head { display:flex; align-items:baseline; flex-wrap:wrap; gap:2px 8px;
+  margin-bottom:6px; min-width:0; }
+.gh-card-head .dot { width:6px; height:6px; flex:none; align-self:center; }
+.gh-owner-name { font-size:12px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.gh-owner-totals { font-size:10px; color:var(--muted); text-align:right; }
+.gh-card-cols { display:grid; gap:10px 24px;
+  grid-template-columns: repeat(var(--split, 1), minmax(0, 1fr)); }
+/* Sections: an owner's header row has a repo row's shape, so its totals sit
+   in the same columns as the numbers beneath, and its repos are indented
+   under it. The indent moves the dot and the name's text, never the name's
+   reserved box, so no number leaves its column. */
+.gh-owner { display:flex; align-items:center; gap:8px; min-width:0;
+  margin-top:4px; }
+.gh-owner .dot { width:6px; height:6px; flex:none; }
+.gh-owner .gh-repo-name { font-size:12px; }
+.gh-owner .gh-cell { font-weight:700; }
+#reposBody[data-layout="sections"] .gh-row:not(.gh-head) > .dot { margin-left:10px; margin-right:-10px; }
+#reposBody[data-layout="sections"] .gh-row:not(.gh-head) > .gh-repo-name { text-indent:10px; }
 .panel-health { font-size:10px; margin:4px 0 0; }
 
 /* A repo row opens its GitHub Actions page. The affordance is deliberately

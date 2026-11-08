@@ -697,6 +697,10 @@ fn cockpit_payload(input: CockpitInput) -> Value {
         // The content columns each panel affords at this width. A panel's Full
         // view fills the window, so this is `panel_columns` over the window's
         // width; it travels as data for the reason `hostColumns` does.
+        // The Repos Full view's owner cards at this width: how many share a
+        // row and which columns they keep (`repo_cards`), data for the reason
+        // `panelColumns` is.
+        "repoCards": repo_cards_json(available),
         "panelColumns": viewmodel::cockpit::PanelKind::ALL
             .iter()
             .map(|kind| (kind.id().to_owned(), json!(viewmodel::cockpit::panel_columns(*kind, available, SPACING))))
@@ -707,6 +711,13 @@ fn cockpit_payload(input: CockpitInput) -> Value {
         // polling, so the sentence is made here, in one place.
         "overviewLoadFailed": dashboard::OVERVIEW_LOAD_FAILED,
     })
+}
+
+/// [`viewmodel::cockpit::repo_cards`] at the window's width, as the cockpit
+/// payload carries it.
+fn repo_cards_json(available: f64) -> Value {
+    let cards = viewmodel::cockpit::repo_cards(available, SPACING);
+    json!({"columns": cards.columns, "fields": cards.fields})
 }
 
 /// The write side of the poll loop, pulled out of the spawned task for the
@@ -10218,6 +10229,17 @@ mod tests {
                 "{kind:?}"
             );
         }
+        // The Repos Full view's cards: how many share a row and which columns
+        // they keep, from the same width (`repo_cards`).
+        assert_eq!(narrow["repoCards"]["columns"], json!(1));
+        assert_eq!(
+            wide["repoCards"]["columns"],
+            json!(viewmodel::cockpit::REPO_CARD_MAX_COLUMNS)
+        );
+        assert_eq!(
+            wide["repoCards"]["fields"],
+            json!(viewmodel::cockpit::REPO_CARD_FIELDS)
+        );
     }
 
     /// Every sentence the page shows when one of its two reads fails is Rust's:
