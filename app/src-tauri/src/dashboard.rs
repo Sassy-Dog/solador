@@ -193,8 +193,18 @@ fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
     if tile.source != "ghRunners" && tile.runner_full_view != "table" {
         return Err("Only a GitHub Runners tile has a Full view of its own to lay out.".into());
     }
+    // Cards is every tile's default, so only a Repos tile may hold anything
+    // else — and only one of the two layouts its views can paint.
+    if !REPO_LAYOUTS.contains(&tile.repo_layout.as_str())
+        || (tile.source != "ghWorkflows" && tile.repo_layout != REPO_LAYOUTS[0])
+    {
+        return Err("Choose Cards or Sections for a GitHub Repos tile.".into());
+    }
     Ok(())
 }
+
+/// A GitHub Repos tile's two layouts, the default first.
+const REPO_LAYOUTS: [&str; 2] = ["cards", "sections"];
 
 /// The tile "Add tile" starts from for `source`: `DashboardTile::new`'s defaults,
 /// the scope the source opens on, and Machines one width wider. One source of
@@ -1253,6 +1263,42 @@ mod detail_table_tests {
         assert_eq!(default_layout().tiles.len(), store::SHIPPED_TILES.len());
     }
 
+    /// Cards or Sections, on a GitHub Repos tile only — any other source
+    /// keeps the default it cannot use, so a hand-edited value never sits on
+    /// a tile that ignores it.
+    #[test]
+    fn repo_layout_is_cards_or_sections_on_repos_tiles_only() {
+        let with = |source: &str, layout: &str| {
+            let mut tile = DashboardTile::new("t", source, "T", "all");
+            tile.repo_layout = layout.into();
+            validate(&DashboardLayout {
+                revision: 0,
+                legacy_detail_views: Default::default(),
+                tiles: vec![tile],
+            })
+        };
+        assert!(with("ghWorkflows", "cards").is_ok());
+        assert!(with("ghWorkflows", "sections").is_ok());
+        let refusal = "Choose Cards or Sections for a GitHub Repos tile.";
+        assert_eq!(with("ghWorkflows", "grid"), Err(refusal.to_owned()));
+        assert_eq!(with("hosts", "sections"), Err(refusal.to_owned()));
+        assert!(with("hosts", "cards").is_ok());
+    }
+
+    #[test]
+    fn configure_defines_the_repo_layout_choice() {
+        let c = configure();
+        let ids: Vec<&str> = c["repoLayout"]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["cards", "sections"]);
+        assert_eq!(c["repoLayout"]["label"], "Layout");
+        assert_eq!(c["repoLayout"]["sources"], json!(["ghWorkflows"]));
+    }
+
     #[test]
     fn a_tile_carries_its_view_settings_to_the_page() {
         let mut layout = default_layout();
@@ -1271,6 +1317,8 @@ mod detail_table_tests {
         assert_eq!(tile["detailView"], "list");
         assert_eq!(tile["runnerFullView"], "list");
         assert_eq!(view["spacing"], SPACING);
+        let repos = tiles.iter().find(|t| t["source"] == "ghWorkflows").unwrap();
+        assert_eq!(repos["repoLayout"], "cards");
         let tile = tiles.iter().find(|t| t["source"] == "hosts").unwrap();
         assert_eq!(tile["coreRowSpan"], 2);
         assert_eq!(tile["hostOverflow"], "stack");
@@ -1586,7 +1634,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     let full_note = scope_note(tile, string(source, "title"), &scope_label);
     json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
-        "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,
+        "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
         "sortColumns":if tile.source == "ghWorkflows" { json!([
             {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
@@ -1770,6 +1818,14 @@ fn configure() -> Value {
         },
         "detailView": {"label":"Detail layout","options":table_list,"help":"Whether this tile\u{2019}s Detail lists its rows as a table or as a list."},
         "runnerFullView": {"label":"Full view layout","options":table_list,"help":"Whether this tile\u{2019}s Full view lists runners as a table or as a list. Detail has its own choice."},
+        // On This tile's page rather than one view's: the overview tile and
+        // its Full view both follow it. Only the sources listed show it.
+        "repoLayout": {
+            "label":"Layout",
+            "options":[{"id":REPO_LAYOUTS[0],"label":"Cards"},{"id":REPO_LAYOUTS[1],"label":"Sections"}],
+            "help":"Cards gives each owner its own box; Sections lists every owner in one table. The tile and its Full view both use it.",
+            "sources":["ghWorkflows"],
+        },
         "coreRowSpan": {"label":"CPU core rows","min":CORE_ROW_SPAN_RANGE.start(),"max":CORE_ROW_SPAN_RANGE.end(),"help":"How many rows tall the per-core CPU grid is on every host card in this tile\u{2019}s Full view."},
         "hostOverflow": {
             "label":"When host cards don\u{2019}t fit",
