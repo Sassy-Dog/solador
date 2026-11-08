@@ -368,7 +368,7 @@ pub fn new_repo(slug: impl Into<String>, accounts: &[VendorAccount]) -> TrackedR
     }
 }
 
-/// What one discovery-picker checkbox change amounts to, decided before the
+/// What one repo-search checkbox change amounts to, decided before the
 /// store is touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackChange {
@@ -385,12 +385,12 @@ pub enum TrackChange {
     Noop,
 }
 
-/// One checkbox change in the discovery picker, resolved to exactly one
+/// One checkbox change in the repo search, resolved to exactly one
 /// action or the status line refusing it.
 ///
 /// A repo another account fetches is refused **with the owner named**, in
 /// both directions: checking it would be two accounts fetching one repo, and
-/// unchecking it is not this picker's business. A tracked-but-unattributed
+/// unchecking it is not this search's business. A tracked-but-unattributed
 /// repo unchecks nowhere either — its removal belongs to the portfolio row,
 /// where the unattributed state is visible rather than merely absent.
 ///

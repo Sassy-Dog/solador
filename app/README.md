@@ -397,15 +397,26 @@ The group is decided once per runner row in Rust (`groupId`, `groupLabel`,
 `groupRank`), and the tile, Detail and Full all read it, so a group always
 opens onto the runners it counted.
 The existing source warnings accompany grouped counts too.
-A **GitHub Repos** row carries its backlog on the row itself, in both
-presentations: numeric-only Issues, Ready and PRs columns at every tile width,
-without repeated labels or dot separators. *Ready* is the repo's open issues
+A **GitHub Repos** tile groups its repos **by owner** (the part of
+`owner/name` before the slash, `viewmodel::repo_owners`), laid out as
+Configure → **Layout** says: **Cards** (the default, and what a store written
+before the setting reads) gives each owner its own box, small owners sharing
+a row and one showing more than 8 rows spanning the tile with its rows split
+into columns; **Sections** is one table with a header row per owner. Each
+owner's header carries its dot and its totals (issues, PRs, Dependabot, and
+how many are running) over every repo in the tile's scope, and the row limit
+applies per owner, each with its own "N more" line. A row carries its backlog
+on the row itself, in both presentations: numeric-only Issues, Ready, PRs and
+Dep columns at every tile width, without repeated labels or dot separators; a
+card narrower than a small tile (a medium tile with two cards across) keeps
+Issues, PRs and Dep, and its dot alone carries the status. *Ready* is the repo's open issues
 whose project-board Status is `Ready`. Counts come verbatim from the detailed
 table's cells, so an unreadable count is the same `—` there. Hovering the PRs
 count (here and in the full Repos panel) says how many Dependabot opened —
-`7 open PRs · 5 from Dependabot` — and Repos Detail has a **DEPENDABOT**
-column right after PRS; an unreadable PR count has no tooltip and reads `—`
-there. Numbers and their
+`7 open PRs · 5 from Dependabot` — and every Repos layout has a **DEP**
+column right after PRS with that Dependabot count; an unreadable PR count has
+no tooltip and reads `—` there. Repos Detail lists each owner's repos under
+the owner's name. Numbers and their
 column headers align to the right in fixed-width slots. The status column
 is exactly as wide as the widest Repos status (`Unreadable`, 10ch), and a long
 repo name ellipsizes before the counts give way. A repo with a run parked at a
@@ -1144,7 +1155,13 @@ await window.__TAURI__.core.invoke("runners");
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
   "loading": false,                      // true while the panel is still filling in
   "availability": {"label": "Operational", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
-  "columns": [{"label": "REPO", "width": 96.0}, {"label": "ISSUES", "width": 36.0}, {"label": "READY", "width": 28.0}, …],
+  "columns": [{"label": "REPO", "width": 96.0}, {"label": "ISSUES", "width": 36.0}, {"label": "READY", "width": 28.0}, {"label": "PRS", "width": 20.0}, {"label": "DEP", "width": 20.0}, …],
+  "layout": "cards",                     // or "sections": the tile's Configure → Layout
+  "owners": [{"owner": "acme", "dotColor": "#e0a03a", "spans": false,
+              "totalsText": "17 issues · 9 PRs · 5 Dependabot · 1 running",
+              "cells": […],                // the totals under the columns, for Sections
+              "rowIds": ["acme/cogwheel", "acme/gadget", …]}],
+  "cardOrder": [0, 2, 1],                // owner indices: owners that fit first, spanning ones last
   "rows": [{
     "repo": "acme/gadget", "name": "gadget",
     "dotColor": "#e05a4f", "blinking": false,
@@ -1179,8 +1196,8 @@ would put it where no Rust test can see it. It is the same rule the `/issues`
 cursor-pagination guard in `crates/github` exists to protect.
 
 The **column widths are Rust's**, in points, for the same reason the host
-grid's column count is: eight fixed numeric columns summing to 232pt is what
-`PanelKind::GhWorkflows.min_width` (458pt) is built on, and a width re-typed in
+grid's column count is: nine fixed numeric columns summing to 252pt is what
+`PanelKind::GhWorkflows.min_width` (478pt) is built on, and a width re-typed in
 CSS is a second implementation free to disagree with the breakpoint.
 
 **READY is the one column REST cannot answer.** Projects v2 has no REST
@@ -2297,8 +2314,9 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_set_account_enabled` | one account in or out of the GitHub pass, without deleting it or its token |
 | `settings_remove_account` | delete the account and the one credential item it named. **Its repos are not re-homed** — they stay tracked and become unattributed, because moving them onto whichever account survived would invent an owner. Returns a receipt naming the same repos the confirmation prompt did |
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio. Add takes an optional `accountId` — the per-account "add by name" path, where the attribution is the operator's own answer. Without one it **attributes the repo to an account only when the store holds exactly one** (`settings::new_repo`) — with two or more there is no correct default, so it lands unattributed and the row's picker asks |
-| `settings_discover_repos` | the discovery probe: everything one account's token can see (`GET /user/repos`, Link-paged to a 1,000-repo backstop whose cut is **reported**, never silent), merged against the store into checkbox rows — plus the orgs **derived** from that result. Derived, not fetched: `GET /user/orgs` answers a fine-grained PAT with `200` and an empty list, and fine-grained PATs are the only kind this app asks for. Ephemeral like the Services probe; a failure returns the worded finding as `reason` |
-| `settings_set_repo_tracked` | one discovery checkbox: track or untrack a repo for one account (`settings::tracked_change` — add, adopt an unattributed repo by explicit click, remove, refuse another account's with the owner named, or a harmless no-op). The untrack consequence (configured watched workflows are lost) rides the discovery payload as `untrackPrompt`, and the frontend two-steps on it like the account delete |
+| `settings_discover_repos` | the discovery probe: everything one account's token can see (`GET /user/repos`, Link-paged to a 5,000-repo backstop whose cut is **reported**, never silent), kept in `App::discovered` for the search and summarised as `{id, total, totalLabel, truncatedNote, orgs, reason}` — the orgs **derived** from that result. Derived, not fetched: `GET /user/orgs` answers a fine-grained PAT with `200` and an empty list, and fine-grained PATs are the only kind this app asks for. Ephemeral like the Services probe: nothing persists; a failure returns the worded finding as `reason` |
+| `settings_search_repos` | the repos screen's search over the list the walk cached for one account (`id`, `query`): every repo whose `owner/name` contains the query, ignoring case (`github::discovery::search`), plus this account's tracked repos the grant does not cover, this account's first and then by name, at most 50 → `{id, query, results, countLabel, moreLabel, addByName}`. Each result carries `tracked`, `trackedBy`, `granted`, `archived`, `untrackPrompt` and the match's char offsets. Before the walk has cached a list (or after it failed) the answer is `pending: true` with no results, though a full `owner/name` is still offered by name |
+| `settings_set_repo_tracked` | one search checkbox: track or untrack a repo for one account (`settings::tracked_change` — add, adopt an unattributed repo by explicit click, remove, refuse another account's with the owner named, or a harmless no-op). The untrack consequence (configured watched workflows are lost) rides the search answer as `untrackPrompt`, and the frontend two-steps on it like the account delete |
 | `settings_set_repo_account` | that picker: which account fetches this repo. `accountId: null` is the unattributed state, which is a legitimate answer rather than a cleared field; an id no account carries is refused, because a stale id on screen is indistinguishable from a deliberate *Unattributed* |
 | `settings_save_openclaw` | the OpenClaw gateway URL |
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
@@ -2437,9 +2455,10 @@ Two things worth knowing about this surface:
   from the control being broken. There is still no
   control for the 1 Hz host poll or the 10s agent-health poll: neither has a
   `PanelInterval` to name it, deliberately. Since #647 the **core row span**, **row spacing**,
-  **host overflow mode** and the Runners / Detail Table-or-List choices are
-  per-tile fields (`coreRowSpan`, `rowGapPx`, `hostOverflow`, `detailView`,
-  `runnerFullView` on the overview's tile), edited in that tile's Configure
+  **host overflow mode**, the Runners / Detail Table-or-List choices and a
+  Repos tile's Cards-or-Sections **Layout** are per-tile fields (`coreRowSpan`,
+  `rowGapPx`, `hostOverflow`, `detailView`, `runnerFullView`, `repoLayout` on
+  the overview's tile), edited in that tile's Configure
   (**This tile** / **Detail** / **Full view**, built from Rust's `TILE_VIEWS`)
   and validated per tile by `dashboard_save`. The range-bounded two
   (`coreRowSpan`, `rowGapPx`) are described by `crates/store`'s
@@ -2494,22 +2513,32 @@ GitHub surface on one tab, one card per account. The GitHub and Portfolio
 tabs both retired into it: a token is an account's, and a repo row sits on
 the card of the account whose token reads it. Every form is behind a button
 (Rename…, Replace token…, Add account…, Configure… per repo) — built
-up-front and toggled, the delete-confirm precedent applied to forms — and
-the card's repos section is deliberately **just the list**, with one way in.
+up-front and toggled, the delete-confirm precedent applied to forms.
 
-**Configure repos…** opens a **modal** — the app's second floating layer
-(`.ctx-menu` is the first), an in-app overlay rather than a window because a
-second webview window needs the ACL grant this repo refuses (#123). It
-renders the `settings_discover_repos` probe live: one checkbox row per
-grant, checkbox-first so every slug left-aligns, with the already-tracked
-repos **checked** (state read from the live view, never the probe snapshot);
-foreign repos disabled with their owner named; by-name repos kept visible as
-"not in this token's grants"; a reported truncation; an untrack two-step
-exactly when unchecking would forget configured watched workflows; the orgs
-the probe derived offered below the rows; and the add-by-name field in the
-footer for a public repo the operator would rather not grant. Close, the
-scrim, and Escape all dismiss it. Repos no account claims render in an
-**Unattributed** section with the Fetched-by picker.
+**Watched repos** are listed under one heading per owner (`repoGroups`, the
+Repos tile's grouping, `owner · count`), each row with its Configure…. Below
+them, **Add a repo** is one search box. Opening the account starts the
+`settings_discover_repos` walk **once** — the box is disabled and says it is
+reading until the walk answers, then shows the walk's count ("This token can
+read 908 repos"), its truncation, or its worded `reason`. The list stays in
+Rust (`App::discovered`); each keystroke asks `settings_search_repos`, and only
+the newest reply paints, and only while the box still says what it asked, so a
+slow reply for `cl` never lands on top of `claims`. Results are checkbox rows,
+checkbox-first so every slug left-aligns, the match in bold: this account's
+repos **checked** and marked *watching* (state read from the live view, never
+the answer snapshot); another account's disabled with that account named;
+`archived`; by-name repos kept visible as "not in this token's grants"; and an
+untrack two-step exactly when unticking would forget configured watched
+workflows. Under them, how many matched ("5 of 908 match"), how many more past
+the 50 shown, and — for a full `owner/name` the list does not hold — **Add
+`owner/name` by name**, for a public repo the operator would rather not grant.
+That offer stands even when the walk failed. The arrow keys move a highlight
+through the rows, Enter ticks the highlighted one, and Escape clears the box.
+A query is not an edit: it raises no unsaved prompt, and a tick keeps it and
+its results across the re-render. The orgs the walk derived that the account
+does not watch yet are offered in its **Runner organizations** block. Repos no
+account claims render in an **Unattributed** section with the Fetched-by
+picker.
 
 Each account's token is **its own item** in the OS credential store
 (`SecretKey::VendorToken`, keyed by the account's id) and is never shared with
@@ -3211,7 +3240,9 @@ and that immediacy is itself the check on the corresponding wake:
 | `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Sources → GitHub (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
 | `settings_set_account_org` / Runners | under Settings → Sources → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Sources → GitHub". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. For a repo that is `Waiting`, click its **dashboard** row too: it opens `.../actions/runs/{id}` (or the Actions page when several runs wait). Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
-| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Sources → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Sources → GitHub (type its name into **Add a repo** on its account's card and tick it, or type its full `owner/name` and choose **Add … by name**) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| `settings_discover_repos` / `settings_search_repos` | open a GitHub account under Settings → Sources, wait for the line under **Add a repo** to change from *Reading what this token can access…*, then type part of a repo name, press **ArrowDown** and **Enter**, then **Escape** | the line says how many repos the token can read; matches appear as you type with the match in bold and "N of M match" under them; Enter ticks the highlighted repo, which joins **Watched repos** under its owner's heading while the box keeps its text; Escape empties the box. Typing a full `owner/name` the token can't list offers **Add … by name** |
+| `repoLayout` (`dashboard_save`) | **Edit dashboard** → a GitHub Repos tile watching repos from two owners → **Configure** → **Layout**: **Sections**, then back to **Cards**; open its **Full view** after each | Sections is one table with a header row per owner carrying its totals; Cards gives each owner its own box, small owners side by side. The Full view follows the tile each time, and the choice survives a relaunch |
 | `agentRelease` on each host row (`settings_payload` → `hosts_tab`, `agent_release_loop`, #489) | Settings → Sources → the seeded host. Then, against a real agent with `\|$TOKEN` on `SOLADOR_SEED_HOST` | the row carries a persistent line with **no Test press**. With no token (the default smoke run) it reads `Agent version — · not compared with releases`, because no health read can land. With a live agent it reads `Agent v<version> · …` and, while no `agent-v*` release has been published (the feed 404s), `no agent release published yet` in a muted colour — **never** `up to date`, and never amber or red. Amber appears only as `<release> available` beside a host whose CalVer is lower than a verified release. Terminal: one `agent release: …` line at startup, then hourly (`newest verified is …`, `none published yet`, or `the check failed: …`). A line that stays `checking for a newer release…` for more than a few seconds with a network means `agent_release_loop` never ran |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Sources → **Add source** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |

@@ -52,14 +52,19 @@ you configured under it.
 
 ## 3. Choose which repos to watch
 
-On the account's card, **Configure repos…** opens a picker that lists
-everything the token was granted — it reads them live, so you don't have to type
-names. The same panel takes an `owner/name` slug plus **Add**, which covers
-public repos you'd rather not grant the token access to at all. Repos you
-disable stay in the list and are simply skipped.
+On the account's card, **Add a repo** searches everything the token was
+granted: opening the account reads the list once (the box says so while it
+does, then how many repos the token can read), and typing any part of a
+repo's `owner/name` lists the matches as you type. Tick one to watch it; the
+arrow keys and Enter do the same from the keyboard, and Escape clears the box.
+Typing a full `owner/name` the token can't list offers **Add … by name**,
+which covers public repos you'd rather not grant the token access to at all.
+Watched repos are listed above the box, grouped by owner. Repos you disable
+stay in the list and are simply skipped.
 
-Entries are annotated as you'd hope: `archived`, and `not in this token's
-grants` for a repo the token can no longer see.
+Entries are annotated as you'd hope: `watching`, `archived`, `not in this
+token's grants` for a repo the token can no longer see, and the other account
+that fetches a repo another account already watches.
 
 Each repo can name **watched workflows** (comma-separated, e.g. `release.yml`).
 Leave it blank for the default `ci.yml` view, or list the extra workflows whose

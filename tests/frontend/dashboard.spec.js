@@ -261,7 +261,12 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               // (`tileEmpty` is Rust's sentence; the test supplies the words) or
               // holds this one reading back to land later (#640).
               let scoped = fixtures[command];
-              if (window.__TILE_EMPTY__) scoped = { ...scoped, rows: [], tileEmpty: window.__TILE_EMPTY__ };
+              // Repos' owner groups are rebuilt from the kept rows
+              // (`attach_owners`), so a scope that keeps none has none.
+              if (window.__TILE_EMPTY__) {
+                scoped = { ...scoped, rows: [], tileEmpty: window.__TILE_EMPTY__ };
+                if (scoped.owners) Object.assign(scoped, { owners: [], cardOrder: [] });
+              }
               if (window.__REJECT_TILE__ === command) throw "The reading failed.";
               // Every read of this command parks until released, so a poll cannot
               // land between the hold and the assertion (#656).

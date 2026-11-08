@@ -143,7 +143,7 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
 - **Layout is decided in Rust, never re-derived in JS** (`crates/viewmodel/src/cockpit.rs`):
   host columns, host tabs, per-panel `min_width` and `panel_columns`. A tile owns
   its own view settings (`coreRowSpan`, `hostOverflow`, `rowGapPx`, `detailView`,
-  `runnerFullView`), edited in its Configure; there is no global layout, and no
+  `runnerFullView`, `repoLayout`), edited in its Configure; there is no global layout, and no
   Full view of Solador itself (#647).
 - **Every source is added; none is built in.** A fresh store has none, and a
   store written before the switches keeps what it had

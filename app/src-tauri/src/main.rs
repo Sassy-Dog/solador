@@ -5811,7 +5811,7 @@ fn settings_add_repo(
     settings_response(&state, status)
 }
 
-/// One discovery-picker checkbox: track or untrack `slug` for the account.
+/// One repo-search checkbox: track or untrack `slug` for the account.
 ///
 /// The decision is [`settings::tracked_change`]'s, made in one place and
 /// tested there: add, adopt (the explicit operator click that legitimises

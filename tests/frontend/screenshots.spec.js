@@ -91,12 +91,13 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
  * OpenClaw tile), so the panel shot is that tile's Full view of the showcase
  * readings. Without it the overview is the showcase's own.
  */
-async function stubShowcase(page, baseURL, tileSource = null) {
+async function stubShowcase(page, baseURL, tileSource = null, edit = null) {
   const answers = {};
   for (const [command, file] of Object.entries(PAYLOADS)) {
     answers[command] = await fixture(baseURL, file);
   }
   if (tileSource) answers.dashboard_view = dashboardWithTiles(answers.dashboard_view, [tileSource]);
+  edit?.(answers);
   const cockpits = {};
   for (const [width, file] of Object.entries(COCKPITS)) {
     cockpits[width] = await fixture(baseURL, file);
@@ -129,8 +130,8 @@ async function expectNoMisses(page) {
  * button, then Full view (`tileFull`). Rust's showcase payload answers the
  * panel's command whatever the tile asked for.
  */
-async function loadTileFull(page, baseURL, source) {
-  await stubShowcase(page, baseURL, source);
+async function loadTileFull(page, baseURL, source, edit = null) {
+  await stubShowcase(page, baseURL, source, edit);
   await page.goto("/index.html");
   await openTileFull(page, source);
   await page.waitForTimeout(300); // sparklines animate in
@@ -188,6 +189,40 @@ async function expectCpuSectionInCrop(panel) {
  * box, and what lies below the top `visibleH` is cut. The crop must also keep
  * the panel's full width, because these panels' values are right-aligned.
  */
+/**
+ * A Repos tile set to Sections (Configure → Layout): the tile and the payload
+ * Rust scopes to it both carry the choice. The overview shot keeps the default
+ * Cards, so the site shows both layouts.
+ */
+function inSections(answers) {
+  const view = answers.dashboard_view;
+  for (const tile of [...view.tiles, ...view.layout.tiles]) {
+    if (tile.source === "ghWorkflows") tile.repoLayout = "sections";
+  }
+  answers.repos = { ...answers.repos, layout: "sections" };
+}
+
+/**
+ * The GitHub Repos card says repos are "grouped by the organization it lives
+ * in", so every owner's name must lie inside the top-left `cover` crop. Cards
+ * put the second owner beside the first, past the crop's right edge; Sections
+ * stack the owners down the left, which is why that shot is taken in Sections.
+ */
+async function expectEveryOwnerInCrop(panel) {
+  const box = await panel.boundingBox();
+  const names = panel.locator(".gh-owner-name, .gh-owner:not([data-continued]) .gh-repo-name");
+  expect(await names.count(), "the showcase has two owners").toBeGreaterThan(1);
+  for (const [w, h] of SHOT_BOXES) {
+    const scale = Math.max(w / box.width, h / box.height);
+    for (const name of await names.all()) {
+      const at = await name.boundingBox();
+      const label = `${await name.textContent()} inside the ${w}x${h} crop`;
+      expect(at.x - box.x + at.width, label).toBeLessThanOrEqual(w / scale + 0.5);
+      expect(at.y - box.y + at.height, label).toBeLessThanOrEqual(h / scale + 0.5);
+    }
+  }
+}
+
 async function expectWholeInCrop(panel, selectors) {
   const box = await panel.boundingBox();
   for (const selector of selectors) await expect(panel.locator(selector)).toHaveCount(1);
@@ -257,10 +292,11 @@ test.describe("at 2x: the shots people look at", () => {
   ]) {
     test(`panel: ${name}`, async ({ page, baseURL }) => {
       await page.setViewportSize({ width, height: 1200 });
-      await loadTileFull(page, baseURL, source);
+      await loadTileFull(page, baseURL, source, name === "repos" ? inSections : null);
       const panel = page.locator(selector);
       await expect(panel).toBeVisible();
       if (name === "containers") await expectRemoteHostInCrop(panel);
+      if (name === "repos") await expectEveryOwnerInCrop(panel);
       if (name === "usage") {
         await expectWholeInCrop(panel, ["neon", "sentry", "vercel"].map((id) => `.pv-section[data-provider="${id}"]`));
       }

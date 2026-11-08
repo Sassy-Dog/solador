@@ -550,9 +550,12 @@
   `showDisk: false` (Configure → **Disk strip**) drops the strip from that tile's
   rows only, in `tile_view`; status, attention and Detail are unchanged. Each
   machine renders as an inset card. GitHub tiles persist row limits
-  (including All); Repos also persists selected repository identities and column
-  sorting, and Runners supports OS + architecture groups, split by the runner
-  group labels above. `viewmodel::dashboard` owns sorting/aggregation.
+  (including All); Repos also persists selected repository identities, column
+  sorting and its **Layout** (`repoLayout`: `cards` or `sections`, `cards` for a
+  store written before it), and groups its rows by owner, with the row limit
+  applied per owner and each owner's totals counted over the tile's scope (the
+  rows past the limit included, nothing outside it); Runners supports OS +
+  architecture groups, split by the runner group labels above. `viewmodel::dashboard` owns sorting/aggregation.
   Architecture is carried from GitHub's standard labels through the runner
   roster so absences retain their type, and every label is carried the same way
   so absences retain their group; unknown stays unknown.
@@ -595,7 +598,8 @@
   visible tile). A hidden tile is never a target and no chip opens Solador's Full
   view. Detail defaults to compact
   tables, with a Table/List choice persisted per tile (`detailView`, and
-  `runnerFullView` for a GitHub Runners tile's Full view).
+  `runnerFullView` for a GitHub Runners tile's Full view); a Repos tile's
+  Detail lists each owner's repos under its name in either.
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
   group identity each runner row carries (`groupId`, label split included);

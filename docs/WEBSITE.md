@@ -70,7 +70,11 @@ the README. The showcase Anthropic, OpenAI and Usage payloads are `usage::Fixtur
 the measured fixture with every plan meter green and under pace (the showcase's
 one anomaly is a failing repo), plus a Vercel reading, which the e2e suite's
 `Measured` deliberately lacks. Containers keeps the remote host under this machine's
-(the generator asserts it is inside the crop), the generator asserts that Usage's
+(the generator asserts it is inside the crop). The Repos shot is a tile set to
+**Sections**, because its owners stack down the left where the crop reaches,
+while Cards would put the second owner past the crop's right edge; the generator
+asserts every owner's name is inside the crop, and the overview keeps the
+default Cards, so the site shows both layouts. The generator asserts that Usage's
 Neon, Sentry and Vercel sections sit inside the crop with the panel's full
 width (a two-column Usage at 908pt fails it), and `site.spec.js` asserts every
 image is anchored top left, which ties the CSS to that assumption. The Hosts alt names only the CPU section ("overall and
