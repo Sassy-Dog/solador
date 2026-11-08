@@ -3754,29 +3754,34 @@ test("Repos tiles show one card per owner, big owners last", async ({ page, base
   await expect(globex).toHaveAttribute("data-span", "true");
   await expect(globex.locator(".db-owner-col")).toHaveCount(3);
   await expect(globex.locator(".db-item")).toHaveCount(18);
-  // The two small owners share a row; the big one spans the next.
+  // The two small owners share a row, in two columns rather than three with
+  // one left empty; the big one spans the next.
   const [acme, jdoe, big] = await Promise.all(
     ["acme", "jdoe", "globex"].map((o) => all.locator(`.db-owner-card[data-owner="${o}"]`).boundingBox()),
   );
   expect(Math.round(acme.y)).toBe(Math.round(jdoe.y));
+  expect(Math.round(acme.width)).toBe(Math.round(jdoe.width));
   expect(big.y).toBeGreaterThan(acme.y);
-  expect(big.width).toBeGreaterThan(acme.width * 2);
+  expect(big.width).toBeGreaterThan(acme.width + jdoe.width);
   await expect(all.locator('.db-owner-card[data-owner="acme"] .db-owner-totals')).toHaveText(
     "17 issues · 9 PRs · 5 Dependabot · 1 running",
   );
-  // Each card has its own column header: the counts Rust names for a card
-  // (`cardCounts`), with DEP beside PRS. READY and the status word are
-  // Sections' and Detail's; in a card the dot carries the status, and the
-  // row's accessible name still says it.
+  // Each card has its own column header, with DEP beside PRS. A card half
+  // the window keeps the tile's whole strip and its status word.
   const acmeCard = all.locator('.db-owner-card[data-owner="acme"]');
-  await expect(acmeCard.locator(".db-repo-head .db-count")).toHaveText(["Issues", "PRs", "Dep"]);
-  await expect(acmeCard.locator(".db-repo-head .db-value")).toHaveCount(0);
-  await expect(acmeCard.locator(".db-item .db-count")).toHaveCount(4 * 3);
-  await expect(all.locator(".db-owner-card .db-item > .db-value")).toHaveCount(0);
-  await expect(acmeCard.locator('.db-item[data-id="acme/cogwheel"]')).toHaveAttribute("aria-label", /Running/);
-  // The strip ends a card row now, and its " · " separators stay hidden.
-  await expect(acmeCard.locator(".db-item .db-row-counts").first()).toHaveCSS("font-size", "0px");
+  await expect(acmeCard.locator(".db-repo-head .db-count")).toHaveText(["Issues", "Ready", "PRs", "Dep"]);
+  await expect(acmeCard.locator(".db-repo-head .db-value")).toHaveText("Status");
+  await expect(acmeCard.locator('.db-item[data-id="acme/cogwheel"] > .db-value')).toHaveText("Running");
   expect(page.dashboardErrors).toEqual([]);
+});
+
+test("a sole owner's card fills its tile", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const repos = tile(page, "ghWorkflows");
+  const card = repos.locator(".db-owner-card");
+  await expect(card).toHaveCount(1);
+  const [one, row] = await Promise.all([card.boundingBox(), repos.locator(".db-owner-cards").boundingBox()]);
+  expect(Math.round(one.width)).toBe(Math.round(row.width));
 });
 
 test("a half-width Repos tile's cards keep owner and repo names whole", async ({ page, baseURL }) => {
@@ -3789,6 +3794,17 @@ test("a half-width Repos tile's cards keep owner and repo names whole", async ({
   // small tile; the totals wrap under the name rather than squeezing it.
   expect(await five.locator(".db-owner-name").evaluateAll(cut)).toEqual([]);
   expect(await five.locator(".db-item-name").evaluateAll(cut)).toEqual([]);
+  // A quarter-window card keeps ISSUES, PRS and DEP (`cardCounts`), as the
+  // half-width mockup does. READY and the status word are Sections' and
+  // Detail's; the dot carries the status, and the row's name still says it.
+  const acmeCard = five.locator('.db-owner-card[data-owner="acme"]');
+  await expect(acmeCard.locator(".db-repo-head .db-count")).toHaveText(["Issues", "PRs", "Dep"]);
+  await expect(acmeCard.locator(".db-repo-head .db-value")).toHaveCount(0);
+  await expect(acmeCard.locator(".db-item .db-count")).toHaveCount(4 * 3);
+  await expect(five.locator(".db-owner-card .db-item > .db-value")).toHaveCount(0);
+  await expect(acmeCard.locator('.db-item[data-id="acme/cogwheel"]')).toHaveAttribute("aria-label", /Running/);
+  // The strip ends a narrow card's row, and its " · " separators stay hidden.
+  await expect(acmeCard.locator(".db-item .db-row-counts").first()).toHaveCSS("font-size", "0px");
 });
 
 test("a Sections tile lists owners in name order with totals in the count slots", async ({ page, baseURL }) => {

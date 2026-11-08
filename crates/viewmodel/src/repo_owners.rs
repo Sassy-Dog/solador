@@ -172,6 +172,35 @@ pub fn owner_card_columns(tile_width: &str) -> usize {
     }
 }
 
+/// Overview grid columns a tile spans, of 12 (`dashboard.css`).
+fn tile_span(tile_width: &str) -> usize {
+    match tile_width {
+        "medium" => 6,
+        "wide" => 12,
+        _ => 4,
+    }
+}
+
+/// The narrowest card, in overview grid columns, that keeps a Repos row's
+/// whole strip (every count and the status word): a small tile's span, which
+/// every Repos row has always fitted.
+pub const FULL_STRIP_SPAN: usize = 4;
+
+/// How many owner cards share a row: the tile width's
+/// [`owner_card_columns`], but never more than there are owners that don't
+/// span, so a sole small owner fills its tile rather than half of it. An
+/// owner that spans still splits into [`owner_card_columns`].
+pub fn card_columns(tile_width: &str, small_owners: usize) -> usize {
+    owner_card_columns(tile_width).min(small_owners.max(1))
+}
+
+/// Whether a card is narrower than [`FULL_STRIP_SPAN`] (a medium tile with two
+/// cards per row), and so keeps only ISSUES, PRS and DEP, as the half-width
+/// mockup does. The spec's narrowing: the status word goes the way JOBS does.
+pub fn card_is_narrow(tile_width: &str, columns: usize) -> bool {
+    tile_span(tile_width) < FULL_STRIP_SPAN * columns.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +336,26 @@ mod tests {
         assert_eq!(owner_card_columns("medium"), 2);
         assert_eq!(owner_card_columns("wide"), 3);
         assert_eq!(owner_card_columns("bogus"), 1);
+    }
+
+    #[test]
+    fn a_row_of_cards_holds_no_more_columns_than_small_owners() {
+        assert_eq!(card_columns("medium", 1), 1);
+        assert_eq!(card_columns("medium", 3), 2);
+        assert_eq!(card_columns("wide", 2), 2);
+        assert_eq!(card_columns("wide", 5), 3);
+        assert_eq!(card_columns("wide", 0), 1);
+        assert_eq!(card_columns("small", 4), 1);
+    }
+
+    #[test]
+    fn only_a_card_narrower_than_a_small_tile_is_narrow() {
+        assert!(card_is_narrow("medium", 2));
+        assert!(!card_is_narrow("medium", 1));
+        assert!(!card_is_narrow("wide", 3));
+        assert!(!card_is_narrow("wide", 2));
+        assert!(!card_is_narrow("small", 1));
+        assert!(!card_is_narrow("bogus", 1));
     }
 
     #[test]

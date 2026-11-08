@@ -1647,10 +1647,9 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         format!("{} shown · {problems} need attention", shown.len())
     };
     let full_note = scope_note(tile, string(source, "title"), &scope_label);
-    let card_counts = if by_owner.is_some() {
-        json!(REPO_CARD_COUNTS)
-    } else {
-        Value::Null
+    let card_counts = match &by_owner {
+        Some(o) if o.narrow => json!(REPO_CARD_COUNTS),
+        _ => Value::Null,
     };
     let (owner_groups, card_order, card_columns) = by_owner
         .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
@@ -1667,10 +1666,11 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         ]) } else {json!([])}})
 }
 
-/// The counts a Repos tile's card shows, by slot: the spec's card columns
-/// (REPO, ISSUES, PRS, DEP; JOBS and LONGEST are the Full view's). READY and
-/// the status word stay in Sections and in Detail; in a card the row's dot
-/// carries the status, and its accessible name still says it.
+/// The counts a narrow Repos card keeps, by slot (`cardCounts`): the spec's
+/// card columns (REPO, ISSUES, PRS, DEP; JOBS and LONGEST are the Full
+/// view's). A card at least a small tile wide keeps the whole strip, READY and
+/// the status word included, and `cardCounts` is null. In a narrow card the
+/// row's dot carries the status, and its accessible name still says it.
 const REPO_CARD_COUNTS: [&str; 3] = [
     crate::github::COL_ISSUES,
     crate::github::COL_PRS,
@@ -1686,6 +1686,8 @@ struct OwnerGroups {
     shown: Vec<usize>,
     card_order: Vec<usize>,
     card_columns: usize,
+    /// A card narrower than a small tile: it keeps [`REPO_CARD_COUNTS`] only.
+    narrow: bool,
 }
 
 /// Groups a Repos tile's matching rows (already scoped and sorted) by owner.
@@ -1693,13 +1695,16 @@ struct OwnerGroups {
 /// the hidden ones included, and nothing outside the scope.
 fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> OwnerGroups {
     use viewmodel::repo_owners::{
-        card_order, group_by_owner, owner_card_columns, owner_row, totals_text, CARD_SPAN_ROWS,
+        card_columns, card_is_narrow, card_order, group_by_owner, owner_card_columns, owner_row,
+        totals_text, CARD_SPAN_ROWS,
     };
     let rows: Vec<_> = matching
         .iter()
         .map(|r| owner_row(r, string(r, "id")))
         .collect();
-    let card_columns = owner_card_columns(&tile.width);
+    // A spanning owner splits into every column the tile width allows; the
+    // row of small owners takes no more columns than it has owners.
+    let split_columns = owner_card_columns(&tile.width);
     let mut shown = Vec::new();
     let mut shown_counts = Vec::new();
     let number = |v: Option<u64>| v.map_or_else(|| "—".to_owned(), |n| n.to_string());
@@ -1737,10 +1742,12 @@ fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> Owne
                     format!("{hidden} more →")
                 }),
                 "spans": spans,
-                "splitColumns": if spans { card_columns } else { 1 },
+                "splitColumns": if spans { split_columns } else { 1 },
             })
         })
         .collect();
+    let small_owners = shown_counts.iter().filter(|&&n| n <= CARD_SPAN_ROWS).count();
+    let columns = card_columns(&tile.width, small_owners);
     OwnerGroups {
         groups,
         shown,
@@ -1748,7 +1755,8 @@ fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> Owne
             .into_iter()
             .map(|(i, _)| i)
             .collect(),
-        card_columns,
+        card_columns: columns,
+        narrow: card_is_narrow(&tile.width, columns),
     }
 }
 
@@ -2307,9 +2315,11 @@ mod tests {
         assert_eq!(group(&view, "globex")["splitColumns"], 2);
         assert_eq!(group(&view, "acme")["splitColumns"], 1);
         assert_eq!(order(&view), ["acme", "jdoe", "globex"]);
+        // Two small owners share a wide tile's row in two columns, not three
+        // with one left empty; the spanning owner still splits into three.
         let wide = configured_tile("ghWorkflows", json!({"rowLimit":"all","width":"wide"}));
         let view = tile_view(&wide, &owners_source());
-        assert_eq!(view["cardColumns"], 3);
+        assert_eq!(view["cardColumns"], 2);
         assert_eq!(group(&view, "globex")["splitColumns"], 3);
         let five = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"medium"}));
         let view = tile_view(&five, &owners_source());
@@ -2330,14 +2340,33 @@ mod tests {
 
     /// DEP sorts like any count, and the header names its slot for the CSS.
     #[test]
-    fn a_repo_card_shows_issues_prs_and_dep_and_no_other_tile_names_any() {
-        // The spec's card columns: REPO, ISSUES, PRS, DEP (JOBS and LONGEST
-        // are the Full view's). READY and the status word stay in Sections;
-        // the row dot carries the status in a card.
-        let view = tile_view(&configured_tile("ghWorkflows", json!({})), &owners_source());
+    fn only_a_narrow_repo_card_drops_ready_and_the_status_word() {
+        // A medium tile with two cards per row: a quarter of the window, the
+        // half-width mockup's ISSUES, PRS and DEP. The dot carries the status.
+        let narrow = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"medium"}));
+        let view = tile_view(&narrow, &owners_source());
+        assert_eq!(view["cardColumns"], 2);
         assert_eq!(view["cardCounts"], json!(["ISSUES", "PRS", "DEP"]));
+        // A third of the window or more keeps the whole strip, as every Repos
+        // row always has: null means no narrowing.
+        let wide = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"wide"}));
+        assert_eq!(tile_view(&wide, &owners_source())["cardCounts"], Value::Null);
+        let small = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"small"}));
+        assert_eq!(tile_view(&small, &owners_source())["cardCounts"], Value::Null);
         let runners = tile_view(&configured_tile("ghRunners", json!({})), &owners_source());
         assert_eq!(runners["cardCounts"], Value::Null);
+    }
+
+    #[test]
+    fn a_sole_small_owner_fills_its_tile() {
+        let acme = configured_tile(
+            "ghWorkflows",
+            json!({"width":"medium","selectedRepos":["acme/widget","acme/gadget"]}),
+        );
+        let view = tile_view(&acme, &owners_source());
+        assert_eq!(list(&view, "ownerGroups").len(), 1);
+        assert_eq!(view["cardColumns"], 1);
+        assert_eq!(view["cardCounts"], Value::Null);
     }
 
     #[test]
