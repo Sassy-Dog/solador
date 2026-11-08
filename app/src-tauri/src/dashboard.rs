@@ -1746,7 +1746,10 @@ fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> Owne
             })
         })
         .collect();
-    let small_owners = shown_counts.iter().filter(|&&n| n <= CARD_SPAN_ROWS).count();
+    let small_owners = shown_counts
+        .iter()
+        .filter(|&&n| n <= CARD_SPAN_ROWS)
+        .count();
     let columns = card_columns(&tile.width, small_owners);
     OwnerGroups {
         groups,
@@ -2350,9 +2353,15 @@ mod tests {
         // A third of the window or more keeps the whole strip, as every Repos
         // row always has: null means no narrowing.
         let wide = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"wide"}));
-        assert_eq!(tile_view(&wide, &owners_source())["cardCounts"], Value::Null);
+        assert_eq!(
+            tile_view(&wide, &owners_source())["cardCounts"],
+            Value::Null
+        );
         let small = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"small"}));
-        assert_eq!(tile_view(&small, &owners_source())["cardCounts"], Value::Null);
+        assert_eq!(
+            tile_view(&small, &owners_source())["cardCounts"],
+            Value::Null
+        );
         let runners = tile_view(&configured_tile("ghRunners", json!({})), &owners_source());
         assert_eq!(runners["cardCounts"], Value::Null);
     }
