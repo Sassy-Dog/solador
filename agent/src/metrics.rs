@@ -648,52 +648,98 @@ pub fn spawn_sampler() -> MetricsState {
 /// not one handle; a "simplification" that merges them puts that error back on
 /// every Linux host's TOP CPU list, silently.
 async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
-    let mut sys = SamplerSystems::new();
-    let mut networks = Networks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED);
-    let mut disks = Disks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED);
+    let mut sampler = on_blocking_thread(Sampler::new).await;
 
-    // Read once at startup; the skip policy doesn't change while running.
-    let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
-    let skip = skip_fstypes(skip_env.as_deref());
-
-    // `SamplerSystems::new` primed both handles; the first reading of anything
+    // `Sampler::new` primed both handles; the first reading of anything
     // sysinfo derives from a delta is meaningless, so wait one interval out.
     tokio::time::sleep(SAMPLE_INTERVAL).await;
 
-    // Processes are enumerated on a slow cadence (expensive, and only needed
-    // as a ~1-minute "what's hogging" view). Cached between ticks.
-    let mut cached_processes: Vec<Process> = Vec::new();
-    let mut tick: u64 = 0;
-
     loop {
-        // Refresh everything; the second+ refresh yields valid deltas/usages.
-        sys.refresh_machine();
-        networks.refresh(true);
-        disks.refresh(true);
+        let gpu = gpu_state.latest();
+        let (back, snap) = on_blocking_thread(move || {
+            let snap = sampler.pass(gpu);
+            (sampler, snap)
+        })
+        .await;
+        sampler = back;
+        *state.inner.write().await = snap;
+        state.mark_sampled();
 
-        if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
-            cached_processes = sys.refresh_processes(PROCESS_TOP_LIMIT);
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
+    }
+}
+
+/// Run `work` on tokio's blocking pool and wait for it.
+///
+/// Every `sysinfo` call, and the IOKit / sysctl reads beside it, is synchronous
+/// and can take seconds on a Mac with many mounted volumes under load (#725:
+/// the disk walk and the process-table walk). Called inline from a task they
+/// hold a runtime thread for that long; on a current-thread runtime (every
+/// `#[tokio::test]`) that stalls the GPU probe and the caller's own polling
+/// too. A panic in `work` resumes here, so [`spawn_sampler`]'s supervisor still
+/// sees it as the sampler task panicking and restarts the loop.
+async fn on_blocking_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        // Cancelled only when the runtime is shutting down; nothing to serve.
+        Err(_) => std::future::pending().await,
+    }
+}
+
+/// Everything the sampler owns across passes, so a pass can move to a blocking
+/// thread as one value and come back.
+struct Sampler {
+    sys: SamplerSystems,
+    networks: Networks,
+    disks: Disks,
+    skip: std::collections::HashSet<String>,
+    /// Processes are enumerated on a slow cadence (expensive, and only needed
+    /// as a ~1-minute "what's hogging" view). Cached between ticks.
+    cached_processes: Vec<Process>,
+    tick: u64,
+}
+
+impl Sampler {
+    fn new() -> Self {
+        // Read once at startup; the skip policy doesn't change while running.
+        let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
+        Sampler {
+            sys: SamplerSystems::new(),
+            networks: Networks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED),
+            disks: Disks::new_with_refreshed_list().expect(SYSINFO_SUPPORTED),
+            skip: skip_fstypes(skip_env.as_deref()),
+            cached_processes: Vec::new(),
+            tick: 0,
         }
+    }
 
-        let snap = compute_snapshot(
-            &sys.machine,
-            &networks,
-            &disks,
+    /// One refresh and the snapshot it yields. The second and later refreshes
+    /// give valid deltas and usages.
+    fn pass(&mut self, gpu: Gpu) -> Snapshot {
+        self.sys.refresh_machine();
+        self.networks.refresh(true);
+        self.disks.refresh(true);
+
+        if self.tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
+            self.cached_processes = self.sys.refresh_processes(PROCESS_TOP_LIMIT);
+        }
+        self.tick = self.tick.wrapping_add(1);
+
+        compute_snapshot(
+            &self.sys.machine,
+            &self.networks,
+            &self.disks,
             SAMPLE_INTERVAL.as_secs_f64(),
-            cached_processes.clone(),
-            &skip,
+            self.cached_processes.clone(),
+            &self.skip,
             ProbedReadings {
                 pressure: read_memory_pressure(),
                 pressure_level: mempressure::read(),
                 thermal_state: thermal::read(),
-                gpu: gpu_state.latest(),
+                gpu,
             },
-        );
-        *state.inner.write().await = snap;
-        state.mark_sampled();
-
-        tick = tick.wrapping_add(1);
-        tokio::time::sleep(SAMPLE_INTERVAL).await;
+        )
     }
 }
 
@@ -957,10 +1003,20 @@ mod tests {
         sampled_snapshot_with(pressure, Gpu::unknown())
     }
 
-    #[tokio::test]
-    async fn live_sampler_reports_the_platform_thermal_state() {
+    /// How long a live-sampler test waits for its first measured snapshot.
+    ///
+    /// The work is real: startup (system, network and disk lists), one
+    /// `SAMPLE_INTERVAL`, then a full pass including the process-table and
+    /// disk walks. Measured at ~1.1-1.3 s on an idle or gate-loaded Mac, but
+    /// #725 saw it exceed 15 s on a Mac with 22 mounts and a load near 10, so
+    /// the budget is a multiple of that worst case rather than of the typical
+    /// one. Passing is not slower than the work; only a hung sampler waits it
+    /// out.
+    const FIRST_SNAPSHOT_BUDGET: Duration = Duration::from_secs(60);
+
+    async fn first_measured_snapshot() -> Snapshot {
         let state = spawn_sampler();
-        let snapshot = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(FIRST_SNAPSHOT_BUDGET, async {
             loop {
                 let snapshot = state.latest().await;
                 if snapshot.disk.read_mbps.is_some() {
@@ -970,7 +1026,43 @@ mod tests {
             }
         })
         .await
-        .expect("the sampler must produce a measured snapshot");
+        .expect("the sampler must produce a measured snapshot")
+    }
+
+    /// #725: blocking `sysinfo` work must not hold the runtime thread. On this
+    /// current-thread runtime a timer task can only tick while the blocking
+    /// closure runs elsewhere.
+    #[tokio::test]
+    async fn blocking_work_leaves_the_runtime_free() {
+        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        on_blocking_thread(|| std::thread::sleep(Duration::from_millis(300))).await;
+        ticker.abort();
+        assert!(
+            ticks.load(std::sync::atomic::Ordering::SeqCst) >= 5,
+            "the runtime thread was held while the work ran"
+        );
+    }
+
+    /// The supervisor in `spawn_sampler` restarts on a panicking task; a panic
+    /// on the blocking thread must therefore surface as one.
+    #[tokio::test]
+    async fn a_panic_on_the_blocking_thread_panics_the_awaiting_task() {
+        let join = tokio::spawn(async {
+            on_blocking_thread(|| -> u8 { panic!("sampler pass panicked") }).await
+        });
+        assert!(join.await.unwrap_err().is_panic());
+    }
+
+    #[tokio::test]
+    async fn live_sampler_reports_the_platform_thermal_state() {
+        let snapshot = first_measured_snapshot().await;
         if cfg!(target_os = "macos") {
             assert!(
                 matches!(snapshot.cpu.thermal_state, Some(0..=3)),
@@ -1062,18 +1154,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_sampler_reports_the_platform_memory_pressure_level() {
-        let state = spawn_sampler();
-        let snapshot = tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
-                let snapshot = state.latest().await;
-                if snapshot.disk.read_mbps.is_some() {
-                    break snapshot;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the sampler must produce a measured snapshot");
+        let snapshot = first_measured_snapshot().await;
         if cfg!(target_os = "macos") {
             assert!(
                 matches!(snapshot.memory.pressure_level, Some(0..=2)),
