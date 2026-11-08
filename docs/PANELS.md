@@ -22,8 +22,10 @@
   Dependabot`) and a **DEP** column after PRS in every Repos layout (the
   overview tile, Detail and the Full view).
   Repos are **grouped by owner**, the part of `owner/name` before the slash
-  (compared case-insensitively, labelled with its first spelling, never
-  defaulted), decided once in `viewmodel::repo_owners`. A Repos tile's
+  (compared case-insensitively, labelled with its first spelling in
+  owner/name order, never defaulted), decided once in `viewmodel::repo_owners`.
+  Every row carries its group's label (`github::attach_owners`), so `Acme/x`
+  and `acme/z` sit under one owner in the tile, Detail and the Full view. A Repos tile's
   Configure → **Layout** (`repoLayout`, `cards` by default and for a store
   written before it) chooses **Cards**, one box per owner, or **Sections**, one
   table with a header row per owner; the tile and its Full view both follow it,

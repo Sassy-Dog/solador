@@ -1724,8 +1724,14 @@ fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> Owne
             shown_counts.push(visible.len());
             let totals = &group.totals;
             let count = |header: &str, value: String| json!({"header": header, "value": value});
+            // The source's label, which every member row carries
+            // (`github::attach_owners`), rather than the first spelling in
+            // this tile's sort: the page matches rows to owners by it.
+            let owner = matching[group.members[0]]["owner"]
+                .as_str()
+                .unwrap_or(&group.owner);
             json!({
-                "owner": group.owner,
+                "owner": owner,
                 "color": matching[group.worst]["color"],
                 "attentionCount": group.attention,
                 "totalsText": totals_text(totals),
@@ -2405,6 +2411,26 @@ mod tests {
             let view = tile_view(&tile, &owners_source());
             assert_eq!(group(&view, "globex")["splitColumns"], 2);
             assert_eq!(view["cardCounts"], json!(["ISSUES", "PRS", "DEP"]));
+        }
+    }
+
+    /// The page paints an owner's rows by matching each row's `owner` to the
+    /// group's label, so the label is the rows' own whatever the tile's sort:
+    /// here `acme/zephyr` sorts first, and neither repo may go unpainted.
+    #[test]
+    fn a_mixed_case_owner_keeps_every_row_under_one_label() {
+        let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).unwrap();
+        let p = crate::github::repos_view(&crate::github::mixed_case_owner_state(now), now);
+        let source = source_view("ghWorkflows", "GitHub Repos", &p);
+        let tile = configured_tile(
+            "ghWorkflows",
+            json!({"rowLimit":"all","sortBy":"issues","sortDescending":true}),
+        );
+        let view = tile_view(&tile, &source);
+        assert_eq!(group_names(&view), ["Acme"]);
+        assert_eq!(list(&view, "rows").len(), 2);
+        for row in list(&view, "rows") {
+            assert_eq!(row["owner"], "Acme", "{}", row["id"]);
         }
     }
 

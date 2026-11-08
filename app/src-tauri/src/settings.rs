@@ -4859,6 +4859,32 @@ mod tests {
         );
     }
 
+    /// The organizations offered on the card: one this account watches, one
+    /// another account watches (named), and never a person's login.
+    #[test]
+    fn discovered_orgs_say_who_watches_them() {
+        let mut mine = account("work");
+        mine.orgs = Some(vec!["acme".into()]);
+        let mut home = account("home");
+        home.orgs = Some(vec!["BETA".into()]);
+        let found = github::AccessibleRepos {
+            repos: vec![
+                discovered("acme/r", "acme", true, false),
+                discovered("beta/x", "beta", true, false),
+                discovered("jdoe/dotfiles", "jdoe", false, false),
+            ],
+            truncated: false,
+        };
+        let summary = discovery_summary(&mine, &found, &[mine.clone(), home]);
+        assert_eq!(
+            summary["orgs"],
+            json!([
+                {"name": "acme", "selected": true, "selectedBy": null},
+                {"name": "beta", "selected": false, "selectedBy": "home"},
+            ])
+        );
+    }
+
     #[test]
     fn the_summary_counts_and_formats_the_total() {
         let mut mine = account("work");
@@ -4866,13 +4892,6 @@ mod tests {
         let found = github::AccessibleRepos {
             repos: (0..1031)
                 .map(|i| discovered(&format!("acme/r{i}"), "acme", true, false))
-                .chain(std::iter::once(discovered(
-                    "jdoe/dotfiles",
-                    "jdoe",
-                    false,
-                    false,
-                )))
-                .take(1031)
                 .collect(),
             truncated: false,
         };

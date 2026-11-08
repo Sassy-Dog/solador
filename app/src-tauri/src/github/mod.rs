@@ -988,6 +988,17 @@ pub(crate) fn attach_owners(payload: &mut Value) {
     let order: Vec<usize> = card_order(&shown).into_iter().map(|(i, _)| i).collect();
     payload["owners"] = json!(owners);
     payload["cardOrder"] = json!(order);
+    // Owners compare case-insensitively, but a slug keeps the case it was
+    // stored in, so each row takes its group's label: a reader matching rows
+    // to an owner by `owner` (a tile's cards, Detail's headings) sees one
+    // owner, never a repo left out or a second heading.
+    if let Some(rows) = payload["rows"].as_array_mut() {
+        for group in &groups {
+            for &i in &group.members {
+                rows[i]["owner"] = json!(group.owner);
+            }
+        }
+    }
 }
 
 /// The Repos panel's footer: every account that contributed nothing this pass,
@@ -2165,6 +2176,24 @@ fn fixture_run(
     }
 }
 
+/// One owner spelled two ways, `Acme/anvil` and `acme/zephyr`, the second
+/// with more issues: slugs are stored as typed, so a repo added by name can
+/// differ in case from one discovery listed. Every name is made up.
+#[cfg(test)]
+pub(crate) fn mixed_case_owner_state(now: DateTime<Utc>) -> GitHubState {
+    let health = |slug: &str, id, issues: u32| {
+        let run = fixture_run(now, id, "CI", "completed", Some("success"), 30);
+        let counts = fixture_counts(Some(1), Some(issues), Some(0), Some(0), Some(0));
+        github::workflows::health(slug, &[run], None, counts, now)
+    };
+    let mut state = GitHubState::new();
+    state.apply_repos(vec![
+        health("Acme/anvil", 1, 1),
+        health("acme/zephyr", 2, 9),
+    ]);
+    state
+}
+
 fn fixture_counts(
     branches: Option<u32>,
     issues_incl_prs: Option<u32>,
@@ -3337,6 +3366,24 @@ mod tests {
         let owner = &view["owners"][0];
         assert_eq!(owner["totalsText"], "— issues · — PRs · — Dependabot");
         assert_eq!(owner["cells"][ISSUES]["text"], "—");
+    }
+
+    /// Owners compare case-insensitively, so every row carries its group's
+    /// label: a reader that matches a row to its owner by `owner` (the
+    /// tile's cards, Detail's headings) never loses one or splits it in two.
+    #[test]
+    fn every_row_carries_its_owner_groups_label() {
+        let view = repos_view(&mixed_case_owner_state(now()), now());
+        let owners: Vec<&str> = view["owners"]
+            .as_array()
+            .expect("owners")
+            .iter()
+            .map(|o| o["owner"].as_str().expect("owner"))
+            .collect();
+        assert_eq!(owners, ["Acme"]);
+        for row in view["rows"].as_array().expect("rows") {
+            assert_eq!(row["owner"], "Acme", "{}", row["repo"]);
+        }
     }
 
     /// Small owners first, the big one last and spanning: the 4/2/18 picture.
