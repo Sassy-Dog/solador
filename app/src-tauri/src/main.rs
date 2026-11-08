@@ -326,6 +326,11 @@ struct App {
     /// both panels render from", and a delivery ledger inside it would make
     /// that sentence false.
     approvals: Mutex<github::notify::ApprovalWatch>,
+    /// What each account's last discovery walk found, by account: the list
+    /// the repos screen searches as the operator types. Filled when the
+    /// screen opens (`settings_discover_repos`), never persisted, and never a
+    /// credential — repo names only.
+    discovered: Mutex<std::collections::HashMap<Uuid, github::AccessibleRepos>>,
     /// The last known availability of each watched third-party service, for the
     /// same reason and with the same discipline as `approvals` above: a
     /// delivery ledger, not something a panel renders.
@@ -5855,14 +5860,15 @@ fn settings_set_repo_tracked(
     settings_response(&state, status)
 }
 
-/// The discovery probe: everything this account's token can see, merged
-/// against the store into checkbox rows — the Services-probe pattern, one
-/// surface over. The answer is ephemeral: nothing here persists, so a failed
-/// or stale probe costs nothing but the sentence explaining it.
+/// The discovery probe: everything this account's token can see, kept in
+/// `App::discovered` for the repos screen's search, and summarised for the
+/// screen (how many, whether the walk was cut, the derived orgs) — the
+/// Services-probe pattern, one surface over. Nothing here persists, so a
+/// failed or stale probe costs nothing but the sentence explaining it.
 ///
 /// Unlike the poll loop this reads exactly one credential and fires exactly
-/// one walk, only when the operator opens the picker — discovery never rides
-/// a cadence.
+/// one walk, only when the operator opens the repos screen — discovery never
+/// rides a cadence.
 #[tauri::command]
 async fn settings_discover_repos(
     id: String,
@@ -5877,12 +5883,12 @@ async fn settings_discover_repos(
     };
     // Everything the answer needs, cloned out before the await — no lock is
     // ever held across one (`poll_github`'s rule, applied to a command).
-    let (account, repos, accounts) = {
+    let (account, accounts) = {
         let store = state.store.lock().expect("store poisoned");
         let Some(account) = store.account(account_id).cloned() else {
             return Ok(json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE }));
         };
-        (account, store.repos().to_vec(), store.accounts().to_vec())
+        (account, store.accounts().to_vec())
     };
     let token = match account_secret_key(&account) {
         None => return Ok(json!({ "id": id, "reason": ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE })),
@@ -5901,13 +5907,50 @@ async fn settings_discover_repos(
             .list_accessible_repos()
             .await
         {
-            Ok(found) => settings::discovery_answer(&account, &found, &repos, &accounts),
+            Ok(found) => {
+                let summary = settings::discovery_summary(&account, &found, &accounts);
+                // The list stays here, for the search; the screen gets the
+                // count, the cut and the orgs.
+                state
+                    .discovered
+                    .lock()
+                    .expect("discovered poisoned")
+                    .insert(account_id, found);
+                summary
+            }
             // A failed probe found something, and the finding is the product —
             // worded by the error's own `user_message`, never a bare transport
             // string.
             Err(e) => json!({ "id": id, "reason": e.user_message() }),
         },
     )
+}
+
+/// The repos screen's search over the list `settings_discover_repos` cached
+/// for this account. Before that walk lands there is nothing to search, and
+/// the answer says so (`pending`) rather than "nothing matches"; an unknown
+/// account gets the same sentence the discovery does.
+fn search_repos(app: &App, id: &str, query: &str) -> Value {
+    let Ok(account_id) = Uuid::parse_str(id) else {
+        return json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE });
+    };
+    let (account, repos, accounts) = {
+        let store = app.store.lock().expect("store poisoned");
+        let Some(account) = store.account(account_id).cloned() else {
+            return json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE });
+        };
+        (account, store.repos().to_vec(), store.accounts().to_vec())
+    };
+    let discovered = app.discovered.lock().expect("discovered poisoned");
+    match discovered.get(&account_id) {
+        Some(found) => settings::search_answer(&account, found, &repos, &accounts, query),
+        None => json!({ "id": id, "query": query, "pending": true }),
+    }
+}
+
+#[tauri::command]
+fn settings_search_repos(id: String, query: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    search_repos(&state, &id, &query)
 }
 
 #[tauri::command]
@@ -7734,6 +7777,7 @@ fn new_app(
         openclaw: Mutex::new(OpenClawState::new()),
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+        discovered: Mutex::new(std::collections::HashMap::new()),
         service_status: Mutex::new(services::StatusWatch::new()),
         services: Mutex::new(services::ServiceStatuses::new()),
         host_reachability: Mutex::new(services::HostWatch::new()),
@@ -8038,6 +8082,7 @@ fn main() {
             settings_set_repo_account,
             settings_set_repo_tracked,
             settings_discover_repos,
+            settings_search_repos,
             settings_save_account,
             settings_set_account_enabled,
             settings_set_account_org,
@@ -11490,8 +11535,9 @@ mod tests {
         assert_eq!(vm["hostCardMinWidth"], 900.0);
         // Nothing arranges panels any more (#647), and the gaps are the
         // dashboard's. The payload is exactly the host cards' sizing, the
-        // columns each panel affords the window, the overview's empty line and
-        // its load-failure sentence.
+        // columns each panel affords the window, the Repos Full view's cards
+        // at this width, the overview's empty line and its load-failure
+        // sentence.
         let mut keys: Vec<&str> = vm
             .as_object()
             .expect("object")
@@ -11509,6 +11555,7 @@ mod tests {
                 "hosts",
                 "overviewLoadFailed",
                 "panelColumns",
+                "repoCards",
                 "volumeSlots",
             ]
         );
@@ -11947,6 +11994,54 @@ mod tests {
     // `settings_add_repo` is a Tauri command and cannot be called from a test,
     // so these exercise the two lines it is made of — `settings::new_repo`
     // followed by `Store::upsert_repo` — against a real store file.
+
+    /// The repos screen searches what the account's discovery walk found, and
+    /// before that walk lands there is nothing to search: the answer says it
+    /// is pending rather than "nothing matches".
+    #[test]
+    fn search_before_discovery_is_pending() {
+        let (_dir, _rt, app) = test_app();
+        let account = VendorAccount::new(VendorKind::GitHub, "work", "");
+        let id = account.id;
+        app.store.lock().unwrap().upsert_account(account);
+        let answer = search_repos(&app, &id.to_string(), "acme");
+        assert_eq!(answer["pending"], json!(true));
+        assert_eq!(answer["query"], "acme");
+        let unknown = search_repos(&app, "not-a-uuid", "acme");
+        assert_eq!(unknown["reason"], UNKNOWN_ACCOUNT_MESSAGE);
+        let missing = search_repos(&app, &Uuid::from_u128(77).to_string(), "acme");
+        assert_eq!(missing["reason"], UNKNOWN_ACCOUNT_MESSAGE);
+    }
+
+    #[test]
+    fn search_reads_the_discovered_list() {
+        let (_dir, _rt, app) = test_app();
+        let account = VendorAccount::new(VendorKind::GitHub, "work", "");
+        let id = account.id;
+        app.store.lock().unwrap().upsert_account(account);
+        let repo = |name: &str| github::RepoRef {
+            full_name: name.into(),
+            owner_login: "acme".into(),
+            owner_is_org: true,
+            archived: false,
+        };
+        app.discovered.lock().unwrap().insert(
+            id,
+            github::AccessibleRepos {
+                repos: vec![repo("acme/claims-web"), repo("acme/billing")],
+                truncated: false,
+            },
+        );
+        let answer = search_repos(&app, &id.to_string(), "claims");
+        let slugs: Vec<&str> = answer["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|r| r["slug"].as_str().unwrap())
+            .collect();
+        assert_eq!(slugs, ["acme/claims-web"]);
+        assert_eq!(answer["countLabel"], "1 of 2 match");
+    }
 
     /// A scratch store carrying `count` GitHub accounts, each pointing at its
     /// own credential item exactly as `settings::validated_account` mints them.

@@ -44,10 +44,15 @@ use viewmodel::color;
 
 use git::LocalRepoCounts;
 
+/// The discovery walk's result, cached per account for the repos screen's
+/// search (`App::discovered`); re-exported for the same reason.
+pub use github::AccessibleRepos;
 /// Re-exported so `main.rs` — where the module name `github` shadows the crate
 /// name — reaches the client through this module rather than through a
 /// `::github::` escape hatch that reads like a typo.
 pub use github::GitHubClient;
+#[cfg(test)]
+pub use github::RepoRef;
 
 /// A pass read the settings and found no GitHub organization.
 ///

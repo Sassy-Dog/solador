@@ -34,10 +34,12 @@ const RUNS_PER_PAGE: &str = "30";
 /// an org with more runners than this is read page by page, never truncated.
 const RUNNERS_PER_PAGE: &str = "100";
 
-/// The discovery walk's page backstop: 10 pages × 100 per page = 1,000 repos,
-/// an order of magnitude past any portfolio this cockpit tracks. Hitting it
-/// sets [`discovery::AccessibleRepos::truncated`] rather than looping on.
-pub const DISCOVERY_PAGE_CAP: usize = 10;
+/// The discovery walk's page backstop: 50 pages × 100 per page = 5,000 repos.
+/// An organization this cockpit watches can hold close to a thousand, and the
+/// repos screen searches the whole list, so the cap sits well past that.
+/// Hitting it sets [`discovery::AccessibleRepos::truncated`] rather than
+/// looping on.
+pub const DISCOVERY_PAGE_CAP: usize = 50;
 /// Pages of 100 the open-PR walk reads before refusing: 1,000 open PRs. Past
 /// it the walk reports [`GitHubError::TooManyToCount`], never a truncation.
 pub const PULLS_PAGE_CAP: usize = 10;

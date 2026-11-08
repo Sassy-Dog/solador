@@ -265,8 +265,9 @@ pub fn metric_label(window: &Window) -> String {
     }
 }
 
-/// `1234567` as `1,234,567`.
-fn grouped(n: i64) -> String {
+/// `1234567` as `1,234,567`. Public for the other counts the app says out
+/// loud (Settings' "This token can read 1,031 repos").
+pub fn grouped(n: i64) -> String {
     let digits = n.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {

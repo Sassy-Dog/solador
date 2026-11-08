@@ -85,6 +85,37 @@ pub fn organizations(repos: &[RepoRef]) -> Vec<String> {
     orgs.into_iter().map(ToOwned::to_owned).collect()
 }
 
+/// Where `query` first occurs in `full_name`, ignoring case and the query's
+/// surrounding whitespace, as **char** offsets `(start, end)` so a page can
+/// bold exactly that span. `None` for an empty query or no match.
+#[must_use]
+pub fn match_range(full_name: &str, query: &str) -> Option<(usize, usize)> {
+    let needle: Vec<char> = query.trim().chars().collect();
+    let hay: Vec<char> = full_name.chars().collect();
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len())
+        .find(|&start| {
+            hay[start..start + needle.len()]
+                .iter()
+                .zip(&needle)
+                .all(|(a, b)| a.to_lowercase().eq(b.to_lowercase()))
+        })
+        .map(|start| (start, start + needle.len()))
+}
+
+/// The accessible repos whose `owner/name` contains `query` anywhere,
+/// ignoring case, in the list's own order. An empty query matches nothing:
+/// the watched list already covers "show me everything".
+#[must_use]
+pub fn search<'a>(repos: &'a [RepoRef], query: &str) -> Vec<&'a RepoRef> {
+    repos
+        .iter()
+        .filter(|repo| match_range(&repo.full_name, query).is_some())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +162,48 @@ mod tests {
             "two acme repos derive one org, and jdoe is a person, not an org"
         );
         assert!(organizations(&[]).is_empty());
+    }
+
+    fn named(full_name: &str) -> RepoRef {
+        let (owner, _) = full_name.split_once('/').unwrap();
+        RepoRef {
+            full_name: full_name.into(),
+            owner_login: owner.into(),
+            owner_is_org: true,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn search_is_trimmed_and_case_insensitive() {
+        let repos = [
+            named("globex/claims-web"),
+            named("globex/billing-api"),
+            named("Acme/CLAIMS"),
+        ];
+        let found: Vec<&str> = search(&repos, " Claims ")
+            .iter()
+            .map(|r| r.full_name.as_str())
+            .collect();
+        assert_eq!(found, ["globex/claims-web", "Acme/CLAIMS"]);
+        // The owner is part of what is searched.
+        assert_eq!(search(&repos, "GLOBEX/").len(), 2);
+    }
+
+    #[test]
+    fn an_empty_query_matches_nothing() {
+        let repos = [named("acme/gadget")];
+        assert!(search(&repos, "").is_empty());
+        assert!(search(&repos, "   ").is_empty());
+    }
+
+    #[test]
+    fn match_range_is_char_offsets() {
+        assert_eq!(match_range("acme/claims-web", "CLAIMS"), Some((5, 11)));
+        assert_eq!(match_range("acme/claims-web", " web "), Some((12, 15)));
+        assert_eq!(match_range("acme/claims-web", "zzz"), None);
+        assert_eq!(match_range("acme/claims-web", ""), None);
+        // Offsets count characters, not bytes, so a page can slice by them.
+        assert_eq!(match_range("ünï/claims", "claims"), Some((4, 10)));
     }
 }
