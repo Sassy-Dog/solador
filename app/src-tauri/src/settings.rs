@@ -606,16 +606,7 @@ pub fn search_answer(
     let more = matched.saturating_sub(SEARCH_RESULT_CAP);
     rows.truncate(SEARCH_RESULT_CAP);
     let trimmed = query.trim();
-    let add_by_name = Some(trimmed)
-        .filter(|q| q.contains('/'))
-        .and_then(|q| validated_slug(q, repos))
-        .filter(|slug| {
-            !found
-                .repos
-                .iter()
-                .any(|repo| repo.full_name.eq_ignore_ascii_case(slug))
-        })
-        .map(|slug| json!({"label": format!("Add {slug} by name"), "slug": slug}));
+    let add_by_name = add_by_name_offer(query, repos, &found.repos);
     json!({
         "id": account.id.to_string(),
         "query": query,
@@ -625,6 +616,28 @@ pub fn search_answer(
         "moreLabel": (more > 0).then(|| format!("{} more match — keep typing", count_text(more))),
         "addByName": add_by_name,
     })
+}
+
+/// **Add `owner/name` by name**, offered for a full slug that nothing tracks
+/// and `listed` does not hold — how a public repo the token was not granted is
+/// added. `listed` is empty when the walk never answered (it failed), so the
+/// offer still stands then: the retired modal's slug field never waited on
+/// the walk either.
+#[must_use]
+pub fn add_by_name_offer(
+    query: &str,
+    repos: &[TrackedRepo],
+    listed: &[github::RepoRef],
+) -> Option<Value> {
+    Some(query.trim())
+        .filter(|q| q.contains('/'))
+        .and_then(|q| validated_slug(q, repos))
+        .filter(|slug| {
+            !listed
+                .iter()
+                .any(|repo| repo.full_name.eq_ignore_ascii_case(slug))
+        })
+        .map(|slug| json!({"label": format!("Add {slug} by name"), "slug": slug}))
 }
 
 /// The comma-separated watched-workflow field, parsed the way
@@ -1965,21 +1978,18 @@ fn accounts_tab(
         "addAccountLabel": "Add account…",
         "reposHeading": "Watched repos",
         // The search that replaced the picker: type part of a name, tick to
-        // watch. `untrackLabel` names the unwatch button the cards show.
+        // watch. `untrackLabel` is the untrack confirm's proceed button.
         "searchLabel": "Add a repo",
         "searchPlaceholder": "Type part of a repo name",
         "untrackLabel": "Stop tracking",
         "watchingLabel": "watching",
         "noReposLabel": "No repos attributed yet",
         "configureLabel": "Configure…",
-        "configureReposLabel": "Configure repos…",
-        // The modal's title line, beside the account's own label.
-        "pickerHeading": "Repos this token can access",
-        "closeLabel": "Close",
-        "slugLabel": "owner/name (e.g. acme/gadget)",
-        "addLabel": "Add",
         "workflowsLabel": "Watched workflows (comma-separated, e.g. release.yml)",
         "discoverPendingLabel": "Reading what this token can access…",
+        // The call itself refused (no `reason` ever came back): said, rather
+        // than leaving the pending line up forever.
+        "discoverFailedLabel": "Couldn't read what this token can access. Open this account again to retry.",
         "archivedLabel": "archived",
         "notGrantedLabel": "not in this token's grants",
         "fetchedByLabel": "fetched by",
@@ -4956,6 +4966,20 @@ mod tests {
         assert_eq!(tab["searchPlaceholder"], "Type part of a repo name");
         assert_eq!(tab["untrackLabel"], "Stop tracking");
         assert_eq!(tab["watchingLabel"], "watching");
+        assert_eq!(
+            tab["discoverFailedLabel"],
+            "Couldn't read what this token can access. Open this account again to retry."
+        );
+        // The modal's own words went with it.
+        for retired in [
+            "configureReposLabel",
+            "pickerHeading",
+            "closeLabel",
+            "slugLabel",
+            "addLabel",
+        ] {
+            assert!(tab.get(retired).is_none(), "{retired} outlived the modal");
+        }
     }
 
     /// Every branch of the checkbox: add, adopt, refuse-foreign, remove, and

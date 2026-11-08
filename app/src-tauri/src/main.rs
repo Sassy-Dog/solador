@@ -5944,7 +5944,14 @@ fn search_repos(app: &App, id: &str, query: &str) -> Value {
     let discovered = app.discovered.lock().expect("discovered poisoned");
     match discovered.get(&account_id) {
         Some(found) => settings::search_answer(&account, found, &repos, &accounts, query),
-        None => json!({ "id": id, "query": query, "pending": true }),
+        // No list to search, but a full owner/name can still be added.
+        None => json!({
+            "id": id,
+            "query": query,
+            "pending": true,
+            "results": [],
+            "addByName": settings::add_by_name_offer(query, &repos, &[]),
+        }),
     }
 }
 
@@ -12007,6 +12014,15 @@ mod tests {
         let answer = search_repos(&app, &id.to_string(), "acme");
         assert_eq!(answer["pending"], json!(true));
         assert_eq!(answer["query"], "acme");
+        assert!(
+            answer["countLabel"].is_null(),
+            "no list, no count: {answer}"
+        );
+        // A list that never arrived (a failed walk) still lets a full
+        // owner/name be added by name, as the retired modal's field did.
+        let by_name = search_repos(&app, &id.to_string(), "rust-lang/cargo");
+        assert_eq!(by_name["pending"], json!(true));
+        assert_eq!(by_name["addByName"]["slug"], "rust-lang/cargo");
         let unknown = search_repos(&app, "not-a-uuid", "acme");
         assert_eq!(unknown["reason"], UNKNOWN_ACCOUNT_MESSAGE);
         let missing = search_repos(&app, &Uuid::from_u128(77).to_string(), "acme");

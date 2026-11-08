@@ -878,19 +878,24 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .pairing { gap:8px; }
 .pair-trusted { color:var(--green); }
 .hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
-/* The Configure repos… modal — the app's second floating layer (.ctx-menu at
-   z-index:10 is the first, so this sits one up). The scrim owns dismissal:
-   a click that lands on it, and not on the panel, closes the picker. */
-.modal-scrim { position:fixed; inset:0; z-index:20; background:rgba(4,8,18,.65);
-  display:flex; align-items:center; justify-content:center; }
-.modal { background:var(--panel); border:1px solid var(--line); border-radius:12px;
-  padding:14px 18px; width:min(560px, 90vw); max-height:80vh; overflow-y:auto;
-  display:flex; flex-direction:column; gap:10px; }
-/* One row per grant, checkbox first in a fixed slot — the constant-width
-   .toggle is what left-aligns every slug in the column. */
-.pick-row { display:flex; flex-direction:column; gap:6px; padding:6px 0;
-  border-top:1px solid var(--line); }
-.pick-row:first-of-type { border-top:0; }
+/* An account's watched repos, one heading per owner as the Repos tile groups
+   them; the first repo under a heading needs no rule above it. */
+.repo-owner { font-size:11px; font-weight:700; color:var(--ink); padding-top:8px; }
+.repo-owner + .repo-row { border-top:0; }
+/* Add a repo: the box, the walk's count or reason under it, then the results,
+   which stay in the page scroll like every other list here. */
+.repo-search { gap:4px; padding-top:10px; }
+.search-results { gap:0; }
+/* One row per match, checkbox first in a fixed slot — the constant-width
+   .toggle is what left-aligns every slug in the column. The arrow keys'
+   row is lifted onto panelAlt, the app's hover/selection surface. */
+.search-row { display:flex; flex-direction:column; gap:6px; padding:5px 6px;
+  border-top:1px solid var(--line); border-radius:6px; }
+.search-row:first-of-type { border-top:0; }
+.search-row[data-active="true"] { background:var(--panelAlt); }
+.search-row .slug { font-weight:400; }
+.search-row .slug b { font-weight:700; }
+.search-count, .search-more { padding:4px 6px 0; }
 .about-name { font-size:20px; font-weight:700; margin:0; }
 .about-tagline { font-size:13px; font-weight:700; margin:0; }
 .link-row { display:flex; gap:10px; font-size:11px; flex-wrap:wrap; }

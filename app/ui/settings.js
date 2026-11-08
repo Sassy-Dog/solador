@@ -61,25 +61,18 @@ const S = {
    *  edit form explain itself and point at pairing the moment Test knows,
    *  as `repair` does. Rust's `plainRefused`, remembered per host. */
   unpaired: new Set(),
-  /** Per-account discovery answers, keyed by account id: `"pending"` while
-   *  the walk runs, then Rust's `settings_discover_repos` payload verbatim
-   *  (`reason` set when it failed). Held here like `probe` is — which
-   *  account you last probed is a *view* state, not something the store
-   *  remembers. This file never fills any of it in. */
-  discover: {},
+  /** The repos screen's search, keyed by account id: `{summary, query,
+   *  answer, seq, active}`. `summary` is `"pending"` while the discovery walk
+   *  runs, then Rust's `settings_discover_repos` payload verbatim (`reason` set
+   *  when it failed); `answer` is the newest `settings_search_repos` payload
+   *  painted; `seq` numbers the requests so a reply that lands after a newer
+   *  one is dropped; `active` is the arrow-key row. Held here like `probe` is —
+   *  a *view* state, never persisted — and it is what puts the box and its
+   *  results back after a mutation re-renders the card. */
+  search: {},
 };
 
 const $s = (id) => document.getElementById(id);
-
-// Escape closes the Configure repos… modal — the `.ctx-menu` dismissal
-// precedent, one layer up. A no-op while nothing is open, so the listener
-// costs nothing on every other keystroke.
-document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  if (Object.keys(S.discover).length === 0) return;
-  S.discover = {};
-  renderKeepingEdits();
-});
 
 function node(tag, cls, text) {
   const n = document.createElement(tag);
@@ -227,11 +220,21 @@ async function apply(result) {
   if (!result) return;
   const edits = unappliedEdits();
   const expanded = Array.from(document.querySelectorAll("#settingsBody .connection-advanced"), el => el.open);
+  // A field that asks for it gets its focus back across the render, caret at
+  // the end: Enter in the repo search ticks a row, and the operator's next
+  // keystroke belongs in the same box.
+  const focused = document.activeElement;
+  const refocus = focused?.dataset?.keepFocus === "true" ? focused.id : null;
   S.view = result.settings;
   S.status = result.status || "";
   render();
   restoreEdits(edits);
   document.querySelectorAll("#settingsBody .connection-advanced").forEach((el, index) => { el.open = expanded[index] || false; });
+  const again = refocus && document.getElementById(refocus);
+  if (again && !again.disabled) {
+    again.focus();
+    again.setSelectionRange(again.value.length, again.value.length);
+  }
 }
 
 async function mutate(command, args, submitted = []) {
@@ -281,7 +284,7 @@ function renderTabs() {
       S.catalog = false;
       S.route = null;
       S.status = "";
-      S.discover = {};
+      S.search = {};
       render();
     }));
     bar.appendChild(b);
@@ -722,21 +725,44 @@ function repoRow(t, account, repo) {
   return row;
 }
 
-/** One row of the discovery picker: a checkbox over "this account tracks it".
+/** A slug with the matched part in bold. `matchStart`/`matchEnd` are Rust's
+ *  char offsets; `Array.from` walks the same code points, and the pieces go
+ *  in as text nodes, never markup. */
+function matchedSlug(entry) {
+  const slug = node("span", "slug");
+  const start = entry.matchStart;
+  const end = entry.matchEnd;
+  if (typeof start !== "number" || typeof end !== "number") {
+    slug.textContent = entry.slug;
+    return slug;
+  }
+  const chars = Array.from(entry.slug);
+  slug.append(
+    chars.slice(0, start).join(""),
+    node("b", null, chars.slice(start, end).join("")),
+    chars.slice(end).join("")
+  );
+  return slug;
+}
+
+/** One search result: a checkbox over "this account watches it".
  *
- *  The checkbox state reads the LIVE view (`account.repos`), never the probe
- *  payload — a probe is a snapshot, and painting its `tracked` after a toggle
- *  round-trip would show the state from before the click. Everything else on
- *  the row (grants, foreign owner, the untrack consequence) is the probe's. */
-function pickerRow(t, account, entry) {
-  const row = node("div", "pick-row");
+ *  The checkbox and the *watching* badge read the LIVE view (`account.repos`),
+ *  never the answer — an answer is a snapshot, and painting its `tracked`
+ *  after a toggle round-trip would show the state from before the click.
+ *  Everything else on the row (grants, another account's claim, the untrack
+ *  consequence) is the answer's. */
+function searchRow(t, account, entry) {
+  const row = node("div", "search-row");
   row.dataset.pick = entry.slug;
   const head = node("div", "row");
   const tracked = account.repos.some(
     (repo) => repo.slug.toLowerCase() === entry.slug.toLowerCase()
   );
   const box = checkbox(tracked);
-  head.append(box, node("span", "slug", entry.slug));
+  box.setAttribute("aria-label", entry.slug);
+  head.append(box, matchedSlug(entry));
+  if (tracked) head.appendChild(node("span", "badge-ok", t.watchingLabel));
   if (entry.archived) head.appendChild(node("span", "badge-dim", t.archivedLabel));
   if (!entry.granted) head.appendChild(node("span", "badge-dim", t.notGrantedLabel));
   if (entry.trackedBy) {
@@ -775,97 +801,191 @@ function pickerRow(t, account, entry) {
   return row;
 }
 
-/** Closes the Configure repos… modal: forget the probe, repaint. */
-function closePicker(accountId) {
-  delete S.discover[accountId];
-  renderKeepingEdits();
+/** What sits under the search box for the newest answer: the rows, then how
+ *  many matched, how many more there are, and Add by name. Nothing for an
+ *  empty box: the watched list above already covers that case. */
+function searchResults(t, account) {
+  const state = S.search[account.id];
+  const answer = state?.answer;
+  if (!answer || !state.query.trim()) return [];
+  const out = (answer.results || []).map((entry) => searchRow(t, account, entry));
+  out.forEach((row, index) => {
+    if (index === state.active) row.dataset.active = "true";
+  });
+  if (answer.reason) out.push(node("p", "confirm", answer.reason));
+  if (answer.countLabel) out.push(node("span", "result search-count", answer.countLabel));
+  if (answer.moreLabel) out.push(node("span", "dim search-more", answer.moreLabel));
+  if (answer.addByName) {
+    const add = button(answer.addByName.label, "repo-add");
+    add.addEventListener("click", () => {
+      // Submitted, so the box empties before the round trip, as the retired
+      // slug field did: the repo it named is in the watched list next.
+      state.query = "";
+      state.answer = null;
+      state.active = -1;
+      mutate("settings_add_repo", { slug: answer.addByName.slug, accountId: account.id });
+    });
+    out.push(actionRow(add));
+  }
+  return out;
 }
 
-/** The Configure repos… modal: render-driven from `S.discover[account.id]`,
- *  the Services-probe pattern — "pending" while the walk runs, Rust's worded
- *  `reason` when it failed, checkbox rows when it answered — so the modal
- *  survives the re-render every checkbox mutation triggers. An in-app
- *  overlay, not a window: a second webview window needs the ACL grant this
- *  repo refuses (#123), and `.ctx-menu` is the layering precedent. */
-function repoModal(t, account) {
-  const scrim = node("div", "modal-scrim");
-  // Clicks on the scrim close; clicks inside the panel must not bubble into
-  // that — the same containment test the `.ctx-menu` dismisser runs.
-  scrim.addEventListener("click", (event) => {
-    if (event.target === scrim) closePicker(account.id);
+/** Repaints one account's results in place — never the whole card, which
+ *  would take the caret out of the box on every keystroke. Reads the account
+ *  from the live view, so a reply that lands after a mutation paints the
+ *  checkboxes as they are now. */
+function paintSearch(accountId) {
+  const results = document.querySelector(`[data-search-results="${accountId}"]`);
+  const t = S.view.accounts;
+  const account = t.rows.find((row) => row.id === accountId);
+  if (!results || !account) return;
+  results.replaceChildren(...searchResults(t, account));
+}
+
+/** Moves the arrow-key highlight, starting at the first row. */
+function moveActive(accountId, step) {
+  const state = S.search[accountId];
+  const rows = document.querySelectorAll(`[data-search-results="${accountId}"] .search-row`);
+  if (!state || rows.length === 0) return;
+  state.active = state.active < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, state.active + step));
+  rows.forEach((row, index) => {
+    if (index === state.active) row.dataset.active = "true";
+    else delete row.dataset.active;
   });
-  const modal = node("div", "modal");
-  modal.dataset.picker = account.id;
+  rows[state.active].scrollIntoView({ block: "nearest" });
+}
 
-  const head = node("div", "row");
-  head.append(
-    node("span", "host-name", account.label),
-    node("span", "dim", t.pickerHeading),
-    node("span", "grow")
-  );
-  const close = button(t.closeLabel, "picker-close");
-  close.addEventListener("click", () => closePicker(account.id));
-  head.appendChild(close);
-  modal.appendChild(head);
-
-  const found = S.discover[account.id];
-  if (found === "pending") {
-    modal.appendChild(node("span", "result", t.discoverPendingLabel));
-  } else if (found && found.reason) {
-    modal.appendChild(node("p", "confirm", found.reason));
-  } else if (found) {
-    if (found.truncatedNote) modal.appendChild(help(found.truncatedNote));
-    for (const entry of found.repos) modal.appendChild(pickerRow(t, account, entry));
-    // The same probe derived the orgs, so the offers render here too — on
-    // the card they would sit behind this very scrim, unreachable exactly
-    // while they exist.
-    const offered = (found.orgs || []).filter((org) => !org.selected);
-    if (offered.length > 0) {
-      modal.appendChild(node("span", "lbl", t.orgsHeading));
-      for (const org of offered) {
-        const orgRow = node("div", "row");
-        orgRow.dataset.discoveredOrg = org.name;
-        orgRow.append(node("span", "result", org.name));
-        if (org.selectedBy) {
-          orgRow.append(node("span", "dim", t.watchedByLabel), node("span", "dim", org.selectedBy));
-        } else {
-          orgRow.appendChild(node("span", "grow"));
-          const watch = button(t.orgAddButtonLabel, "org-watch");
-          watch.addEventListener("click", () =>
-            mutate("settings_set_account_org", { id: account.id, org: org.name, selected: true })
-          );
-          orgRow.appendChild(watch);
-        }
-        modal.appendChild(orgRow);
-      }
-    }
+/** The walk behind the search, once per opening of the account: the list
+ *  stays in Rust, and this file keeps only its summary. A reply for an
+ *  account the operator has since left paints nothing. */
+async function discoverRepos(accountId) {
+  const state = S.search[accountId];
+  let summary = null;
+  try {
+    summary = await callRust("settings_discover_repos", { id: accountId });
+  } catch {
+    summary = null;
   }
+  if (S.search[accountId] !== state) return;
+  // Every outcome Rust knows of comes back as a payload with its own
+  // `reason`; only a refused call has none, and it says so rather than
+  // leaving the pending line up.
+  state.summary = summary && typeof summary === "object"
+    ? summary
+    : { reason: S.view.accounts.discoverFailedLabel };
+  const t = S.view.accounts;
+  const account = t.rows.find((row) => row.id === accountId);
+  if (!account) return;
+  // In place, like the results: a whole-card render here would pull the
+  // caret out of whatever the operator started typing while the walk ran.
+  document.querySelector(`[data-repo-search="${accountId}"]`)?.replaceWith(repoSearch(t, account));
+  document.querySelector(`[data-discovered-orgs="${accountId}"]`)?.replaceWith(discoveredOrgs(t, account));
+}
 
-  // Add by name, for a repo the grant list cannot offer — a public repo the
-  // operator would rather not grant to the token.
-  const slug = textInput("");
-  const add = button(t.addLabel, "repo-add");
-  // A hint, not the validation: Rust re-checks and refuses in its own words.
-  const syncAdd = () => {
-    add.disabled = !slug.value.includes("/");
-  };
-  slug.addEventListener("input", syncAdd);
-  syncAdd();
-  const submitSlug = () => {
-    const value = slug.value;
-    // Cleared before the round-trip so the submitted value does not ride the
-    // re-render as an unapplied edit (see `unappliedEdits`).
-    slug.value = "";
-    mutate("settings_add_repo", { slug: value, accountId: account.id });
-  };
-  add.addEventListener("click", submitSlug);
-  slug.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !add.disabled) submitSlug();
+/** Add a repo: one box searched as the operator types, over everything the
+ *  account's token can read (Rust's `settings_search_repos`). Disabled until
+ *  the walk answers, with the pending line under it; then the walk's own
+ *  count, or its reason when it failed — the box stays open then, because a
+ *  full owner/name can still be added by name. */
+function repoSearch(t, account) {
+  const state = S.search[account.id];
+  const box = node("div", "stack repo-search");
+  box.dataset.repoSearch = account.id;
+  const input = textInput(state.query);
+  input.placeholder = t.searchPlaceholder;
+  // A query is not an edit: `unappliedEdits` skips it (no unsaved prompt,
+  // no restore), and `S.search` is what puts it back after a render.
+  input.dataset.saveOnChange = "true";
+  input.dataset.keepFocus = "true";
+  const pending = state.summary === "pending";
+  input.disabled = pending;
+  box.appendChild(field(`repo-search-${account.id}`, t.searchLabel, input));
+  if (pending) {
+    box.appendChild(node("span", "result repo-search-note", t.discoverPendingLabel));
+  } else if (state.summary.reason) {
+    box.appendChild(node("p", "confirm", state.summary.reason));
+  } else {
+    box.appendChild(node("span", "result repo-search-note", state.summary.totalLabel));
+    if (state.summary.truncatedNote) box.appendChild(help(state.summary.truncatedNote));
+  }
+  const results = node("div", "stack search-results");
+  results.dataset.searchResults = account.id;
+  results.append(...searchResults(t, account));
+  box.appendChild(results);
+
+  input.addEventListener("input", async () => {
+    state.query = input.value;
+    state.active = -1;
+    const seq = ++state.seq;
+    if (!input.value.trim()) {
+      state.answer = null;
+      paintSearch(account.id);
+      return;
+    }
+    let answer;
+    try {
+      answer = await callRust("settings_search_repos", { id: account.id, query: input.value });
+    } catch {
+      return;
+    }
+    // Only the newest request paints, and only while the box still says what
+    // it asked: a slow reply for "cl" never lands on top of "claims".
+    if (S.search[account.id] !== state || seq !== state.seq || answer?.query !== state.query) return;
+    state.answer = answer;
+    paintSearch(account.id);
   });
-  modal.append(field(`repo-slug-${account.id}`, t.slugLabel, slug), actionRow(add));
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActive(account.id, event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter") {
+      const active = document.querySelector(
+        `[data-search-results="${account.id}"] .search-row[data-active="true"] .toggle`
+      );
+      if (!active) return;
+      event.preventDefault();
+      // The click a pointer would make, so the untrack two-step still applies.
+      active.click();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      input.value = "";
+      state.query = "";
+      state.answer = null;
+      state.active = -1;
+      paintSearch(account.id);
+    }
+  });
+  return box;
+}
 
-  scrim.appendChild(modal);
-  return scrim;
+/** The organizations the walk derived that this account doesn't watch yet,
+ *  offered beside the ones it does. Which are watched reads the live view
+ *  (`account.orgs`), so a Watch click stops the offer on the next render;
+ *  who else watches one is the walk's. */
+function discoveredOrgs(t, account) {
+  const box = node("div", "stack");
+  box.dataset.discoveredOrgs = account.id;
+  const summary = S.search[account.id]?.summary;
+  const watched = (name) => account.orgs.some((org) => org.toLowerCase() === name.toLowerCase());
+  const offered = (summary && summary !== "pending" && summary.orgs || []).filter((org) => !watched(org.name));
+  box.hidden = offered.length === 0;
+  for (const org of offered) {
+    const orgRow = node("div", "row");
+    orgRow.dataset.discoveredOrg = org.name;
+    orgRow.append(node("span", "result", org.name));
+    if (org.selectedBy) {
+      orgRow.append(node("span", "dim", t.watchedByLabel), node("span", "dim", org.selectedBy));
+    } else {
+      orgRow.appendChild(node("span", "grow"));
+      const watch = button(t.orgAddButtonLabel, "org-watch");
+      watch.addEventListener("click", () =>
+        mutate("settings_set_account_org", { id: account.id, org: org.name, selected: true })
+      );
+      orgRow.appendChild(watch);
+    }
+    box.appendChild(orgRow);
+  }
+  return box;
 }
 
 /** One vendor account as a card: identity and badge on top, every form
@@ -953,37 +1073,32 @@ function accountCard(t, account) {
   const monitor = node("label", "connection-toggle");
   monitor.append(enabled, node("span", null, S.view.connections.monitorLabel));
 
-  // The repos this account fetches — just the list, with everything editable
-  // behind the per-row Configure… and the whole selection behind the modal.
+  // The repos this account fetches, under one heading per owner the way the
+  // Repos tile groups them (Rust's `repoGroups`), everything editable behind
+  // the per-row Configure…; then the search that adds more.
   const repos = node("div", "stack");
   repos.dataset.repos = account.id;
   repos.appendChild(node("span", "lbl", t.reposHeading));
   if (account.repos.length === 0) {
     repos.appendChild(node("span", "result", t.noReposLabel));
   }
-  for (const repo of account.repos) repos.appendChild(repoRow(t, account, repo));
-
-  const configureRepos = button(t.configureReposLabel, "configure-repos");
-  configureRepos.addEventListener("click", async () => {
-    if (S.discover[account.id]) {
-      closePicker(account.id);
-      return;
-    }
-    S.discover[account.id] = "pending";
-    renderKeepingEdits();
-    const found = await callRust("settings_discover_repos", { id: account.id }).catch(() => null);
-    if (found) {
-      S.discover[account.id] = found;
-    } else {
-      delete S.discover[account.id];
-    }
-    renderKeepingEdits();
-  });
-  repos.appendChild(actionRow(configureRepos));
+  for (const owner of account.repoGroups) {
+    const heading = node("span", "repo-owner", owner.label);
+    heading.dataset.owner = owner.owner;
+    repos.appendChild(heading);
+    for (const repo of owner.repos) repos.appendChild(repoRow(t, account, repo));
+  }
+  // Opening the account is what starts its walk — once: the state outlives
+  // every re-render until the operator leaves the page.
+  if (!S.search[account.id]) {
+    S.search[account.id] = { summary: "pending", query: "", answer: null, seq: 0, active: -1 };
+    discoverRepos(account.id);
+  }
+  repos.appendChild(repoSearch(t, account));
 
   // Runner organizations: the stored selection, each removable; orgs the
-  // discovery derived but nobody watches yet, offered; plus the manual Watch
-  // field. Checkbox semantics — every click round-trips through
+  // discovery derived that this account doesn't watch yet, offered; plus the
+  // manual Watch field. Checkbox semantics — every click round-trips through
   // `settings_set_account_org` and the re-render paints what was persisted.
   const orgs = node("div", "stack");
   orgs.dataset.orgs = account.id;
@@ -1001,6 +1116,7 @@ function accountCard(t, account) {
     orgRow.append(node("span", "result", org), node("span", "grow"), stop);
     orgs.appendChild(orgRow);
   }
+  orgs.appendChild(discoveredOrgs(t, account));
   const orgInput = textInput("");
   const watch = button(t.orgAddButtonLabel, "org-add");
   // A hint, not the validation: Rust trims, refuses blanks, and refuses an
@@ -1039,13 +1155,7 @@ function accountsTab(t, options = {}) {
     empty.appendChild(help(t.empty));
     out.push(empty);
   }
-  for (const account of t.rows) {
-    out.push(accountCard(t, account));
-    // The modal rides the same render as its card: `position: fixed` frees
-    // it from the layout, and living inside the settings body means one
-    // `replaceChildren` swap can never strand a stale overlay.
-    if (S.discover[account.id]) out.push(repoModal(t, account));
-  }
+  for (const account of t.rows) out.push(accountCard(t, account));
 
   if (t.unattributed.length > 0) {
     const orphans = group(t.unattributedHeading);
@@ -1623,7 +1733,7 @@ function showConnections() {
   S.catalog = false;
   S.route = null;
   S.probe = null;
-  S.discover = {};
+  S.search = {};
   S.status = "";
   render();
 }
@@ -1635,7 +1745,7 @@ function openConnection(entry) {
     S.editor = { ...entry };
     S.walk = null;
     S.probe = null;
-    S.discover = {};
+    S.search = {};
     S.status = "";
     render();
   });
@@ -2005,7 +2115,7 @@ async function openSettings(tab) {
     S.pair = {};
     S.repair = new Set();
     S.unpaired = new Set();
-    S.discover = {};
+    S.search = {};
     render();
   };
   if (settingsOpen) {
