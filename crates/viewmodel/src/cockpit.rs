@@ -485,8 +485,6 @@ mod tests {
 
     // MARK: the panel table
 
-    /// Every panel declares its own breakpoint. A new kind that forgets one
-    /// would split against a zero minimum and never leave a cramped column.
     #[test]
     fn repo_cards_fit_by_width_and_narrow_longest_first() {
         let all: Vec<&str> = REPO_CARD_FIELDS.to_vec();
@@ -508,6 +506,8 @@ mod tests {
         assert_eq!(repo_cards(5000.0, 16.0).columns, REPO_CARD_MAX_COLUMNS);
     }
 
+    /// Every panel declares its own breakpoint. A new kind that forgets one
+    /// would split against a zero minimum and never leave a cramped column.
     #[test]
     fn every_panel_kind_declares_a_positive_min_width() {
         for kind in PanelKind::ALL {

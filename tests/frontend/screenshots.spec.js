@@ -203,8 +203,8 @@ function inSections(answers) {
 }
 
 /**
- * The GitHub Repos card says repos are "grouped by the organization it lives
- * in", so every owner's name must lie inside the top-left `cover` crop. Cards
+ * The GitHub Repos card says repos are "grouped by the organization or account
+ * that owns it", so every owner's name must lie inside the top-left `cover` crop. Cards
  * put the second owner beside the first, past the crop's right edge; Sections
  * stack the owners down the left, which is why that shot is taken in Sections.
  */

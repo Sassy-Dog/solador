@@ -33,9 +33,10 @@
   included. A total that includes an unknown count is unknown and reads `—`.
   The tile's row limit applies **per owner**, each owner keeping its own
   "N more" line. In Cards, owners that fit share a row; one showing more than
-  `CARD_SPAN_ROWS` (8) rows spans the width and splits its rows into columns,
-  and a card narrower than a small tile keeps ISSUES, PRS and DEP only (its
-  dot still carries the status). The Full view's cards show REPO, ISSUES, PRS,
+  `CARD_SPAN_ROWS` (8) rows spans the width and splits its rows into columns.
+  When any card or split column the tile paints is narrower than a small
+  tile, every card in that tile keeps ISSUES, PRS and DEP only, so the columns
+  line up (its dot still carries the status). The Full view's cards show REPO, ISSUES, PRS,
   DEP, JOBS and LONGEST, as many cards across as `cockpit::repo_cards` allows
   at the window's width (a second card only when each gets 320pt, at most 4), dropping LONGEST
   below 380pt and JOBS below 300pt; its Sections keep every column and repeat

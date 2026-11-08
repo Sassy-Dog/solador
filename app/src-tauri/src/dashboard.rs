@@ -1668,9 +1668,10 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
 
 /// The counts a narrow Repos card keeps, by slot (`cardCounts`): the spec's
 /// card columns (REPO, ISSUES, PRS, DEP; JOBS and LONGEST are the Full
-/// view's). A card at least a small tile wide keeps the whole strip, READY and
-/// the status word included, and `cardCounts` is null. In a narrow card the
-/// row's dot carries the status, and its accessible name still says it.
+/// view's). A tile whose every card and split column is at least a small tile
+/// wide keeps the whole strip, READY and the status word included, and
+/// `cardCounts` is null. In a narrow card the row's dot carries the status,
+/// and its accessible name still says it.
 const REPO_CARD_COUNTS: [&str; 3] = [
     crate::github::COL_ISSUES,
     crate::github::COL_PRS,
@@ -1686,7 +1687,8 @@ struct OwnerGroups {
     shown: Vec<usize>,
     card_order: Vec<usize>,
     card_columns: usize,
-    /// A card narrower than a small tile: it keeps [`REPO_CARD_COUNTS`] only.
+    /// The tile paints a card or split column narrower than a small tile:
+    /// every card keeps [`REPO_CARD_COUNTS`] only, so the columns line up.
     narrow: bool,
 }
 
@@ -1751,6 +1753,10 @@ fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> Owne
         .filter(|&&n| n <= CARD_SPAN_ROWS)
         .count();
     let columns = card_columns(&tile.width, small_owners);
+    // The narrowest card the tile paints: a spanning owner's split columns
+    // when one spans, so its quarter-window columns drop READY like the rest.
+    let any_spans = small_owners < shown_counts.len();
+    let narrowest = columns.max(if any_spans { split_columns } else { 1 });
     OwnerGroups {
         groups,
         shown,
@@ -1759,7 +1765,7 @@ fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> Owne
             .map(|(i, _)| i)
             .collect(),
         card_columns: columns,
-        narrow: card_is_narrow(&tile.width, columns),
+        narrow: card_is_narrow(&tile.width, narrowest),
     }
 }
 
@@ -2376,6 +2382,30 @@ mod tests {
         assert_eq!(list(&view, "ownerGroups").len(), 1);
         assert_eq!(view["cardColumns"], 1);
         assert_eq!(view["cardCounts"], Value::Null);
+    }
+
+    /// A spanning owner splits into the tile's columns even when the small
+    /// owners take only one, so on a medium tile its quarter-window columns
+    /// narrow the tile's cards; one strip per tile keeps the columns aligned.
+    #[test]
+    fn a_spanning_owners_split_columns_narrow_the_cards() {
+        let globex: Vec<Value> = list(&owners_source(), "rows")
+            .iter()
+            .filter(|r| r["owner"] == "globex")
+            .map(|r| r["id"].clone())
+            .collect();
+        assert_eq!(globex.len(), 18);
+        let mut with_one_small = globex.clone();
+        with_one_small.push(json!("acme/widget"));
+        for selected in [globex, with_one_small] {
+            let tile = configured_tile(
+                "ghWorkflows",
+                json!({"rowLimit":"all","width":"medium","selectedRepos":selected}),
+            );
+            let view = tile_view(&tile, &owners_source());
+            assert_eq!(group(&view, "globex")["splitColumns"], 2);
+            assert_eq!(view["cardCounts"], json!(["ISSUES", "PRS", "DEP"]));
+        }
     }
 
     #[test]

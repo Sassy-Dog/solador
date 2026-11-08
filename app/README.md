@@ -407,9 +407,10 @@ owner's header carries its dot and its totals (issues, PRs, Dependabot, and
 how many are running) over every repo in the tile's scope, and the row limit
 applies per owner, each with its own "N more" line. A row carries its backlog
 on the row itself, in both presentations: numeric-only Issues, Ready, PRs and
-Dep columns at every tile width, without repeated labels or dot separators; a
-card narrower than a small tile (a medium tile with two cards across) keeps
-Issues, PRs and Dep, and its dot alone carries the status. *Ready* is the repo's open issues
+Dep columns at every tile width, without repeated labels or dot separators.
+When any card or split column is narrower than a small tile (a medium tile with
+two cards, or a spanning owner's two columns, across), every card in the tile
+keeps Issues, PRs and Dep, and its dot alone carries the status. *Ready* is the repo's open issues
 whose project-board Status is `Ready`. Counts come verbatim from the detailed
 table's cells, so an unreadable count is the same `—` there. Hovering the PRs
 count (here and in the full Repos panel) says how many Dependabot opened —
