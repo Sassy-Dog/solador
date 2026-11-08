@@ -44,10 +44,15 @@ use viewmodel::color;
 
 use git::LocalRepoCounts;
 
+/// The discovery walk's result, cached per account for the repos screen's
+/// search (`App::discovered`); re-exported for the same reason.
+pub use github::AccessibleRepos;
 /// Re-exported so `main.rs` — where the module name `github` shadows the crate
 /// name — reaches the client through this module rather than through a
 /// `::github::` escape hatch that reads like a typo.
 pub use github::GitHubClient;
+#[cfg(test)]
+pub use github::RepoRef;
 
 /// A pass read the settings and found no GitHub organization.
 ///
@@ -130,11 +135,13 @@ pub const RUNNERS_STALE_AFTER_SECS: u64 = 150;
 // row was paid for the same way — PRS, LOCAL and JOBS gave up the few points
 // they held past their widest text — so the panel still pairs at 1890pt.
 //
-// They sum to 232pt, the figure `PanelKind::GhWorkflows.min_width` is built
-// on — widen one and that breakpoint has to move with it.
+// They sum to 252pt, the figure `PanelKind::GhWorkflows.min_width` is built
+// on — widen one and that breakpoint has to move with it. DEP joined at 20pt
+// and moved it from 458 to 478.
 const ISSUES_W: f64 = 36.0; // "ISSUES" 32.4
 const READY_W: f64 = 28.0; // "READY" 27.0
 const PRS_W: f64 = 20.0; // 3-digit value 19.8
+const DEP_W: f64 = 20.0; // "DEP" 16.2, 3-digit value 19.8
 const LOCAL_W: f64 = 28.0; // "LOCAL" 27.0
 const REMOTE_W: f64 = 36.0; // "REMOTE" 32.4
 const WT_W: f64 = 20.0; // 3-digit value 19.8
@@ -155,7 +162,7 @@ const MONO_11_CHAR_W: f64 = 6.6;
 const REPO_NAME_CHARS: usize = 14;
 
 /// **Fixed, not a minimum**, for the reason every other column here is
-/// (#206): a name column that grows to its own text drags all eight numeric
+/// (#206): a name column that grows to its own text drags all nine numeric
 /// columns right on exactly the row whose name is longest.
 ///
 /// It is also what stops the numeric block being flung to the panel's far
@@ -171,18 +178,22 @@ const REPO_NAME_W: f64 = 96.0;
 pub const COL_ISSUES: &str = "ISSUES";
 pub const COL_READY: &str = "READY";
 pub const COL_PRS: &str = "PRS";
+/// Dependabot's share of PRS, beside it.
+pub const COL_DEP: &str = "DEP";
+pub const COL_JOBS: &str = "JOBS";
 pub const COL_LONGEST: &str = "LONGEST";
 
 /// The header row. `REPO` is the only left-aligned column.
-const COLUMNS: [(&str, Option<f64>); 9] = [
+const COLUMNS: [(&str, Option<f64>); 10] = [
     ("REPO", Some(REPO_NAME_W)),
     (COL_ISSUES, Some(ISSUES_W)),
     (COL_READY, Some(READY_W)),
     (COL_PRS, Some(PRS_W)),
+    (COL_DEP, Some(DEP_W)),
     ("REMOTE", Some(REMOTE_W)),
     ("LOCAL", Some(LOCAL_W)),
     ("WT", Some(WT_W)),
-    ("JOBS", Some(JOBS_W)),
+    (COL_JOBS, Some(JOBS_W)),
     (COL_LONGEST, Some(LONGEST_W)),
 ];
 
@@ -238,7 +249,7 @@ pub enum AccountResult {
 ///
 /// A `Failed` or `Unattributed` account contributes its repos as
 /// **unreachable** rows rather than as nothing at all. The panel already has a
-/// rendering for "we could not read this repo" — a muted dot and eight em
+/// rendering for "we could not read this repo" — a muted dot and nine em
 /// dashes — and it is the honest one here: dropping the rows would take a
 /// tracked repo off the board with only a footer line to say so, and a row
 /// that is *present and blank* is much harder to miss than a row that is gone.
@@ -827,7 +838,7 @@ fn approval_url(health: &RepoWorkflowHealth) -> Option<String> {
 ///
 /// The original panel has none — an `onTapGesture` on a `VStack` is invisible to
 /// VoiceOver — so this is not parity, it is the web platform's own floor: a
-/// `role="link"` whose accessible name would otherwise be the row's eight
+/// `role="link"` whose accessible name would otherwise be the row's nine
 /// numbers read aloud in a row.
 fn open_label(slug: &str) -> String {
     format!("Open {slug} on GitHub Actions")
@@ -874,15 +885,22 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         &[]
     };
 
+    // Owner first, so each owner's repos sit together under its header, then
+    // the short name. Both case-insensitive, and stable between polls.
     let mut sorted: Vec<&RepoWorkflowHealth> = health.iter().collect();
-    sorted.sort_by_cached_key(|h| h.short_name().to_lowercase());
+    sorted.sort_by_cached_key(|h| {
+        (
+            viewmodel::repo_owners::owner_of(&h.repo).to_lowercase(),
+            h.short_name().to_lowercase(),
+        )
+    });
 
     // The chip and the footer want the same clock the Runners panel's footer
     // uses, which is unix seconds; `now` is a `DateTime` here for the LONGEST
     // column's arithmetic.
     let now_secs = u64::try_from(now.timestamp()).unwrap_or(0);
 
-    json!({
+    let mut payload = json!({
         "id": PanelKind::GhWorkflows.id(),
         "title": PanelKind::GhWorkflows.title(),
         "trailing": message.map_or_else(|| json!(trailing_label(health)), |_| Value::Null),
@@ -905,7 +923,95 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // state that carries both — no credential anywhere, several accounts to
         // blame — is exactly the one where suppressing it would hurt.
         "footer": repos_footer(state, now_secs),
-    })
+        // The unscoped panel belongs to no tile, so it paints the layout a new
+        // tile gets; a tile's Full view replaces this with its own choice
+        // (`tile_scope`).
+        "layout": "cards",
+    });
+    attach_owners(&mut payload);
+    payload
+}
+
+/// Groups a Repos payload's rows by owner: `owners`, in name order, and
+/// `cardOrder`, the order Cards lays them out in. Run again after a tile's
+/// scope has dropped rows, so every header counts exactly the rows under it.
+///
+/// Each owner carries one cell per fixed column, in column order, so a
+/// Sections header row paints its totals under the columns they total:
+/// ISSUES, PRS, DEP and JOBS (running), the rest blank.
+pub(crate) fn attach_owners(payload: &mut Value) {
+    use viewmodel::repo_owners::{
+        card_order, group_by_owner, owner_row, totals_text, CARD_SPAN_ROWS,
+    };
+    let rows: &[Value] = payload["rows"].as_array().map_or(&[], Vec::as_slice);
+    let owner_rows: Vec<_> = rows
+        .iter()
+        .map(|row| owner_row(row, row["repo"].as_str().unwrap_or_default()))
+        .collect();
+    let groups = group_by_owner(&owner_rows);
+    // A group's label is its first member's `owner`: the raw spelling on the
+    // source's pass, and the label that pass stamped when a scoped Full view
+    // runs this again over the rows it kept, so the scope never renames it.
+    let labels: Vec<String> = groups
+        .iter()
+        .map(|g| {
+            rows[g.members[0]]["owner"]
+                .as_str()
+                .unwrap_or(&g.owner)
+                .to_owned()
+        })
+        .collect();
+    let as_cell = |value: Option<u64>, width: f64, tint: u32| {
+        count_cell(
+            value.map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+            width,
+            tint,
+        )
+    };
+    let owners: Vec<Value> = groups
+        .iter()
+        .zip(&labels)
+        .map(|(group, label)| {
+            let totals = &group.totals;
+            let cells: Vec<Value> = COLUMNS
+                .iter()
+                .skip(1)
+                .map(|(label, width)| {
+                    let width = width.unwrap_or_default();
+                    match *label {
+                        COL_ISSUES => as_cell(totals.issues, width, color::INK),
+                        COL_PRS => as_cell(totals.prs, width, color::INK),
+                        COL_DEP => as_cell(totals.dependabot, width, color::INK),
+                        COL_JOBS => as_cell(Some(totals.running), width, color::AMBER),
+                        _ => json!({ "text": "", "width": width }),
+                    }
+                })
+                .collect();
+            json!({
+                "owner": label,
+                "dotColor": rows[group.worst]["dotColor"],
+                "totalsText": totals_text(totals),
+                "cells": cells,
+                "rowIds": group.members.iter().map(|&i| &rows[i]["repo"]).collect::<Vec<_>>(),
+                "spans": group.members.len() > CARD_SPAN_ROWS,
+            })
+        })
+        .collect();
+    let shown: Vec<usize> = groups.iter().map(|g| g.members.len()).collect();
+    let order: Vec<usize> = card_order(&shown).into_iter().map(|(i, _)| i).collect();
+    payload["owners"] = json!(owners);
+    payload["cardOrder"] = json!(order);
+    // Owners compare case-insensitively, but a slug keeps the case it was
+    // stored in, so each row takes its group's label: a reader matching rows
+    // to an owner by `owner` (a tile's cards, Detail's headings) sees one
+    // owner, never a repo left out or a second heading.
+    if let Some(rows) = payload["rows"].as_array_mut() {
+        for (group, label) in groups.iter().zip(&labels) {
+            for &i in &group.members {
+                rows[i]["owner"] = json!(label);
+            }
+        }
+    }
 }
 
 /// The Repos panel's footer: every account that contributed nothing this pass,
@@ -1097,7 +1203,7 @@ fn health_line(health: &[RepoWorkflowHealth]) -> Value {
     json!({ "text": text, "color": color::hex(color::GREEN) })
 }
 
-/// One repo's row: the dot, the short name, and the eight fixed cells.
+/// One repo's row: the dot, the short name, and the nine fixed cells.
 ///
 /// The local counts are joined by [`git::normalize`]d name, the same key the
 /// original panel joins on — a repo not checked out here simply has no entry, and
@@ -1122,6 +1228,7 @@ fn repo_row(
 
     json!({
         "repo": health.repo,
+        "owner": viewmodel::repo_owners::owner_of(&health.repo),
         "name": health.short_name(),
         "dotColor": color::hex(status_color(status)),
         "blinking": status_blinks(status),
@@ -1136,7 +1243,8 @@ fn repo_row(
             RepoStatus::Healthy => "Healthy",
         },
         "attention": !matches!(status, RepoStatus::Healthy | RepoStatus::Running),
-        "sortValues": {"issues":health.open_issues,"ready":health.ready_issues,"prs":health.open_prs,"status":match status {
+        "sortValues": {"issues":health.open_issues,"ready":health.ready_issues,"prs":health.open_prs,
+            "dependabot":health.dependabot_prs,"running":health.running.len(),"status":match status {
             RepoStatus::Unreachable => 0, RepoStatus::Failed => 1, RepoStatus::NeedsApproval => 2, RepoStatus::Running => 3, RepoStatus::Healthy => 4,
         }},
         // The row's click target. Present on every row, including an
@@ -1156,6 +1264,7 @@ fn repo_row(
             count_cell(health.open_issues, ISSUES_W, color::INK),
             count_cell(health.ready_issues, READY_W, color::INK),
             pull_request_cell(health.open_prs, health.dependabot_prs),
+            count_cell(health.dependabot_prs, DEP_W, color::INK),
             count_cell(health.remote_branches, REMOTE_W, color::INK),
             count_cell(on_disk.local_branches, LOCAL_W, color::INK),
             count_cell(on_disk.worktrees, WT_W, color::INK),
@@ -1943,11 +2052,13 @@ pub fn showcase_state(now: DateTime<Utc>) -> GitHubState {
     let mut state = GitHubState::new();
     state.apply_repos(vec![
         health("acme/widget", 1, "success", 30, counts(12, 4, 1, 1, 2)),
-        health("acme/flywheel", 2, "success", 55, counts(5, 7, 2, 1, 3)),
+        // A second owner, so the showcase shows the grouping it is a picture
+        // of. Green, so `acme/gadget` stays the one tile out of true.
+        health("globex/flywheel", 2, "success", 55, counts(5, 7, 2, 1, 3)),
         // The one tile out of true.
         health("acme/gadget", 3, "failure", 12, counts(9, 11, 3, 2, 4)),
         health(
-            "acme/pipe-fitting",
+            "globex/pipe-fitting",
             4,
             "success",
             140,
@@ -1994,6 +2105,67 @@ pub fn showcase_state(now: DateTime<Utc>) -> GitHubState {
     state
 }
 
+/// Three owners of uneven sizes — 4, 2 and 18 repos — the picture Cards'
+/// packing is built for: two small owners share a row, and the big one spans
+/// the width and splits its rows into columns. Every name is made up.
+#[must_use]
+pub fn owners_fixture_state(now: DateTime<Utc>) -> GitHubState {
+    let health = |slug: &str, id, conclusion: &str, status: &str, counts| {
+        let conclusion = (status == "completed").then_some(conclusion);
+        let run = fixture_run(now, id, "CI", status, conclusion, 30);
+        github::workflows::health(slug, &[run], None, counts, now)
+    };
+    let counts = |issues: u32, prs: u32, dependabot: u32| {
+        fixture_counts(
+            Some(4),
+            Some(issues + prs),
+            Some(prs),
+            Some(dependabot),
+            Some(1),
+        )
+    };
+    let mut repos = vec![
+        health("acme/widget", 1, "success", "completed", counts(2, 0, 0)),
+        health("acme/gadget", 2, "success", "completed", counts(4, 2, 2)),
+        health(
+            "acme/pipe-fitting",
+            3,
+            "success",
+            "completed",
+            counts(3, 4, 2),
+        ),
+        health("acme/cogwheel", 4, "", "in_progress", counts(8, 3, 1)),
+        health("jdoe/dotfiles", 5, "success", "completed", counts(1, 1, 1)),
+        health("jdoe/homelab", 6, "success", "completed", counts(2, 0, 0)),
+    ];
+    let globex = [
+        "anvil", "beacon", "bellows", "caliper", "derrick", "gantry", "gimbal", "hopper", "keel",
+        "lathe", "mandrel", "piston", "quarry", "ratchet", "sprocket", "trestle", "turbine",
+        "winch",
+    ];
+    for (i, name) in globex.iter().enumerate() {
+        let n = u32::try_from(i).unwrap_or(0);
+        let id = 10 + i64::from(n);
+        let slug = format!("globex/{name}");
+        repos.push(if *name == "caliper" {
+            health(&slug, id, "failure", "completed", counts(12, 5, 3))
+        } else if *name == "derrick" {
+            health(&slug, id, "", "in_progress", counts(5, 2, 1))
+        } else {
+            health(
+                &slug,
+                id,
+                "success",
+                "completed",
+                counts(2 + n % 7, 1 + n % 3, n % 3),
+            )
+        });
+    }
+    let mut state = GitHubState::new();
+    state.apply_repos(repos);
+    state
+}
+
 /// One `main`-branch push run for the fixtures, `minutes_ago` before `now`.
 fn fixture_run(
     now: DateTime<Utc>,
@@ -2015,6 +2187,24 @@ fn fixture_run(
         run_started_at: None,
         display_title: Some("a commit".to_owned()),
     }
+}
+
+/// One owner spelled two ways, `Acme/anvil` and `acme/zephyr`, the second
+/// with more issues: slugs are stored as typed, so a repo added by name can
+/// differ in case from one discovery listed. Every name is made up.
+#[cfg(test)]
+pub(crate) fn mixed_case_owner_state(now: DateTime<Utc>) -> GitHubState {
+    let health = |slug: &str, id, issues: u32| {
+        let run = fixture_run(now, id, "CI", "completed", Some("success"), 30);
+        let counts = fixture_counts(Some(1), Some(issues), Some(0), Some(0), Some(0));
+        github::workflows::health(slug, &[run], None, counts, now)
+    };
+    let mut state = GitHubState::new();
+    state.apply_repos(vec![
+        health("Acme/anvil", 1, 1),
+        health("acme/zephyr", 2, 9),
+    ]);
+    state
 }
 
 fn fixture_counts(
@@ -2135,11 +2325,12 @@ mod tests {
     const ISSUES: usize = 0;
     const READY: usize = 1;
     const PRS: usize = 2;
-    const REMOTE: usize = 3;
-    const LOCAL: usize = 4;
-    const WT: usize = 5;
-    const JOBS: usize = 6;
-    const LONGEST: usize = 7;
+    const DEP: usize = 3;
+    const REMOTE: usize = 4;
+    const LOCAL: usize = 5;
+    const WT: usize = 6;
+    const JOBS: usize = 7;
+    const LONGEST: usize = 8;
 
     // MARK: - Repos: states
 
@@ -3000,14 +3191,16 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["REPO", "ISSUES", "READY", "PRS", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+            vec![
+                "REPO", "ISSUES", "READY", "PRS", "DEP", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"
+            ]
         );
         // REPO is a reservation like every other column: a name column that
-        // grew to its own text would drag all eight numeric columns right on
+        // grew to its own text would drag all nine numeric columns right on
         // the one row whose name is longest (#206).
         assert_eq!(columns[0]["width"], REPO_NAME_W);
 
-        // The eight numeric widths sum to the figure
+        // The nine numeric widths sum to the figure
         // `PanelKind::GhWorkflows.min_width` is built on — widen a column
         // without moving that breakpoint and the panel silently outgrows the
         // width it claims to need.
@@ -3017,7 +3210,7 @@ mod tests {
             .filter_map(|c| c["width"].as_f64())
             .sum();
         assert!(
-            (numeric - 232.0).abs() < f64::EPSILON,
+            (numeric - 252.0).abs() < f64::EPSILON,
             "numeric columns sum to {numeric}"
         );
         // …and the whole fixed block, name included, still fits inside it.
@@ -3093,19 +3286,138 @@ mod tests {
         }
     }
 
-    /// Sorted by short name, case-insensitively — a stable order, so a row does
-    /// not jump around as CI activity changes.
+    /// Sorted by owner, then short name, both case-insensitively — a stable
+    /// order, so a row does not jump around as CI activity changes, and each
+    /// owner's repos sit together under its header.
     #[test]
-    fn rows_are_sorted_by_short_name_case_insensitively() {
+    fn rows_are_sorted_by_owner_then_name() {
         let state = ready(vec![
-            health_of("acme/Gadget", &[], RepoCounts::default()),
             health_of("acme/widget", &[], RepoCounts::default()),
             health_of("Other-Org/apple", &[], RepoCounts::default()),
+            health_of("acme/Gadget", &[], RepoCounts::default()),
         ]);
         assert_eq!(
             row_names(&repos_view(&state, now())),
-            vec!["apple", "Gadget", "widget"]
+            vec!["Gadget", "widget", "apple"]
         );
+    }
+
+    fn backlog(issues: u32, prs: u32, dependabot: u32) -> RepoCounts {
+        RepoCounts {
+            open_issues_including_prs: Some(issues + prs),
+            open_pull_requests: Some(prs),
+            open_dependabot_prs: Some(dependabot),
+            ..RepoCounts::default()
+        }
+    }
+
+    /// Dependabot's share of PRS is a column of its own, beside PRS, with the
+    /// same three renderings every count has.
+    #[test]
+    fn the_dep_column_shows_dependabots_share() {
+        let state = ready(vec![
+            health_of("acme/a", &[], backlog(1, 3, 2)),
+            health_of("acme/b", &[], RepoCounts::default()),
+            health_of("acme/c", &[], backlog(1, 3, 0)),
+        ]);
+        let view = repos_view(&state, now());
+        let rows = rows(&view);
+        assert_eq!(cell_text(&rows[0], DEP), "2");
+        assert_eq!(cell_text(&rows[1], DEP), "—");
+        assert_eq!(cell_text(&rows[2], DEP), "0");
+        assert_eq!(cell(&rows[2], DEP)["color"], color::hex(color::MUTED));
+        assert_eq!(rows[0]["sortValues"]["dependabot"], 2);
+        assert_eq!(rows[1]["sortValues"]["dependabot"], Value::Null);
+    }
+
+    /// Each owner carries its totals, the worst member's dot and its repos in
+    /// row order, so every header counts exactly the rows under it.
+    #[test]
+    fn owners_carry_totals_dot_and_row_ids() {
+        let state = ready(vec![
+            health_of(
+                "acme/a",
+                &[run("completed", Some("success"), 5)],
+                backlog(2, 1, 1),
+            ),
+            health_of(
+                "jdoe/x",
+                &[run("completed", Some("success"), 5)],
+                backlog(1, 0, 0),
+            ),
+            health_of(
+                "acme/b",
+                &[run("completed", Some("failure"), 5)],
+                backlog(3, 2, 0),
+            ),
+        ]);
+        let view = repos_view(&state, now());
+        let owners = view["owners"].as_array().expect("owners");
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners[0]["owner"], "acme");
+        assert_eq!(owners[0]["rowIds"], json!(["acme/a", "acme/b"]));
+        let failed = rows(&view)
+            .iter()
+            .find(|r| r["repo"] == "acme/b")
+            .expect("failed row");
+        assert_eq!(owners[0]["dotColor"], failed["dotColor"]);
+        assert_eq!(owners[0]["totalsText"], "5 issues · 3 PRs · 1 Dependabot");
+        assert_eq!(owners[0]["cells"][ISSUES]["text"], "5");
+        assert_eq!(owners[0]["cells"][READY]["text"], "");
+        assert_eq!(owners[0]["cells"][DEP]["text"], "1");
+        assert_eq!(owners[0]["spans"], false);
+        assert_eq!(owners[1]["owner"], "jdoe");
+        assert_eq!(view["layout"], "cards");
+    }
+
+    /// An owner whose only repo could not be read has unknown totals — never
+    /// a zero that reads as "nothing open".
+    #[test]
+    fn an_unreadable_owner_totals_render_em_dashes() {
+        let state = ready(vec![RepoWorkflowHealth::unreachable("ghost/x")]);
+        let view = repos_view(&state, now());
+        let owner = &view["owners"][0];
+        assert_eq!(owner["totalsText"], "— issues · — PRs · — Dependabot");
+        assert_eq!(owner["cells"][ISSUES]["text"], "—");
+    }
+
+    /// Owners compare case-insensitively, so every row carries its group's
+    /// label: a reader that matches a row to its owner by `owner` (the
+    /// tile's cards, Detail's headings) never loses one or splits it in two.
+    #[test]
+    fn every_row_carries_its_owner_groups_label() {
+        let view = repos_view(&mixed_case_owner_state(now()), now());
+        let owners: Vec<&str> = view["owners"]
+            .as_array()
+            .expect("owners")
+            .iter()
+            .map(|o| o["owner"].as_str().expect("owner"))
+            .collect();
+        assert_eq!(owners, ["Acme"]);
+        for row in view["rows"].as_array().expect("rows") {
+            assert_eq!(row["owner"], "Acme", "{}", row["repo"]);
+        }
+    }
+
+    /// Small owners first, the big one last and spanning: the 4/2/18 picture.
+    #[test]
+    fn card_order_puts_the_big_owner_last() {
+        let view = repos_view(&owners_fixture_state(now()), now());
+        let owners = view["owners"].as_array().expect("owners");
+        let order: Vec<(&str, bool)> = view["cardOrder"]
+            .as_array()
+            .expect("cardOrder")
+            .iter()
+            .map(|i| {
+                let owner = &owners[usize::try_from(i.as_u64().expect("index")).expect("index")];
+                (
+                    owner["owner"].as_str().expect("owner"),
+                    owner["spans"].as_bool().expect("spans"),
+                )
+            })
+            .collect();
+        assert_eq!(order, [("acme", false), ("jdoe", false), ("globex", true)]);
+        assert_eq!(owners[1]["rowIds"].as_array().expect("ids").len(), 18);
     }
 
     // MARK: - Repos: per-account results

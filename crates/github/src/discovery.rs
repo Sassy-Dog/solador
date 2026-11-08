@@ -1,19 +1,19 @@
-//! Token-driven repo discovery — the types behind Settings' "choose repos"
-//! picker, and the org derivation the runner-org picker reads.
+//! Token-driven repo discovery — the types behind Settings' repo search,
+//! and the org derivation the runner-org picker reads.
 //!
 //! `GET /user/repos` lists "repositories that the authenticated user has
 //! explicit permission to access", which for a fine-grained PAT is exactly
-//! the repos the token was granted — the list the picker offers checkboxes
+//! the repos the token was granted — the list the search offers checkboxes
 //! over. The org list is **derived from that same result** (the distinct
 //! owners of type `Organization`) rather than fetched: `GET /user/orgs`
 //! answers a fine-grained PAT with `200` and an **empty list**, and
-//! fine-grained PATs are the only token kind this app asks operators for. A
-//! picker built on that endpoint would render empty for every operator who
+//! fine-grained PATs are the only token kind this app asks operators for. An
+//! org list built on that endpoint would render empty for every operator who
 //! followed the app's own setup instructions.
 
 use serde::Deserialize;
 
-/// One repository the token can access, as the picker renders it.
+/// One repository the token can access, as the repo search lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRef {
     /// `owner/name` — the same slug spelling `TrackedRepo` keys on.
@@ -23,7 +23,7 @@ pub struct RepoRef {
     /// Whether the owner is an organization — what the org derivation reads.
     pub owner_is_org: bool,
     /// Archived repos are still offered (the operator may want a read-only
-    /// watch) but the picker tags them.
+    /// watch) but the search tags them.
     pub archived: bool,
 }
 
@@ -31,7 +31,7 @@ pub struct RepoRef {
 /// was cut short at [`crate::client::DISCOVERY_PAGE_CAP`].
 ///
 /// `truncated` exists so a capped walk is **reported, never silent**: a
-/// picker that quietly dropped page eleven would read as "covered
+/// search that quietly dropped page fifty-one would read as "covered
 /// everything" to the one operator with more repos than the cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessibleRepos {
@@ -39,8 +39,8 @@ pub struct AccessibleRepos {
     pub truncated: bool,
 }
 
-/// The wire shape of one `/user/repos` entry — only the fields the picker
-/// reads. Strict on purpose: a page this build cannot read is skew to report
+/// The wire shape of one `/user/repos` entry — only the fields the search
+/// and the org derivation read. Strict on purpose: a page this build cannot read is skew to report
 /// (`DecodeFailed`), not a repo list to guess at.
 #[derive(Debug, Deserialize)]
 pub(crate) struct UserRepoDto {
@@ -57,7 +57,7 @@ struct OwnerDto {
     kind: String,
 }
 
-/// One decoded page into picker rows.
+/// One decoded page into repo rows.
 pub(crate) fn map(dtos: Vec<UserRepoDto>) -> Vec<RepoRef> {
     dtos.into_iter()
         .map(|dto| RepoRef {
@@ -83,6 +83,37 @@ pub fn organizations(repos: &[RepoRef]) -> Vec<String> {
         .map(|repo| repo.owner_login.as_str())
         .collect();
     orgs.into_iter().map(ToOwned::to_owned).collect()
+}
+
+/// Where `query` first occurs in `full_name`, ignoring case and the query's
+/// surrounding whitespace, as **char** offsets `(start, end)` so a page can
+/// bold exactly that span. `None` for an empty query or no match.
+#[must_use]
+pub fn match_range(full_name: &str, query: &str) -> Option<(usize, usize)> {
+    let needle: Vec<char> = query.trim().chars().collect();
+    let hay: Vec<char> = full_name.chars().collect();
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len())
+        .find(|&start| {
+            hay[start..start + needle.len()]
+                .iter()
+                .zip(&needle)
+                .all(|(a, b)| a.to_lowercase().eq(b.to_lowercase()))
+        })
+        .map(|start| (start, start + needle.len()))
+}
+
+/// The accessible repos whose `owner/name` contains `query` anywhere,
+/// ignoring case, in the list's own order. An empty query matches nothing:
+/// the watched list already covers "show me everything".
+#[must_use]
+pub fn search<'a>(repos: &'a [RepoRef], query: &str) -> Vec<&'a RepoRef> {
+    repos
+        .iter()
+        .filter(|repo| match_range(&repo.full_name, query).is_some())
+        .collect()
 }
 
 #[cfg(test)]
@@ -131,5 +162,48 @@ mod tests {
             "two acme repos derive one org, and jdoe is a person, not an org"
         );
         assert!(organizations(&[]).is_empty());
+    }
+
+    fn named(full_name: &str) -> RepoRef {
+        let (owner, _) = full_name.split_once('/').unwrap();
+        RepoRef {
+            full_name: full_name.into(),
+            owner_login: owner.into(),
+            owner_is_org: true,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn search_is_trimmed_and_case_insensitive() {
+        let repos = [
+            named("globex/claims-web"),
+            named("globex/billing-api"),
+            named("Acme/CLAIMS"),
+        ];
+        let found: Vec<&str> = search(&repos, " Claims ")
+            .iter()
+            .map(|r| r.full_name.as_str())
+            .collect();
+        assert_eq!(found, ["globex/claims-web", "Acme/CLAIMS"]);
+        // The owner is part of what is searched.
+        assert_eq!(search(&repos, "GLOBEX/").len(), 2);
+    }
+
+    #[test]
+    fn an_empty_query_matches_nothing() {
+        let repos = [named("acme/gadget")];
+        assert!(search(&repos, "").is_empty());
+        assert!(search(&repos, "   ").is_empty());
+    }
+
+    #[test]
+    fn match_range_is_char_offsets() {
+        assert_eq!(match_range("acme/claims-web", "CLAIMS"), Some((5, 11)));
+        assert_eq!(match_range("acme/claims-web", " web "), Some((12, 15)));
+        assert_eq!(match_range("acme/claims-web", "zzz"), None);
+        assert_eq!(match_range("acme/claims-web", ""), None);
+        // Offsets count characters, not bytes, so a page can slice by them.
+        assert_eq!(match_range("ünï/claims", "claims"), Some((4, 10)));
     }
 }

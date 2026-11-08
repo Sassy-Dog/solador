@@ -145,7 +145,8 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
             .iter()
             .any(|(v, _)| *v == tile.scope);
         if !["auto", "5", "10", "20", "50", "all"].contains(&tile.row_limit.as_str())
-            || !["name", "issues", "ready", "prs", "status"].contains(&tile.sort_by.as_str())
+            || !["name", "issues", "ready", "prs", "dependabot", "status"]
+                .contains(&tile.sort_by.as_str())
             || !["list", "grouped"].contains(&tile.runner_view.as_str())
             || (tile.runner_view == "grouped" && tile.source != "ghRunners")
             || (!tile.show_disk && tile.source != "hosts")
@@ -193,8 +194,18 @@ fn validate_view_settings(tile: &DashboardTile) -> Result<(), String> {
     if tile.source != "ghRunners" && tile.runner_full_view != "table" {
         return Err("Only a GitHub Runners tile has a Full view of its own to lay out.".into());
     }
+    // Cards is every tile's default, so only a Repos tile may hold anything
+    // else — and only one of the two layouts its views can paint.
+    if !REPO_LAYOUTS.contains(&tile.repo_layout.as_str())
+        || (tile.source != "ghWorkflows" && tile.repo_layout != REPO_LAYOUTS[0])
+    {
+        return Err("Choose Cards or Sections for a GitHub Repos tile.".into());
+    }
     Ok(())
 }
+
+/// A GitHub Repos tile's two layouts, the default first.
+const REPO_LAYOUTS: [&str; 2] = ["cards", "sections"];
 
 /// The tile "Add tile" starts from for `source`: `DashboardTile::new`'s defaults,
 /// the scope the source opens on, and Machines one width wider. One source of
@@ -549,10 +560,15 @@ const UNIFIED_MEMORY_TITLE: &str =
 /// On the row rather than under it (the way a machine's CPU/RAM sit) because
 /// five two-line rows are what stops the default overview fitting a 1024×768
 /// laptop — the e2e suite measures that.
-const ROW_COUNTS: [(&str, &str, &str); 3] = [
+///
+/// DEP's word is a placeholder the strip never paints: the row's accessible
+/// name reads its `title` (`3 from Dependabot`) instead, which Rust sets
+/// whenever the count is known.
+const ROW_COUNTS: [(&str, &str, &str); 4] = [
     (crate::github::COL_ISSUES, "issue", "issues"),
     (crate::github::COL_READY, "ready", "ready"),
     (crate::github::COL_PRS, "PR", "PRs"),
+    (crate::github::COL_DEP, "dep", "dep"),
 ];
 
 /// The widest word each strip column prints, in characters, and the widest
@@ -562,10 +578,11 @@ const ROW_COUNTS: [(&str, &str, &str); 3] = [
 /// here would overflow its slot on every row without moving a number the
 /// e2e alignment test could see. The test below is the link.
 #[cfg(test)]
-const ROW_COUNT_SLOT_CH: [(&str, usize); 3] = [
+const ROW_COUNT_SLOT_CH: [(&str, usize); 4] = [
     (crate::github::COL_ISSUES, 6),
     (crate::github::COL_READY, 5),
     (crate::github::COL_PRS, 3),
+    (crate::github::COL_DEP, 3),
 ];
 #[cfg(test)]
 const ROW_STATUS_SLOT_CH: usize = 10;
@@ -641,6 +658,8 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 );
                 r["url"] = v["url"].clone();
                 r["sortValues"] = v["sortValues"].clone();
+                // Detail lists each owner's repos under its name.
+                r["owner"] = v["owner"].clone();
                 // A run parked at a gate: the pulse that tells "a human must
                 // act" from "a machine is working" (both are amber), and the
                 // click target Rust chose for it. Copied verbatim; the webview
@@ -702,18 +721,23 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 ) {
                     entry["title"] = title;
                 }
-                // …and what is left is Detailed's extra, so the three are
+                // DEP's bare number, said in words for a screen reader and a
+                // tooltip — only over a count that was read.
+                if let Some(entry) = r["counts"]
+                    .as_array_mut()
+                    .and_then(|c| c.iter_mut().find(|c| c["header"] == crate::github::COL_DEP))
+                {
+                    if let Some(n) = entry["value"].as_str().filter(|v| v.parse::<u32>().is_ok()) {
+                        entry["title"] = json!(format!("{n} from Dependabot"));
+                    }
+                }
+                // …and what is left is Detailed's extra, so the counts are
                 // never printed twice on one row.
-                let mut details: Vec<Value> = cells
+                let details: Vec<Value> = cells
                     .iter()
                     .filter(|(label, _)| !ROW_COUNTS.iter().any(|(column, _, _)| column == label))
                     .map(|(label, text)| field(label, text))
                     .collect();
-                // Dependabot's share of PRS has no column in the Repos panel;
-                // here it is a Detail column of its own. First among the
-                // details, so the table puts it right after PRS, and in
-                // capitals like every column it sits beside.
-                details.insert(0, field("DEPENDABOT", &v["dependabotPrs"]));
                 r["details"] = json!(details);
                 r
             })
@@ -1093,7 +1117,6 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
                 "RAM" | "GPU mem" => 130,
                 "Disk read" | "Disk write" | "Network down" | "Network up" => 95,
                 "Thermal" => 90,
-                "DEPENDABOT" => 95,
                 "Organization" => 180,
                 "Labels" => 170,
                 "OS" | "Architecture" | "LONGEST" => 120,
@@ -1243,6 +1266,42 @@ mod detail_table_tests {
         assert_eq!(default_layout().tiles.len(), store::SHIPPED_TILES.len());
     }
 
+    /// Cards or Sections, on a GitHub Repos tile only — any other source
+    /// keeps the default it cannot use, so a hand-edited value never sits on
+    /// a tile that ignores it.
+    #[test]
+    fn repo_layout_is_cards_or_sections_on_repos_tiles_only() {
+        let with = |source: &str, layout: &str| {
+            let mut tile = DashboardTile::new("t", source, "T", "all");
+            tile.repo_layout = layout.into();
+            validate(&DashboardLayout {
+                revision: 0,
+                legacy_detail_views: Default::default(),
+                tiles: vec![tile],
+            })
+        };
+        assert!(with("ghWorkflows", "cards").is_ok());
+        assert!(with("ghWorkflows", "sections").is_ok());
+        let refusal = "Choose Cards or Sections for a GitHub Repos tile.";
+        assert_eq!(with("ghWorkflows", "grid"), Err(refusal.to_owned()));
+        assert_eq!(with("hosts", "sections"), Err(refusal.to_owned()));
+        assert!(with("hosts", "cards").is_ok());
+    }
+
+    #[test]
+    fn configure_defines_the_repo_layout_choice() {
+        let c = configure();
+        let ids: Vec<&str> = c["repoLayout"]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["cards", "sections"]);
+        assert_eq!(c["repoLayout"]["label"], "Layout");
+        assert_eq!(c["repoLayout"]["sources"], json!(["ghWorkflows"]));
+    }
+
     #[test]
     fn a_tile_carries_its_view_settings_to_the_page() {
         let mut layout = default_layout();
@@ -1261,6 +1320,8 @@ mod detail_table_tests {
         assert_eq!(tile["detailView"], "list");
         assert_eq!(tile["runnerFullView"], "list");
         assert_eq!(view["spacing"], SPACING);
+        let repos = tiles.iter().find(|t| t["source"] == "ghWorkflows").unwrap();
+        assert_eq!(repos["repoLayout"], "cards");
         let tile = tiles.iter().find(|t| t["source"] == "hosts").unwrap();
         assert_eq!(tile["coreRowSpan"], 2);
         assert_eq!(tile["hostOverflow"], "stack");
@@ -1523,8 +1584,14 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     } else {
         12
     };
+    // A Repos tile groups by owner, and its limit applies to each owner, so
+    // every owner in scope keeps its header (`owner_groups`).
+    let by_owner = (tile.source == "ghWorkflows").then(|| owner_groups(tile, &matching, limit));
     // Default ordering is stable. Explicit column sorts follow current values.
-    let mut shown: Vec<_> = matching.iter().take(limit).copied().cloned().collect();
+    let mut shown: Vec<_> = match &by_owner {
+        Some(owners) => owners.shown.iter().map(|&i| matching[i].clone()).collect(),
+        None => matching.iter().take(limit).copied().cloned().collect(),
+    };
     // Only this tile's copies lose the strip: Detail reads the source rows, and
     // the status line and attention were derived before this point.
     if tile.source == "hosts" && !tile.show_disk {
@@ -1534,7 +1601,13 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
             }
         }
     }
-    let hidden = matching.len().saturating_sub(limit);
+    // A Repos tile's overflow is each owner's own more line, so the tile adds
+    // none of its own.
+    let hidden = if by_owner.is_some() {
+        0
+    } else {
+        matching.len().saturating_sub(limit)
+    };
     let hidden_attention: u64 = matching
         .iter()
         .skip(limit)
@@ -1574,13 +1647,132 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         format!("{} shown · {problems} need attention", shown.len())
     };
     let full_note = scope_note(tile, string(source, "title"), &scope_label);
-    json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
+    let card_counts = match &by_owner {
+        Some(o) if o.narrow => json!(REPO_CARD_COUNTS),
+        _ => Value::Null,
+    };
+    let (owner_groups, card_order, card_columns) = by_owner
+        .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
+        .unwrap_or((Value::Null, Value::Null, Value::Null));
+    json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,"cardCounts":card_counts,
+        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
-        "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,
+        "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
         "sortColumns":if tile.source == "ghWorkflows" { json!([
-            {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
+            {"key":"name","label":"Repo","header":null},{"key":"issues","label":"Issues","header":crate::github::COL_ISSUES},
+            {"key":"ready","label":"Ready","header":crate::github::COL_READY},{"key":"prs","label":"PRs","header":crate::github::COL_PRS},
+            {"key":"dependabot","label":"Dep","header":crate::github::COL_DEP},{"key":"status","label":"Status","header":null}
         ]) } else {json!([])}})
+}
+
+/// The counts a narrow Repos card keeps, by slot (`cardCounts`): the spec's
+/// card columns (REPO, ISSUES, PRS, DEP; JOBS and LONGEST are the Full
+/// view's). A tile whose every card and split column is at least a small tile
+/// wide keeps the whole strip, READY and the status word included, and
+/// `cardCounts` is null. In a narrow card the row's dot carries the status,
+/// and its accessible name still says it.
+const REPO_CARD_COUNTS: [&str; 3] = [
+    crate::github::COL_ISSUES,
+    crate::github::COL_PRS,
+    crate::github::COL_DEP,
+];
+
+/// A Repos tile's rows grouped by owner, as [`tile_view`] lays them out.
+struct OwnerGroups {
+    /// One entry per owner in scope, in name order.
+    groups: Vec<Value>,
+    /// Indices into the matching rows, in the order the tile shows them:
+    /// owner by owner, each owner's rows in the tile's sort, up to the limit.
+    shown: Vec<usize>,
+    card_order: Vec<usize>,
+    card_columns: usize,
+    /// The tile paints a card or split column narrower than a small tile:
+    /// every card keeps [`REPO_CARD_COUNTS`] only, so the columns line up.
+    narrow: bool,
+}
+
+/// Groups a Repos tile's matching rows (already scoped and sorted) by owner.
+/// The limit applies per owner; totals and the dot cover every matching row,
+/// the hidden ones included, and nothing outside the scope.
+fn owner_groups(tile: &DashboardTile, matching: &[&Value], limit: usize) -> OwnerGroups {
+    use viewmodel::repo_owners::{
+        card_columns, card_is_narrow, card_order, group_by_owner, owner_card_columns, owner_row,
+        totals_text, CARD_SPAN_ROWS,
+    };
+    let rows: Vec<_> = matching
+        .iter()
+        .map(|r| owner_row(r, string(r, "id")))
+        .collect();
+    // A spanning owner splits into every column the tile width allows; the
+    // row of small owners takes no more columns than it has owners.
+    let split_columns = owner_card_columns(&tile.width);
+    let mut shown = Vec::new();
+    let mut shown_counts = Vec::new();
+    let number = |v: Option<u64>| v.map_or_else(|| "—".to_owned(), |n| n.to_string());
+    let groups = group_by_owner(&rows)
+        .into_iter()
+        .map(|group| {
+            let visible: Vec<usize> = group.members.iter().copied().take(limit).collect();
+            let hidden = group.members.len() - visible.len();
+            let hidden_attention = group.members[visible.len()..]
+                .iter()
+                .filter(|&&i| rows[i].attention)
+                .count();
+            let spans = visible.len() > CARD_SPAN_ROWS;
+            shown.extend(&visible);
+            shown_counts.push(visible.len());
+            let totals = &group.totals;
+            let count = |header: &str, value: String| json!({"header": header, "value": value});
+            // The source's label, which every member row carries
+            // (`github::attach_owners`), rather than the first spelling in
+            // this tile's sort: the page matches rows to owners by it.
+            let owner = matching[group.members[0]]["owner"]
+                .as_str()
+                .unwrap_or(&group.owner);
+            json!({
+                "owner": owner,
+                "color": matching[group.worst]["color"],
+                "attentionCount": group.attention,
+                "totalsText": totals_text(totals),
+                "counts": [
+                    count(crate::github::COL_ISSUES, number(totals.issues)),
+                    count(crate::github::COL_READY, String::new()),
+                    count(crate::github::COL_PRS, number(totals.prs)),
+                    count(crate::github::COL_DEP, number(totals.dependabot)),
+                ],
+                "runningLabel": (totals.running > 0).then(|| format!("{} running", totals.running)),
+                "rows": visible.iter().map(|&i| matching[i]).collect::<Vec<_>>(),
+                "hidden": hidden,
+                "moreLabel": (hidden > 0).then(|| if hidden_attention > 0 {
+                    format!("{hidden} more · {hidden_attention} need attention →")
+                } else {
+                    format!("{hidden} more →")
+                }),
+                "spans": spans,
+                "splitColumns": if spans { split_columns } else { 1 },
+            })
+        })
+        .collect();
+    let small_owners = shown_counts
+        .iter()
+        .filter(|&&n| n <= CARD_SPAN_ROWS)
+        .count();
+    let columns = card_columns(&tile.width, small_owners);
+    // The narrowest card the tile paints: a spanning owner's split columns
+    // when one spans, so its quarter-window columns drop READY like the rest.
+    let any_spans = small_owners < shown_counts.len();
+    let narrowest = columns.max(if any_spans { split_columns } else { 1 });
+    OwnerGroups {
+        groups,
+        shown,
+        card_order: card_order(&shown_counts)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect(),
+        card_columns: columns,
+        narrow: card_is_narrow(&tile.width, narrowest),
+    }
 }
 
 /// Same scope and truncation rules as a saved tile, using cached readings only.
@@ -1760,6 +1952,14 @@ fn configure() -> Value {
         },
         "detailView": {"label":"Detail layout","options":table_list,"help":"Whether this tile\u{2019}s Detail lists its rows as a table or as a list."},
         "runnerFullView": {"label":"Full view layout","options":table_list,"help":"Whether this tile\u{2019}s Full view lists runners as a table or as a list. Detail has its own choice."},
+        // On This tile's page rather than one view's: the overview tile and
+        // its Full view both follow it. Only the sources listed show it.
+        "repoLayout": {
+            "label":"Layout",
+            "options":[{"id":REPO_LAYOUTS[0],"label":"Cards"},{"id":REPO_LAYOUTS[1],"label":"Sections"}],
+            "help":"Cards gives each owner its own box; Sections lists every owner in one table. The tile and its Full view both use it.",
+            "sources":["ghWorkflows"],
+        },
         "coreRowSpan": {"label":"CPU core rows","min":CORE_ROW_SPAN_RANGE.start(),"max":CORE_ROW_SPAN_RANGE.end(),"help":"How many rows tall the per-core CPU grid is on every host card in this tile\u{2019}s Full view."},
         "hostOverflow": {
             "label":"When host cards don\u{2019}t fit",
@@ -1957,17 +2157,21 @@ mod tests {
 
     #[test]
     fn repo_selection_and_numeric_sort_happen_before_the_row_limit() {
+        // One owner, so the sort is visible across every row.
         let rows = json!([
-            {"id":"a","label":"Alpha","sortValues":{"issues":2}},
-            {"id":"b","label":"Beta","sortValues":{"issues":10}},
-            {"id":"c","label":"Charlie","sortValues":{"issues":null}},
-            {"id":"d","label":"Delta","sortValues":{"issues":100}}
+            {"id":"o/a","label":"Alpha","sortValues":{"issues":2}},
+            {"id":"o/b","label":"Beta","sortValues":{"issues":10}},
+            {"id":"o/c","label":"Charlie","sortValues":{"issues":null}},
+            {"id":"o/d","label":"Delta","sortValues":{"issues":100}}
         ]);
         let source = json!({"rows":rows,"scopes":[]});
-        for (descending, expected) in [(false, vec!["a", "b", "c"]), (true, vec!["b", "a", "c"])] {
+        for (descending, expected) in [
+            (false, vec!["o/a", "o/b", "o/c"]),
+            (true, vec!["o/b", "o/a", "o/c"]),
+        ] {
             let tile = configured_tile(
                 "ghWorkflows",
-                json!({"rowLimit":"all", "selectedRepos":["a","b","c"], "sortBy":"issues", "sortDescending":descending}),
+                json!({"rowLimit":"all", "selectedRepos":["o/a","o/b","o/c"], "sortBy":"issues", "sortDescending":descending}),
             );
             let view = tile_view(&tile, &source);
             let ids: Vec<_> = list(&view, "rows")
@@ -1976,6 +2180,289 @@ mod tests {
                 .collect();
             assert_eq!(ids, expected);
         }
+    }
+
+    /// The Repos source over three owners of 4, 2 and 18 repos.
+    fn owners_source() -> Value {
+        let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).unwrap();
+        let p = crate::github::repos_view(&crate::github::owners_fixture_state(now), now);
+        source_view("ghWorkflows", "GitHub Repos", &p)
+    }
+
+    fn group_names(view: &Value) -> Vec<String> {
+        list(view, "ownerGroups")
+            .iter()
+            .map(|g| string(g, "owner").to_owned())
+            .collect()
+    }
+
+    fn group<'a>(view: &'a Value, owner: &str) -> &'a Value {
+        list(view, "ownerGroups")
+            .iter()
+            .find(|g| g["owner"] == owner)
+            .unwrap()
+    }
+
+    /// A limit of 5 is 5 per owner: every owner keeps its header, and the
+    /// overflow collapses inside the owner it belongs to.
+    #[test]
+    fn every_owner_shows_its_header_under_a_per_owner_limit() {
+        let tile = configured_tile("ghWorkflows", json!({"rowLimit":"5"}));
+        let view = tile_view(&tile, &owners_source());
+        assert_eq!(group_names(&view), ["acme", "globex", "jdoe"]);
+        assert_eq!(list(group(&view, "acme"), "rows").len(), 4);
+        assert_eq!(group(&view, "acme")["hidden"], 0);
+        assert!(group(&view, "acme")["moreLabel"].is_null());
+        assert_eq!(list(group(&view, "jdoe"), "rows").len(), 2);
+        assert_eq!(list(group(&view, "globex"), "rows").len(), 5);
+        assert_eq!(group(&view, "globex")["hidden"], 13);
+        assert_eq!(group(&view, "globex")["moreLabel"], "13 more →");
+        assert_eq!(list(&view, "rows").len(), 11);
+        assert!(string(&view, "footer").starts_with("11 shown · "));
+        // The overflow lives in each owner's own more line, so the tile adds
+        // none of its own.
+        assert_eq!(view["moreCount"], 0);
+    }
+
+    /// A hidden repo that needs attention is named in its owner's more line.
+    #[test]
+    fn an_owners_more_line_names_hidden_attention() {
+        let tile = configured_tile("ghWorkflows", json!({"rowLimit":"2"}));
+        let view = tile_view(&tile, &owners_source());
+        // globex/caliper failed and sorts fourth by name.
+        assert_eq!(
+            group(&view, "globex")["moreLabel"],
+            "16 more · 1 need attention →"
+        );
+    }
+
+    /// The tile's sort reorders repos inside each owner and never moves one.
+    #[test]
+    fn the_tiles_sort_orders_repos_within_each_owner() {
+        let tile = configured_tile(
+            "ghWorkflows",
+            json!({"rowLimit":"all","sortBy":"issues","sortDescending":true}),
+        );
+        let view = tile_view(&tile, &owners_source());
+        assert_eq!(group_names(&view), ["acme", "globex", "jdoe"]);
+        for g in list(&view, "ownerGroups") {
+            let issues: Vec<u64> = list(g, "rows")
+                .iter()
+                .map(|r| r["sortValues"]["issues"].as_u64().unwrap())
+                .collect();
+            let mut sorted = issues.clone();
+            sorted.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(issues, sorted, "{}", g["owner"]);
+        }
+    }
+
+    /// An owner's totals cover every repo the scope matches, the ones the
+    /// limit hides included.
+    #[test]
+    fn owner_totals_cover_hidden_rows_in_scope() {
+        let tile = configured_tile("ghWorkflows", json!({"rowLimit":"5"}));
+        let view = tile_view(&tile, &owners_source());
+        let globex = group(&view, "globex");
+        assert_eq!(
+            string(globex, "totalsText"),
+            "90 issues · 40 PRs · 21 Dependabot · 1 running"
+        );
+        let counts: Vec<(&str, &str)> = list(globex, "counts")
+            .iter()
+            .map(|c| (string(c, "header"), string(c, "value")))
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                ("ISSUES", "90"),
+                ("READY", ""),
+                ("PRS", "40"),
+                ("DEP", "21")
+            ]
+        );
+        assert_eq!(globex["runningLabel"], "1 running");
+        assert!(group(&view, "jdoe")["runningLabel"].is_null());
+        // The failed repo's colour is the owner's dot.
+        assert_eq!(globex["color"], json!(color::hex(color::RED)));
+    }
+
+    /// A scope that keeps none of an owner's repos drops that owner's header;
+    /// a scope that keeps nothing leaves the tile its empty state.
+    #[test]
+    fn a_scope_that_matches_none_of_an_owner_drops_its_header() {
+        let tile = configured_tile("ghWorkflows", json!({"scope":"healthy","rowLimit":"all"}));
+        let mut source = owners_source();
+        // Fail jdoe's two repos: a Healthy tile then has nothing of jdoe's.
+        for row in source["rows"].as_array_mut().unwrap() {
+            if string(row, "id").starts_with("jdoe/") {
+                row["scopes"] = json!([]);
+            }
+        }
+        let view = tile_view(&tile, &source);
+        assert_eq!(group_names(&view), ["acme", "globex"]);
+        let selected = configured_tile("ghWorkflows", json!({"selectedRepos":["gone/repo"]}));
+        let view = tile_view(&selected, &source);
+        assert_eq!(list(&view, "ownerGroups").len(), 0);
+        assert!(!string(&view, "empty").is_empty());
+    }
+
+    /// Cards: small owners share a row, a big one spans it and splits its
+    /// rows into as many columns as the tile holds cards. Spanning follows the
+    /// rows a card shows, because that is what decides the wasted space.
+    #[test]
+    fn a_big_owner_spans_and_splits_into_the_cards_columns() {
+        let order = |view: &Value| -> Vec<String> {
+            list(view, "cardOrder")
+                .iter()
+                .map(|i| {
+                    string(
+                        &list(view, "ownerGroups")[usize::try_from(i.as_u64().unwrap()).unwrap()],
+                        "owner",
+                    )
+                    .to_owned()
+                })
+                .collect()
+        };
+        let medium = configured_tile("ghWorkflows", json!({"rowLimit":"all","width":"medium"}));
+        let view = tile_view(&medium, &owners_source());
+        assert_eq!(view["cardColumns"], 2);
+        assert_eq!(group(&view, "globex")["spans"], true);
+        assert_eq!(group(&view, "globex")["splitColumns"], 2);
+        assert_eq!(group(&view, "acme")["splitColumns"], 1);
+        assert_eq!(order(&view), ["acme", "jdoe", "globex"]);
+        // Two small owners share a wide tile's row in two columns, not three
+        // with one left empty; the spanning owner still splits into three.
+        let wide = configured_tile("ghWorkflows", json!({"rowLimit":"all","width":"wide"}));
+        let view = tile_view(&wide, &owners_source());
+        assert_eq!(view["cardColumns"], 2);
+        assert_eq!(group(&view, "globex")["splitColumns"], 3);
+        let five = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"medium"}));
+        let view = tile_view(&five, &owners_source());
+        assert_eq!(group(&view, "globex")["spans"], false);
+        assert_eq!(order(&view), ["acme", "globex", "jdoe"]);
+    }
+
+    /// Detail lists each owner's repos under its name, so the rows carry it.
+    #[test]
+    fn repo_rows_carry_their_owner() {
+        let source = owners_source();
+        let row = list(&source, "rows")
+            .iter()
+            .find(|r| r["id"] == "jdoe/homelab")
+            .unwrap();
+        assert_eq!(row["owner"], "jdoe");
+    }
+
+    /// DEP sorts like any count, and the header names its slot for the CSS.
+    #[test]
+    fn only_a_narrow_repo_card_drops_ready_and_the_status_word() {
+        // A medium tile with two cards per row: a quarter of the window, the
+        // half-width mockup's ISSUES, PRS and DEP. The dot carries the status.
+        let narrow = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"medium"}));
+        let view = tile_view(&narrow, &owners_source());
+        assert_eq!(view["cardColumns"], 2);
+        assert_eq!(view["cardCounts"], json!(["ISSUES", "PRS", "DEP"]));
+        // A third of the window or more keeps the whole strip, as every Repos
+        // row always has: null means no narrowing.
+        let wide = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"wide"}));
+        assert_eq!(
+            tile_view(&wide, &owners_source())["cardCounts"],
+            Value::Null
+        );
+        let small = configured_tile("ghWorkflows", json!({"rowLimit":"5","width":"small"}));
+        assert_eq!(
+            tile_view(&small, &owners_source())["cardCounts"],
+            Value::Null
+        );
+        let runners = tile_view(&configured_tile("ghRunners", json!({})), &owners_source());
+        assert_eq!(runners["cardCounts"], Value::Null);
+    }
+
+    #[test]
+    fn a_sole_small_owner_fills_its_tile() {
+        let acme = configured_tile(
+            "ghWorkflows",
+            json!({"width":"medium","selectedRepos":["acme/widget","acme/gadget"]}),
+        );
+        let view = tile_view(&acme, &owners_source());
+        assert_eq!(list(&view, "ownerGroups").len(), 1);
+        assert_eq!(view["cardColumns"], 1);
+        assert_eq!(view["cardCounts"], Value::Null);
+    }
+
+    /// A spanning owner splits into the tile's columns even when the small
+    /// owners take only one, so on a medium tile its quarter-window columns
+    /// narrow the tile's cards; one strip per tile keeps the columns aligned.
+    #[test]
+    fn a_spanning_owners_split_columns_narrow_the_cards() {
+        let globex: Vec<Value> = list(&owners_source(), "rows")
+            .iter()
+            .filter(|r| r["owner"] == "globex")
+            .map(|r| r["id"].clone())
+            .collect();
+        assert_eq!(globex.len(), 18);
+        let mut with_one_small = globex.clone();
+        with_one_small.push(json!("acme/widget"));
+        for selected in [globex, with_one_small] {
+            let tile = configured_tile(
+                "ghWorkflows",
+                json!({"rowLimit":"all","width":"medium","selectedRepos":selected}),
+            );
+            let view = tile_view(&tile, &owners_source());
+            assert_eq!(group(&view, "globex")["splitColumns"], 2);
+            assert_eq!(view["cardCounts"], json!(["ISSUES", "PRS", "DEP"]));
+        }
+    }
+
+    /// The page paints an owner's rows by matching each row's `owner` to the
+    /// group's label, so the label is the rows' own whatever the tile's sort:
+    /// here `acme/zephyr` sorts first, and neither repo may go unpainted.
+    #[test]
+    fn a_mixed_case_owner_keeps_every_row_under_one_label() {
+        let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).unwrap();
+        let p = crate::github::repos_view(&crate::github::mixed_case_owner_state(now), now);
+        let source = source_view("ghWorkflows", "GitHub Repos", &p);
+        let tile = configured_tile(
+            "ghWorkflows",
+            json!({"rowLimit":"all","sortBy":"issues","sortDescending":true}),
+        );
+        let view = tile_view(&tile, &source);
+        assert_eq!(group_names(&view), ["Acme"]);
+        assert_eq!(list(&view, "rows").len(), 2);
+        for row in list(&view, "rows") {
+            assert_eq!(row["owner"], "Acme", "{}", row["id"]);
+        }
+        // Detail heads its rows from the source's, so they carry it too.
+        for row in list(&source, "rows") {
+            assert_eq!(row["owner"], "Acme", "{}", row["id"]);
+        }
+    }
+
+    #[test]
+    fn repos_sort_by_dependabot_and_name_each_header_slot() {
+        let tile = configured_tile("ghWorkflows", json!({"sortBy":"dependabot"}));
+        assert!(validate(&DashboardLayout {
+            revision: 0,
+            legacy_detail_views: Default::default(),
+            tiles: vec![tile.clone()],
+        })
+        .is_ok());
+        let view = tile_view(&tile, &owners_source());
+        let headers: Vec<&Value> = list(&view, "sortColumns")
+            .iter()
+            .map(|c| &c["header"])
+            .collect();
+        assert_eq!(
+            headers,
+            [
+                &Value::Null,
+                &json!("ISSUES"),
+                &json!("READY"),
+                &json!("PRS"),
+                &json!("DEP"),
+                &Value::Null
+            ]
+        );
     }
 
     #[test]
@@ -2051,7 +2538,8 @@ mod tests {
     fn old_tile_settings_keep_defaults_and_invalid_new_options_are_refused() {
         let old = json!({"id":"old","source":"ghWorkflows","title":"Repos","scope":"all","presentation":"summary","width":"medium"});
         let tile: DashboardTile = serde_json::from_value(old).unwrap();
-        let source = json!({"rows":(0..8).map(|i| json!({"id":i.to_string(),"label":i.to_string()})).collect::<Vec<_>>()});
+        // One owner, as every repo row has: the limit is per owner.
+        let source = json!({"rows":(0..8).map(|i| json!({"id":format!("o/{i}"),"label":i.to_string()})).collect::<Vec<_>>()});
         assert_eq!(list(&tile_view(&tile, &source), "rows").len(), 5);
         assert_eq!(tile.sort_by, "name");
         assert_eq!(tile.runner_view, "list");
@@ -3012,7 +3500,7 @@ mod tests {
                     .iter()
                     .map(|c| string(c, "header").to_owned())
                     .collect::<Vec<_>>(),
-                ["ISSUES", "READY", "PRS"]
+                ["ISSUES", "READY", "PRS", "DEP"]
             );
             assert!(
                 list(row, "metrics").is_empty(),
@@ -3022,30 +3510,37 @@ mod tests {
             assert!(
                 !labels(row, "details")
                     .iter()
-                    .any(|l| ["ISSUES", "READY", "PRS"].contains(&l.as_str())),
+                    .any(|l| ["ISSUES", "READY", "PRS", "DEP"].contains(&l.as_str())),
                 "{}: details repeat a metric",
                 row["label"]
             );
         }
         // pipe-fitting: 9 inclusive − 2 PRs, 3 Ready, 2 PRs.
-        assert_eq!(values(get("pipe-fitting")), ["7", "3", "2"]);
+        // …and 1 of those 2 PRs from Dependabot.
+        assert_eq!(values(get("pipe-fitting")), ["7", "3", "2", "1"]);
         assert_eq!(
             labels(get("pipe-fitting"), "counts"),
-            ["issues", "ready", "PRs"]
+            ["issues", "ready", "PRs", "dep"]
         );
         // A genuine zero is "0", not an em dash — and plural, like the dash.
-        assert_eq!(values(get("widget")), ["4", "0", "0"]);
-        assert_eq!(labels(get("widget"), "counts"), ["issues", "ready", "PRs"]);
-        // Exactly one is singular; `ready` has no plural.
-        assert_eq!(values(get("flywheel")), ["1", "0", "1"]);
-        assert_eq!(labels(get("flywheel"), "counts"), ["issue", "ready", "PR"]);
+        assert_eq!(values(get("widget")), ["4", "0", "0", "0"]);
+        assert_eq!(
+            labels(get("widget"), "counts"),
+            ["issues", "ready", "PRs", "dep"]
+        );
+        // Exactly one is singular; `ready` and `dep` have no plural.
+        assert_eq!(values(get("flywheel")), ["1", "0", "1", "0"]);
+        assert_eq!(
+            labels(get("flywheel"), "counts"),
+            ["issue", "ready", "PR", "dep"]
+        );
         // cogwheel's PAT could not read any side count; toolkit's runs failed.
-        assert_eq!(values(get("cogwheel")), ["—", "—", "—"]);
+        assert_eq!(values(get("cogwheel")), ["—", "—", "—", "—"]);
         assert_eq!(
             labels(get("cogwheel"), "counts"),
-            ["issues", "ready", "PRs"]
+            ["issues", "ready", "PRs", "dep"]
         );
-        assert_eq!(values(get("toolkit")), ["—", "—", "—"]);
+        assert_eq!(values(get("toolkit")), ["—", "—", "—", "—"]);
         // The detail line still names the longest run, found by column label
         // rather than a cell index that moves when a column joins.
         assert!(
@@ -3079,7 +3574,7 @@ mod tests {
         }
         assert_eq!(
             labels(get("widget"), "details"),
-            ["DEPENDABOT", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+            ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
         );
         // Who opened the PRs: a tooltip on the PRs count and a Detail field,
         // both verbatim from the Repos view; nothing over an unknown count.
@@ -3087,15 +3582,14 @@ mod tests {
         assert_eq!(prs("gadget")["title"], "5 open PRs · 3 from Dependabot");
         assert_eq!(prs("flywheel")["title"], "1 open PR · none from Dependabot");
         assert!(prs("cogwheel")["title"].is_null());
-        let dependabot = |name: &'static str| {
-            list(get(name), "details")
-                .iter()
-                .find(|d| d["label"] == "DEPENDABOT")
-                .map(|d| d["value"].clone())
-        };
-        assert_eq!(dependabot("gadget"), Some(json!("3")));
-        assert_eq!(dependabot("cogwheel"), Some(json!("—")));
-        assert_eq!(dependabot("toolkit"), Some(json!("—")));
+        // Dependabot's share is a count of its own, verbatim from the DEP
+        // cell, worded for a screen reader by Rust; nothing over an unknown.
+        let dep = |name: &'static str| list(get(name), "counts")[3].clone();
+        assert_eq!(dep("gadget")["value"], "3");
+        assert_eq!(dep("gadget")["title"], "3 from Dependabot");
+        assert_eq!(dep("cogwheel")["value"], "—");
+        assert!(dep("cogwheel")["title"].is_null());
+        assert_eq!(dep("toolkit")["value"], "—");
     }
 
     /// The CSS slots are hand-copied numbers; this is what ties them to the
@@ -3151,7 +3645,7 @@ mod tests {
             .iter()
             .map(|c| format!("{} {}", c["value"].as_str().unwrap(), string(c, "label")))
             .collect();
-        assert_eq!(strip, ["7 issues", "— ready", "2 PRs"]);
+        assert_eq!(strip, ["7 issues", "— ready", "2 PRs", "1 dep"]);
     }
 
     /// A plan is one Usage row under its own scope, carrying its meters, and it

@@ -326,6 +326,11 @@ struct App {
     /// both panels render from", and a delivery ledger inside it would make
     /// that sentence false.
     approvals: Mutex<github::notify::ApprovalWatch>,
+    /// What each account's last discovery walk found, by account: the list
+    /// the repos screen searches as the operator types. Filled when the
+    /// screen opens (`settings_discover_repos`), never persisted, and never a
+    /// credential — repo names only.
+    discovered: Mutex<std::collections::HashMap<Uuid, github::AccessibleRepos>>,
     /// The last known availability of each watched third-party service, for the
     /// same reason and with the same discipline as `approvals` above: a
     /// delivery ledger, not something a panel renders.
@@ -697,6 +702,10 @@ fn cockpit_payload(input: CockpitInput) -> Value {
         // The content columns each panel affords at this width. A panel's Full
         // view fills the window, so this is `panel_columns` over the window's
         // width; it travels as data for the reason `hostColumns` does.
+        // The Repos Full view's owner cards at this width: how many share a
+        // row and which columns they keep (`repo_cards`), data for the reason
+        // `panelColumns` is.
+        "repoCards": repo_cards_json(available),
         "panelColumns": viewmodel::cockpit::PanelKind::ALL
             .iter()
             .map(|kind| (kind.id().to_owned(), json!(viewmodel::cockpit::panel_columns(*kind, available, SPACING))))
@@ -707,6 +716,13 @@ fn cockpit_payload(input: CockpitInput) -> Value {
         // polling, so the sentence is made here, in one place.
         "overviewLoadFailed": dashboard::OVERVIEW_LOAD_FAILED,
     })
+}
+
+/// [`viewmodel::cockpit::repo_cards`] at the window's width, as the cockpit
+/// payload carries it.
+fn repo_cards_json(available: f64) -> Value {
+    let cards = viewmodel::cockpit::repo_cards(available, SPACING);
+    json!({"columns": cards.columns, "fields": cards.fields})
 }
 
 /// The write side of the poll loop, pulled out of the spawned task for the
@@ -5795,7 +5811,7 @@ fn settings_add_repo(
     settings_response(&state, status)
 }
 
-/// One discovery-picker checkbox: track or untrack `slug` for the account.
+/// One repo-search checkbox: track or untrack `slug` for the account.
 ///
 /// The decision is [`settings::tracked_change`]'s, made in one place and
 /// tested there: add, adopt (the explicit operator click that legitimises
@@ -5844,14 +5860,15 @@ fn settings_set_repo_tracked(
     settings_response(&state, status)
 }
 
-/// The discovery probe: everything this account's token can see, merged
-/// against the store into checkbox rows — the Services-probe pattern, one
-/// surface over. The answer is ephemeral: nothing here persists, so a failed
-/// or stale probe costs nothing but the sentence explaining it.
+/// The discovery probe: everything this account's token can see, kept in
+/// `App::discovered` for the repos screen's search, and summarised for the
+/// screen (how many, whether the walk was cut, the derived orgs) — the
+/// Services-probe pattern, one surface over. Nothing here persists, so a
+/// failed or stale probe costs nothing but the sentence explaining it.
 ///
 /// Unlike the poll loop this reads exactly one credential and fires exactly
-/// one walk, only when the operator opens the picker — discovery never rides
-/// a cadence.
+/// one walk, only when the operator opens the repos screen — discovery never
+/// rides a cadence.
 #[tauri::command]
 async fn settings_discover_repos(
     id: String,
@@ -5866,12 +5883,12 @@ async fn settings_discover_repos(
     };
     // Everything the answer needs, cloned out before the await — no lock is
     // ever held across one (`poll_github`'s rule, applied to a command).
-    let (account, repos, accounts) = {
+    let (account, accounts) = {
         let store = state.store.lock().expect("store poisoned");
         let Some(account) = store.account(account_id).cloned() else {
             return Ok(json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE }));
         };
-        (account, store.repos().to_vec(), store.accounts().to_vec())
+        (account, store.accounts().to_vec())
     };
     let token = match account_secret_key(&account) {
         None => return Ok(json!({ "id": id, "reason": ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE })),
@@ -5890,13 +5907,57 @@ async fn settings_discover_repos(
             .list_accessible_repos()
             .await
         {
-            Ok(found) => settings::discovery_answer(&account, &found, &repos, &accounts),
+            Ok(found) => {
+                let summary = settings::discovery_summary(&account, &found, &accounts);
+                // The list stays here, for the search; the screen gets the
+                // count, the cut and the orgs.
+                state
+                    .discovered
+                    .lock()
+                    .expect("discovered poisoned")
+                    .insert(account_id, found);
+                summary
+            }
             // A failed probe found something, and the finding is the product —
             // worded by the error's own `user_message`, never a bare transport
             // string.
             Err(e) => json!({ "id": id, "reason": e.user_message() }),
         },
     )
+}
+
+/// The repos screen's search over the list `settings_discover_repos` cached
+/// for this account. Before that walk lands there is nothing to search, and
+/// the answer says so (`pending`) rather than "nothing matches"; an unknown
+/// account gets the same sentence the discovery does.
+fn search_repos(app: &App, id: &str, query: &str) -> Value {
+    let Ok(account_id) = Uuid::parse_str(id) else {
+        return json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE });
+    };
+    let (account, repos, accounts) = {
+        let store = app.store.lock().expect("store poisoned");
+        let Some(account) = store.account(account_id).cloned() else {
+            return json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE });
+        };
+        (account, store.repos().to_vec(), store.accounts().to_vec())
+    };
+    let discovered = app.discovered.lock().expect("discovered poisoned");
+    match discovered.get(&account_id) {
+        Some(found) => settings::search_answer(&account, found, &repos, &accounts, query),
+        // No list to search, but a full owner/name can still be added.
+        None => json!({
+            "id": id,
+            "query": query,
+            "pending": true,
+            "results": [],
+            "addByName": settings::add_by_name_offer(query, &repos, &[]),
+        }),
+    }
+}
+
+#[tauri::command]
+fn settings_search_repos(id: String, query: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    search_repos(&state, &id, &query)
 }
 
 #[tauri::command]
@@ -6718,6 +6779,12 @@ fn dump_showcase_dashboard() -> Value {
     )
 }
 
+/// The Repos panel over three owners of uneven sizes (`--dump-repos --owners`).
+fn dump_github_owners() -> Value {
+    let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
+    github::repos_view(&github::owners_fixture_state(now), now)
+}
+
 fn dump_github_showcase(runners: bool) -> Value {
     let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
     let state = github::showcase_state(now);
@@ -7237,6 +7304,25 @@ fn dump_dashboard() -> Value {
 /// The same readings under another layout, so a fixture can hold a Rust-authored
 /// attention chip target for a layout the default does not have.
 fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
+    dump_dashboard_with(layout, dump_github(false, false))
+}
+
+/// The overview over the three-owner Repos fixture (`--dump-dashboard
+/// --owners`): one wide tile showing every repo, so Cards packs at full width,
+/// and one medium tile limited to 5 per owner.
+fn dump_owners_dashboard() -> Value {
+    let mut layout = dashboard::default_layout();
+    let mut all = store::DashboardTile::new("repos-all", "ghWorkflows", "GitHub Repos", "all");
+    all.width = "wide".into();
+    all.row_limit = "all".into();
+    let mut five = store::DashboardTile::new("repos-five", "ghWorkflows", "Five Per Owner", "all");
+    five.width = "medium".into();
+    five.row_limit = "5".into();
+    layout.tiles = vec![all, five];
+    dump_dashboard_with(&layout, dump_github_owners())
+}
+
+fn dump_dashboard_with(layout: &store::DashboardLayout, repos: Value) -> Value {
     let mut hosts = dump_cockpit(1200.0, 3, HostOverflowMode::Stack);
     hosts["id"] = json!("hosts");
     // The Machines tile's GPU meters need a GPU to draw: ubu-01 serves a local
@@ -7261,7 +7347,7 @@ fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
     cadences.set_panel_interval_secs(store::settings::PanelInterval::AzureCost, 6 * 3600);
     let mut payloads = vec![
         hosts,
-        dump_github(false, false),
+        repos,
         dump_github(false, true),
         dump_containers(false),
         services::view(&services::fixture_statuses(), true),
@@ -7326,6 +7412,8 @@ fn run_dump(args: &[String]) -> bool {
             dump_showcase_dashboard()
         } else if args.iter().any(|arg| arg == "--chips") {
             dump_dashboard_of(&chips_layout())
+        } else if args.iter().any(|arg| arg == "--owners") {
+            dump_owners_dashboard()
         } else {
             dump_dashboard()
         };
@@ -7432,6 +7520,8 @@ fn run_dump(args: &[String]) -> bool {
     if let Some(path) = dump_flag_path(args, "--dump-repos", "sample-repos.json") {
         if showcase {
             write_json(&path, &dump_github_showcase(false));
+        } else if args.iter().any(|arg| arg == "--owners") {
+            write_json(&path, &dump_github_owners());
         } else {
             write_json(&path, &dump_github(empty, false));
         }
@@ -7694,6 +7784,7 @@ fn new_app(
         openclaw: Mutex::new(OpenClawState::new()),
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+        discovered: Mutex::new(std::collections::HashMap::new()),
         service_status: Mutex::new(services::StatusWatch::new()),
         services: Mutex::new(services::ServiceStatuses::new()),
         host_reachability: Mutex::new(services::HostWatch::new()),
@@ -7998,6 +8089,7 @@ fn main() {
             settings_set_repo_account,
             settings_set_repo_tracked,
             settings_discover_repos,
+            settings_search_repos,
             settings_save_account,
             settings_set_account_enabled,
             settings_set_account_org,
@@ -10189,6 +10281,17 @@ mod tests {
                 "{kind:?}"
             );
         }
+        // The Repos Full view's cards: how many share a row and which columns
+        // they keep, from the same width (`repo_cards`).
+        assert_eq!(narrow["repoCards"]["columns"], json!(1));
+        assert_eq!(
+            wide["repoCards"]["columns"],
+            json!(viewmodel::cockpit::REPO_CARD_MAX_COLUMNS)
+        );
+        assert_eq!(
+            wide["repoCards"]["fields"],
+            json!(viewmodel::cockpit::REPO_CARD_FIELDS)
+        );
     }
 
     /// Every sentence the page shows when one of its two reads fails is Rust's:
@@ -11439,8 +11542,9 @@ mod tests {
         assert_eq!(vm["hostCardMinWidth"], 900.0);
         // Nothing arranges panels any more (#647), and the gaps are the
         // dashboard's. The payload is exactly the host cards' sizing, the
-        // columns each panel affords the window, the overview's empty line and
-        // its load-failure sentence.
+        // columns each panel affords the window, the Repos Full view's cards
+        // at this width, the overview's empty line and its load-failure
+        // sentence.
         let mut keys: Vec<&str> = vm
             .as_object()
             .expect("object")
@@ -11458,6 +11562,7 @@ mod tests {
                 "hosts",
                 "overviewLoadFailed",
                 "panelColumns",
+                "repoCards",
                 "volumeSlots",
             ]
         );
@@ -11896,6 +12001,63 @@ mod tests {
     // `settings_add_repo` is a Tauri command and cannot be called from a test,
     // so these exercise the two lines it is made of — `settings::new_repo`
     // followed by `Store::upsert_repo` — against a real store file.
+
+    /// The repos screen searches what the account's discovery walk found, and
+    /// before that walk lands there is nothing to search: the answer says it
+    /// is pending rather than "nothing matches".
+    #[test]
+    fn search_before_discovery_is_pending() {
+        let (_dir, _rt, app) = test_app();
+        let account = VendorAccount::new(VendorKind::GitHub, "work", "");
+        let id = account.id;
+        app.store.lock().unwrap().upsert_account(account);
+        let answer = search_repos(&app, &id.to_string(), "acme");
+        assert_eq!(answer["pending"], json!(true));
+        assert_eq!(answer["query"], "acme");
+        assert!(
+            answer["countLabel"].is_null(),
+            "no list, no count: {answer}"
+        );
+        // A list that never arrived (a failed walk) still lets a full
+        // owner/name be added by name, as the retired modal's field did.
+        let by_name = search_repos(&app, &id.to_string(), "globex/ledger");
+        assert_eq!(by_name["pending"], json!(true));
+        assert_eq!(by_name["addByName"]["slug"], "globex/ledger");
+        let unknown = search_repos(&app, "not-a-uuid", "acme");
+        assert_eq!(unknown["reason"], UNKNOWN_ACCOUNT_MESSAGE);
+        let missing = search_repos(&app, &Uuid::from_u128(77).to_string(), "acme");
+        assert_eq!(missing["reason"], UNKNOWN_ACCOUNT_MESSAGE);
+    }
+
+    #[test]
+    fn search_reads_the_discovered_list() {
+        let (_dir, _rt, app) = test_app();
+        let account = VendorAccount::new(VendorKind::GitHub, "work", "");
+        let id = account.id;
+        app.store.lock().unwrap().upsert_account(account);
+        let repo = |name: &str| github::RepoRef {
+            full_name: name.into(),
+            owner_login: "acme".into(),
+            owner_is_org: true,
+            archived: false,
+        };
+        app.discovered.lock().unwrap().insert(
+            id,
+            github::AccessibleRepos {
+                repos: vec![repo("acme/claims-web"), repo("acme/billing")],
+                truncated: false,
+            },
+        );
+        let answer = search_repos(&app, &id.to_string(), "claims");
+        let slugs: Vec<&str> = answer["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|r| r["slug"].as_str().unwrap())
+            .collect();
+        assert_eq!(slugs, ["acme/claims-web"]);
+        assert_eq!(answer["countLabel"], "1 of 2 match");
+    }
 
     /// A scratch store carrying `count` GitHub accounts, each pointing at its
     /// own credential item exactly as `settings::validated_account` mints them.

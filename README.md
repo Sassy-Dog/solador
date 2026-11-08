@@ -77,8 +77,9 @@ Machines includes colored CPU/RAM utilization bars, GPU and GPU-memory meters
 strip for the fullest volume, and persistent acknowledgements for expected
 warnings on a specific machine and metric; critical alerts still need attention.
 Volumes you don't care about can be hidden per machine from the tile, Detail or Settings,
-and a Machines tile can drop its Disk strip. GitHub Repos supports
-per-tile repository selection, sortable columns and an All rows option.
+and a Machines tile can drop its Disk strip. GitHub Repos groups
+repos by the owner they live under, as one card per owner or one table with a section
+per owner, and supports per-tile repository selection, sortable columns and an All rows option.
 Runners can show every individual runner or counts grouped by OS and architecture,
 optionally split by runner labels you list in the GitHub Runners tile's Configure — `runner-large`,
 say, to see large and small runners apart. Only an OS and architecture where a runner
@@ -88,7 +89,7 @@ carries one splits, and Detail and Full show every runner's labels.
 |---|---|
 | **Hosts** | CPU, memory, disk, network, GPU, battery — this machine, plus any host you can reach that runs the [agent](agent/) |
 | **Containers / VMs** | docker, podman and tart, locally and on every host |
-| **GitHub Repos** | running workflows, longest-running elapsed, branch and worktree counts |
+| **GitHub Repos** | running workflows, open issues, ready work and PRs (with Dependabot's count), longest-running elapsed, branch and worktree counts, grouped by owner |
 | **GitHub Runners** | your self-hosted runners, with an absence roster for the ones that should be there and aren't |
 | **Anthropic** | whichever you set up: Claude's plan limits (the plan's name, a meter per 5-hour and weekly window it has or an Enterprise seat's dollar budget, and whether the current pace runs out before the reset), your organization's API spend this month, and this machine's Claude Code token rollups |
 | **OpenAI** | Codex's plan limits and your organization's API spend this month, each only if you set it up |

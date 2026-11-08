@@ -36,7 +36,19 @@ const TEST_RESULT = "✓ ubu-01 · agent v0.4.0";
  * (`{status, settings}`), so the frontend's "re-render from what was
  * persisted" contract is exercised rather than mocked away.
  */
-async function stubIpc(page, cockpit, settings, probe, updates, discover) {
+async function stubIpc(page, cockpit, settings, probe, updates, discover, search) {
+  // Discovery and search answer from Node, so a test can delay one reply or
+  // shape it from the arguments. `exposeFunction` rather than a stringified
+  // callback: the page runs under the app's CSP, which refuses eval.
+  // A binding registers once per page, and some tests stub twice; each call
+  // swaps the callbacks behind it instead.
+  if (!page.repoStubs) {
+    page.repoStubs = {};
+    await page.exposeFunction("__discoverRepos__", (args) => page.repoStubs.discover(args));
+    await page.exposeFunction("__searchRepos__", (args) => page.repoStubs.search(args));
+  }
+  page.repoStubs.discover = typeof discover === "function" ? discover : defaultDiscovery(settings, discover);
+  page.repoStubs.search = search || searchOver(settings);
   await page.addInitScript(
     ({ cockpit, settings, testResult, probe, updates, discover }) => {
       window.__CALLS__ = [];
@@ -57,8 +69,10 @@ async function stubIpc(page, cockpit, settings, probe, updates, discover) {
             if (command === "settings_save_source") {
               return window.__SAVE_SOURCE__ || { status: `${args.kind === "anthropic" ? "Anthropic" : "Source"} saved.`, settings, saved: true };
             }
-            // The discovery probe likewise — ephemeral, never persisted.
-            if (command === "settings_discover_repos") return discover;
+            // The discovery probe likewise — ephemeral, never persisted —
+            // and the search over what it found.
+            if (command === "settings_discover_repos") return window.__discoverRepos__(args);
+            if (command === "settings_search_repos") return window.__searchRepos__(args);
             // The three updater commands answer in the About tab's own
             // `about.updates` shape — not `{status, settings}` — because an
             // update check is not a settings mutation and nothing is
@@ -75,20 +89,73 @@ async function stubIpc(page, cockpit, settings, probe, updates, discover) {
       testResult: TEST_RESULT,
       probe: probe || null,
       updates: updates || settings.about.updates,
-      discover: discover || null,
     }
   );
 }
+
+/** What a token at a large organization's scale reads: 900 made-up services, five
+ *  `claims-*` repos, one archived, plus the fixture's own tracked repos.
+ *  Names are invented; no real organization's repos belong in this repo. */
+const GRANTED = [
+  ...Array.from({ length: 900 }, (_, i) => `acme/svc-${String(i + 1).padStart(3, "0")}`),
+  "acme/claims-api", "acme/claims-batch", "acme/claims-docs", "acme/claims-etl", "acme/claims-web",
+  "acme/legacy-vault", "acme/gadget", "acme/widget",
+];
+const ARCHIVED = new Set(["acme/legacy-vault"]);
+/** Watched by the fixture's other account, so its row names that account. */
+const FOREIGN = { "acme/claims-web": "personal" };
+const untrackPrompt = (slug) => `Stop tracking ${slug}? Its watched workflows (release.yml) are forgotten.`;
+
+/** The summary `settings_discover_repos` answers with, for whichever account
+ *  asked. A test passes its own object (a failure's `reason`, orgs) instead. */
+const defaultDiscovery = (settings, given) => async (args) =>
+  given || {
+    id: args.id,
+    total: GRANTED.length,
+    totalLabel: `This token can read ${GRANTED.length} repos`,
+    truncatedNote: null,
+    orgs: [],
+    reason: null,
+  };
+
+/** A stand-in for Rust's `search_answer` at this scale: substring matches,
+ *  this account's tracked first, at most 50, with the count, the overflow and
+ *  Add by name. Matching itself is tested in Rust; this only has to answer. */
+const searchOver = (settings) => async ({ id, query }) => {
+  const account = settings.accounts.rows.find((row) => row.id === id);
+  const mine = new Set((account?.repos || []).map((repo) => repo.slug.toLowerCase()));
+  const q = query.trim().toLowerCase();
+  if (!q) return { id, query, results: [], countLabel: null, moreLabel: null, addByName: null };
+  const rows = GRANTED.filter((slug) => slug.toLowerCase().includes(q))
+    .map((slug) => {
+      const start = slug.toLowerCase().indexOf(q);
+      const tracked = mine.has(slug.toLowerCase());
+      return {
+        slug, tracked, trackedBy: FOREIGN[slug] || null, granted: true, archived: ARCHIVED.has(slug),
+        untrackPrompt: tracked ? untrackPrompt(slug) : null, matchStart: start, matchEnd: start + q.length,
+      };
+    })
+    .sort((a, b) => (a.tracked === b.tracked ? a.slug.localeCompare(b.slug) : a.tracked ? -1 : 1));
+  const listed = GRANTED.some((slug) => slug.toLowerCase() === q);
+  const slug = query.trim();
+  return {
+    id, query,
+    results: rows.slice(0, 50),
+    countLabel: `${rows.length} of ${GRANTED.length} match`,
+    moreLabel: rows.length > 50 ? `${rows.length - 50} more match — keep typing` : null,
+    addByName: q.includes("/") && !listed && !mine.has(q) ? { label: `Add ${slug} by name`, slug } : null,
+  };
+};
 
 const calls = (page, command) =>
   page.evaluate((c) => window.__CALLS__.filter((call) => call.command === c), command);
 
 /** Loads the app with the IPC stub installed and opens Settings. */
-async function openSettings(page, baseURL, probe, updates, discover, edit) {
+async function openSettings(page, baseURL, probe, updates, discover, edit, search) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
   edit?.(settings);
-  await stubIpc(page, cockpit, settings, probe, updates, discover);
+  await stubIpc(page, cockpit, settings, probe, updates, discover, search);
   await page.goto("/index.html");
   await expect(page.locator(SETTINGS_BUTTON)).toBeVisible();
   await page.locator(SETTINGS_BUTTON).click();
@@ -960,23 +1027,42 @@ test("a credential with nothing stored offers nothing to clear", async ({ page, 
   await expect(box.locator(".badge-ok")).toHaveCount(0);
 });
 
-test("repos live under their account card, edited behind Configure", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
+/** Opens the owning account's editor and waits for its discovery to answer:
+ *  the search field is disabled until then. */
+async function openRepos(page, settings) {
   await tab(page, "accounts").click();
   const { owning } = accountsOf(settings);
   const card = page.locator(`.group[data-account="${owning.id}"]`);
+  const field = page.locator(`#repo-search-${owning.id}`);
+  return { owning, card, field };
+}
 
-  const rows = card.locator(".repo-row[data-repo]");
-  await expect(rows).toHaveCount(owning.repos.length);
-  await expect(rows.first().locator(".slug")).toHaveText(owning.repos[0].slug);
+const rowsOf = (card) => card.locator(".search-row");
+const slugsOf = (card) => rowsOf(card).evaluateAll((rows) => rows.map((row) => row.dataset.pick));
 
-  // The card is just the list plus one way in: Configure repos… opens the
-  // modal; the old inline picker and add-by-name disclosure are gone.
-  await expect(card.locator(".btn.configure-repos")).toBeVisible();
-  await expect(card.locator(".btn.add-by-name")).toHaveCount(0);
-  await expect(card.locator(".btn.choose-repos")).toHaveCount(0);
+test("repos live under their account card, grouped by owner", async ({ page, baseURL }) => {
+  // A second owner on the same account, in the shape Rust groups it.
+  const settings = await openSettings(page, baseURL, null, null, null, (s) => {
+    const owning = s.accounts.rows.find((row) => row.repos.length > 0);
+    const rocket = { slug: "globex/rocket", enabled: true, workflows: "", accountMissing: false };
+    owning.repos.push(rocket);
+    owning.repoGroups.push({ owner: "globex", label: "globex · 1", repos: [rocket] });
+  });
+  const { owning, card } = await openRepos(page, settings);
+  const groups = owning.repoGroups;
+  expect(groups.length, "the fixture must carry two owners").toBe(2);
 
-  const first = owning.repos[0].slug;
+  // Each owner's heading, then its repos, in Rust's order.
+  const sequence = await card.locator(".repo-owner, .repo-row[data-repo]").evaluateAll((els) =>
+    els.map((el) => el.dataset.owner ? `# ${el.textContent}` : el.dataset.repo));
+  expect(sequence).toEqual(groups.flatMap((g) => [`# ${g.label}`, ...g.repos.map((r) => r.slug)]));
+  await expect(card.locator(".repo-owner").first()).toHaveAttribute("data-owner", groups[0].owner);
+
+  // No popup and no button into one.
+  await expect(card.locator(".btn.configure-repos")).toHaveCount(0);
+  await expect(page.locator(".modal, .modal-scrim")).toHaveCount(0);
+
+  const first = groups[0].repos[0].slug;
   const row = card.locator(`.repo-row[data-repo="${first}"]`);
   const config = row.locator('[data-disclosure="configure"]');
   await expect(config).toBeHidden();
@@ -1010,114 +1096,208 @@ test("repos live under their account card, edited behind Configure", async ({ pa
 });
 
 /**
- * The Configure repos… modal: every grant as a checkbox row, the already-
- * tracked ones checked (state read from the live view), a foreign repo
- * disabled with its owner named, a reported truncation, the untrack
- * two-step exactly when Rust sent a consequence, add-by-name in the footer,
- * and three ways out — Close, the scrim, and Escape.
+ * The search that replaced the Configure repos… modal: matches as you type
+ * over ~900 repos, the match in bold, the row badges the picker carried, and
+ * the untrack two-step exactly when Rust sent a consequence.
  */
-test("the repo modal checkboxes the grants and two-steps a costly untrack", async ({
-  page,
-  baseURL,
-}) => {
-  const cockpit = await fixture(baseURL, "sample-cockpit.json");
-  const settings = await fixture(baseURL, "sample-settings.json");
-  const owning = settings.accounts.rows.find((row) => row.repos.length > 0);
-  const tracked = owning.repos[0];
-  const discover = {
-    id: owning.id,
-    repos: [
-      { slug: "acme/fresh", tracked: false, trackedBy: null, granted: true, archived: false, untrackPrompt: null },
-      { slug: tracked.slug, tracked: true, trackedBy: null, granted: true, archived: false,
-        untrackPrompt: "Stop tracking " + tracked.slug + "? Its watched workflows (release.yml) are forgotten." },
-      { slug: "acme/vault", tracked: false, trackedBy: "personal", granted: true, archived: true, untrackPrompt: null },
-    ],
-    orgs: [{ name: "beta", selected: false, selectedBy: null }],
-    truncated: true,
-    truncatedNote: "the walk was cut short",
-    reason: null,
-  };
-  await stubIpc(page, cockpit, settings, null, null, discover);
-  await page.goto("/index.html");
-  await page.locator(SETTINGS_BUTTON).click();
-  await tab(page, "accounts").click();
+test("searching lists matches as you type and two-steps a costly untrack", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { owning, card, field } = await openRepos(page, settings);
+  const t = settings.accounts;
+  await expect(field).toBeEnabled();
+  await expect(field).toHaveAttribute("placeholder", t.searchPlaceholder);
+  await expect(page.locator(`label[for="repo-search-${owning.id}"]`)).toHaveText(t.searchLabel);
+  await expect(rowsOf(card), "an empty box lists nothing").toHaveCount(0);
 
-  const card = page.locator(`.group[data-account="${owning.id}"]`);
-  await card.locator(".btn.configure-repos").click();
-  const picker = page.locator(`.modal[data-picker="${owning.id}"]`);
-  await expect(picker).toBeVisible();
-  await expect(picker, "the modal names its account").toContainText(owning.label);
-  await expect(picker.locator('[data-pick="acme/fresh"] .toggle')).not.toBeChecked();
-  const trackedRow = picker.locator(`[data-pick="${tracked.slug}"]`);
-  await expect(
-    trackedRow.locator(".toggle"),
-    "the checkbox reads the live view, not the probe snapshot"
-  ).toBeChecked();
-  const foreign = picker.locator('[data-pick="acme/vault"]');
+  await field.fill("claims");
+  await expect(rowsOf(card)).toHaveCount(5);
+  await expect(card.locator(".search-row b")).toHaveText(Array(5).fill("claims"));
+  await expect(rowsOf(card).first().locator(".slug")).toHaveText("acme/claims-api");
+  await expect(card.locator(".search-count")).toHaveText(`5 of ${GRANTED.length} match`);
+
+  // Watched by the other account: named, and not this card's to tick.
+  const foreign = card.locator('[data-pick="acme/claims-web"]');
+  await expect(foreign).toContainText(t.fetchedByLabel);
+  await expect(foreign).toContainText("personal");
   await expect(foreign.locator(".toggle")).toBeDisabled();
-  await expect(foreign, "a foreign repo names its owner").toContainText("personal");
-  await expect(foreign).toContainText(settings.accounts.archivedLabel);
-  await expect(picker, "a cut walk says so").toContainText(discover.truncatedNote);
 
-  await picker.locator('[data-pick="acme/fresh"] .toggle').click();
+  await card.locator('[data-pick="acme/claims-api"] .toggle').click();
   expect(await calls(page, "settings_set_repo_tracked")).toEqual([
-    {
-      command: "settings_set_repo_tracked",
-      args: { id: owning.id, slug: "acme/fresh", tracked: true },
-    },
+    { command: "settings_set_repo_tracked", args: { id: owning.id, slug: "acme/claims-api", tracked: true } },
   ]);
 
-  // Unchecking the one with a consequence waits for the operator's answer —
-  // Rust's sentence, verbatim, and nothing sent until Proceed.
-  const confirm = trackedRow.locator('[data-confirm="untrack"]');
+  await field.fill("vault");
+  await expect(card.locator('[data-pick="acme/legacy-vault"]')).toContainText(t.archivedLabel);
+
+  // This account's own: ticked and marked, and unticking waits for the
+  // operator's answer to Rust's sentence, verbatim.
+  await field.fill("gadget");
+  const watched = card.locator('[data-pick="acme/gadget"]');
+  await expect(watched.locator(".toggle")).toBeChecked();
+  await expect(watched).toContainText(t.watchingLabel);
+  const confirm = watched.locator('[data-confirm="untrack"]');
   await expect(confirm).toBeHidden();
-  await trackedRow.locator(".toggle").click();
+  await watched.locator(".toggle").click();
   await expect(confirm).toBeVisible();
-  await expect(confirm.locator(".confirm")).toHaveText(discover.repos[1].untrackPrompt);
+  await expect(confirm.locator(".confirm")).toHaveText(untrackPrompt("acme/gadget"));
   expect((await calls(page, "settings_set_repo_tracked")).length).toBe(1);
+  await expect(confirm.locator(".btn.untrack-proceed")).toHaveText(t.untrackLabel);
   await confirm.locator(".btn.untrack-proceed").click();
   expect((await calls(page, "settings_set_repo_tracked")).at(-1)).toEqual({
     command: "settings_set_repo_tracked",
-    args: { id: owning.id, slug: tracked.slug, tracked: false },
+    args: { id: owning.id, slug: "acme/gadget", tracked: false },
   });
+});
 
-  // Add by name lives in the modal footer, and the add carries the card's
-  // own account — the attribution is the operator's answer, not a deduction.
-  const add = picker.locator(".btn.repo-add");
-  await expect(add).toBeDisabled();
-  await page.locator(`#repo-slug-${owning.id}`).fill("gadget");
-  await expect(add, "a bare name is not owner/name").toBeDisabled();
-  await page.locator(`#repo-slug-${owning.id}`).fill("acme/lathe");
-  await expect(add).toBeEnabled();
+test("a query matching more than fifty says how many more", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { card, field } = await openRepos(page, settings);
+  await field.fill("svc");
+  await expect(rowsOf(card)).toHaveCount(50);
+  await expect(card.locator(".search-more")).toHaveText("850 more match — keep typing");
+});
+
+test("a full owner/name that isn't listed offers Add by name", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { owning, card, field } = await openRepos(page, settings);
+  // A listed repo is ticked, not added. The row first, so the answer has
+  // landed before the absence is asserted.
+  await field.fill("acme/claims-api");
+  await expect(card.locator('[data-pick="acme/claims-api"]')).toBeVisible();
+  await expect(card.locator(".btn.repo-add"), "a listed repo offers no add").toHaveCount(0);
+  await field.fill("globex/ledger");
+  const add = card.locator(".btn.repo-add");
+  await expect(add).toHaveText("Add globex/ledger by name");
   await add.click();
   expect(await calls(page, "settings_add_repo")).toEqual([
-    { command: "settings_add_repo", args: { slug: "acme/lathe", accountId: owning.id } },
+    { command: "settings_add_repo", args: { slug: "globex/ledger", accountId: owning.id } },
   ]);
-  await expect(page.locator(`#repo-slug-${owning.id}`)).toHaveValue("");
+  // Submitted, so cleared, as the old slug field was.
+  await expect(field).toHaveValue("");
+});
 
-  // The discovery's derived org is offered inside the modal — on the card it
-  // would sit behind this very scrim.
-  await picker.locator('[data-discovered-org="beta"] .btn.org-watch').click();
-  expect((await calls(page, "settings_set_account_org")).at(-1)).toEqual({
-    command: "settings_set_account_org",
-    args: { id: owning.id, org: "beta", selected: true },
-  });
+test("ticking a result keeps the query and raises no unsaved prompt", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { card, field } = await openRepos(page, settings);
+  await field.fill("claims");
+  await card.locator('[data-pick="acme/claims-api"] .toggle').click();
+  await expect.poll(async () => (await calls(page, "settings_set_repo_tracked")).length).toBe(1);
+  // The mutation re-renders the card; the box and its results come back.
+  await expect(field).toHaveValue("claims");
+  await expect(rowsOf(card)).toHaveCount(5);
+  // A query is not an edit, so leaving asks nothing.
+  await page.locator('.tab[data-tab="connections"]').click();
+  await expect(page.locator(".connection-row").first()).toBeVisible();
+  await expect(page.locator("#settingsConfirm")).toBeHidden();
+});
 
-  // Three ways out, all of them forgetting the probe: Close…
-  await picker.locator(".btn.picker-close").click();
-  await expect(page.locator(".modal-scrim")).toHaveCount(0);
-  // …the scrim (a click on the panel itself must NOT close it)…
-  await card.locator(".btn.configure-repos").click();
-  await expect(picker).toBeVisible();
-  await picker.click({ position: { x: 10, y: 10 } });
-  await expect(picker, "a click inside the panel is not a dismissal").toBeVisible();
-  await page.locator(".modal-scrim").click({ position: { x: 5, y: 5 } });
-  await expect(page.locator(".modal-scrim")).toHaveCount(0);
-  // …and Escape.
-  await card.locator(".btn.configure-repos").click();
-  await expect(picker).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.locator(".modal-scrim")).toHaveCount(0);
+test("a slow reply for an older query never overwrites the newer one", async ({ page, baseURL }) => {
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const answer = searchOver(settings);
+  const slowFirst = async (args) => {
+    if (args.query === "cl") await new Promise((resolve) => setTimeout(resolve, 300));
+    return answer(args);
+  };
+  await openSettings(page, baseURL, null, null, null, null, slowFirst);
+  const { card, field } = await openRepos(page, settings);
+  await expect(field).toBeEnabled();
+  await field.fill("cl");
+  await field.fill("claims");
+  await expect(rowsOf(card)).toHaveCount(5);
+  await page.waitForTimeout(400);
+  expect(await slugsOf(card)).toEqual([
+    "acme/claims-api", "acme/claims-batch", "acme/claims-docs", "acme/claims-etl", "acme/claims-web",
+  ]);
+  await expect(card.locator(".search-count")).toHaveText(`5 of ${GRANTED.length} match`);
+});
+
+test("a failed discovery says why instead of an empty list", async ({ page, baseURL }) => {
+  const reason = "GitHub refused this account's token. Replace it in this account's settings.";
+  const settings = await openSettings(page, baseURL, null, null, { id: "any", reason });
+  const { card, field } = await openRepos(page, settings);
+  await expect(card.locator("p.confirm", { hasText: reason })).toBeVisible();
+  await expect(card).not.toContainText(settings.accounts.discoverPendingLabel);
+  // Still open: a full owner/name can be added without the list.
+  await expect(field).toBeEnabled();
+});
+
+test("a discovery call that never answers says so instead of loading forever", async ({ page, baseURL }) => {
+  const refused = async () => { throw new Error("the IPC call was refused"); };
+  const settings = await openSettings(page, baseURL, null, null, refused);
+  const { card } = await openRepos(page, settings);
+  await expect(card.locator("p.confirm", { hasText: settings.accounts.discoverFailedLabel })).toBeVisible();
+  await expect(card).not.toContainText(settings.accounts.discoverPendingLabel);
+});
+
+test("the search box says it is loading until discovery answers", async ({ page, baseURL }) => {
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const answer = defaultDiscovery(settings);
+  const slow = async (args) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return answer(args);
+  };
+  await openSettings(page, baseURL, null, null, slow);
+  const { card, field } = await openRepos(page, settings);
+  await expect(field).toBeDisabled();
+  await expect(card.locator(".repo-search-note")).toHaveText(settings.accounts.discoverPendingLabel);
+  await expect(field).toBeEnabled();
+  await expect(card.locator(".repo-search-note")).toHaveText(`This token can read ${GRANTED.length} repos`);
+  // Opening the editor asks once, and the re-render that follows doesn't ask again.
+  expect((await calls(page, "settings_discover_repos")).length).toBe(1);
+});
+
+test("arrow keys and Enter toggle the highlighted result; Escape clears", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { owning, card, field } = await openRepos(page, settings);
+  await field.fill("claims");
+  await expect(rowsOf(card)).toHaveCount(5);
+  await field.press("ArrowDown");
+  await expect(rowsOf(card).nth(0)).toHaveAttribute("data-active", "true");
+  await field.press("ArrowDown");
+  await expect(rowsOf(card).nth(1)).toHaveAttribute("data-active", "true");
+  await expect(card.locator('.search-row[data-active="true"]')).toHaveCount(1);
+  await field.press("ArrowUp");
+  await field.press("ArrowDown");
+  await field.press("Enter");
+  await expect.poll(() => calls(page, "settings_set_repo_tracked")).toEqual([
+    { command: "settings_set_repo_tracked", args: { id: owning.id, slug: "acme/claims-batch", tracked: true } },
+  ]);
+  // The re-render hands the box its focus back, caret at the end.
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue("claims");
+  await field.press("Escape");
+  await expect(field).toHaveValue("");
+  await expect(rowsOf(card)).toHaveCount(0);
+});
+
+test("discovered organizations are offered on the card", async ({ page, baseURL }) => {
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const { owning } = accountsOf(settings);
+  const discover = {
+    id: owning.id,
+    total: 3,
+    totalLabel: "This token can read 3 repos",
+    truncatedNote: "the walk was cut short",
+    orgs: [
+      { name: "acme", selected: true, selectedBy: null },
+      { name: "beta", selected: false, selectedBy: null },
+      { name: "gamma", selected: false, selectedBy: "personal" },
+    ],
+    reason: null,
+  };
+  await openSettings(page, baseURL, null, null, discover);
+  const { card } = await openRepos(page, settings);
+  await expect(card, "a cut walk says so").toContainText(discover.truncatedNote);
+  const orgs = card.locator(`[data-orgs="${owning.id}"]`);
+  await expect(orgs.locator('[data-discovered-org="acme"]'), "already watched").toHaveCount(0);
+  const gamma = orgs.locator('[data-discovered-org="gamma"]');
+  await expect(gamma).toContainText(settings.accounts.watchedByLabel);
+  await expect(gamma).toContainText("personal");
+  await expect(gamma.locator(".org-watch")).toHaveCount(0);
+  await orgs.locator('[data-discovered-org="beta"] .btn.org-watch').click();
+  expect(await calls(page, "settings_set_account_org")).toEqual([
+    { command: "settings_set_account_org", args: { id: owning.id, org: "beta", selected: true } },
+  ]);
 });
 
 /**

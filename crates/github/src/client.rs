@@ -34,10 +34,12 @@ const RUNS_PER_PAGE: &str = "30";
 /// an org with more runners than this is read page by page, never truncated.
 const RUNNERS_PER_PAGE: &str = "100";
 
-/// The discovery walk's page backstop: 10 pages × 100 per page = 1,000 repos,
-/// an order of magnitude past any portfolio this cockpit tracks. Hitting it
-/// sets [`discovery::AccessibleRepos::truncated`] rather than looping on.
-pub const DISCOVERY_PAGE_CAP: usize = 10;
+/// The discovery walk's page backstop: 50 pages × 100 per page = 5,000 repos.
+/// An organization this cockpit watches can hold close to a thousand, and the
+/// repos screen searches the whole list, so the cap sits well past that.
+/// Hitting it sets [`discovery::AccessibleRepos::truncated`] rather than
+/// looping on.
+pub const DISCOVERY_PAGE_CAP: usize = 50;
 /// Pages of 100 the open-PR walk reads before refusing: 1,000 open PRs. Past
 /// it the walk reports [`GitHubError::TooManyToCount`], never a truncation.
 pub const PULLS_PAGE_CAP: usize = 10;
@@ -351,16 +353,18 @@ impl GitHubClient {
         )))
     }
 
-    /// Every repository the token can access — Settings' discovery picker.
+    /// Every repository the token can access — what Settings' repo search
+    /// looks through.
     ///
     /// `GET /user/repos`, 100 per page, server-side `full_name` sort (a
-    /// stable picker order the client does not have to invent), walking each
+    /// stable order the client does not have to invent), walking each
     /// advertised `rel="next"` up to [`DISCOVERY_PAGE_CAP`] pages. The cap is
-    /// a runaway backstop an order of magnitude past any real portfolio, and
-    /// hitting it is **reported** (`truncated`) rather than silent — a picker
-    /// that quietly dropped page eleven would read as "covered everything" to
-    /// the one operator it did not. Settings-time only, never the poll loop:
-    /// discovery spends requests only when the operator opens the picker.
+    /// a runaway backstop well past the largest organization this cockpit
+    /// watches, and hitting it is **reported** (`truncated`) rather than
+    /// silent — a search that quietly dropped page fifty-one would read as
+    /// "covered everything" to the one operator it did not. Settings-time
+    /// only, never the poll loop: discovery spends requests only when the
+    /// operator opens a GitHub account's editor.
     pub async fn list_accessible_repos(&self) -> Result<discovery::AccessibleRepos, GitHubError> {
         let mut repos = Vec::new();
         for page in 1..=DISCOVERY_PAGE_CAP {
@@ -734,7 +738,7 @@ mod tests {
 
     /// One page, no `Link` header — the whole answer, and nothing truncated.
     /// The matchers pin the query: 100 per page, server-side `full_name` sort
-    /// (a stable picker order the client does not have to invent).
+    /// (a stable order the client does not have to invent).
     #[tokio::test]
     async fn accessible_repos_are_fetched_in_one_sorted_page_when_one_suffices() {
         let server = MockServer::start().await;
@@ -789,8 +793,9 @@ mod tests {
     }
 
     /// The cap is reported, never silent: a walk that stops with more pages
-    /// advertised says so, because a picker that quietly dropped page eleven
-    /// would read as "covered everything" to the one operator it did not.
+    /// advertised says so, because a search that quietly dropped page
+    /// fifty-one would read as "covered everything" to the one operator it
+    /// did not.
     #[tokio::test]
     async fn discovery_reports_the_cap_rather_than_walking_forever() {
         let server = MockServer::start().await;

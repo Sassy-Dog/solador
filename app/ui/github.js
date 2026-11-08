@@ -128,7 +128,8 @@ function openRepo(url) {
   window.__TAURI__.core.invoke("plugin:opener|open_url", { url }).catch(() => {});
 }
 
-function repoRowNode(row, nameWidth) {
+/** `keep`: the cell indices a card shows (`repoCards.fields`); null keeps all. */
+function repoRowNode(row, nameWidth, keep = null) {
   const el = node("div", "gh-row");
   const dot = node("span", "dot");
   dot.style.background = row.dotColor;
@@ -141,7 +142,7 @@ function repoRowNode(row, nameWidth) {
   // squeeze it to nothing.
   reserveWidth(name, nameWidth);
   el.append(dot, name);
-  for (const cell of row.cells) el.appendChild(cellNode("gh-cell", cell));
+  for (const cell of keep ? keep.map((i) => row.cells[i]) : row.cells) el.appendChild(cellNode("gh-cell", cell));
   el.appendChild(node("span", "grow"));
 
   // The original panel's `onTapGesture` + `NSWorkspace.open`. A `div` is not a
@@ -192,6 +193,100 @@ function renderAvailability(id, chip) {
   el.hidden = !chip;
 }
 
+// MARK: - Repos by owner
+//
+// Rust groups the repos (`owners`: name order, each with its dot colour, its
+// totals sentence, its totals as cells under the columns, its rows and
+// whether it spans) and orders the cards (`cardOrder`); the cockpit payload
+// says how many cards share a row at this width and which columns a card
+// keeps (`repoCards`, on the panel's dataset). Nothing here decides any of it.
+
+/** An owner's header row in Sections: its totals sit under their columns.
+ *  `.gh-owner`, never `.gh-row`, so a repo-row selector never counts it. */
+function ownerHeaderRow(owner, columns, continued = false) {
+  const el = node("div", "gh-owner");
+  el.dataset.owner = owner.owner;
+  // A column that starts mid-owner says whose rows it continues.
+  if (continued) el.dataset.continued = "true";
+  el.title = `${owner.owner} · ${owner.totalsText}`;
+  const dot = node("span", "dot");
+  dot.style.background = owner.dotColor;
+  const name = node("span", "gh-repo-name", owner.owner);
+  reserveWidth(name, (columns[0] || {}).width);
+  el.append(dot, name);
+  for (const cell of owner.cells) el.appendChild(cellNode("gh-cell", cell));
+  el.appendChild(node("span", "grow"));
+  return el;
+}
+
+/** Each owner's rows, in Rust's order, by `rowIds`. */
+function rowsByOwner(payload) {
+  const byId = new Map((payload.rows || []).map((r) => [r.repo, r]));
+  return new Map(payload.owners.map((o) => [o, o.rowIds.map((id) => byId.get(id)).filter(Boolean)]));
+}
+
+/** Sections: today's column split over the owner headers and their rows. */
+function ownerSections(payload, cols) {
+  const nameWidth = (payload.columns[0] || {}).width;
+  const items = [];
+  for (const [owner, rows] of rowsByOwner(payload)) {
+    items.push({ owner });
+    for (const row of rows) items.push({ owner, row });
+  }
+  return chunk(items, Math.min(cols, Math.max(1, items.length))).map((group) => {
+    const column = node("div", "gh-col");
+    column.appendChild(repoHeader(payload.columns));
+    if (group[0].row) column.appendChild(ownerHeaderRow(group[0].owner, payload.columns, true));
+    for (const item of group)
+      column.appendChild(item.row ? repoRowNode(item.row, nameWidth) : ownerHeaderRow(item.owner, payload.columns));
+    return column;
+  });
+}
+
+/** One owner's card: its header, then its rows in `split` tables. */
+function ownerCard(owner, rows, columns, keep, split) {
+  const card = node("section", "gh-card");
+  card.dataset.owner = owner.owner;
+  if (owner.spans) card.dataset.span = "true";
+  const head = node("div", "gh-card-head");
+  const dot = node("span", "dot");
+  dot.style.background = owner.dotColor;
+  head.append(dot, node("span", "gh-owner-name", owner.owner), node("span", "grow"), node("span", "gh-owner-totals", owner.totalsText));
+  const body = node("div", "gh-card-cols");
+  // CSSOM, never a `style=""` attribute -- `style-src 'self'` blocks it.
+  body.style.setProperty("--split", String(split));
+  const nameWidth = (columns[0] || {}).width;
+  for (const group of chunk(rows, Math.min(split, Math.max(1, rows.length)))) {
+    const column = node("div", "gh-col");
+    column.appendChild(repoHeader(columns));
+    for (const row of group) column.appendChild(repoRowNode(row, nameWidth, keep));
+    body.appendChild(column);
+  }
+  card.append(head, body);
+  return card;
+}
+
+/** Cards: one per owner in `cardOrder`. A spanning owner splits its rows into
+ *  `cardCols` tables; the small owners' row takes no more columns than it has
+ *  owners (`repo_owners::card_columns`, the overview's rule), so a sole owner
+ *  fills the panel rather than a fraction of it. */
+function ownerCards(payload, cardCols, fields) {
+  const wrap = node("div", "gh-cards");
+  const small = payload.owners.filter((o) => !o.spans).length;
+  wrap.style.setProperty("--card-cols", String(Math.min(cardCols, Math.max(1, small))));
+  // The fixed columns a card keeps, by Rust's labels; an unknown field list
+  // (no cockpit payload yet) keeps every column rather than inventing a cut.
+  const fixed = payload.columns.slice(1);
+  const keep = fields.length ? fixed.flatMap((c, i) => (fields.includes(c.label) ? [i] : [])) : fixed.map((_, i) => i);
+  const columns = [payload.columns[0], ...keep.map((i) => fixed[i])];
+  const rows = rowsByOwner(payload);
+  for (const index of payload.cardOrder || payload.owners.map((_, i) => i)) {
+    const owner = payload.owners[index];
+    if (owner) wrap.appendChild(ownerCard(owner, rows.get(owner), columns, keep, owner.spans ? cardCols : 1));
+  }
+  return wrap;
+}
+
 function renderRepos(payload) {
   lastRepos = payload;
   $g("reposTitle").textContent = window.soladorDashboard?.tileHeading?.("ghWorkflows") || payload.title;
@@ -206,17 +301,28 @@ function renderRepos(payload) {
     // right-flush numeric block. Unlike the runner list (one flex column) this
     // cannot be CSS multi-column: balancing has no way to repeat a header per
     // column.
-    const cols = Math.max(1, Number($g("reposPanel").dataset.cols) | 0);
+    const panel = $g("reposPanel");
+    const cols = Math.max(1, Number(panel.dataset.cols) | 0);
     const rows = payload.rows || [];
     const nameWidth = (payload.columns[0] || {}).width;
-    for (const group of chunk(rows, Math.min(cols, Math.max(1, rows.length)))) {
-      const column = node("div", "gh-col");
-      column.appendChild(repoHeader(payload.columns));
-      for (const row of group) column.appendChild(repoRowNode(row, nameWidth));
-      children.push(column);
+    if (payload.owners?.length && payload.layout === "cards") {
+      const cardCols = Math.max(1, Number(panel.dataset.cardCols) | 0);
+      const fields = (panel.dataset.cardFields || "").split(",").filter(Boolean);
+      children.push(ownerCards(payload, cardCols, fields));
+    } else if (payload.owners?.length) {
+      children.push(...ownerSections(payload, cols));
+    } else {
+      for (const group of chunk(rows, Math.min(cols, Math.max(1, rows.length)))) {
+        const column = node("div", "gh-col");
+        column.appendChild(repoHeader(payload.columns));
+        for (const row of group) column.appendChild(repoRowNode(row, nameWidth));
+        children.push(column);
+      }
     }
   }
-  $g("reposBody").replaceChildren(...children);
+  const body = $g("reposBody");
+  body.dataset.layout = !payload.message && payload.owners?.length ? payload.layout : "";
+  body.replaceChildren(...children);
 
   // Which accounts contributed nothing this pass, and which repos no account
   // claims. Same element and same rules as the Runners panel's: in the header

@@ -154,6 +154,11 @@ pub struct DashboardTile {
     /// Detail's.
     #[serde(default = "table_view")]
     pub runner_full_view: String,
+    /// GitHub Repos tiles only: `cards` (each owner its own box) or
+    /// `sections` (one table, a header row per owner), in the tile and its
+    /// Full view. A store written before the setting reads as Cards.
+    #[serde(default = "cards_layout")]
+    pub repo_layout: String,
 }
 
 fn automatic_rows() -> String {
@@ -176,6 +181,9 @@ fn default_row_gap_px() -> u8 {
 }
 fn table_view() -> String {
     "table".into()
+}
+fn cards_layout() -> String {
+    "cards".into()
 }
 fn de_core_row_span<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     read_ranged(d, TileRangeField::CoreRowSpan)
@@ -218,6 +226,7 @@ impl DashboardTile {
             row_gap_px: DEFAULT_ROW_GAP_PX,
             detail_view: table_view(),
             runner_full_view: table_view(),
+            repo_layout: cards_layout(),
             source,
         }
     }
@@ -282,6 +291,21 @@ mod tests {
 
     fn tile_json() -> Value {
         serde_json::to_value(DashboardTile::new("t", "hosts", "T", "all")).unwrap()
+    }
+
+    /// A store written before the layout setting opens, and its Repos tiles
+    /// read as Cards — the default every new tile gets too.
+    #[test]
+    fn a_tile_without_repo_layout_reads_cards() {
+        let mut raw =
+            serde_json::to_value(DashboardTile::new("r", "ghWorkflows", "R", "all")).unwrap();
+        raw.as_object_mut().unwrap().remove("repoLayout");
+        let tile: DashboardTile = serde_json::from_value(raw).unwrap();
+        assert_eq!(tile.repo_layout, "cards");
+        assert_eq!(
+            DashboardTile::new("h", "hosts", "H", "all").repo_layout,
+            "cards"
+        );
     }
 
     fn layout_with(key: &str, value: Value) -> Value {

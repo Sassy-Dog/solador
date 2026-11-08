@@ -412,7 +412,7 @@
   text-align: right;
   white-space: nowrap;
 }
-#dashboardOverview .db-row-counts .db-count[data-header="PRS"] { width: 5ch; }
+#dashboardOverview .db-row-counts .db-count:is([data-header="PRS"], [data-header="DEP"]) { width: 5ch; }
 #dashboardOverview .db-count > strong {
   display: inline-block;
   width: 100%;
@@ -1112,3 +1112,74 @@
 #dashboardOverview .db-config-switch { width:fit-content; margin:4px 0 6px; }
 #dashboardOverview .db-config-page[hidden] { display:none; }
 #dashboardOverview .db-field > .db-sub { margin:2px 0 0; }
+
+/* GitHub Repos by owner. Rust decides how many cards share a row
+   (`cardColumns` → --owner-cols), which owner spans it and how many columns
+   its rows split into (`splitColumns` → --split); these rules only lay out
+   what they are handed. */
+#dashboardOverview .db-owner-cards {
+  display: grid;
+  grid-template-columns: repeat(var(--owner-cols, 1), minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+#dashboardOverview .db-owner-card {
+  min-width: 0;
+  border: 1px solid var(--db-line);
+  border-radius: 6px;
+  padding: 6px 9px 4px;
+}
+#dashboardOverview .db-owner-card[data-span="true"] { grid-column: 1 / -1; }
+#dashboardOverview .db-owner-cols {
+  display: grid;
+  grid-template-columns: repeat(var(--split, 1), minmax(0, 1fr));
+  gap: 0 18px;
+}
+#dashboardOverview .db-owner-col { min-width: 0; }
+/* A card row has no status word, so its count strip is the row's last child
+   and would otherwise take `.db-item > span:last-child`'s 11px, showing the
+   " · " separators the strip hides everywhere else. */
+#dashboardOverview .db-item > .db-row-counts:last-child { font-size: 0; }
+/* A card's totals take the name's line when both fit, and wrap under it when
+   they don't: a medium tile's card is narrower than a small tile, and the
+   owner's name is the fact the operator asked for. */
+#dashboardOverview .db-owner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  font-size: 12px;
+  padding: 2px 0 5px;
+}
+#dashboardOverview .db-owner .db-row-label { min-width: 0; max-width: 100%; }
+#dashboardOverview .db-owner-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#dashboardOverview .db-owner-totals {
+  margin-left: auto;
+  color: var(--db-muted);
+  font-size: 11px;
+  text-align: right;
+}
+/* Sections: an owner's header row is a repo row's shape, so its totals sit
+   in the same slots as the numbers beneath; its repos are indented under it. */
+#dashboardOverview .db-owner.db-item-tabular { flex-wrap: nowrap; padding-top: 7px; }
+#dashboardOverview .db-owner.db-item-tabular > .db-value {
+  width: 10ch;
+  flex: none;
+  text-align: right;
+  font-size: 11px;
+  color: var(--db-muted);
+}
+#dashboardOverview .db-tile-rows[data-layout="sections"] .db-item > .db-row-label { padding-left: 13px; }
+#dashboardOverview .db-owner-more { font-size: 11px; }
+#dashboardOverview .db-detail-owner {
+  grid-column: 1 / -1;
+  margin: 8px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}

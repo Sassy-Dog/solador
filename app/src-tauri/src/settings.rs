@@ -368,7 +368,7 @@ pub fn new_repo(slug: impl Into<String>, accounts: &[VendorAccount]) -> TrackedR
     }
 }
 
-/// What one discovery-picker checkbox change amounts to, decided before the
+/// What one repo-search checkbox change amounts to, decided before the
 /// store is touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackChange {
@@ -385,12 +385,12 @@ pub enum TrackChange {
     Noop,
 }
 
-/// One checkbox change in the discovery picker, resolved to exactly one
+/// One checkbox change in the repo search, resolved to exactly one
 /// action or the status line refusing it.
 ///
 /// A repo another account fetches is refused **with the owner named**, in
 /// both directions: checking it would be two accounts fetching one repo, and
-/// unchecking it is not this picker's business. A tracked-but-unattributed
+/// unchecking it is not this search's business. A tracked-but-unattributed
 /// repo unchecks nowhere either — its removal belongs to the portfolio row,
 /// where the unattributed state is visible rather than merely absent.
 ///
@@ -455,81 +455,27 @@ fn untrack_prompt(repo: &TrackedRepo) -> Option<String> {
 }
 
 /// The one sentence a capped discovery walk must carry — reported, never
-/// silent, because a picker that quietly dropped page eleven reads as
+/// silent, because a search that quietly dropped page fifty-one reads as
 /// "covered everything" to the one operator it did not.
 const DISCOVERY_TRUNCATED_NOTE: &str =
-    "This token can access more repositories than the picker walks (1,000) — the list is cut short. Add anything missing by name.";
+    "This token can access more than 5,000 repositories, the most the search reads — the list is cut short. Add anything missing by its full owner/name.";
 
-/// The discovery picker's payload: every repo this account's token can see,
-/// every repo this account already tracks, and the orgs derived from the
-/// grant — merged against the store so each row knows its checkbox state.
-///
-/// Like the Services probe, the result is **ephemeral**: it renders a live
-/// answer and is never persisted, so the stored selection stays editable with
-/// no request in flight. Rows are sorted by slug; a repo this account tracks
-/// that the token's grants do not include is shown with `granted: false`
-/// rather than vanished — unchecking it must be possible from the same list
-/// that shows everything else.
-#[must_use]
-pub fn discovery_answer(
+/// How many search results one answer carries. Past it the answer says how
+/// many more match, so the operator types more rather than scrolls.
+pub const SEARCH_RESULT_CAP: usize = 50;
+
+/// `1031` as `1,031`.
+fn count_text(n: usize) -> String {
+    viewmodel::plan_usage::grouped(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// The organizations the grant derives, each with whether this account
+/// watches it and which other account does.
+fn org_rows(
     account: &VendorAccount,
     found: &github::AccessibleRepos,
-    repos: &[TrackedRepo],
     accounts: &[VendorAccount],
-) -> Value {
-    let tracked_by_label = |repo: &TrackedRepo| {
-        repo.account_id
-            .filter(|id| *id != account.id)
-            .and_then(|id| accounts.iter().find(|other| other.id == id))
-            .map(|other| other.label.clone())
-    };
-    let tracked_row = |repo: &TrackedRepo| {
-        repos
-            .iter()
-            .find(|tracked| tracked.slug.eq_ignore_ascii_case(&repo.slug))
-    };
-    let mut rows: Vec<Value> = found
-        .repos
-        .iter()
-        .map(|granted| {
-            let tracked = repos
-                .iter()
-                .find(|repo| repo.slug.eq_ignore_ascii_case(&granted.full_name));
-            let mine = tracked.is_some_and(|repo| repo.account_id == Some(account.id));
-            json!({
-                "slug": granted.full_name,
-                "tracked": mine,
-                "trackedBy": tracked.and_then(tracked_by_label),
-                "granted": true,
-                "archived": granted.archived,
-                "untrackPrompt": tracked.filter(|_| mine).and_then(untrack_prompt),
-            })
-        })
-        .collect();
-    // This account's tracked repos the grant list does not cover — added by
-    // name, or a grant since revoked. Shown, not vanished.
-    for repo in repos {
-        if repo.account_id != Some(account.id) {
-            continue;
-        }
-        let granted = found
-            .repos
-            .iter()
-            .any(|found| found.full_name.eq_ignore_ascii_case(&repo.slug));
-        if granted {
-            continue;
-        }
-        rows.push(json!({
-            "slug": repo.slug,
-            "tracked": true,
-            "trackedBy": Value::Null,
-            "granted": false,
-            "archived": false,
-            "untrackPrompt": tracked_row(repo).and_then(untrack_prompt),
-        }));
-    }
-    rows.sort_by(|a, b| a["slug"].as_str().cmp(&b["slug"].as_str()));
-
+) -> Vec<Value> {
     let org_selected_by = |org: &str| {
         accounts
             .iter()
@@ -544,7 +490,7 @@ pub fn discovery_answer(
             .map(|other| other.label.clone())
     };
     let selected: Vec<&String> = account.orgs.iter().flatten().collect();
-    let orgs: Vec<Value> = github::discovery::organizations(&found.repos)
+    github::discovery::organizations(&found.repos)
         .into_iter()
         .map(|org| {
             json!({
@@ -553,16 +499,145 @@ pub fn discovery_answer(
                 "selectedBy": org_selected_by(&org),
             })
         })
-        .collect();
+        .collect()
+}
 
+/// What one discovery walk found, said once when an account's repos screen
+/// opens: how many repos the token can read, whether the walk was cut short,
+/// and the organizations the grant derives. The list itself stays in the
+/// app's cache, and the screen searches it ([`search_answer`]).
+///
+/// Ephemeral like the Services probe: never persisted, so the stored
+/// selection stays editable with no request in flight.
+#[must_use]
+pub fn discovery_summary(
+    account: &VendorAccount,
+    found: &github::AccessibleRepos,
+    accounts: &[VendorAccount],
+) -> Value {
+    let total = found.repos.len();
+    let noun = if total == 1 { "repo" } else { "repos" };
     json!({
         "id": account.id.to_string(),
-        "repos": rows,
-        "orgs": orgs,
-        "truncated": found.truncated,
+        "total": total,
+        "totalLabel": format!("This token can read {} {noun}", count_text(total)),
         "truncatedNote": found.truncated.then_some(DISCOVERY_TRUNCATED_NOTE),
+        "orgs": org_rows(account, found, accounts),
         "reason": Value::Null,
     })
+}
+
+/// One repo as the search lists it: its checkbox state, who else tracks it,
+/// what unticking it costs, and where the query matched (char offsets).
+fn search_row(
+    account: &VendorAccount,
+    accounts: &[VendorAccount],
+    repos: &[TrackedRepo],
+    slug: &str,
+    granted: bool,
+    archived: bool,
+    query: &str,
+) -> Value {
+    let tracked = repos
+        .iter()
+        .find(|repo| repo.slug.eq_ignore_ascii_case(slug));
+    let mine = tracked.is_some_and(|repo| repo.account_id == Some(account.id));
+    let tracked_by = tracked
+        .and_then(|repo| repo.account_id)
+        .filter(|id| *id != account.id)
+        .and_then(|id| accounts.iter().find(|other| other.id == id))
+        .map(|other| other.label.clone());
+    let (start, end) = github::discovery::match_range(slug, query).unzip();
+    json!({
+        "slug": slug,
+        "tracked": mine,
+        "trackedBy": tracked_by,
+        "granted": granted,
+        "archived": archived,
+        "untrackPrompt": tracked.filter(|_| mine).and_then(untrack_prompt),
+        "matchStart": start,
+        "matchEnd": end,
+    })
+}
+
+/// The repos screen's search: every repo this account's token can read whose
+/// `owner/name` contains `query`, plus this account's tracked repos the grant
+/// does not cover (added by name, or a grant since revoked — shown, not
+/// vanished, so unticking stays possible). This account's tracked repos sort
+/// first, then by slug; at most [`SEARCH_RESULT_CAP`] come back, with a line
+/// saying how many more match.
+///
+/// A full `owner/name` the list does not hold and nothing tracks is offered
+/// as **Add by name**: how a public repo the token was not granted is added.
+#[must_use]
+pub fn search_answer(
+    account: &VendorAccount,
+    found: &github::AccessibleRepos,
+    repos: &[TrackedRepo],
+    accounts: &[VendorAccount],
+    query: &str,
+) -> Value {
+    let row = |slug: &str, granted: bool, archived: bool| {
+        search_row(account, accounts, repos, slug, granted, archived, query)
+    };
+    let mut rows: Vec<Value> = github::discovery::search(&found.repos, query)
+        .into_iter()
+        .map(|repo| row(&repo.full_name, true, repo.archived))
+        .collect();
+    for repo in repos {
+        let listed = found
+            .repos
+            .iter()
+            .any(|found| found.full_name.eq_ignore_ascii_case(&repo.slug));
+        if repo.account_id == Some(account.id)
+            && !listed
+            && github::discovery::match_range(&repo.slug, query).is_some()
+        {
+            rows.push(row(&repo.slug, false, false));
+        }
+    }
+    rows.sort_by_cached_key(|row| {
+        (
+            row["tracked"] != true,
+            row["slug"].as_str().unwrap_or_default().to_lowercase(),
+        )
+    });
+    let matched = rows.len();
+    let more = matched.saturating_sub(SEARCH_RESULT_CAP);
+    rows.truncate(SEARCH_RESULT_CAP);
+    let trimmed = query.trim();
+    let add_by_name = add_by_name_offer(query, repos, &found.repos);
+    json!({
+        "id": account.id.to_string(),
+        "query": query,
+        "results": rows,
+        "countLabel": (!trimmed.is_empty())
+            .then(|| format!("{} of {} match", count_text(matched), count_text(found.repos.len()))),
+        "moreLabel": (more > 0).then(|| format!("{} more match — keep typing", count_text(more))),
+        "addByName": add_by_name,
+    })
+}
+
+/// **Add `owner/name` by name**, offered for a full slug that nothing tracks
+/// and `listed` does not hold — how a public repo the token was not granted is
+/// added. `listed` is empty when the walk never answered (it failed), so the
+/// offer still stands then: the retired modal's slug field never waited on
+/// the walk either.
+#[must_use]
+pub fn add_by_name_offer(
+    query: &str,
+    repos: &[TrackedRepo],
+    listed: &[github::RepoRef],
+) -> Option<Value> {
+    Some(query.trim())
+        .filter(|q| q.contains('/'))
+        .and_then(|q| validated_slug(q, repos))
+        .filter(|slug| {
+            !listed
+                .iter()
+                .any(|repo| repo.full_name.eq_ignore_ascii_case(slug))
+        })
+        .map(|slug| json!({"label": format!("Add {slug} by name"), "slug": slug}))
 }
 
 /// The comma-separated watched-workflow field, parsed the way
@@ -1764,6 +1839,33 @@ fn repo_row(repo: &TrackedRepo) -> Value {
     })
 }
 
+/// An account's watched repos grouped by owner, the way the Repos tile groups
+/// them: owners compared case-insensitively and labelled with the first
+/// spelling, in owner order, each owner's repos in name order.
+fn repo_groups(mine: &[&TrackedRepo]) -> Vec<Value> {
+    let mut groups: std::collections::BTreeMap<String, (String, Vec<&TrackedRepo>)> =
+        std::collections::BTreeMap::new();
+    for repo in mine {
+        let owner = viewmodel::repo_owners::owner_of(&repo.slug);
+        groups
+            .entry(owner.to_lowercase())
+            .or_insert_with(|| (owner.to_owned(), Vec::new()))
+            .1
+            .push(repo);
+    }
+    groups
+        .into_values()
+        .map(|(owner, mut repos)| {
+            repos.sort_by_cached_key(|repo| repo.slug.to_lowercase());
+            json!({
+                "label": format!("{owner} · {}", repos.len()),
+                "owner": owner,
+                "repos": repos.into_iter().map(repo_row).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
 /// The Accounts tab — the whole GitHub surface now: one card per *account*
 /// with the repos it fetches and the orgs it watches, the unattributed repos
 /// no card can claim, and the add form. The Portfolio tab retired into this
@@ -1827,6 +1929,13 @@ fn accounts_tab(
                     .filter(|repo| repo.account_id == Some(account.id))
                     .map(repo_row)
                     .collect::<Vec<_>>(),
+                // The same repos as the screen lists them: under their owners.
+                "repoGroups": repo_groups(
+                    &repos
+                        .iter()
+                        .filter(|repo| repo.account_id == Some(account.id))
+                        .collect::<Vec<_>>(),
+                ),
                 // The stored selection, always rendered — editable with no
                 // discovery request in flight.
                 "orgs": orgs,
@@ -1867,22 +1976,25 @@ fn accounts_tab(
         "renameLabel": "Rename…",
         "replaceTokenLabel": "Replace token…",
         "addAccountLabel": "Add account…",
-        "reposHeading": "Repos",
+        "reposHeading": "Watched repos",
+        // The search that replaced the picker: type part of a name, tick to
+        // watch. `untrackLabel` is the untrack confirm's proceed button.
+        "searchLabel": "Add a repo",
+        "searchPlaceholder": "Type part of a repo name",
+        "untrackLabel": "Stop tracking",
+        "watchingLabel": "watching",
         "noReposLabel": "No repos attributed yet",
         "configureLabel": "Configure…",
-        "configureReposLabel": "Configure repos…",
-        // The modal's title line, beside the account's own label.
-        "pickerHeading": "Repos this token can access",
-        "closeLabel": "Close",
-        "slugLabel": "owner/name (e.g. acme/gadget)",
-        "addLabel": "Add",
         "workflowsLabel": "Watched workflows (comma-separated, e.g. release.yml)",
         "discoverPendingLabel": "Reading what this token can access…",
+        // The call itself refused (no `reason` ever came back): said, rather
+        // than leaving the pending line up forever.
+        "discoverFailedLabel": "Couldn't read what this token can access. Open this account again to retry.",
         "archivedLabel": "archived",
         "notGrantedLabel": "not in this token's grants",
         "fetchedByLabel": "fetched by",
         "watchedByLabel": "watched by",
-        "reposHelp": "Drives the Repos and GitHub Runners panels. Choose repos lists everything this account's token was granted; add by name covers public repos you'd rather not grant. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive. The panel polls 4 requests per repo per pass against GitHub's 5,000/hour per-token budget — about 20 repos at the default 60s cadence, about 100 at 5 minutes.",
+        "reposHelp": "Drives the Repos and GitHub Runners panels. Type part of a repo's name to find it among everything this account's token can read, and tick it to watch it; a full owner/name the token can't list, such as a public repo you'd rather not grant, is added by name. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive. The panel polls 4 requests per repo per pass against GitHub's 5,000/hour per-token budget — about 20 repos at the default 60s cadence, about 100 at 5 minutes.",
     });
     let rest = json!({
         "orgsHeading": "Runner organizations",
@@ -4586,12 +4698,12 @@ mod tests {
         }
     }
 
-    /// The picker's whole vocabulary in one payload: checked (tracked by this
+    /// The search's whole vocabulary in one answer: checked (tracked by this
     /// account, with the untrack consequence when workflows are configured),
     /// foreign (another account's, named), by-name (tracked but not in this
-    /// token's grants), and offered (granted, untracked).
+    /// token's grants), archived, and offered (granted, untracked).
     #[test]
-    fn the_discovery_answer_marks_tracked_granted_and_foreign_repos() {
+    fn search_marks_tracked_foreign_and_archived() {
         let mut mine = account("work");
         mine.orgs = Some(vec!["acme".into()]);
         let other = account("personal");
@@ -4622,12 +4734,14 @@ mod tests {
         };
         let accounts = [mine.clone(), other.clone()];
 
-        let answer = discovery_answer(&mine, &found, &repos, &accounts);
-        assert!(answer["reason"].is_null());
-        assert_eq!(answer["truncated"], json!(false));
-        assert!(answer["truncatedNote"].is_null());
-
-        let rows = answer["repos"].as_array().expect("repo rows");
+        let answer = search_answer(&mine, &found, &repos, &accounts, "ACME");
+        assert_eq!(answer["id"], json!(mine.id.to_string()));
+        assert_eq!(answer["query"], "ACME");
+        let rows = answer["results"].as_array().expect("result rows");
+        assert!(
+            !rows.iter().any(|row| row["slug"] == "beta/tool"),
+            "only what matches"
+        );
         let row = |slug: &str| {
             rows.iter()
                 .find(|row| row["slug"] == slug)
@@ -4640,6 +4754,10 @@ mod tests {
         assert_eq!(gadget["granted"], json!(true));
         let prompt = gadget["untrackPrompt"].as_str().expect("a consequence");
         assert!(prompt.contains("release.yml"), "{prompt}");
+        assert_eq!(
+            (gadget["matchStart"].clone(), gadget["matchEnd"].clone()),
+            (json!(0), json!(4))
+        );
 
         let foreign = row("acme/other");
         assert_eq!(foreign["tracked"], json!(false));
@@ -4658,19 +4776,142 @@ mod tests {
         let fresh = row("acme/fresh");
         assert_eq!(fresh["tracked"], json!(false));
         assert!(fresh["trackedBy"].is_null());
+        // Three granted acme repos and the tracked-by-name one, of the five
+        // the token can read.
+        assert_eq!(answer["countLabel"], "4 of 5 match");
+        assert!(answer["moreLabel"].is_null());
+    }
 
-        let orgs = answer["orgs"].as_array().expect("org rows");
-        let org = |name: &str| {
-            orgs.iter()
-                .find(|row| row["name"] == name)
-                .unwrap_or_else(|| panic!("no org row for {name}"))
-                .clone()
+    #[test]
+    fn search_puts_this_accounts_tracked_first_then_slug_order() {
+        let mine = account("work");
+        let repos = vec![owned_by(&mine, "acme/zeta")];
+        let found = github::AccessibleRepos {
+            repos: vec![
+                discovered("acme/mid", "acme", true, false),
+                discovered("acme/zeta", "acme", true, false),
+                discovered("Acme/Alpha", "Acme", true, false),
+            ],
+            truncated: false,
         };
-        assert_eq!(org("acme")["selected"], json!(true));
-        assert_eq!(org("beta")["selected"], json!(false));
+        let answer = search_answer(&mine, &found, &repos, std::slice::from_ref(&mine), "acme");
+        let slugs: Vec<&str> = answer["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["slug"].as_str().unwrap())
+            .collect();
+        assert_eq!(slugs, ["acme/zeta", "Acme/Alpha", "acme/mid"]);
+    }
+
+    #[test]
+    fn search_caps_results_and_says_how_many_more() {
+        let mine = account("work");
+        let found = github::AccessibleRepos {
+            repos: (0..900)
+                .map(|i| discovered(&format!("acme/repo-{i:03}"), "acme", true, false))
+                .collect(),
+            truncated: false,
+        };
+        let answer = search_answer(&mine, &found, &[], std::slice::from_ref(&mine), "repo");
+        assert_eq!(
+            answer["results"].as_array().unwrap().len(),
+            SEARCH_RESULT_CAP
+        );
+        assert_eq!(SEARCH_RESULT_CAP, 50);
+        assert_eq!(answer["countLabel"], "900 of 900 match");
+        assert_eq!(answer["moreLabel"], "850 more match — keep typing");
+        // An empty box answers nothing and says nothing.
+        let empty = search_answer(&mine, &found, &[], std::slice::from_ref(&mine), "  ");
+        assert!(empty["results"].as_array().unwrap().is_empty());
+        assert!(empty["countLabel"].is_null());
+        assert!(empty["moreLabel"].is_null());
+    }
+
+    #[test]
+    fn search_offers_add_by_name_only_for_an_unlisted_full_slug() {
+        let mine = account("work");
+        let other = account("personal");
+        let repos = vec![owned_by(&other, "beta/elsewhere")];
+        let found = github::AccessibleRepos {
+            repos: vec![discovered("acme/gadget", "acme", true, false)],
+            truncated: false,
+        };
+        let accounts = [mine.clone(), other];
+        let ask = |query: &str| {
+            search_answer(&mine, &found, &repos, &accounts, query)["addByName"].clone()
+        };
+        let offer = ask(" globex/ledger ");
+        assert_eq!(offer["slug"], "globex/ledger");
+        assert_eq!(offer["label"], "Add globex/ledger by name");
+        assert!(ask("acme/gadget").is_null(), "listed: tick it instead");
+        assert!(ask("ACME/Gadget").is_null(), "listed, in any case");
+        assert!(ask("beta/elsewhere").is_null(), "already tracked");
+        assert!(ask("cargo").is_null(), "not a full owner/name");
+        assert!(ask("acme/").is_null());
+    }
+
+    #[test]
+    fn the_truncated_note_names_the_cap() {
         assert!(
-            !orgs.iter().any(|row| row["name"] == "jdoe"),
-            "a person is not an organization"
+            DISCOVERY_TRUNCATED_NOTE.contains("5,000"),
+            "{DISCOVERY_TRUNCATED_NOTE}"
+        );
+    }
+
+    /// The organizations offered on the card: one this account watches, one
+    /// another account watches (named), and never a person's login.
+    #[test]
+    fn discovered_orgs_say_who_watches_them() {
+        let mut mine = account("work");
+        mine.orgs = Some(vec!["acme".into()]);
+        let mut home = account("home");
+        home.orgs = Some(vec!["BETA".into()]);
+        let found = github::AccessibleRepos {
+            repos: vec![
+                discovered("acme/r", "acme", true, false),
+                discovered("beta/x", "beta", true, false),
+                discovered("jdoe/dotfiles", "jdoe", false, false),
+            ],
+            truncated: false,
+        };
+        let summary = discovery_summary(&mine, &found, &[mine.clone(), home]);
+        assert_eq!(
+            summary["orgs"],
+            json!([
+                {"name": "acme", "selected": true, "selectedBy": null},
+                {"name": "beta", "selected": false, "selectedBy": "home"},
+            ])
+        );
+    }
+
+    #[test]
+    fn the_summary_counts_and_formats_the_total() {
+        let mut mine = account("work");
+        mine.orgs = Some(vec!["acme".into()]);
+        let found = github::AccessibleRepos {
+            repos: (0..1031)
+                .map(|i| discovered(&format!("acme/r{i}"), "acme", true, false))
+                .collect(),
+            truncated: false,
+        };
+        let summary = discovery_summary(&mine, &found, std::slice::from_ref(&mine));
+        assert_eq!(summary["id"], json!(mine.id.to_string()));
+        assert_eq!(summary["total"], json!(1031));
+        assert_eq!(summary["totalLabel"], "This token can read 1,031 repos");
+        assert!(summary["truncatedNote"].is_null());
+        assert!(summary["reason"].is_null());
+        assert_eq!(
+            summary["orgs"],
+            json!([{"name": "acme", "selected": true, "selectedBy": null}])
+        );
+        let one = github::AccessibleRepos {
+            repos: vec![discovered("acme/r", "acme", true, false)],
+            truncated: false,
+        };
+        assert_eq!(
+            discovery_summary(&mine, &one, std::slice::from_ref(&mine))["totalLabel"],
+            "This token can read 1 repo"
         );
     }
 
@@ -4681,14 +4922,83 @@ mod tests {
             repos: Vec::new(),
             truncated: true,
         };
-        let answer = discovery_answer(&mine, &found, &[], std::slice::from_ref(&mine));
-        assert_eq!(answer["truncated"], json!(true));
+        let summary = discovery_summary(&mine, &found, std::slice::from_ref(&mine));
         assert!(
-            answer["truncatedNote"]
+            summary["truncatedNote"]
                 .as_str()
                 .is_some_and(|s| !s.is_empty()),
             "a capped walk must say so, or it reads as covered-everything"
         );
+    }
+
+    #[test]
+    fn account_rows_group_repos_by_owner() {
+        let mine = account("work");
+        let repos = vec![
+            owned_by(&mine, "acme/b"),
+            owned_by(&mine, "jdoe/x"),
+            owned_by(&mine, "acme/a"),
+        ];
+        let rows = account_rows(&accounts_view(
+            std::slice::from_ref(&mine),
+            &repos,
+            &StoredSecrets::default(),
+        ));
+        let groups = rows[0]["repoGroups"].as_array().expect("groups");
+        let shape: Vec<(String, String, Vec<String>)> = groups
+            .iter()
+            .map(|g| {
+                (
+                    g["owner"].as_str().unwrap().to_owned(),
+                    g["label"].as_str().unwrap().to_owned(),
+                    g["repos"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| r["slug"].as_str().unwrap().to_owned())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (
+                    "acme".into(),
+                    "acme · 2".into(),
+                    vec!["acme/a".into(), "acme/b".into()]
+                ),
+                ("jdoe".into(), "jdoe · 1".into(), vec!["jdoe/x".into()]),
+            ]
+        );
+        // The flat list stays, for the tracked check.
+        assert_eq!(rows[0]["repos"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn the_repos_screen_labels_are_rusts() {
+        let mine = account("work");
+        let vm = accounts_view(std::slice::from_ref(&mine), &[], &StoredSecrets::default());
+        let tab = &vm["accounts"];
+        assert_eq!(tab["reposHeading"], "Watched repos");
+        assert_eq!(tab["searchLabel"], "Add a repo");
+        assert_eq!(tab["searchPlaceholder"], "Type part of a repo name");
+        assert_eq!(tab["untrackLabel"], "Stop tracking");
+        assert_eq!(tab["watchingLabel"], "watching");
+        assert_eq!(
+            tab["discoverFailedLabel"],
+            "Couldn't read what this token can access. Open this account again to retry."
+        );
+        // The modal's own words went with it.
+        for retired in [
+            "configureReposLabel",
+            "pickerHeading",
+            "closeLabel",
+            "slugLabel",
+            "addLabel",
+        ] {
+            assert!(tab.get(retired).is_none(), "{retired} outlived the modal");
+        }
     }
 
     /// Every branch of the checkbox: add, adopt, refuse-foreign, remove, and

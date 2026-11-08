@@ -51,7 +51,7 @@ async function switchPanel(page, panel) {
 
 /** Loads the app with both panels stubbed from the dumped fixtures. */
 async function gotoWithFixtures(page, baseURL, overrides = {}, panel = "repos") {
-  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const cockpit = overrides.cockpit ?? (await fixture(baseURL, "sample-cockpit.json"));
   const repos = overrides.repos ?? (await fixture(baseURL, "sample-repos.json"));
   const runners = overrides.runners ?? (await fixture(baseURL, "sample-runners.json"));
   await gotoPanel(page, baseURL, { cockpit, repos, runners }, panel);
@@ -65,12 +65,28 @@ const rgb = (hex) => {
 };
 
 const repoRows = (page) => page.locator("#reposBody .gh-row:not(.gh-head)");
+
+/** The fixture grown to `n` rows the way Rust would send them: each a repo of
+ *  its own, listed in its owner's `rowIds` (the panel paints an owner's rows
+ *  by those ids, so a copied row its owner does not list is never shown). */
+function manyRepos(repos, n) {
+  const rows = Array.from({ length: n }, (_, i) => {
+    const row = repos.rows[i % repos.rows.length];
+    return { ...row, repo: `${row.owner}/repo-${i}`, name: `repo-${i}` };
+  });
+  const owners = repos.owners.map((o) => ({ ...o, rowIds: rows.filter((r) => r.owner === o.owner).map((r) => r.repo) }));
+  return { ...repos, rows, owners };
+}
+
+/** A Repos payload laid out as one table (Sections): what the tests of the
+ *  table's every column read. Cards keep only `repoCards.fields`. */
+const sections = (repos) => ({ ...repos, layout: "sections" });
 const runnerRows = (page) => page.locator("#runnersBody .gh-row");
 
 // MARK: - Repos
 
 test("the Repos panel is headed by its tile's name and paints Rust's trailing label and column header", async ({ page, baseURL }) => {
-  const titled = { ...(await fixture(baseURL, "sample-repos.json")), title: "Rust's own title" };
+  const titled = sections({ ...(await fixture(baseURL, "sample-repos.json")), title: "Rust's own title" });
   const { repos } = await gotoWithFixtures(page, baseURL, { repos: titled }, "repos");
   await expect(page.locator("#reposPanel")).toBeVisible();
 
@@ -92,6 +108,10 @@ test("the Repos panel is headed by its tile's name and paints Rust's trailing la
   );
   const labels = await header.locator(".gh-cell").allTextContents();
   expect(labels).toEqual(repos.columns.slice(1).map((c) => c.label));
+  // Ten columns, DEP beside PRS: Dependabot's share of the PRs.
+  expect(repos.columns.map((c) => c.label)).toEqual(
+    ["REPO", "ISSUES", "READY", "PRS", "DEP", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"],
+  );
   for (const [index, column] of repos.columns.slice(1).entries()) {
     await expect(header.locator(".gh-cell").nth(index)).toHaveCSS("width", `${column.width}px`);
   }
@@ -101,7 +121,9 @@ test("the Repos panel is headed by its tile's name and paints Rust's trailing la
 });
 
 test("every repo row carries Rust's cells, widths and dot colour", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
+  // Sections: every column (a card keeps only `repoCards.fields`).
+  const repos = sections(await fixture(baseURL, "sample-repos.json"));
+  await gotoWithFixtures(page, baseURL, { repos }, "repos");
   await expect(repoRows(page)).toHaveCount(repos.rows.length);
 
   const names = await repoRows(page).locator(".gh-repo-name").allTextContents();
@@ -130,7 +152,8 @@ test("every repo row carries Rust's cells, widths and dot colour", async ({ page
  * deriving either from a number.
  */
 test("an unknown count renders an em dash, a real zero renders a dimmed zero", async ({ page, baseURL }) => {
-  const { repos } = await gotoWithFixtures(page, baseURL, {}, "repos");
+  const repos = sections(await fixture(baseURL, "sample-repos.json"));
+  await gotoWithFixtures(page, baseURL, { repos }, "repos");
   const texts = repos.rows.flatMap((r) => r.cells.map((c) => c.text));
   expect(texts, "the fixture must contain an unknown count").toContain("—");
   expect(texts, "…and a genuine zero beside it").toContain("0");
@@ -369,8 +392,7 @@ test("opening the Repos Full view releases the boot frame's floor before any fra
  * switching a Full view drops a floor, and only that resets the page.
  */
 test("closing a Full view keeps its tile's floor and resets no overview tile", async ({ page, baseURL }) => {
-  const many = await fixture(baseURL, "sample-repos.json");
-  while (many.rows.length < 40) many.rows = many.rows.concat(many.rows);
+  const many = manyRepos(await fixture(baseURL, "sample-repos.json"), 48);
   const few = { ...many, rows: many.rows.slice(0, 1) };
   await stubTileIpc(page, baseURL, {
     source: "ghWorkflows", sources: Object.values(GITHUB_TILE),
@@ -423,8 +445,7 @@ test("closing a Full view keeps its tile's floor and resets no overview tile", a
  * measured.
  */
 test("a second Repos tile's Full view does not inherit the first tile's floor", async ({ page, baseURL }) => {
-  const many = await fixture(baseURL, "sample-repos.json");
-  while (many.rows.length < 40) many.rows = many.rows.concat(many.rows);
+  const many = manyRepos(await fixture(baseURL, "sample-repos.json"), 48);
   const few = { ...many, rows: many.rows.slice(0, 1) };
   const second = "full-repos-b";
   await stubTileIpc(page, baseURL, {
@@ -450,6 +471,85 @@ test("a second Repos tile's Full view does not inherit the first tile's floor", 
   await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(floorA);
   // …and it is B's natural height, not some smaller stale floor.
   await expect.poll(() => body.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(200);
+});
+
+// MARK: - Repos: by owner
+
+/** The cockpit fixture with the Repos cards Rust would send at some width. */
+async function cockpitWithCards(baseURL, columns, fields) {
+  return { ...(await fixture(baseURL, "sample-cockpit.json")), repoCards: { columns, fields } };
+}
+
+test("Full view cards: small owners share a row, the big one spans", async ({ page, baseURL }) => {
+  const repos = await fixture(baseURL, "sample-repos-owners.json");
+  expect(repos.layout).toBe("cards");
+  const cockpit = await cockpitWithCards(baseURL, 3, ["REPO", "ISSUES", "PRS", "DEP", "JOBS"]);
+  await gotoWithFixtures(page, baseURL, { repos, cockpit }, "repos");
+  const cards = page.locator("#reposBody .gh-card");
+  await expect(cards).toHaveCount(3);
+  expect(await cards.evaluateAll((els) => els.map((el) => el.dataset.owner))).toEqual(["acme", "jdoe", "globex"]);
+  const globex = page.locator('#reposBody .gh-card[data-owner="globex"]');
+  await expect(globex).toHaveAttribute("data-span", "true");
+  await expect(globex.locator(".gh-col")).toHaveCount(3);
+  // The two small owners share a row in two columns, not three with one
+  // left empty; the big one spans the next.
+  const [acme, jdoe, big] = await Promise.all(
+    ["acme", "jdoe", "globex"].map((o) => page.locator(`#reposBody .gh-card[data-owner="${o}"]`).boundingBox()),
+  );
+  expect(Math.round(acme.y)).toBe(Math.round(jdoe.y));
+  expect(Math.round(acme.width)).toBe(Math.round(jdoe.width));
+  expect(big.y).toBeGreaterThan(acme.y);
+  expect(big.width).toBeGreaterThan(acme.width + jdoe.width);
+  // Every card table carries exactly Rust's fields, in its own header.
+  for (const head of await page.locator("#reposBody .gh-card .gh-head").all()) {
+    expect([await head.locator(".gh-repo-name").textContent(), ...(await head.locator(".gh-cell").allTextContents())])
+      .toEqual(["REPO", "ISSUES", "PRS", "DEP", "JOBS"]);
+  }
+  // A row keeps the cells under those fields, Rust's text verbatim.
+  const cogwheel = repos.rows.find((r) => r.repo === "acme/cogwheel");
+  const keep = [1, 3, 4, 8].map((i) => cogwheel.cells[i - 1].text);
+  const row = page.locator('#reposBody .gh-card[data-owner="acme"] .gh-row:not(.gh-head)').first();
+  await expect(row.locator(".gh-repo-name")).toHaveText("cogwheel");
+  await expect(row.locator(".gh-cell")).toHaveText(keep);
+  // The card header: the owner, its dot and Rust's totals sentence.
+  const acmeOwner = repos.owners.find((o) => o.owner === "acme");
+  const head = page.locator('#reposBody .gh-card[data-owner="acme"] .gh-card-head');
+  await expect(head.locator(".gh-owner-name")).toHaveText("acme");
+  await expect(head.locator(".gh-owner-totals")).toHaveText(acmeOwner.totalsText);
+  await expect(head.locator(".dot")).toHaveCSS("background-color", rgb(acmeOwner.dotColor));
+  await expect(repoRows(page)).toHaveCount(repos.rows.length);
+});
+
+test("a sole owner's card fills the Repos Full view", async ({ page, baseURL }) => {
+  const repos = await fixture(baseURL, "sample-repos.json");
+  expect(repos.layout).toBe("cards");
+  expect(repos.owners).toHaveLength(1);
+  await gotoWithFixtures(page, baseURL, { repos }, "repos");
+  const card = page.locator("#reposBody .gh-card");
+  await expect(card).toHaveCount(1);
+  const [one, body] = await Promise.all([card.boundingBox(), page.locator("#reposBody").boundingBox()]);
+  expect(Math.round(one.width)).toBe(Math.round(body.width));
+});
+
+test("Full view sections repeat an owner header when a column continues it", async ({ page, baseURL }) => {
+  const repos = sections(await fixture(baseURL, "sample-repos-owners.json"));
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  expect(cockpit.panelColumns.ghWorkflows).toBe(2);
+  await gotoWithFixtures(page, baseURL, { repos, cockpit }, "repos");
+  const columns = page.locator("#reposBody > .gh-col");
+  await expect(columns).toHaveCount(2);
+  // Owners in name order, each a header row of its own, never a repo row.
+  const owners = page.locator("#reposBody .gh-owner");
+  expect(await owners.evaluateAll((els) => els.map((el) => [el.dataset.owner, el.dataset.continued ?? null])))
+    .toEqual([["acme", null], ["globex", null], ["globex", "true"], ["jdoe", null]]);
+  await expect(page.locator("#reposBody .gh-owner.gh-row")).toHaveCount(0);
+  await expect(columns.nth(1).locator(":scope > *").nth(1)).toHaveClass(/gh-owner/);
+  await expect(columns.nth(1).locator(":scope > *").nth(1)).toHaveAttribute("data-continued", "true");
+  await expect(repoRows(page)).toHaveCount(repos.rows.length);
+  // An owner's totals sit under their columns, Rust's cells verbatim.
+  const globex = repos.owners.find((o) => o.owner === "globex");
+  await expect(owners.nth(1).locator(".gh-cell")).toHaveText(globex.cells.map((c) => c.text));
+  await expect(owners.nth(1).locator(".gh-repo-name")).toHaveText("globex");
 });
 
 // MARK: - Repos: tap to open
@@ -1089,7 +1189,9 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
 test("a wide panel splits Repos and keeps Runners in one aligned table", async ({ page, baseURL }) => {
   // sample-cockpit.json is dumped at 2732pt, so its two-panel rows are 1358pt
   // each — past both breakpoints (Repos needs 1136, Runners 816).
-  const { repos, runners } = await gotoWithFixtures(page, baseURL, {}, "repos");
+  // Sections: the table split into columns (Cards splits only a big owner).
+  const repos = sections(await fixture(baseURL, "sample-repos.json"));
+  const { runners } = await gotoWithFixtures(page, baseURL, { repos }, "repos");
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const cols = (id) => cockpit.panelColumns[id];
   expect(cols("ghWorkflows"), "fixture must be wide enough for 2").toBe(2);

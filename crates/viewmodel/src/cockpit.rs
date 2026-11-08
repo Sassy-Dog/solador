@@ -101,14 +101,14 @@ impl PanelKind {
     /// *its* content has room for them.
     ///
     /// Each figure is the panel's widest fixed content plus its card padding —
-    /// e.g. Repos sums eight fixed numeric columns (232pt), their gaps, the
+    /// e.g. Repos sums nine fixed numeric columns (252pt), their gaps, the
     /// status dot and a 96pt name reservation. Widen a panel's content, widen
     /// this number.
     ///
     /// It is also the width **one content column** needs, which is what
     /// [`panel_columns`] reads it as. Repos was 560 while its columns carried
     /// half again the width their labels needed; sizing them to their text
-    /// took it to 440 — 458 since READY joined the row — which is what lets it
+    /// took it to 440 — 458 since READY joined the row, 478 since DEP did — which is what lets it
     /// hold two columns on a display where it previously could not.
     ///
     /// What the number decides today: [`panel_columns`] gives a panel a second
@@ -139,7 +139,7 @@ impl PanelKind {
     pub fn min_width(self) -> f64 {
         match self {
             PanelKind::Hosts => HOST_CARD_MIN_WIDTH,
-            PanelKind::GhWorkflows => 458.0,
+            PanelKind::GhWorkflows => 478.0,
             PanelKind::GhRunners => 400.0,
             PanelKind::Containers => 400.0,
             PanelKind::AzureCost => 400.0,
@@ -222,6 +222,61 @@ pub fn panel_columns(kind: PanelKind, width: f64, spacing: f64) -> usize {
 /// Two. A third column of a short list costs more in scanning than the gutter
 /// it reclaims, and every panel this applies to is a list.
 pub const PANEL_MAX_COLUMNS: usize = 2;
+
+/// The narrowest card a Repos Full view lays out, in points: the REPO name
+/// plus ISSUES, PRS and DEP, with room to read.
+pub const REPO_CARD_MIN_WIDTH: f64 = 320.0;
+
+/// Never more than four cards to a row, however wide the window.
+pub const REPO_CARD_MAX_COLUMNS: usize = 4;
+
+/// The columns a Repos card shows, as the panel's column labels, in order.
+/// The rest (READY, REMOTE, LOCAL, WT) stay in Sections and in Detail.
+pub const REPO_CARD_FIELDS: [&str; 6] = ["REPO", "ISSUES", "PRS", "DEP", "JOBS", "LONGEST"];
+
+/// A card narrower than this drops LONGEST.
+const REPO_CARD_LONGEST_WIDTH: f64 = 380.0;
+
+/// A card narrower than this drops JOBS too. A running workflow still shows
+/// through the amber row dot and the owner's running total.
+const REPO_CARD_JOBS_WIDTH: f64 = 300.0;
+
+/// How a Repos Full view lays out its owner cards at one width.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoCards {
+    /// Cards to a row, and the columns a spanning owner splits into.
+    pub columns: usize,
+    /// [`REPO_CARD_FIELDS`] with the narrowing ladder applied.
+    pub fields: Vec<&'static str>,
+}
+
+/// The spec's narrowing ladder, decided here so the page only paints it:
+/// as many cards of [`REPO_CARD_MIN_WIDTH`] as fit (the rule
+/// [`panel_columns`] uses, clamped to 1..=[`REPO_CARD_MAX_COLUMNS`]), then
+/// LONGEST and JOBS drop as the card each one leaves narrows.
+pub fn repo_cards(width: f64, spacing: f64) -> RepoCards {
+    let columns = if width.is_nan() || width <= 0.0 {
+        1
+    } else {
+        let fits = ((width + spacing) / (REPO_CARD_MIN_WIDTH + spacing)).floor();
+        if fits >= 1.0 {
+            (fits as usize).min(REPO_CARD_MAX_COLUMNS)
+        } else {
+            1
+        }
+    };
+    let card = (width - spacing * (columns - 1) as f64) / columns as f64;
+    let fields = REPO_CARD_FIELDS
+        .iter()
+        .copied()
+        .filter(|&field| match field {
+            "LONGEST" => card >= REPO_CARD_LONGEST_WIDTH,
+            "JOBS" => card >= REPO_CARD_JOBS_WIDTH,
+            _ => true,
+        })
+        .collect();
+    RepoCards { columns, fields }
+}
 
 /// Minimum height of the tabbed host container, in points.
 ///
@@ -329,10 +384,10 @@ mod tests {
         assert_eq!(panel_columns(PanelKind::GhRunners, 816.0, SPACING), 2);
         assert_eq!(panel_columns(PanelKind::Containers, 815.0, SPACING), 1);
         assert_eq!(panel_columns(PanelKind::Containers, 816.0, SPACING), 2);
-        // Repos carries 232pt of fixed numeric columns plus a 96pt name, so
-        // its minimum is 458 and it pairs at 2 * 458 + 16 = 932.
-        assert_eq!(panel_columns(PanelKind::GhWorkflows, 931.0, SPACING), 1);
-        assert_eq!(panel_columns(PanelKind::GhWorkflows, 932.0, SPACING), 2);
+        // Repos carries 252pt of fixed numeric columns plus a 96pt name, so
+        // its minimum is 478 and it pairs at 2 * 478 + 16 = 972.
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 971.0, SPACING), 1);
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 972.0, SPACING), 2);
     }
 
     /// Capped at two: a third column of a short list costs more scanning than
@@ -429,6 +484,27 @@ mod tests {
     }
 
     // MARK: the panel table
+
+    #[test]
+    fn repo_cards_fit_by_width_and_narrow_longest_first() {
+        let all: Vec<&str> = REPO_CARD_FIELDS.to_vec();
+        let no_longest: Vec<&str> = REPO_CARD_FIELDS[..5].to_vec();
+        let no_jobs: Vec<&str> = REPO_CARD_FIELDS[..4].to_vec();
+        // 800: two cards of 392, every field.
+        let cards = repo_cards(800.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (2, all));
+        // 700: two cards of 342, LONGEST goes first.
+        let cards = repo_cards(700.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (2, no_longest.clone()));
+        // 1500: four cards of 363.
+        let cards = repo_cards(1500.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (4, no_longest));
+        // 290: one card under 300, so JOBS goes too.
+        let cards = repo_cards(290.0, 16.0);
+        assert_eq!((cards.columns, cards.fields), (1, no_jobs));
+        // Never more than four, however wide.
+        assert_eq!(repo_cards(5000.0, 16.0).columns, REPO_CARD_MAX_COLUMNS);
+    }
 
     /// Every panel declares its own breakpoint. A new kind that forgets one
     /// would split against a zero minimum and never leave a cramped column.

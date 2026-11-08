@@ -434,6 +434,22 @@ function applyPanelColumns(columns) {
   }
 }
 
+/**
+ * The Repos Full view's owner cards at this width (`repo_cards` in Rust): how
+ * many share a row and which columns a card keeps. On the panel's dataset
+ * beside `cols`, and the same `panelcolumns` event re-splits it at once.
+ */
+function applyRepoCards(cards) {
+  const panel = $("reposPanel");
+  if (!panel || !cards) return;
+  const cols = String(Math.max(1, Number(cards.columns) | 0));
+  const fields = (cards.fields || []).join(",");
+  if (panel.dataset.cardCols === cols && panel.dataset.cardFields === fields) return;
+  panel.dataset.cardCols = cols;
+  panel.dataset.cardFields = fields;
+  panel.dispatchEvent(new CustomEvent("panelcolumns", { detail: { columns: Number(panel.dataset.cols) || 1 } }));
+}
+
 // Which host the tab bar has selected, by id. Module-level so it survives every
 // poll: the payload is rebuilt once a second, and a selection stored on the DOM
 // would be reset by the next render.
@@ -551,6 +567,7 @@ function renderCockpit(p) {
   $("hostsTitle").textContent = window.soladorDashboard?.tileHeading?.("hosts") || "";
 
   applyPanelColumns(p.panelColumns);
+  applyRepoCards(p.repoCards);
 
   installCoreLadders(p.hosts);
 

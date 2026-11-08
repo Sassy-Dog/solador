@@ -19,7 +19,30 @@
   are a walk of `/pulls` (100 per page, refused past `PULLS_PAGE_CAP` rather
   than truncated), not the `per_page=1` trick, because the walk also yields how
   many Dependabot opened: the PRs count's tooltip (`7 open PRs · 5 from
-  Dependabot`) and a **DEPENDABOT** column after PRS in Repos Detail.
+  Dependabot`) and a **DEP** column after PRS in every Repos layout (the
+  overview tile, Detail and the Full view).
+  Repos are **grouped by owner**, the part of `owner/name` before the slash
+  (compared case-insensitively, labelled with its first spelling in
+  owner/name order, never defaulted), decided once in `viewmodel::repo_owners`.
+  Every row carries its group's label (`github::attach_owners`), so `Acme/x`
+  and `acme/z` sit under one owner in the tile, Detail and the Full view. A Repos tile's
+  Configure → **Layout** (`repoLayout`, `cards` by default and for a store
+  written before it) chooses **Cards**, one box per owner, or **Sections**, one
+  table with a header row per owner; the tile and its Full view both follow it,
+  and Detail lists each owner's repos under its name. Each owner's header
+  carries its totals: issues, PRs, Dependabot and how many workflows are
+  running, over every repo **in the tile's scope**, the ones past the row limit
+  included. A total that includes an unknown count is unknown and reads `—`.
+  The tile's row limit applies **per owner**, each owner keeping its own
+  "N more" line. In Cards, owners that fit share a row; one showing more than
+  `CARD_SPAN_ROWS` (8) rows spans the width and splits its rows into columns.
+  When any card or split column the tile paints is narrower than a small
+  tile, every card in that tile keeps ISSUES, PRS and DEP only, so the columns
+  line up (its dot still carries the status). The Full view's cards show REPO, ISSUES, PRS,
+  DEP, JOBS and LONGEST, as many cards across as `cockpit::repo_cards` allows
+  at the window's width (a second card only when each gets 320pt, at most 4), dropping LONGEST
+  below 380pt and JOBS below 300pt; its Sections keep every column and repeat
+  an owner's header at the top of a column that continues it.
   The org's runners are walked the same way (`org_runners`: 100 per page,
   `Link: rel="next"`, de-duplicated by `id`, refused past `RUNNERS_PAGE_CAP`
   pages with `TooManyToCount`): the roster reads a fetch as the complete
