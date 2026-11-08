@@ -1160,8 +1160,11 @@ test("a query matching more than fifty says how many more", async ({ page, baseU
 test("a full owner/name that isn't listed offers Add by name", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   const { owning, card, field } = await openRepos(page, settings);
-  await field.fill("acme/claims");
-  await expect(card.locator(".btn.repo-add"), "a listed prefix offers no add").toHaveCount(0);
+  // A listed repo is ticked, not added. The row first, so the answer has
+  // landed before the absence is asserted.
+  await field.fill("acme/claims-api");
+  await expect(card.locator('[data-pick="acme/claims-api"]')).toBeVisible();
+  await expect(card.locator(".btn.repo-add"), "a listed repo offers no add").toHaveCount(0);
   await field.fill("rust-lang/cargo");
   const add = card.locator(".btn.repo-add");
   await expect(add).toHaveText("Add rust-lang/cargo by name");
