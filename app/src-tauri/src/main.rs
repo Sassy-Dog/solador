@@ -7243,6 +7243,25 @@ fn dump_dashboard() -> Value {
 /// The same readings under another layout, so a fixture can hold a Rust-authored
 /// attention chip target for a layout the default does not have.
 fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
+    dump_dashboard_with(layout, dump_github(false, false))
+}
+
+/// The overview over the three-owner Repos fixture (`--dump-dashboard
+/// --owners`): one wide tile showing every repo, so Cards packs at full width,
+/// and one medium tile limited to 5 per owner.
+fn dump_owners_dashboard() -> Value {
+    let mut layout = dashboard::default_layout();
+    let mut all = store::DashboardTile::new("repos-all", "ghWorkflows", "GitHub Repos", "all");
+    all.width = "wide".into();
+    all.row_limit = "all".into();
+    let mut five = store::DashboardTile::new("repos-five", "ghWorkflows", "Five Per Owner", "all");
+    five.width = "medium".into();
+    five.row_limit = "5".into();
+    layout.tiles = vec![all, five];
+    dump_dashboard_with(&layout, dump_github_owners())
+}
+
+fn dump_dashboard_with(layout: &store::DashboardLayout, repos: Value) -> Value {
     let mut hosts = dump_cockpit(1200.0, 3, HostOverflowMode::Stack);
     hosts["id"] = json!("hosts");
     // The Machines tile's GPU meters need a GPU to draw: ubu-01 serves a local
@@ -7267,7 +7286,7 @@ fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
     cadences.set_panel_interval_secs(store::settings::PanelInterval::AzureCost, 6 * 3600);
     let mut payloads = vec![
         hosts,
-        dump_github(false, false),
+        repos,
         dump_github(false, true),
         dump_containers(false),
         services::view(&services::fixture_statuses(), true),
@@ -7332,6 +7351,8 @@ fn run_dump(args: &[String]) -> bool {
             dump_showcase_dashboard()
         } else if args.iter().any(|arg| arg == "--chips") {
             dump_dashboard_of(&chips_layout())
+        } else if args.iter().any(|arg| arg == "--owners") {
+            dump_owners_dashboard()
         } else {
             dump_dashboard()
         };
