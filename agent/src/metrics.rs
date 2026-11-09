@@ -366,7 +366,7 @@ fn process_refresh_kind() -> ProcessRefreshKind {
 // The sampler's two sysinfo handles.
 // ---------------------------------------------------------------------------
 
-/// The two `sysinfo::System` handles [`sampler_loop`] samples through — one per
+/// The two `sysinfo::System` handles [`sampler_loop_with`] samples through — one per
 /// cadence, and **that is the whole point of this type** (#378).
 ///
 /// # Why this is not one `System`
@@ -612,31 +612,51 @@ pub fn spawn_sampler() -> MetricsState {
     let handle = state.clone();
     let gpu_state = crate::gpu::spawn_probe();
 
-    tokio::spawn(async move {
-        loop {
-            let task = handle.clone();
-            let gpu = gpu_state.clone();
-            // Isolate the loop so a panic inside it doesn't take down the agent;
-            // a `JoinHandle` carries the panic back here as an `Err`.
-            let join = tokio::spawn(async move { sampler_loop(task, gpu).await });
-            match join.await {
-                Ok(()) => {
-                    // The loop is infinite; a clean return is unexpected.
-                    tracing::error!("metrics sampler exited unexpectedly; restarting");
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "metrics sampler panicked; restarting");
-                }
-            }
-            // Back off so a tight panic loop doesn't spin the CPU.
-            tokio::time::sleep(SAMPLE_INTERVAL).await;
-        }
-    });
+    tokio::spawn(supervise_sampler(
+        handle,
+        gpu_state,
+        SAMPLE_INTERVAL,
+        Sampler::new,
+    ));
 
     state
 }
 
-/// The sampler's inner loop: prime once, then sample forever.
+/// [`spawn_sampler`]'s supervisor with the sampler's constructor and the
+/// interval supplied by the caller, so a test can hand it a pass that panics.
+/// Production passes `Sampler::new` and [`SAMPLE_INTERVAL`]. Every restart
+/// builds a fresh sampler from `make`.
+async fn supervise_sampler<S: SamplePass>(
+    handle: MetricsState,
+    gpu_state: crate::gpu::GpuState,
+    interval: Duration,
+    make: impl Fn() -> S + Clone + Send + 'static,
+) {
+    loop {
+        let task = handle.clone();
+        let gpu = gpu_state.clone();
+        let make = make.clone();
+        // Isolate the loop so a panic inside it doesn't take down the agent;
+        // a `JoinHandle` carries the panic back here as an `Err`.
+        let join = tokio::spawn(async move { sampler_loop_with(task, gpu, interval, make).await });
+        match join.await {
+            Ok(()) => {
+                // The loop is infinite; a clean return is unexpected.
+                tracing::error!("metrics sampler exited unexpectedly; restarting");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "metrics sampler panicked; restarting");
+            }
+        }
+        // Back off so a tight panic loop doesn't spin the CPU.
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// The sampler's inner loop: prime once, then sample forever. The supplied
+/// constructor and interval are what [`supervise_sampler`] passes through;
+/// production passes `Sampler::new` and [`SAMPLE_INTERVAL`] (see
+/// [`spawn_sampler`]).
 ///
 /// `gpu_state` is read, never driven: the probe behind it runs on its own task
 /// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess or
@@ -648,10 +668,6 @@ pub fn spawn_sampler() -> MetricsState {
 /// The pair lives in [`SamplerSystems`], whose docs carry the 60× reason it is
 /// not one handle; a "simplification" that merges them puts that error back on
 /// every Linux host's TOP CPU list, silently.
-async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
-    sampler_loop_with(state, gpu_state, SAMPLE_INTERVAL, Sampler::new).await
-}
-
 /// One sampling pass's worth of state, as [`sampler_loop_with`] drives it.
 ///
 /// [`Sampler`] is the only production implementation. The trait exists so a
@@ -667,10 +683,8 @@ impl SamplePass for Sampler {
     }
 }
 
-/// [`sampler_loop`]'s body with the sampler's constructor and the interval
-/// supplied by the caller. Production passes `Sampler::new` and
-/// [`SAMPLE_INTERVAL`]; construction and every pass still go through
-/// [`on_blocking_thread`], which is what the tests on this function pin.
+/// Construction and every pass go through [`on_blocking_thread`], which is what
+/// the tests on this function pin.
 async fn sampler_loop_with<S: SamplePass>(
     state: MetricsState,
     gpu_state: crate::gpu::GpuState,
@@ -1064,7 +1078,7 @@ mod tests {
     /// current-thread runtime a timer task can only tick while the closure
     /// runs elsewhere. `sampler_loop_with`'s use of the helper is pinned by
     /// `sampler_loop_keeps_construction_and_passes_off_the_runtime_thread`;
-    /// `sampler_loop` delegates to it in one line.
+    /// `spawn_sampler` reaches it only through `supervise_sampler`.
     #[tokio::test]
     async fn on_blocking_thread_keeps_its_work_off_the_runtime_thread() {
         let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -1112,8 +1126,7 @@ mod tests {
         }
     }
 
-    /// Fails if `sampler_loop_with` (which `sampler_loop` delegates to in one
-    /// line) builds its sampler or runs a pass inline: on this current-thread runtime a ticker task can
+    /// Fails if `sampler_loop_with` builds its sampler or runs a pass inline: on this current-thread runtime a ticker task can
     /// only tick while the slow construction and pass run elsewhere. Each stage
     /// counts the ticks made during its own blocking sleep. An inlined stage
     /// sees exactly 0, because the runtime's only thread is asleep; an
@@ -1178,15 +1191,70 @@ mod tests {
     }
 
     /// The helper half of panic handling: a panic on the blocking thread is
-    /// re-raised on the awaiting task. It does not exercise the
-    /// `spawn_sampler` supervisor's restart or the rebuild of `Sampler` by
-    /// `Sampler::new`.
+    /// re-raised on the awaiting task. The restart that follows is pinned by
+    /// `the_supervisor_restarts_the_sampler_after_a_pass_panics`.
     #[tokio::test]
     async fn a_panic_on_the_blocking_thread_panics_the_awaiting_task() {
         let join = tokio::spawn(async {
             on_blocking_thread(|| -> u8 { panic!("sampler pass panicked") }).await
         });
         assert!(join.await.unwrap_err().is_panic());
+    }
+
+    /// A `SamplePass` for the supervisor test: the first one ever built panics
+    /// on its pass, every later one completes it and raises `recovered`.
+    struct PanicOncePass {
+        panic: bool,
+        recovered: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SamplePass for PanicOncePass {
+        fn pass(&mut self, _gpu: Gpu) -> Snapshot {
+            if self.panic {
+                panic!("injected sampler pass panic");
+            }
+            self.recovered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            empty_snapshot()
+        }
+    }
+
+    /// Fails if `spawn_sampler`'s supervisor (`supervise_sampler`) does not
+    /// restart the loop after a pass panics: the first sampler built panics, and
+    /// the test waits for a second one, built by the restart, to complete a pass.
+    /// It asserts on state reached, within `FIRST_SNAPSHOT_BUDGET`, not on a
+    /// count of ticks.
+    #[tokio::test]
+    async fn the_supervisor_restarts_the_sampler_after_a_pass_panics() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        let state = MetricsState {
+            inner: Arc::new(RwLock::new(empty_snapshot())),
+            last_sample: Arc::new(Mutex::new(Instant::now())),
+        };
+        let built = Arc::new(AtomicU32::new(0));
+        let recovered = Arc::new(AtomicBool::new(false));
+        let (b, r) = (built.clone(), recovered.clone());
+        let supervisor = tokio::spawn(supervise_sampler(
+            state,
+            crate::gpu::GpuState::unknown(),
+            Duration::from_millis(10),
+            move || PanicOncePass {
+                panic: b.fetch_add(1, Ordering::SeqCst) == 0,
+                recovered: r.clone(),
+            },
+        ));
+        let waited = tokio::time::timeout(FIRST_SNAPSHOT_BUDGET, async {
+            while !recovered.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        supervisor.abort();
+        assert!(
+            waited.is_ok(),
+            "the supervisor never restarted the sampler after its pass panicked"
+        );
+        assert!(built.load(Ordering::SeqCst) >= 2);
     }
 
     #[tokio::test]
@@ -1832,7 +1900,7 @@ mod tests {
     /// true on Linux is [`SamplerSystems`] holding a `System` the fast CPU
     /// cadence never touches.
     ///
-    /// This drives the production type exactly as [`sampler_loop`] does: many
+    /// This drives the production type exactly as [`sampler_loop_with`] does: many
     /// machine refreshes, then one process refresh. Reverting to a single
     /// shared `System` deletes [`SamplerSystems`] and this stops compiling; a
     /// "simplification" that keeps the type but points both fields at one
