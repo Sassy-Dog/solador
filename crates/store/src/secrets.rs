@@ -719,6 +719,40 @@ impl CredentialStore for MemoryCredentialStore {
     }
 }
 
+/// What a credential read actually learned.
+///
+/// The three cases are genuinely different and collapsing them is the
+/// unknown-is-not-zero rule in credential form. `unwrap_or_default()` on a
+/// `Result<Option<String>>` turns "the keychain would not answer" into an empty
+/// string, which every consumer downstream reads as "the user has not set this
+/// up" — so a locked keychain silently deletes a configured panel, tells the
+/// operator to paste a credential they already pasted, and (for Azure) discards
+/// the fingerprint cache that keeps an unchanged export free.
+pub enum Credential {
+    /// No credential is stored. The panel's zero-setup state.
+    Absent,
+    /// The stored value.
+    Present(String),
+    /// The credential store refused to answer. We do not know either way.
+    Unreadable,
+}
+
+/// Reads one credential, keeping "there is none" apart from "we could not ask".
+///
+/// Generic over the store so every caller's three branches can be pinned against
+/// `MemoryCredentialStore` and a failing double, with no keychain and no Tauri
+/// app in the test.
+pub fn read_credential<C: CredentialStore + ?Sized>(credentials: &C, key: SecretKey) -> Credential {
+    match credentials.secret(key) {
+        Ok(Some(value)) if !value.trim().is_empty() => Credential::Present(value),
+        Ok(_) => Credential::Absent,
+        Err(e) => {
+            eprintln!("could not read a stored credential: {e}");
+            Credential::Unreadable
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

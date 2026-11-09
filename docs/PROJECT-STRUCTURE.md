@@ -44,6 +44,7 @@
 │   │                       #   and Tailscale (`plain`, #449)
 │   ├── store/              # settings/hosts/repos/container-rules/runner-roster/
 │   │                       #   dashboard-layout JSON + OS credential-store wrappers
+│   │                       #   + the source-save table (`source_save`)
 │   ├── github/             # GitHub client (REST + one GraphQL walk) + the "is it us?" verdict
 │   ├── servicestatus/      # Atlassian Statuspage, status.io, Azure RSS
 │   ├── accelerator/        # the IOKit `IOAccelerator` GPU reader, shared by

@@ -41,6 +41,7 @@ pub mod repos;
 pub mod runners;
 pub mod secrets;
 pub mod settings;
+pub mod source_save;
 pub mod statusvendors;
 
 #[cfg(test)]
