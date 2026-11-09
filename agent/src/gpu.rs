@@ -113,7 +113,7 @@ pub struct GpuState {
 impl GpuState {
     /// A state that has measured nothing yet — which is exactly what it should
     /// report until the first probe lands.
-    fn unknown() -> Self {
+    pub(crate) fn unknown() -> Self {
         GpuState {
             inner: Arc::new(Mutex::new(Gpu::unknown())),
         }

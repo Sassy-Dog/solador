@@ -649,11 +649,39 @@ pub fn spawn_sampler() -> MetricsState {
 /// not one handle; a "simplification" that merges them puts that error back on
 /// every Linux host's TOP CPU list, silently.
 async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
-    let mut sampler = on_blocking_thread(Sampler::new).await;
+    sampler_loop_with(state, gpu_state, SAMPLE_INTERVAL, Sampler::new).await
+}
+
+/// One sampling pass's worth of state, as [`sampler_loop_with`] drives it.
+///
+/// [`Sampler`] is the only production implementation. The trait exists so a
+/// test can hand the loop a slow or panicking pass and watch what the loop does
+/// with the runtime thread; it adds no behaviour of its own.
+trait SamplePass: Send + 'static {
+    fn pass(&mut self, gpu: Gpu) -> Snapshot;
+}
+
+impl SamplePass for Sampler {
+    fn pass(&mut self, gpu: Gpu) -> Snapshot {
+        Sampler::pass(self, gpu)
+    }
+}
+
+/// [`sampler_loop`]'s body with the sampler's constructor and the interval
+/// supplied by the caller. Production passes `Sampler::new` and
+/// [`SAMPLE_INTERVAL`]; construction and every pass still go through
+/// [`on_blocking_thread`], which is what the tests on this function pin.
+async fn sampler_loop_with<S: SamplePass>(
+    state: MetricsState,
+    gpu_state: crate::gpu::GpuState,
+    interval: Duration,
+    make: impl FnOnce() -> S + Send + 'static,
+) {
+    let mut sampler = on_blocking_thread(make).await;
 
     // `Sampler::new` primed both handles; the first reading of anything
     // sysinfo derives from a delta is meaningless, so wait one interval out.
-    tokio::time::sleep(SAMPLE_INTERVAL).await;
+    tokio::time::sleep(interval).await;
 
     loop {
         let gpu = gpu_state.latest();
@@ -666,7 +694,7 @@ async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
         *state.inner.write().await = snap;
         state.mark_sampled();
 
-        tokio::time::sleep(SAMPLE_INTERVAL).await;
+        tokio::time::sleep(interval).await;
     }
 }
 
@@ -1034,8 +1062,8 @@ mod tests {
 
     /// Proves `on_blocking_thread` does not run its closure inline: on this
     /// current-thread runtime a timer task can only tick while the closure
-    /// runs elsewhere. It does not prove `sampler_loop` uses the helper; a
-    /// regression to an inline `pass()` would leave it green.
+    /// runs elsewhere. That `sampler_loop` uses the helper is pinned by
+    /// `sampler_loop_keeps_construction_and_passes_off_the_runtime_thread`.
     #[tokio::test]
     async fn on_blocking_thread_keeps_its_work_off_the_runtime_thread() {
         let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -1051,6 +1079,78 @@ mod tests {
         assert!(
             ticks.load(std::sync::atomic::Ordering::SeqCst) >= 5,
             "the runtime thread was held while the work ran"
+        );
+    }
+
+    /// A `SamplePass` whose passes block their thread for `block`, standing in
+    /// for a slow disk or process walk, and count themselves. The same fake can
+    /// panic instead (`panic_on_pass`) for a test of the supervisor's restart.
+    struct SlowPass {
+        block: Duration,
+        panic_on_pass: bool,
+        passes: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl SamplePass for SlowPass {
+        fn pass(&mut self, _gpu: Gpu) -> Snapshot {
+            std::thread::sleep(self.block);
+            if self.panic_on_pass {
+                panic!("fake sampler pass panicked");
+            }
+            self.passes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            empty_snapshot()
+        }
+    }
+
+    /// Fails if `sampler_loop_with` (and so `sampler_loop`) builds its sampler
+    /// or runs a pass inline: on this current-thread runtime a ticker task can
+    /// only tick while the slow construction and pass run elsewhere. Inlining
+    /// either holds the runtime thread for 300 ms, costing ~30 of the ~60
+    /// ticks available across the 600 ms the two take.
+    #[tokio::test]
+    async fn sampler_loop_keeps_construction_and_passes_off_the_runtime_thread() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        const BLOCK: Duration = Duration::from_millis(300);
+        let state = MetricsState {
+            inner: Arc::new(RwLock::new(empty_snapshot())),
+            last_sample: Arc::new(Mutex::new(Instant::now())),
+        };
+        let ticks = Arc::new(AtomicU32::new(0));
+        let counter = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let passes = Arc::new(AtomicU32::new(0));
+        let fake_passes = passes.clone();
+        let looped = tokio::spawn(sampler_loop_with(
+            state,
+            crate::gpu::GpuState::unknown(),
+            Duration::from_millis(10),
+            move || {
+                std::thread::sleep(BLOCK);
+                SlowPass {
+                    block: BLOCK,
+                    panic_on_pass: false,
+                    passes: fake_passes,
+                }
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while passes.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the loop never completed a pass");
+        looped.abort();
+        ticker.abort();
+        assert!(
+            ticks.load(Ordering::SeqCst) >= 40,
+            "the runtime thread was held while the sampler built or passed"
         );
     }
 
