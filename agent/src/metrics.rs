@@ -655,7 +655,7 @@ async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
 /// One sampling pass's worth of state, as [`sampler_loop_with`] drives it.
 ///
 /// [`Sampler`] is the only production implementation. The trait exists so a
-/// test can hand the loop a slow or panicking pass and watch what the loop does
+/// test can hand the loop a slow pass and watch what the loop does
 /// with the runtime thread; it adds no behaviour of its own.
 trait SamplePass: Send + 'static {
     fn pass(&mut self, gpu: Gpu) -> Snapshot;
@@ -1062,8 +1062,9 @@ mod tests {
 
     /// Proves `on_blocking_thread` does not run its closure inline: on this
     /// current-thread runtime a timer task can only tick while the closure
-    /// runs elsewhere. That `sampler_loop` uses the helper is pinned by
-    /// `sampler_loop_keeps_construction_and_passes_off_the_runtime_thread`.
+    /// runs elsewhere. `sampler_loop_with`'s use of the helper is pinned by
+    /// `sampler_loop_keeps_construction_and_passes_off_the_runtime_thread`;
+    /// `sampler_loop` delegates to it in one line.
     #[tokio::test]
     async fn on_blocking_thread_keeps_its_work_off_the_runtime_thread() {
         let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -1082,7 +1083,7 @@ mod tests {
         );
     }
 
-    /// A `SamplePass` whose passes block their thread for `block`, standing in
+    /// A `SamplePass` whose passes block their thread for `SLOW_BLOCK`, standing in
     /// for a slow disk or process walk. It records how many ticks the test's
     /// ticker task made while the pass slept.
     struct SlowPass {
@@ -1111,8 +1112,8 @@ mod tests {
         }
     }
 
-    /// Fails if `sampler_loop_with` (and so `sampler_loop`) builds its sampler
-    /// or runs a pass inline: on this current-thread runtime a ticker task can
+    /// Fails if `sampler_loop_with` (which `sampler_loop` delegates to in one
+    /// line) builds its sampler or runs a pass inline: on this current-thread runtime a ticker task can
     /// only tick while the slow construction and pass run elsewhere. Each stage
     /// counts the ticks made during its own blocking sleep. An inlined stage
     /// sees exactly 0, because the runtime's only thread is asleep; an
