@@ -653,21 +653,6 @@ async fn supervise_sampler<S: SamplePass>(
     }
 }
 
-/// The sampler's inner loop: prime once, then sample forever. The supplied
-/// constructor and interval are what [`supervise_sampler`] passes through;
-/// production passes `Sampler::new` and [`SAMPLE_INTERVAL`] (see
-/// [`spawn_sampler`]).
-///
-/// `gpu_state` is read, never driven: the probe behind it runs on its own task
-/// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess or
-/// an IOKit read is a mutex lock. A wedged `nvidia-smi` costs a stale GPU
-/// reading, not a stalled snapshot.
-///
-/// **Two cadences, and therefore two `sysinfo::System` handles** — CPU/memory
-/// every [`SAMPLE_INTERVAL`], processes every [`PROCESS_SAMPLE_TICKS`] of them.
-/// The pair lives in [`SamplerSystems`], whose docs carry the 60× reason it is
-/// not one handle; a "simplification" that merges them puts that error back on
-/// every Linux host's TOP CPU list, silently.
 /// One sampling pass's worth of state, as [`sampler_loop_with`] drives it.
 ///
 /// [`Sampler`] is the only production implementation. The trait exists so a
@@ -683,6 +668,22 @@ impl SamplePass for Sampler {
     }
 }
 
+/// The sampler's inner loop: prime once, then sample forever. The supplied
+/// constructor and interval are what [`supervise_sampler`] passes through;
+/// production passes `Sampler::new` and [`SAMPLE_INTERVAL`] (see
+/// [`spawn_sampler`]).
+///
+/// `gpu_state` is read, never driven: the probe behind it runs on its own task
+/// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess or
+/// an IOKit read is a mutex lock. A wedged `nvidia-smi` costs a stale GPU
+/// reading, not a stalled snapshot.
+///
+/// **Two cadences, and therefore two `sysinfo::System` handles** — CPU/memory
+/// every [`SAMPLE_INTERVAL`], processes every [`PROCESS_SAMPLE_TICKS`] of them.
+/// The pair lives in [`SamplerSystems`], whose docs carry the 60× reason it is
+/// not one handle; a "simplification" that merges them puts that error back on
+/// every Linux host's TOP CPU list, silently.
+///
 /// Construction and every pass go through [`on_blocking_thread`], which is what
 /// the tests on this function pin.
 async fn sampler_loop_with<S: SamplePass>(
@@ -1078,7 +1079,8 @@ mod tests {
     /// current-thread runtime a timer task can only tick while the closure
     /// runs elsewhere. `sampler_loop_with`'s use of the helper is pinned by
     /// `sampler_loop_keeps_construction_and_passes_off_the_runtime_thread`;
-    /// `spawn_sampler` reaches it only through `supervise_sampler`.
+    /// `spawn_sampler` reaches it through `supervise_sampler` and
+    /// `sampler_loop_with`.
     #[tokio::test]
     async fn on_blocking_thread_keeps_its_work_off_the_runtime_thread() {
         let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -1126,8 +1128,8 @@ mod tests {
         }
     }
 
-    /// Fails if `sampler_loop_with` builds its sampler or runs a pass inline: on this current-thread runtime a ticker task can
-    /// only tick while the slow construction and pass run elsewhere. Each stage
+    /// Fails if `sampler_loop_with` builds its sampler or runs a pass inline:
+    /// on this current-thread runtime a ticker task can only tick while the slow construction and pass run elsewhere. Each stage
     /// counts the ticks made during its own blocking sleep. An inlined stage
     /// sees exactly 0, because the runtime's only thread is asleep; an
     /// offloaded one sees ~30 (Unix) or ~19 (Windows' 15.6 ms timer tick).
@@ -1201,11 +1203,14 @@ mod tests {
         assert!(join.await.unwrap_err().is_panic());
     }
 
+    /// The reading the post-panic pass reports, so the test can tell a snapshot
+    /// the restarted loop wrote from the state's initial `empty_snapshot()`.
+    const RECOVERED_READ_MBPS: f64 = 1.0;
+
     /// A `SamplePass` for the supervisor test: the first one ever built panics
-    /// on its pass, every later one completes it and raises `recovered`.
+    /// on its pass, every later one returns a recognisable snapshot.
     struct PanicOncePass {
         panic: bool,
-        recovered: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl SamplePass for PanicOncePass {
@@ -1213,38 +1218,44 @@ mod tests {
             if self.panic {
                 panic!("injected sampler pass panic");
             }
-            self.recovered
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            empty_snapshot()
+            let mut snapshot = empty_snapshot();
+            snapshot.disk.read_mbps = Some(RECOVERED_READ_MBPS);
+            snapshot
         }
     }
 
     /// Fails if `spawn_sampler`'s supervisor (`supervise_sampler`) does not
-    /// restart the loop after a pass panics: the first sampler built panics, and
-    /// the test waits for a second one, built by the restart, to complete a pass.
-    /// It asserts on state reached, within `FIRST_SNAPSHOT_BUDGET`, not on a
-    /// count of ticks.
+    /// restart the loop after a pass panics, or restarts it against a state the
+    /// caller does not hold. The first sampler built panics; the state is
+    /// backdated past the stale threshold, and the test waits for a sampler
+    /// built by the restart to write its recognisable snapshot into the
+    /// caller's state and mark it sampled again (`is_stale()` false). It
+    /// asserts on state reached, within `FIRST_SNAPSHOT_BUDGET`, not on a count
+    /// of ticks.
     #[tokio::test]
     async fn the_supervisor_restarts_the_sampler_after_a_pass_panics() {
-        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::sync::atomic::{AtomicU32, Ordering};
         let state = MetricsState {
             inner: Arc::new(RwLock::new(empty_snapshot())),
             last_sample: Arc::new(Mutex::new(Instant::now())),
         };
+        let reader = state.clone();
+        reader.set_sample_age_for_test(
+            SAMPLE_INTERVAL * STALE_INTERVALS + Duration::from_millis(500),
+        );
+        assert!(reader.is_stale(), "the backdated state must start stale");
         let built = Arc::new(AtomicU32::new(0));
-        let recovered = Arc::new(AtomicBool::new(false));
-        let (b, r) = (built.clone(), recovered.clone());
+        let b = built.clone();
         let supervisor = tokio::spawn(supervise_sampler(
             state,
             crate::gpu::GpuState::unknown(),
             Duration::from_millis(10),
             move || PanicOncePass {
                 panic: b.fetch_add(1, Ordering::SeqCst) == 0,
-                recovered: r.clone(),
             },
         ));
         let waited = tokio::time::timeout(FIRST_SNAPSHOT_BUDGET, async {
-            while !recovered.load(Ordering::SeqCst) {
+            while reader.latest().await.disk.read_mbps != Some(RECOVERED_READ_MBPS) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -1252,9 +1263,13 @@ mod tests {
         supervisor.abort();
         assert!(
             waited.is_ok(),
-            "the supervisor never restarted the sampler after its pass panicked"
+            "the restarted sampler never wrote a snapshot into the caller's state"
         );
         assert!(built.load(Ordering::SeqCst) >= 2);
+        assert!(
+            !reader.is_stale(),
+            "the restarted sampler must mark a sample"
+        );
     }
 
     #[tokio::test]
