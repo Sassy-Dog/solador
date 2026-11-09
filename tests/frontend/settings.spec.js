@@ -885,6 +885,19 @@ for (const provider of PROVIDERS) {
   });
 }
 
+test("Neon's rates are typed in its step, behind Advanced options, and sent at Finish", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, withoutProvider(PROVIDERS[0]));
+  await addConnection(page, "neon");
+  await page.locator("#walk-secret").fill("tok_secret");
+  await page.locator(".connection-advanced summary").click();
+  await page.locator("#walk-usdPerCuHour").fill("0.106");
+  await page.locator("#walk-usdPerGibMonth").fill("0.35");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args.inputs).toEqual({ orgId: "", usdPerCuHour: "0.106", usdPerGibMonth: "0.35" });
+});
+
 test("Sentry keeps its own form while Neon and Vercel use steps", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   expect(catalogEntry(settings, "sentry").walk).toBeUndefined();

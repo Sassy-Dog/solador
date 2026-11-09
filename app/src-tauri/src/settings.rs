@@ -103,9 +103,9 @@ impl StoredKey {
 /// struct that could carry the value is a struct a value can leak out of.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StoredSecrets {
-    pub neon: bool,
+    pub neon: StoredKey,
     pub sentry: bool,
-    pub vercel: bool,
+    pub vercel: StoredKey,
     /// Whether each vendor's Admin API key is stored, which is that part of the
     /// source being added.
     pub anthropic_admin: StoredKey,
@@ -1147,15 +1147,21 @@ fn connections_section(
         ));
     }
     let s = store.settings;
+    // Unread counts as there: a store that won't answer says nothing about
+    // whether a key exists, so the source stays a row.
+    let (neon_there, vercel_there) = (
+        stored.neon != StoredKey::Absent,
+        stored.vercel != StoredKey::Absent,
+    );
     for (kind, title, identity, feeds, credential, configured, complete) in [
         (
             "neon",
             "Neon",
             s.neon_org_id.as_str(),
             "Usage",
-            stored.neon,
-            !s.neon_org_id.is_empty() || stored.neon,
-            stored.neon,
+            neon_there,
+            !s.neon_org_id.is_empty() || neon_there,
+            stored.neon == StoredKey::Stored,
         ),
         (
             "sentry",
@@ -1171,9 +1177,9 @@ fn connections_section(
             "Vercel",
             s.vercel_team_id.as_str(),
             "Usage",
-            stored.vercel,
-            !s.vercel_team_id.is_empty() || stored.vercel,
-            stored.vercel,
+            vercel_there,
+            !s.vercel_team_id.is_empty() || vercel_there,
+            stored.vercel == StoredKey::Stored,
         ),
     ] {
         if configured {
@@ -1501,16 +1507,8 @@ fn rate_text(rate: f64) -> String {
     }
 }
 
-fn stored_key(stored: bool) -> StoredKey {
-    if stored {
-        StoredKey::Stored
-    } else {
-        StoredKey::Absent
-    }
-}
-
 fn neon_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
-    let key = stored_key(stored.neon);
+    let key = stored.neon;
     let mut part = with_secret(
         walk_part(
             "neon",
@@ -1552,7 +1550,7 @@ fn neon_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> 
 }
 
 fn vercel_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
-    let key = stored_key(stored.vercel);
+    let key = stored.vercel;
     let mut part = with_secret(
         walk_part(
             "vercel",
@@ -2355,7 +2353,7 @@ fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
             "secret": secret_section(
                 SecretField::Neon,
                 "Organization API key",
-                stored.neon,
+                stored.neon != StoredKey::Absent,
                 "Key stored",
                 "Powers the Neon rows on the Usage panel (month-to-date compute and branch storage). Create an organization API key in the Neon console — it is scoped to the org's projects and, unlike a personal key, isn't tied to one user account. Stored in your OS credential store; the org ID is not a secret and is stored as a normal preference.",
             ),
@@ -2383,7 +2381,7 @@ fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
             "secret": secret_section(
                 SecretField::Vercel,
                 "API token",
-                stored.vercel,
+                stored.vercel != StoredKey::Absent,
                 "Token stored",
                 "Powers the Vercel rows on the Usage panel (month-to-date spend, and what falls beyond the plan). Create a token under Account settings → Tokens with read access to the team whose billing you want. Stored in your OS credential store; the team ID is not a secret and is stored as a normal preference.",
             ),
@@ -3134,9 +3132,9 @@ mod tests {
         off.enabled = false;
 
         let stored = StoredSecrets {
-            neon: false,
+            neon: StoredKey::Absent,
             sentry: true,
-            vercel: false,
+            vercel: StoredKey::Absent,
             anthropic_admin: StoredKey::Absent,
             openai_admin: StoredKey::Absent,
             openclaw: false,
@@ -3514,9 +3512,24 @@ mod tests {
             {
                 let inputs: Vec<_> = drawn["inputs"]
                     .as_array()
-                    .map(|inputs| inputs.iter().map(|i| i["id"].as_str().unwrap()).collect())
+                    .map(|inputs| {
+                        inputs
+                            .iter()
+                            .map(|i| {
+                                (
+                                    i["id"].as_str().unwrap(),
+                                    i["number"].as_bool().unwrap(),
+                                    i["advanced"].as_bool().unwrap(),
+                                )
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let saved: Vec<_> = part.inputs.iter().map(|input| input.id).collect();
+                let saved: Vec<_> = part
+                    .inputs
+                    .iter()
+                    .map(|input| (input.id, input.number, input.advanced))
+                    .collect();
                 assert_eq!(inputs, saved, "{} {}", spec.kind, part.id);
                 assert_eq!(
                     !drawn["secret"].is_null(),
@@ -3526,6 +3539,31 @@ mod tests {
                     part.id
                 );
             }
+        }
+    }
+
+    /// A keychain that won't answer is not "no key": the source stays added,
+    /// the step says it didn't answer, and Finish needs no typed key.
+    #[test]
+    fn neon_and_vercel_with_an_unreadable_keychain_keep_the_source_and_its_key() {
+        let stored = StoredSecrets {
+            neon: StoredKey::Unread,
+            vercel: StoredKey::Unread,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&Settings::default(), &[], &[], &stored, &facts());
+        for kind in ["neon", "vercel"] {
+            let part = &catalog_entry(&vm, kind)["walk"]["parts"][0];
+            assert_eq!(part["on"], true, "{kind}");
+            assert_eq!(part["secret"]["stored"], true, "{kind}");
+            assert!(
+                part["secret"]["storedLabel"]
+                    .as_str()
+                    .unwrap()
+                    .contains("didn\u{2019}t answer"),
+                "{kind}"
+            );
+            assert!(row_of(&vm, kind).is_some(), "{kind} stays a row");
         }
     }
 
@@ -3540,7 +3578,7 @@ mod tests {
             ..Settings::default()
         };
         let stored = StoredSecrets {
-            neon: true,
+            neon: StoredKey::Stored,
             ..StoredSecrets::default()
         };
         let vm = view_of(&settings, &[], &[], &stored, &facts());

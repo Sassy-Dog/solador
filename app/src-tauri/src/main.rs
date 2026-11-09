@@ -2753,9 +2753,9 @@ fn stored_secrets(
         Credential::Unreadable => settings::StoredKey::Unread,
     };
     StoredSecrets {
-        neon: present(SecretKey::NeonApiKey),
+        neon: stored_key(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
-        vercel: present(SecretKey::VercelApiToken),
+        vercel: stored_key(SecretKey::VercelApiToken),
         anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
         openai_admin: stored_key(SecretKey::OpenAiAdminKey),
         openclaw: present(SecretKey::OpenClawBearerToken),
@@ -6940,9 +6940,9 @@ fn dump_settings() -> Value {
     // and the *absent* prompt are covered too).
     let accounts = dump_accounts();
     let stored = StoredSecrets {
-        neon: false,
+        neon: settings::StoredKey::Absent,
         sentry: true,
-        vercel: true,
+        vercel: settings::StoredKey::Stored,
         anthropic_admin: settings::StoredKey::Absent,
         openai_admin: settings::StoredKey::Absent,
         openclaw: false,

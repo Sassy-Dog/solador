@@ -662,7 +662,10 @@ source leaves its tile for the operator to remove. The entry's line says what is
 set up, as `API key · Subscription`. While the credential store won't answer,
 the line says `API key not read` and the source stays a row, because that says
 nothing about whether there is a key. Its **API key** step stays ticked, so a walk
-leaves any key alone, and unticking it is refused. The other sources keep their
+leaves any key alone, and unticking it is refused. Neon and Vercel read the same
+way: with the store silent they stay a row (reading `Setup incomplete`), their
+step says the credential store didn’t answer, and Finish goes through
+without a typed key and keeps whatever key is there. The other sources keep their
 own forms. **Sentry** and **Azure Cost** wait for their own steps, and so do
 GitHub accounts. Three stay forms by design: **OpenClaw**, because pairing is a
 live exchange with the gateway and its token saves at once; **Remote host**,
@@ -1884,13 +1887,16 @@ since read`. A spend cap has no pace, because the reply states no reset for it.
 signed in as on this machine, it sits in its own block, and it is never merged
 into the rollups below it or attributed to a `VendorAccount`.
 
-**Applied without a restart**, like the GitHub panels: saving or clearing a Neon
-key, a Sentry token, an org id or a slug (Neon's and Vercel's at Finish) wakes the usage loop *and* forces its
-provider half to run on that pass, so a newly-saved key fills its section in
-seconds rather than within the hour. A SAS URL wakes the Azure loop the same way.
-The Sentry quota, the Azure budget and the two Neon rates wake nothing on
-purpose — all four are read at render time, so changing one repaints the bar or
-row it feeds on the next 10s frontend tick with no fetch involved.
+**Applied without a restart**, like the GitHub panels: saving or clearing a
+Sentry token or slug, and Finish on Neon's or Vercel's steps (which write the key,
+the org or team id and the two Neon rates together), wake the usage loop *and*
+force its provider half to run on that pass, so a newly-saved key fills its
+section in seconds rather than within the hour. A SAS URL wakes the Azure loop
+the same way. The Sentry quota and the Azure budget wake nothing on purpose —
+both are read at render time, so changing one repaints the bar it feeds on the
+next 10s frontend tick with no fetch involved. The two Neon rates are read at
+render time too, but they can only be set in Neon's steps now, and that Finish
+wakes the usage providers anyway.
 
 ## The `crons` command
 
@@ -3701,7 +3707,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. A different footer, `couldn't read runners — GitHub has more than this build will count — …`, means the org registers more runners than the walk will read (`RUNNERS_PAGE_CAP` x 100); the token is fine and the rows are the last good fetch. |
 | The **Usage**, **Anthropic**, **OpenAI** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`anthropic`/`openai`/`azure_cost` command, or a script error in `usage.js`/`ai-sources.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
-| The Usage panel shows no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows **Stored** for the credential; if it does, the provider read has not run yet — saving wakes it, so re-save to force a pass. |
+| The Usage panel shows no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows the source's row; if it does, the provider read has not run yet — saving wakes it. For Sentry, re-save the token; for Neon or Vercel, reopen the row's steps and press **Finish** (the key field may stay empty, which keeps the stored key). |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |

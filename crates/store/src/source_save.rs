@@ -90,6 +90,11 @@ type ApplyInput = fn(&mut Settings, &str) -> Result<(), &'static str>;
 #[derive(Clone, Copy)]
 pub struct SourceInput {
     pub id: &'static str,
+    /// A number rather than text, and kept behind Advanced options. How the
+    /// steps draw the field; the catalog is tested against them so a drawn
+    /// field cannot drift from the input that saves it.
+    pub number: bool,
+    pub advanced: bool,
     apply: ApplyInput,
 }
 
@@ -156,7 +161,10 @@ fn rate(value: &str) -> Result<f64, &'static str> {
 /// plan variant, which needs an arm in the shell's `match` on it, and anything
 /// the shape cannot say: several credentials in one source (GitHub's
 /// per-account tokens), since the typed secret goes to the source's first keyed
-/// part, and an input a part must have, since an input is never required.
+/// part, and an input a part must have, since an input is never required. Nor
+/// can it say that two parts share one credential (Sentry's token feeds Usage
+/// and Crons): unticking the part that holds the key deletes it, so #732 must
+/// close that.
 pub const SOURCES: [SourceSpec; 6] = [
     SourceSpec {
         kind: "anthropic",
@@ -239,6 +247,8 @@ pub const SOURCES: [SourceSpec; 6] = [
             inputs: &[
                 SourceInput {
                     id: "orgId",
+                    number: false,
+                    advanced: false,
                     apply: |settings, value| {
                         value.clone_into(&mut settings.neon_org_id);
                         Ok(())
@@ -246,6 +256,8 @@ pub const SOURCES: [SourceSpec; 6] = [
                 },
                 SourceInput {
                     id: "usdPerCuHour",
+                    number: true,
+                    advanced: true,
                     apply: |settings, value| {
                         settings.neon_usd_per_cu_hour = rate(value)?;
                         Ok(())
@@ -253,6 +265,8 @@ pub const SOURCES: [SourceSpec; 6] = [
                 },
                 SourceInput {
                     id: "usdPerGibMonth",
+                    number: true,
+                    advanced: true,
                     apply: |settings, value| {
                         settings.neon_usd_per_gib_month = rate(value)?;
                         Ok(())
@@ -277,6 +291,8 @@ pub const SOURCES: [SourceSpec; 6] = [
             }),
             inputs: &[SourceInput {
                 id: "teamId",
+                number: false,
+                advanced: false,
                 apply: |settings, value| {
                     value.clone_into(&mut settings.vercel_team_id);
                     Ok(())
@@ -1041,6 +1057,34 @@ mod tests {
             assert!(env.store.lock().unwrap().dashboard().is_none());
             assert!(env.woken.borrow().is_empty());
         }
+    }
+
+    #[test]
+    fn removing_neon_forgets_its_rates_and_org_and_an_unreadable_store_keeps_a_ticked_part() {
+        let env = Fake::new();
+        save_source_with(
+            &env,
+            "neon",
+            &parts(&["neon"]),
+            Some("napi_x"),
+            &typed(&[
+                ("orgId", "org-1"),
+                ("usdPerCuHour", "0.106"),
+                ("usdPerGibMonth", "0.35"),
+            ]),
+            false,
+        )
+        .unwrap();
+        // A store that won't answer is not "no key": a ticked part needs none typed.
+        env.credentials.fail_read.set(true);
+        save_source_with(&env, "neon", &parts(&["neon"]), None, &[], false).unwrap();
+        env.credentials.fail_read.set(false);
+
+        save_source_with(&env, "neon", &parts(&[]), None, &[], false).unwrap();
+        let store = env.store.lock().unwrap();
+        assert!(store.settings().neon_org_id.is_empty());
+        assert!(store.settings().neon_usd_per_cu_hour.abs() < f64::EPSILON);
+        assert!(store.settings().neon_usd_per_gib_month.abs() < f64::EPSILON);
     }
 
     #[test]
