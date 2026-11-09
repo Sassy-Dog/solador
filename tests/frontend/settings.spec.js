@@ -1709,12 +1709,24 @@ function withoutAzure(settings) {
   settings.connections.rows = settings.connections.rows.filter((row) => row.kind !== "azure");
 }
 
-/** Every command that writes a setting, in the order sent. A Finish on Azure
- *  Cost's steps must send `settings_save_source` and nothing else: the stub
- *  answers any unknown command with "Saved.", so only a list can prove it. */
+/** Every command sent that is not a known read: the stub answers any unknown
+ *  command with "Saved.", so a stray write of any name (`dashboard_save`,
+ *  `settings_clear_secret`, `panel_interval_save`...) would otherwise pass
+ *  unseen. A Finish on Azure Cost's steps must leave exactly
+ *  `["settings_save_source"]`, and Back and Cancel `[]`. */
+const READS = new Set([
+  "cockpit", "dashboard_view", "settings_view", "settings_test_host",
+  // The panels' own reads, which the overview polls under Settings.
+  "containers", "repos", "runners", "anthropic", "openai", "usage", "azure_cost",
+  "services", "crons", "openclaw",
+  "settings_probe_status_vendor", "settings_probe_host_certificate",
+  "settings_discover_repos", "settings_search_repos",
+]);
 const writesOf = (page) =>
-  page.evaluate(() =>
-    window.__CALLS__.map((call) => call.command).filter((command) => /^settings_(save|set|add|remove)/.test(command)));
+  page.evaluate(
+    (reads) => window.__CALLS__.map((call) => call.command).filter((command) => !reads.includes(command)),
+    [...READS],
+  );
 
 test("Azure Cost asks which parts, then each picked part's values, and never for a key", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);

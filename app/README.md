@@ -1760,7 +1760,7 @@ digits again.
 **An unconfigured provider has no section at all** — no heading, no em dash, no
 layout shift; the panel shows only the providers that are set up. The em dash
 is reserved for "configured, and we could not find out". Azure draws the same
-line in a different colour: **no SAS URL is a muted setup instruction**, a failed
+line in a different colour: **no storage account (or no container) is a muted setup instruction**, a failed
 read is **red** and names the failure, and rendering the first as the second
 would send an operator hunting a break that does not exist.
 
@@ -1769,7 +1769,8 @@ used to get wrong. Each stored "is this configured" as a `bool` that only a
 *completed fetch* set, so the value at launch — before any pass had read the
 credential store — was byte-identical to "we looked and there is nothing there".
 Repos and Runners opened on `connect a GitHub token in Settings`, Azure on
-`Add an Azure storage account in Settings`, and Containers asserted
+`Add an Azure Cost SAS URL in Settings` (now `Add an Azure storage account in
+Settings`), and Containers asserted
 `no containers detected` before it had run a single `docker ps`. All of it at a
 machine where everything was configured and working.
 
@@ -3060,7 +3061,7 @@ cargo run -p solador-app -- --dump-openai sample-openai.json       # the OpenAI 
 #   off, so they show the plans' setup line.
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
-#   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and
+#   `--error` (red, an expired SAS), `--empty` (no export location at all) and
 #   `--stale` (the same good read, dated 23h back: a dimmed headline, an "as of
 #   23h ago" line, and the footer's separate warning beside it).
 cargo run -p solador-app -- --dump-crons sample-crons.json         # the Sentry Crons panel
