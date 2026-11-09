@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use store::secrets::{read_credential, Credential};
 use store::settings::PanelInterval;
 use store::{
     ContainerGroupRule, CredentialStore, Host, HostOverflowMode, KeyringStore, SecretKey, Store,
@@ -3875,43 +3876,10 @@ fn crons_unscoped(state: &App) -> Value {
     payload
 }
 
-/// What a credential read actually learned.
-///
-/// The three cases are genuinely different and collapsing them is the
-/// unknown-is-not-zero rule in credential form. `unwrap_or_default()` on a
-/// `Result<Option<String>>` turns "the keychain would not answer" into an empty
-/// string, which every consumer downstream reads as "the user has not set this
-/// up" — so a locked keychain silently deletes a configured panel, tells the
-/// operator to paste a credential they already pasted, and (for Azure) discards
-/// the fingerprint cache that keeps an unchanged export free.
-enum Credential {
-    /// No credential is stored. The panel's zero-setup state.
-    Absent,
-    Present(String),
-    /// The credential store refused to answer. We do not know either way.
-    Unreadable,
-}
-
 /// The operator-facing line for [`Credential::Unreadable`]. Names the layer to
 /// go and look at, and carries no account name or value — `SecretError` is
 /// value-free by construction and this string must stay that way.
 const CREDENTIAL_UNREADABLE_MESSAGE: &str = "couldn't read the credential store";
-
-/// Reads one credential, keeping "there is none" apart from "we could not ask".
-///
-/// Generic over the store rather than taking `&App` so every caller's three
-/// branches can be pinned against `MemoryCredentialStore` and a failing double,
-/// with no keychain and no Tauri app in the test.
-fn read_credential<C: CredentialStore + ?Sized>(credentials: &C, key: SecretKey) -> Credential {
-    match credentials.secret(key) {
-        Ok(Some(value)) if !value.trim().is_empty() => Credential::Present(value),
-        Ok(_) => Credential::Absent,
-        Err(e) => {
-            eprintln!("could not read a stored credential: {e}");
-            Credential::Unreadable
-        }
-    }
-}
 
 /// Which halves of the usage loop a [`wake_usage`] forces onto its next pass.
 ///
@@ -4798,47 +4766,9 @@ fn settings_save_source(
     response
 }
 
-/// The one flag a source's steps own, and the part that sets it. A source with
-/// neither a flag nor a local part is derived from its key and its plan alone.
-fn source_flag<'a>(
-    settings: &'a mut store::Settings,
-    kind: &str,
-) -> Option<(&'a mut bool, &'static str)> {
-    match kind {
-        "anthropic" => Some((&mut settings.claude_local_logs_enabled, "local")),
-        "local" => Some((&mut settings.local_monitoring_enabled, "local")),
-        "services" => Some((&mut settings.service_health_enabled, "services")),
-        _ => None,
-    }
-}
-
-/// The layout with a tile of `source` in it, and the revision it was read at, or
-/// `None` when one is already there. Everything [`persist_dashboard`] can refuse
-/// is refused here, so a caller can ask before it writes anything.
-fn layout_with_tile(
-    store: &Store,
-    source: &str,
-) -> Result<Option<(store::DashboardLayout, u64)>, String> {
-    let current = store
-        .dashboard()
-        .cloned()
-        .unwrap_or_else(dashboard::default_layout);
-    let Some(next) = dashboard::with_source_tile(&current, source) else {
-        return Ok(None);
-    };
-    dashboard::validate(&next)?;
-    dashboard::check_tile_count(current.tiles.len(), next.tiles.len())?;
-    Ok(Some((next, current.revision)))
-}
-
 /// [`settings_save_source`], apart from the Tauri state so tests can drive it.
-///
-/// `Err` is the sentence to show, and the steps stay open with the operator's
-/// choices. Every refusal is checked before the first write, so it changes
-/// nothing. Only a failure can follow a write: an I/O error, or a dashboard edit
-/// that filled the last slot while Finish ran, because the tile is derived again
-/// inside the save's lock. Finish is safe to repeat after either: the flag and
-/// the tile go back, and a key or plan already written stays.
+/// The table, the refusals and their order, the writes and the rollback are
+/// `store::source_save`'s; this only hands it what the shell owns.
 fn save_source_in(
     app: &App,
     kind: &str,
@@ -4846,118 +4776,82 @@ fn save_source_in(
     secret: Option<&str>,
     add_tile: bool,
 ) -> Result<String, String> {
-    let wants = |part: &str| parts.iter().any(|id| id == part);
-    let (title, tile_source, key, plan) = match kind {
-        "anthropic" => (
-            settings::ANTHROPIC_TITLE,
-            "anthropic",
-            Some((
-                SecretKey::AnthropicAdminKey,
-                UsageState::anthropic_api_mut as SpendState,
-            )),
-            Some(subscription::Provider::Claude),
-        ),
-        "openai" => (
-            settings::OPENAI_TITLE,
-            "openai",
-            Some((
-                SecretKey::OpenAiAdminKey,
-                UsageState::openai_api_mut as SpendState,
-            )),
-            Some(subscription::Provider::Codex),
-        ),
-        "local" => (settings::LOCAL_TITLE, "hosts", None, None),
-        "services" => (settings::SERVICES_TITLE, "services", None, None),
-        _ => return Err("Skipped \u{2014} unknown source.".to_owned()),
-    };
+    store::source_save::save_source(&AppSourceSave(app), kind, parts, secret, add_tile)
+}
 
-    // Whatever can refuse goes first.
-    let secret = secret.map(str::trim).filter(|value| !value.is_empty());
-    let credential = key.map(|(key, _)| read_credential(&*app.credentials, key));
-    if wants("api") && secret.is_none() && matches!(credential, Some(Credential::Absent)) {
-        return Err("Enter an Admin API key, or untick API key.".to_owned());
+/// What `store::source_save` needs from the shell: the app's handles, its
+/// dashboard rules, the plan opt-in and the wakes.
+struct AppSourceSave<'a>(&'a App);
+
+const fn plan_provider(provider: store::source_save::PlanProvider) -> subscription::Provider {
+    match provider {
+        store::source_save::PlanProvider::Claude => subscription::Provider::Claude,
+        store::source_save::PlanProvider::Codex => subscription::Provider::Codex,
     }
-    // Unticked means delete, and a store that won't answer can't say whether
-    // there is anything to delete. "Removed" would be a guess.
-    if !wants("api") && matches!(credential, Some(Credential::Unreadable)) {
-        return Err(
-            "Couldn't read the credential store, so a stored API key can't be removed. \
-             Nothing changed."
-                .to_owned(),
-        );
-    }
-    let wants_tile = add_tile && !parts.is_empty();
-    if wants_tile {
-        layout_with_tile(&app.store.lock().expect("store poisoned"), tile_source)?;
+}
+
+impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
+    fn store(&self) -> &Mutex<Store> {
+        &self.0.store
     }
 
-    if let Some((key, spend)) = key {
-        let stored = matches!(credential, Some(Credential::Present(_)));
-        let written = match (wants("api"), secret) {
-            (true, Some(value)) => app.credentials.set_secret(key, value),
-            (false, _) if stored => app.credentials.delete_secret(key),
-            _ => Ok(()),
+    fn credentials(&self) -> &dyn CredentialStore {
+        &*self.0.credentials
+    }
+
+    fn tile_added(
+        &self,
+        current: &store::DashboardLayout,
+        source: &str,
+    ) -> Result<Option<store::DashboardLayout>, String> {
+        let Some(next) = dashboard::with_source_tile(current, source) else {
+            return Ok(None);
         };
-        if let Err(e) = written {
-            // `SecretError` carries the account name and never the value.
-            eprintln!("could not store a credential: {e}");
-            return Err(
-                "Failed to save \u{2014} the credential store rejected the write.".to_owned(),
-            );
-        }
-        // The figure goes with the key, rather than when a pass reaches it.
-        if stored && !wants("api") {
-            spend(&mut app.usage.lock().expect("usage state poisoned")).unconfigure();
-        }
+        dashboard::validate(&next)?;
+        dashboard::check_tile_count(current.tiles.len(), next.tiles.len())?;
+        Ok(Some(next))
     }
 
-    // Only on a change: a toggle resets the provider, which would un-park a
-    // refused keychain and re-read a sign-in because a walk was reopened.
-    if let Some(provider) = plan {
-        let inputs = plan_inputs(&app.store);
-        if inputs.enabled(provider) != wants("subscription") {
-            let status = set_plan_usage(app, provider_id(provider), wants("subscription"));
-            if let Some(failed) = status.filter(|status| status.starts_with("Failed")) {
-                return Err(failed);
-            }
-        }
+    fn persist_dashboard(
+        &self,
+        store: &mut Store,
+        layout: store::DashboardLayout,
+        expected_revision: u64,
+    ) -> Result<(), String> {
+        persist_dashboard(store, layout, expected_revision).map(drop)
     }
 
-    // One lock and one save, with the tile derived inside it: no dashboard edit
-    // can land between the read and the write.
-    {
-        let mut store = app.store.lock().expect("store poisoned");
-        let previous = source_flag(store.settings_mut(), kind)
-            .map(|(flag, part)| std::mem::replace(flag, wants(part)));
-        let tile = if wants_tile {
-            layout_with_tile(&store, tile_source)
-        } else {
-            Ok(None)
+    fn plan_enabled(&self, provider: store::source_save::PlanProvider) -> bool {
+        plan_inputs(&self.0.store).enabled(plan_provider(provider))
+    }
+
+    fn set_plan(
+        &self,
+        provider: store::source_save::PlanProvider,
+        enabled: bool,
+    ) -> Option<String> {
+        set_plan_usage(self.0, provider_id(plan_provider(provider)), enabled)
+    }
+
+    fn unconfigure_spend(&self, spend: store::source_save::SpendFigure) {
+        let state: SpendState = match spend {
+            store::source_save::SpendFigure::Anthropic => UsageState::anthropic_api_mut,
+            store::source_save::SpendFigure::OpenAi => UsageState::openai_api_mut,
         };
-        let written = tile.and_then(|tile| match tile {
-            Some((next, revision)) => persist_dashboard(&mut store, next, revision).map(drop),
-            None => store.save().map_err(|error| format!("Failed: {error}")),
-        });
-        if let Err(failed) = written {
-            if let (Some(previous), Some((flag, _))) =
-                (previous, source_flag(store.settings_mut(), kind))
-            {
-                *flag = previous;
-            }
-            return Err(failed);
-        }
+        state(&mut self.0.usage.lock().expect("usage state poisoned")).unconfigure();
     }
 
-    match kind {
-        "anthropic" => wake_usage(app, UsageWake::Everything),
-        "openai" => wake_usage(app, UsageWake::Providers),
-        "local" => app.containers_wake.notify_one(),
-        _ => {}
+    fn wake(&self, wake: store::source_save::SourceWake) {
+        use store::source_save::SourceWake;
+        match wake {
+            SourceWake::UsageEverything => wake_usage(self.0, UsageWake::Everything),
+            SourceWake::UsageProviders => wake_usage(self.0, UsageWake::Providers),
+            SourceWake::Containers => self.0.containers_wake.notify_one(),
+            SourceWake::StatusPagesOnly => {}
+        }
+        // Any save can add or remove a watched status page.
+        wake_services(self.0);
     }
-    // Any of these can add or remove a watched status page.
-    wake_services(app);
-    let word = if parts.is_empty() { "removed" } else { "saved" };
-    Ok(format!("{title} {word}."))
 }
 
 /// The command vocabulary [`apply_plan_usage`] takes.
@@ -8565,7 +8459,8 @@ mod tests {
     #[test]
     fn an_unknown_source_changes_nothing() {
         let (_dir, _rt, app) = test_app();
-        let refusal = save_source_in(&app, "neon", &parts(&["api"]), None, true).unwrap_err();
+        let refusal =
+            save_source_in(&app, "not-a-source", &parts(&["api"]), None, true).unwrap_err();
         assert!(refusal.contains("unknown source"), "{refusal}");
     }
 

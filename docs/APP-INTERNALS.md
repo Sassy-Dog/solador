@@ -409,7 +409,7 @@
   `claude_plan_usage_enabled` / `codex_plan_usage_enabled`, both `false` in a
   fresh store and on any store written before them; **Subscription** in the
   source's steps, Settings → Sources → Add source, applied at Finish by
-  `settings_save_source`, which changes it only when it differs, so reopening
+  `settings_save_source` (`store::source_save`), which changes it only when it differs, so reopening
   a source neither re-reads a sign-in nor un-parks a refused keychain). Claude: the macOS keychain item `Claude
   Code-credentials` (account `$USER`), read by `/usr/bin/security`, else
   `~/.claude/.credentials.json`; then `GET

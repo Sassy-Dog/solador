@@ -149,8 +149,8 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   store written before the switches keeps what it had
   (`on_before_sources_were_added`). Anthropic and OpenAI are added when any part
   is on, which is derived, never stored. A part not set up says nothing.
-  `settings_save_source` applies a source's steps at Finish, and whatever can
-  refuse runs before its first write.
+  `settings_save_source` applies a source's steps at Finish through
+  `store::source_save`, and whatever can refuse runs before its first write.
 - **Where a setting lives**: tile-specific in its Configure, source credentials
   in Settings → Sources, app-wide in Settings (`app/README.md`).
 - **The Tauri IPC boundary is deliberately not automated** (#123 closed on it:

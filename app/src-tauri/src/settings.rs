@@ -1047,9 +1047,9 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
 /// must not name both. A saved tab id or payload key never reaches the screen.
 pub const SOURCES_LABEL: &str = "Sources";
 /// Everything read about Claude: API spend, the plan's limits and local usage.
-pub const ANTHROPIC_TITLE: &str = "Anthropic";
+pub const ANTHROPIC_TITLE: &str = store::source_save::ANTHROPIC_TITLE;
 /// Everything read about Codex and the OpenAI API.
-pub const OPENAI_TITLE: &str = "OpenAI";
+pub const OPENAI_TITLE: &str = store::source_save::OPENAI_TITLE;
 /// The one sentence a source with no part set up shows on its tile.
 #[must_use]
 pub fn not_set_up_message(title: &str) -> String {
@@ -1060,9 +1060,9 @@ pub fn not_set_up_message(title: &str) -> String {
 }
 
 /// This Mac or PC's own metrics and containers.
-pub const LOCAL_TITLE: &str = "This machine";
+pub const LOCAL_TITLE: &str = store::source_save::LOCAL_TITLE;
 /// The status pages of the sources this store has added.
-pub const SERVICES_TITLE: &str = "Service health";
+pub const SERVICES_TITLE: &str = store::source_save::SERVICES_TITLE;
 /// The button, and the heading of the catalog it opens.
 pub const ADD_SOURCE_LABEL: &str = "Add source";
 
