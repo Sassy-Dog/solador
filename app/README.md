@@ -635,9 +635,11 @@ with one part skips the question. Nothing is applied until **Finish**, which
 sends everything in one `settings_save_source` call, so Cancel has nothing to
 undo and no sign-in is read before the operator has finished saying they want it
 (see [the plans' own limits](#the-plans-own-limits)). Whatever can refuse (no
-key, a full dashboard) runs before the first write (all in
-`crates/store/src/source_save.rs`, whose `SOURCES` table is one row per source),
-and a refusal leaves the steps open. **Remove source**, on a source already added, unticks everything and
+key, a full dashboard) runs before the first write. The order is in
+`crates/store/src/source_save.rs` (its `SOURCES` table lists the sources, and a
+source unlike today's four needs more than a row there), while the full-dashboard
+rule and its sentence stay in `app/src-tauri/src/dashboard.rs` and reach it
+through `SourceSaveEnv::tile_added`. A refusal leaves the steps open. **Remove source**, on a source already added, unticks everything and
 jumps to Ready, and a stored key is cleared by unticking **API key**. Removing a
 source leaves its tile for the operator to remove. The entry's line says what is
 set up, as `API key · Subscription`. While the credential store won't answer,

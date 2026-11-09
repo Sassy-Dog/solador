@@ -3,8 +3,9 @@
 //! the one flag-and-tile save with its rollback.
 //!
 //! This is the logic behind the shell's `settings_save_source` command, so
-//! each source #721 puts on the steps is a row in [`SOURCES`] and a change in
-//! this file, testable without the shell. What only the shell can do comes in
+//! each source #721 puts on the steps starts as a row in [`SOURCES`] and is
+//! testable without the shell. A row is enough only for a source shaped like
+//! today's four (see [`SOURCES`]). What only the shell can do comes in
 //! through [`SourceSaveEnv`]: the store and credential handles, the dashboard
 //! rules, the plan opt-in (it resets the shell's in-memory state) and the
 //! wakes.
@@ -85,7 +86,14 @@ pub struct SourceSpec {
     pub wake: SourceWake,
 }
 
-/// Every source the steps know. A new source is one row here.
+/// Every source the steps know.
+///
+/// A row is not the whole of a new source. A [`SourceSpec`] holds at most one
+/// Admin key, one plan and one flag; [`save_source`] takes no non-secret input
+/// and fixes the `"api"` and `"subscription"` part ids and the sentence that
+/// refuses a missing key. A source with a non-secret input or per-account
+/// credentials means extending [`save_source`] and [`SourceSaveEnv`], and a new
+/// wake, spend or plan variant needs an arm in the shell's `match` on it.
 pub const SOURCES: [SourceSpec; 4] = [
     SourceSpec {
         kind: "anthropic",
@@ -148,9 +156,10 @@ pub fn spec(kind: &str) -> Option<&'static SourceSpec> {
 
 /// What a save needs from the shell.
 pub trait SourceSaveEnv {
-    /// The store. The save takes its lock itself, and never while it calls any
-    /// other method here except [`Self::persist_dashboard`], which is handed
-    /// the locked store.
+    /// The store. The save takes its lock itself. [`Self::tile_added`] and
+    /// [`Self::persist_dashboard`] run under it (the latter is handed the
+    /// locked store), so neither may touch the store; every other method here
+    /// is called with the lock free.
     fn store(&self) -> &Mutex<Store>;
     /// The OS credential store.
     fn credentials(&self) -> &dyn CredentialStore;
@@ -321,14 +330,57 @@ pub fn save_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MemoryCredentialStore;
+    use crate::{MemoryCredentialStore, SecretError};
     use std::cell::{Cell, RefCell};
+
+    /// A credential store that can be told to refuse a read or a write.
+    #[derive(Default)]
+    struct Flaky {
+        inner: MemoryCredentialStore,
+        fail_read: Cell<bool>,
+        fail_write: Cell<bool>,
+    }
+
+    impl Flaky {
+        fn refusal(key: SecretKey) -> SecretError {
+            SecretError::CorruptBlob {
+                account: key.account(),
+            }
+        }
+    }
+
+    impl CredentialStore for Flaky {
+        fn secret(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
+            if self.fail_read.get() {
+                return Err(Self::refusal(key));
+            }
+            self.inner.secret(key)
+        }
+        fn set_secret(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
+            if self.fail_write.get() {
+                return Err(Self::refusal(key));
+            }
+            self.inner.set_secret(key, value)
+        }
+        fn delete_secret(&self, key: SecretKey) -> Result<(), SecretError> {
+            if self.fail_write.get() {
+                return Err(Self::refusal(key));
+            }
+            self.inner.delete_secret(key)
+        }
+        fn secret_bytes(&self, key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
+            self.inner.secret_bytes(key)
+        }
+        fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError> {
+            self.inner.set_secret_bytes(key, value)
+        }
+    }
 
     /// A shell with nothing in it: plan toggles and wakes are recorded, and the
     /// dashboard rules accept any tile unless told otherwise.
     struct Fake {
         store: Mutex<Store>,
-        credentials: MemoryCredentialStore,
+        credentials: Flaky,
         plans: RefCell<Vec<(PlanProvider, bool)>>,
         woken: RefCell<Vec<SourceWake>>,
         spend_dropped: RefCell<Vec<SpendFigure>>,
@@ -342,7 +394,7 @@ mod tests {
             let store = Store::open_in(dir.path(), false).unwrap();
             Self {
                 store: Mutex::new(store),
-                credentials: MemoryCredentialStore::new(),
+                credentials: Flaky::default(),
                 plans: RefCell::default(),
                 woken: RefCell::default(),
                 spend_dropped: RefCell::default(),
@@ -513,6 +565,77 @@ mod tests {
         let refusal = save_source(&env, "services", &parts(&["services"]), None, false);
         assert!(refusal.unwrap_err().starts_with("Failed"));
         assert!(!env.store.lock().unwrap().settings().service_health_enabled);
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_credential_store_refuses_a_removal_and_changes_nothing() {
+        let env = Fake::new();
+        env.credentials.fail_read.set(true);
+        let refusal = save_source(&env, "openai", &parts(&[]), None, true);
+        assert_eq!(
+            refusal.unwrap_err(),
+            "Couldn't read the credential store, so a stored API key can't be removed. \
+             Nothing changed."
+        );
+        env.credentials.fail_read.set(false);
+        assert!(env
+            .credentials
+            .secret(SecretKey::OpenAiAdminKey)
+            .unwrap()
+            .is_none());
+        assert!(env.store.lock().unwrap().dashboard().is_none());
+        assert!(env.plans.borrow().is_empty());
+        assert!(env.spend_dropped.borrow().is_empty());
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_credential_write_the_store_refuses_answers_failed_and_changes_nothing_else() {
+        let env = Fake::new();
+        env.credentials.fail_write.set(true);
+        let refusal = save_source(&env, "openai", &parts(&["api"]), Some("sk-x"), true);
+        assert_eq!(
+            refusal.unwrap_err(),
+            "Failed to save \u{2014} the credential store rejected the write."
+        );
+        env.credentials.fail_write.set(false);
+        assert!(env
+            .credentials
+            .secret(SecretKey::OpenAiAdminKey)
+            .unwrap()
+            .is_none());
+        assert!(env.store.lock().unwrap().dashboard().is_none());
+        assert!(
+            !env.store
+                .lock()
+                .unwrap()
+                .settings()
+                .claude_local_logs_enabled
+        );
+        assert!(env.plans.borrow().is_empty());
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_credential_delete_the_store_refuses_keeps_the_key_and_its_figure() {
+        let env = Fake::new();
+        env.credentials
+            .set_secret(SecretKey::OpenAiAdminKey, "sk-x")
+            .unwrap();
+        env.credentials.fail_write.set(true);
+        let refusal = save_source(&env, "openai", &parts(&[]), None, false);
+        assert_eq!(
+            refusal.unwrap_err(),
+            "Failed to save \u{2014} the credential store rejected the write."
+        );
+        env.credentials.fail_write.set(false);
+        assert!(env
+            .credentials
+            .secret(SecretKey::OpenAiAdminKey)
+            .unwrap()
+            .is_some());
+        assert!(env.spend_dropped.borrow().is_empty());
         assert!(env.woken.borrow().is_empty());
     }
 }

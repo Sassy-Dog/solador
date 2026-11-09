@@ -342,7 +342,7 @@ fn github_configured(store: &Store, credentials: &dyn CredentialStore) -> Config
 }
 
 /// Whether a credential is stored, keeping "there is none" apart from "we could
-/// not ask" — the same three-way read `main.rs`'s `read_credential` makes, minus
+/// not ask" — the same three-way read `store::secrets::read_credential` makes, minus
 /// the value, which this has no reason to hold.
 fn credential_configured(credentials: &dyn CredentialStore, key: SecretKey) -> Configured {
     match credentials.secret(key) {

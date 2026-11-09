@@ -8618,8 +8618,9 @@ mod tests {
 
     type SpendCard = fn(&UsageState, plan_usage::PlanInputs, u64) -> Value;
 
-    /// The two Admin-key sources. `save_source_in` pairs each key with its spend
-    /// state by hand, so the tests below run over both rather than over the
+    /// The two Admin-key sources. `SOURCES` pairs each key with its spend figure
+    /// (`ApiKey { secret, spend }`) and `AppSourceSave::unconfigure_spend` maps
+    /// that to the spend state by hand, so the tests below run over both rather than over the
     /// first.
     const KEYED_SOURCES: [(&str, SecretKey, SpendState, SpendCard); 2] = [
         (
@@ -8792,7 +8793,7 @@ mod tests {
         }
     }
 
-    /// The doc on `save_source_in` promises this. The key is written before the
+    /// The doc on `store::source_save::save_source` promises this. The key is written before the
     /// save fails, so the second Finish has no key to type and must still land.
     #[test]
     fn finish_is_safe_to_repeat_after_a_save_that_failed() {
