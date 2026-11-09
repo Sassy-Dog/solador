@@ -37,8 +37,10 @@ export default {
   // correct. `npm test` skips it; `npm run screenshots` runs only it.
   testMatch: SCREENSHOTS ? ["**/screenshots.spec.js"] : ["**/*.spec.js"],
   testIgnore: SCREENSHOTS ? [] : ["**/screenshots.spec.js"],
-  // A failure keeps its trace in test-results/, which the next run clears:
-  // copy it out before re-running (#722).
+  // A failure keeps its trace in tests/frontend/test-results/, which the next
+  // run clears: copy it out before re-running, then read it with
+  // `npx playwright show-trace <trace.zip>` (#722). CI keeps no artifact
+  // (ci.yml has no upload step), so a CI failure leaves only the message.
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {
     // `-u`: stdout is a pipe here, not a tty, so Python would otherwise buffer

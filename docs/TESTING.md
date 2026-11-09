@@ -250,17 +250,27 @@ ended (#722).** `dashboard.spec.js` (`__SET_DASHBOARD__`, `__SET_SOURCE_ROWS__`)
 and `status-layout.spec.js` (`window.framesForTest.dashboard_view = …`) change
 the answer in place and wait for the app's own 1s `dashboard_view` read to paint
 it. Like `stubCockpit`, they keep the new answer until the test swaps again, so
-the read cannot miss the frame, and in these tests `refresh()`'s early returns
-(`pending`, `busy`, `settingsOpen`) cost one read, not a run of them. Three of these waits (the Detail focus
-test, the open-chip focus test, the runner height-reservation test) each failed
-once or twice locally with no cause found and never in CI; 36 runs of the three
-under eight CPU burners and ten workers did not reproduce it. Each now runs its
-wait inside `swapReport` (`tile-full.js`), which on failure appends how many
-reads the stub saw begun and answered since the swap: none begun means the
-page stopped reading (a stalled renderer), begun and answered means it read and
-did not paint (an app bug). Do not raise the timeout either way. The config
-keeps a failing test's trace (`trace: "retain-on-failure"`); Playwright clears
-`test-results/` at the start of the next run, so copy it out first.
+the read cannot miss the frame. By a reading of the code, not a tested
+guarantee, `refresh()` can skip a read in these ways, and in these tests each
+costs one read, not a run of them: the early return on `pending`, `busy` or
+`settingsOpen` (`app/ui/dashboard.js` ~798); the drops after a read completes,
+`busy || version !== acknowledgementVersion` (~807, ~833), the shape check
+(~808) and the older `layout.revision` check (~810); and the interval's own
+gate (~2849: `mode === "overview" || fullTile`, `!settingsOpen`). Three of
+these waits (the Detail focus test, the open-chip focus test, the runner
+height-reservation test) each failed once or twice locally with no cause found
+and never in CI; 36 runs of the three under eight CPU burners and ten workers
+did not reproduce it. The dashboard waits that follow an in-place swap now run
+inside `swapReport` (`tile-full.js`), which on failure appends how many reads
+the stub saw begun and answered since the swap. None begun: a stalled
+renderer, a `refresh()` skip (~798, ~2849) or a `pending` flag stuck by a read
+that never answered. Begun and answered: an app bug or a dropped read (~807,
+~810, ~833). Do not raise the timeout either way. The config keeps a failing
+test's trace (`trace: "retain-on-failure"`) in `tests/frontend/test-results/`;
+Playwright clears it at the start of the next run, so copy it out first and
+read it with `npx playwright show-trace <trace.zip>`. CI keeps no artifact
+(`ci.yml` has no upload step), so a CI occurrence leaves only `swapReport`'s
+text.
 
 **Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
 `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
