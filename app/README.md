@@ -1900,8 +1900,8 @@ signed in as on this machine, it sits in its own block, and it is never merged
 into the rollups below it or attributed to a `VendorAccount`.
 
 **Applied without a restart**, like the GitHub panels: Finish on Neon's, Sentry's or Vercel's steps (which write the key,
-the org, team or slug and the Neon rates or Sentry quota together; for Sentry, Remove source too), wakes the usage loop *and*
-force its provider half to run on that pass, so a newly-saved key fills its
+the org, team or slug and the Neon rates or Sentry quota together; Remove source on any of the three too) wakes the usage loop *and*
+forces its provider half to run on that pass, so a newly-saved key fills its
 section in seconds rather than within the hour; Sentry's Finish wakes the
 Crons loop too. A SAS URL wakes the Azure loop
 the same way. The Sentry quota and the Azure budget wake nothing on purpose —
@@ -3475,7 +3475,7 @@ and that immediacy is itself the check on the corresponding wake:
    writes anything before Finish: press Cancel after typing a key and an ID and
    check the keychain and `store.json` hold neither, and that **Remove source**
    on the saved row clears the key and the ID. All of them apply without a
-   relaunch — Finish and `settings_save_secret` wake the usage loop *and* force
+   relaunch — Finish (and Remove source) wakes the usage loop *and* forces
    its provider half — so the sections should appear within seconds. That
    immediacy is itself the check on the wake. A key with no org id is the
    interesting case: the section appears, both figures render `—`, and the panel
