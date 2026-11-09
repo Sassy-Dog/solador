@@ -468,10 +468,15 @@
   normal preference, not a credential-store item. Neon and Vercel (a token and
   a team id) are added through the source steps, so the key and the id are
   written together at Finish by `store::source_save`, never by a Save beside the
-  key; Sentry still saves its token on its own.
+  key.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`
   token and org slug — one credential, two panels, so saving or clearing it
   wakes both poll loops or one keeps describing the previous token for an hour.
+  Sentry is added in steps with two parts (Usage, Scheduled jobs) that share the
+  token and the slug: the save table keeps a shared key while any part naming it
+  is ticked, and each part's own flag (`sentry_usage_enabled`,
+  `sentry_crons_enabled`) is what switches its loop on, since the token alone
+  cannot say which one was picked.
 - All credentials live in the OS credential store (`crates/store::secrets`),
   never in `store.json`. On macOS they are consolidated into one item,
   `secrets_v1`, under service `app.solador.desktop`; see `app/README.md`'s

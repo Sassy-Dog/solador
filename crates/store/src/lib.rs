@@ -1524,6 +1524,8 @@ mod tests {
             neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 100_000,
+            sentry_usage_enabled: true,
+            sentry_crons_enabled: false,
             vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             // Flipped off the default so the round trip proves the field

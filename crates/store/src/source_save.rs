@@ -34,6 +34,8 @@ pub const SERVICES_TITLE: &str = "Service health";
 pub const NEON_TITLE: &str = "Neon";
 /// Vercel's billing usage.
 pub const VERCEL_TITLE: &str = "Vercel";
+/// Sentry's error usage and its scheduled-job monitors.
+pub const SENTRY_TITLE: &str = "Sentry";
 
 /// A provider whose own sign-in a plan opt-in reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,14 +60,21 @@ pub enum SourceWake {
     UsageEverything,
     /// The metered providers only.
     UsageProviders,
+    /// The metered providers and the Sentry Crons loop, which read one token.
+    UsageProvidersAndCrons,
     /// The containers loop.
     Containers,
     /// Nothing besides the status pages.
     StatusPagesOnly,
 }
 
-/// The credential one part of a source holds, the sentences that refuse it, and
+/// The credential a part of a source holds, the sentences that refuse it, and
 /// the spend figure it feeds, if any.
+///
+/// Several parts of one source may name the same `secret` (Sentry's token feeds
+/// Usage and Scheduled jobs). It is then one key: asked once, kept while any of
+/// those parts is ticked, and deleted only when none is. Their sentences and
+/// spend figure must agree; the first such part's are the ones used.
 #[derive(Debug, Clone, Copy)]
 pub struct PartKey {
     pub secret: SecretKey,
@@ -109,6 +118,9 @@ pub struct SourcePart {
     /// The flag this part sets: on when ticked, off when not.
     flag: Option<fn(&mut Settings) -> &mut bool>,
     pub inputs: &'static [SourceInput],
+    /// The dashboard tile source this part's tile is added under, when it is not
+    /// the source's own [`SourceSpec::tile_source`] (Sentry's Scheduled jobs).
+    pub tile_source: Option<&'static str>,
 }
 
 impl SourcePart {
@@ -119,6 +131,7 @@ impl SourcePart {
             plan: None,
             flag: None,
             inputs: &[],
+            tile_source: None,
         }
     }
 }
@@ -127,7 +140,8 @@ impl SourcePart {
 pub struct SourceSpec {
     pub kind: &'static str,
     pub title: &'static str,
-    /// The dashboard tile source its tile is added under.
+    /// The dashboard tile source its tile is added under, unless a part names
+    /// its own.
     pub tile_source: &'static str,
     pub parts: &'static [SourcePart],
     pub wake: SourceWake,
@@ -138,6 +152,36 @@ const ADMIN_KEY_UNREADABLE: &str = "Couldn't read the credential store, so a sto
     can't be removed. Nothing changed.";
 
 const NO_RATE: &str = "Enter a rate of zero or more.";
+const NO_QUOTA: &str = "Enter a whole number of events, or leave the quota empty.";
+
+/// Sentry's one token, named by both of its parts.
+const SENTRY_KEY: PartKey = PartKey {
+    secret: SecretKey::SentryUsageToken,
+    missing: "Enter a Sentry API token.",
+    unreadable: "Couldn't read the credential store, so a stored Sentry token can't be \
+        removed. Nothing changed.",
+    spend: None,
+};
+
+/// Sentry's organization slug, which both of its parts read.
+const SENTRY_SLUG: SourceInput = SourceInput {
+    id: "orgSlug",
+    number: false,
+    advanced: false,
+    apply: |settings, value| {
+        value.clone_into(&mut settings.sentry_org_slug);
+        Ok(())
+    },
+};
+
+/// A monthly event quota: empty is zero (no quota, which hides the bar), and
+/// anything else must be a whole number.
+fn quota(value: &str) -> Result<u64, &'static str> {
+    if value.is_empty() {
+        return Ok(0);
+    }
+    value.parse::<u64>().map_err(|_| NO_QUOTA)
+}
 
 /// A rate in dollars: empty is zero (the shipped default, which hides the row),
 /// and anything else must be a finite number of zero or more.
@@ -157,15 +201,16 @@ fn rate(value: &str) -> Result<f64, &'static str> {
 /// A row is a source's whole description, as parts: each part names its id, and
 /// may hold a key (with its refusal sentences and the spend figure it feeds), a
 /// plan opt-in, a flag and typed non-secret inputs. [`save_source_with`] reads
-/// nothing else. What a later source still has to add is a new wake, spend or
-/// plan variant, which needs an arm in the shell's `match` on it, and anything
-/// the shape cannot say: several credentials in one source (GitHub's
+/// nothing else. Parts may share a key (Sentry's token feeds Usage and
+/// Scheduled jobs) or an input id (its organization slug): a shared one is
+/// kept while any part that names it is ticked, and forgotten only when none
+/// is. What a later source still has to add is a new wake, spend or plan
+/// variant, which needs an arm in the shell's `match` on it, and anything the
+/// shape cannot say: several different credentials in one source (GitHub's
 /// per-account tokens), since the typed secret goes to the source's first keyed
-/// part, and an input a part must have, since an input is never required. Nor
-/// can it say that two parts share one credential (Sentry's token feeds Usage
-/// and Crons): unticking the part that holds the key deletes it, so #732 must
-/// close that.
-pub const SOURCES: [SourceSpec; 6] = [
+/// part, and an input a part must have (Azure's), since an input is never
+/// required.
+pub const SOURCES: [SourceSpec; 7] = [
     SourceSpec {
         kind: "anthropic",
         title: ANTHROPIC_TITLE,
@@ -302,7 +347,40 @@ pub const SOURCES: [SourceSpec; 6] = [
         }],
         wake: SourceWake::UsageProviders,
     },
+    SourceSpec {
+        kind: "sentry",
+        title: SENTRY_TITLE,
+        tile_source: "usage",
+        parts: &[
+            SourcePart {
+                key: Some(SENTRY_KEY),
+                flag: Some(|settings| &mut settings.sentry_usage_enabled),
+                inputs: &[
+                    SENTRY_SLUG,
+                    SourceInput {
+                        id: "quota",
+                        number: true,
+                        advanced: true,
+                        apply: |settings, value| {
+                            settings.sentry_monthly_event_quota = quota(value)?;
+                            Ok(())
+                        },
+                    },
+                ],
+                ..SourcePart::new("usage")
+            },
+            SourcePart {
+                key: Some(SENTRY_KEY),
+                flag: Some(|settings| &mut settings.sentry_crons_enabled),
+                inputs: &[SENTRY_SLUG],
+                tile_source: Some("sentryCrons"),
+                ..SourcePart::new("crons")
+            },
+        ],
+        wake: SourceWake::UsageProvidersAndCrons,
+    },
 ];
+
 /// The source named `kind`, or `None` for one the steps do not know.
 #[must_use]
 pub fn spec(kind: &str) -> Option<&'static SourceSpec> {
@@ -350,21 +428,43 @@ pub trait SourceSaveEnv {
     fn wake(&self, wake: SourceWake);
 }
 
-/// The layout with a tile of `source` in it, and the revision it was read at, or
-/// `None` when one is already there. Everything `persist_dashboard` can refuse
-/// is refused here, so a caller can ask before it writes anything.
-fn layout_with_tile(
+/// The tile sources a save adds tiles for: each ticked part's own, or the
+/// source's, once each.
+fn tile_sources<'a>(spec: &'a SourceSpec, wants: &dyn Fn(&str) -> bool) -> Vec<&'a str> {
+    let mut sources: Vec<&str> = Vec::new();
+    for part in spec.parts.iter().filter(|part| wants(part.id)) {
+        let source = part.tile_source.unwrap_or(spec.tile_source);
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    // A part id the table does not know still asks for the source's tile.
+    if sources.is_empty() {
+        sources.push(spec.tile_source);
+    }
+    sources
+}
+
+/// The layout with a tile of each of `sources` in it, and the revision it was
+/// read at, or `None` when every one is already there. Everything
+/// `persist_dashboard` can refuse is refused here, so a caller can ask before it
+/// writes anything.
+fn layout_with_tiles(
     env: &dyn SourceSaveEnv,
     store: &Store,
-    source: &str,
+    sources: &[&str],
 ) -> Result<Option<(DashboardLayout, u64)>, String> {
     let current = store
         .dashboard()
         .cloned()
         .unwrap_or_else(DashboardLayout::shipped);
-    Ok(env
-        .tile_added(&current, source)?
-        .map(|next| (next, current.revision)))
+    let mut next: Option<DashboardLayout> = None;
+    for source in sources {
+        if let Some(added) = env.tile_added(next.as_ref().unwrap_or(&current), source)? {
+            next = Some(added);
+        }
+    }
+    Ok(next.map(|next| (next, current.revision)))
 }
 
 /// Every typed input the parts a save leaves ticked were sent, written into
@@ -387,10 +487,21 @@ fn apply_inputs(
     if inputs.iter().any(|(id, _)| !declared(id)) {
         return Err("Skipped \u{2014} unknown field.");
     }
+    // An input several parts name is one value: written while any of them is
+    // ticked, and forgotten only when none is.
+    let mut done: Vec<&str> = Vec::new();
     for part in spec.parts {
         for input in part.inputs {
+            if done.contains(&input.id) {
+                continue;
+            }
+            done.push(input.id);
+            let ticked = spec
+                .parts
+                .iter()
+                .any(|other| wants(other.id) && other.inputs.iter().any(|i| i.id == input.id));
             let sent = inputs.iter().find(|(id, _)| id == input.id);
-            let value = match (wants(part.id), sent) {
+            let value = match (ticked, sent) {
                 (true, Some((_, value))) => value.trim(),
                 (true, None) => continue,
                 (false, _) => "",
@@ -450,26 +561,31 @@ pub fn save_source_with(
 
     // Whatever can refuse goes first.
     let secret = secret.map(str::trim).filter(|value| !value.is_empty());
-    // Each keyed part, its credential as read now, and the key typed for it.
-    let keyed: Vec<_> = spec
-        .parts
-        .iter()
-        .filter_map(|part| part.key.map(|key| (part, key)))
-        .enumerate()
-        .map(|(index, (part, key))| {
-            let credential = read_credential(env.credentials(), key.secret);
-            (part, key, credential, secret.filter(|_| index == 0))
-        })
-        .collect();
-    for (part, key, credential, typed) in &keyed {
-        if wants(part.id) && typed.is_none() && matches!(credential, Credential::Absent) {
+    // Each distinct key, its credential as read now, the key typed for it, and
+    // whether any part that uses it is ticked. Parts that share a key are one
+    // entry, so unticking one of them cannot delete what another still needs.
+    let mut keyed: Vec<(PartKey, Credential, Option<&str>, bool)> = Vec::new();
+    for key in spec.parts.iter().filter_map(|part| part.key) {
+        if keyed.iter().any(|(seen, ..)| seen.secret == key.secret) {
+            continue;
+        }
+        let ticked = spec
+            .parts
+            .iter()
+            .any(|part| wants(part.id) && part.key.is_some_and(|k| k.secret == key.secret));
+        let credential = read_credential(env.credentials(), key.secret);
+        let typed = secret.filter(|_| keyed.is_empty());
+        keyed.push((key, credential, typed, ticked));
+    }
+    for (key, credential, typed, ticked) in &keyed {
+        if *ticked && typed.is_none() && matches!(credential, Credential::Absent) {
             return Err(key.missing.to_owned());
         }
     }
     // Unticked means delete, and a store that won't answer can't say whether
     // there is anything to delete. "Removed" would be a guess.
-    for (part, key, credential, _) in &keyed {
-        if !wants(part.id) && matches!(credential, Credential::Unreadable) {
+    for (key, credential, _, ticked) in &keyed {
+        if !*ticked && matches!(credential, Credential::Unreadable) {
             return Err(key.unreadable.to_owned());
         }
     }
@@ -484,17 +600,14 @@ pub fn save_source_with(
         apply_inputs(spec, &wants, inputs, &mut scratch).map_err(str::to_owned)?;
     }
     let wants_tile = add_tile && !parts.is_empty();
+    let tiles = tile_sources(spec, &wants);
     if wants_tile {
-        layout_with_tile(
-            env,
-            &env.store().lock().expect("store poisoned"),
-            spec.tile_source,
-        )?;
+        layout_with_tiles(env, &env.store().lock().expect("store poisoned"), &tiles)?;
     }
 
-    for (part, key, credential, typed) in &keyed {
+    for (key, credential, typed, ticked) in &keyed {
         let stored = matches!(credential, Credential::Present(_));
-        let written = match (wants(part.id), typed) {
+        let written = match (ticked, typed) {
             (true, Some(value)) => env.credentials().set_secret(key.secret, value),
             (false, _) if stored => env.credentials().delete_secret(key.secret),
             _ => Ok(()),
@@ -507,7 +620,7 @@ pub fn save_source_with(
             );
         }
         // The figure goes with the key, rather than when a pass reaches it.
-        if let (true, false, Some(spend)) = (stored, wants(part.id), key.spend) {
+        if let (true, false, Some(spend)) = (stored, ticked, key.spend) {
             env.unconfigure_spend(spend);
         }
     }
@@ -539,7 +652,7 @@ pub fn save_source_with(
         let applied =
             apply_inputs(spec, &wants, inputs, store.settings_mut()).map_err(str::to_owned);
         let tile = if wants_tile {
-            layout_with_tile(env, &store, spec.tile_source)
+            layout_with_tiles(env, &store, &tiles)
         } else {
             Ok(None)
         };
@@ -615,6 +728,8 @@ mod tests {
         woken: RefCell<Vec<SourceWake>>,
         spend_dropped: RefCell<Vec<SpendFigure>>,
         refuse_tile: Cell<bool>,
+        /// Every tile source the save asked the dashboard rules about.
+        tiles_asked: RefCell<Vec<String>>,
         _dir: tempfile::TempDir,
     }
 
@@ -629,6 +744,7 @@ mod tests {
                 woken: RefCell::default(),
                 spend_dropped: RefCell::default(),
                 refuse_tile: Cell::new(false),
+                tiles_asked: RefCell::default(),
                 _dir: dir,
             }
         }
@@ -649,6 +765,11 @@ mod tests {
             if self.refuse_tile.get() {
                 return Err("full".to_owned());
             }
+            let mut asked = self.tiles_asked.borrow_mut();
+            if !asked.iter().any(|seen| seen == source) {
+                asked.push(source.to_owned());
+            }
+            drop(asked);
             if current.tiles.iter().any(|tile| tile.source == source) {
                 return Ok(None);
             }
@@ -701,7 +822,15 @@ mod tests {
         let kinds: Vec<_> = SOURCES.iter().map(|spec| spec.kind).collect();
         assert_eq!(
             kinds,
-            ["anthropic", "openai", "local", "services", "neon", "vercel"]
+            [
+                "anthropic",
+                "openai",
+                "local",
+                "services",
+                "neon",
+                "vercel",
+                "sentry"
+            ]
         );
         for kind in kinds {
             assert_eq!(spec(kind).map(|spec| spec.kind), Some(kind));
@@ -1085,6 +1214,233 @@ mod tests {
         assert!(store.settings().neon_org_id.is_empty());
         assert!(store.settings().neon_usd_per_cu_hour.abs() < f64::EPSILON);
         assert!(store.settings().neon_usd_per_gib_month.abs() < f64::EPSILON);
+    }
+
+    fn sentry_token(env: &Fake) -> Option<String> {
+        env.credentials.secret(SecretKey::SentryUsageToken).unwrap()
+    }
+
+    fn sentry_flags(env: &Fake) -> (bool, bool) {
+        let store = env.store.lock().unwrap();
+        (
+            store.settings().sentry_usage_enabled,
+            store.settings().sentry_crons_enabled,
+        )
+    }
+
+    /// Both parts ticked: one token, one slug and the quota, written once.
+    fn sentry_with_both(env: &Fake) {
+        let status = save_source_with(
+            env,
+            "sentry",
+            &parts(&["usage", "crons"]),
+            Some(" sntrys_x "),
+            &typed(&[("orgSlug", " acme "), ("quota", "50000")]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(status, "Sentry saved.");
+    }
+
+    #[test]
+    fn sentry_takes_one_token_and_one_slug_for_both_parts_and_wakes_both_loops() {
+        let env = Fake::new();
+        sentry_with_both(&env);
+        assert_eq!(sentry_token(&env).as_deref(), Some("sntrys_x"));
+        assert_eq!(sentry_flags(&env), (true, true));
+        let store = env.store.lock().unwrap();
+        assert_eq!(store.settings().sentry_org_slug, "acme");
+        assert_eq!(store.settings().sentry_monthly_event_quota, 50_000);
+        drop(store);
+        assert_eq!(*env.woken.borrow(), [SourceWake::UsageProvidersAndCrons]);
+    }
+
+    #[test]
+    fn unticking_usage_keeps_the_token_and_slug_for_crons_and_forgets_the_quota() {
+        let env = Fake::new();
+        sentry_with_both(&env);
+        save_source_with(
+            &env,
+            "sentry",
+            &parts(&["crons"]),
+            None,
+            &typed(&[("orgSlug", "acme")]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            sentry_token(&env).as_deref(),
+            Some("sntrys_x"),
+            "crons still needs it"
+        );
+        assert_eq!(sentry_flags(&env), (false, true));
+        let store = env.store.lock().unwrap();
+        assert_eq!(store.settings().sentry_org_slug, "acme");
+        assert_eq!(store.settings().sentry_monthly_event_quota, 0);
+        drop(store);
+
+        // Then the last part: nothing uses the token now.
+        save_source_with(&env, "sentry", &parts(&[]), None, &[], false).unwrap();
+        assert_eq!(sentry_token(&env), None);
+        assert_eq!(sentry_flags(&env), (false, false));
+        assert!(env
+            .store
+            .lock()
+            .unwrap()
+            .settings()
+            .sentry_org_slug
+            .is_empty());
+    }
+
+    #[test]
+    fn unticking_crons_keeps_the_token_slug_and_quota_for_usage_and_then_the_last_part_deletes_it()
+    {
+        let env = Fake::new();
+        sentry_with_both(&env);
+        save_source_with(
+            &env,
+            "sentry",
+            &parts(&["usage"]),
+            None,
+            &typed(&[("orgSlug", "acme"), ("quota", "50000")]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            sentry_token(&env).as_deref(),
+            Some("sntrys_x"),
+            "usage still needs it"
+        );
+        assert_eq!(sentry_flags(&env), (true, false));
+        let store = env.store.lock().unwrap();
+        assert_eq!(store.settings().sentry_org_slug, "acme");
+        assert_eq!(store.settings().sentry_monthly_event_quota, 50_000);
+        drop(store);
+
+        save_source_with(&env, "sentry", &parts(&[]), None, &[], false).unwrap();
+        assert_eq!(sentry_token(&env), None);
+        assert_eq!(sentry_flags(&env), (false, false));
+        let store = env.store.lock().unwrap();
+        assert!(store.settings().sentry_org_slug.is_empty());
+        assert_eq!(store.settings().sentry_monthly_event_quota, 0);
+    }
+
+    #[test]
+    fn removing_sentry_in_one_save_deletes_the_shared_token() {
+        let env = Fake::new();
+        sentry_with_both(&env);
+        let status = save_source_with(&env, "sentry", &parts(&[]), None, &[], false).unwrap();
+        assert_eq!(status, "Sentry removed.");
+        assert_eq!(sentry_token(&env), None);
+        assert_eq!(sentry_flags(&env), (false, false));
+    }
+
+    #[test]
+    fn either_sentry_part_alone_needs_the_token_and_names_it_in_its_own_words() {
+        for ticked in [&["usage"][..], &["crons"][..], &["usage", "crons"][..]] {
+            let env = Fake::new();
+            let refusal = save_source_with(&env, "sentry", &parts(ticked), None, &[], true);
+            assert_eq!(
+                refusal.unwrap_err(),
+                "Enter a Sentry API token.",
+                "{ticked:?}"
+            );
+            assert_eq!(sentry_flags(&env), (false, false));
+            assert!(env.store.lock().unwrap().dashboard().is_none());
+            assert!(env.woken.borrow().is_empty());
+        }
+        // One typed token covers whichever part was picked.
+        let env = Fake::new();
+        save_source_with(&env, "sentry", &parts(&["crons"]), Some("t"), &[], false).unwrap();
+        assert_eq!(sentry_flags(&env), (false, true));
+        assert_eq!(sentry_token(&env).as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn each_picked_sentry_part_asks_for_its_own_tile_and_only_that() {
+        for (picked, expected) in [
+            (&["usage", "crons"][..], vec!["sentryCrons", "usage"]),
+            (&["usage"][..], vec!["usage"]),
+            (&["crons"][..], vec!["sentryCrons"]),
+        ] {
+            let env = Fake::new();
+            save_source(&env, "sentry", &parts(picked), Some("t"), true).unwrap();
+            let mut asked = env.tiles_asked.borrow().clone();
+            asked.sort();
+            assert_eq!(asked, expected, "{picked:?}");
+        }
+
+        let env = Fake::new();
+        save_source(&env, "sentry", &parts(&["crons"]), Some("t"), false).unwrap();
+        assert!(env.tiles_asked.borrow().is_empty(), "no tile was asked for");
+    }
+
+    #[test]
+    fn a_stored_sentry_token_covers_either_part_without_typing_it_again() {
+        let env = Fake::new();
+        sentry_with_both(&env);
+        save_source_with(&env, "sentry", &parts(&["crons"]), None, &[], false).unwrap();
+        save_source_with(&env, "sentry", &parts(&["usage"]), None, &[], false).unwrap();
+        assert_eq!(sentry_token(&env).as_deref(), Some("sntrys_x"));
+        assert_eq!(sentry_flags(&env), (true, false));
+    }
+
+    #[test]
+    fn an_unreadable_store_refuses_removing_sentry_but_keeps_a_ticked_part() {
+        let env = Fake::new();
+        sentry_with_both(&env);
+        env.credentials.fail_read.set(true);
+        // A part still ticked means the token is not being removed, so a store
+        // that won't answer is not in the way.
+        save_source_with(&env, "sentry", &parts(&["usage"]), None, &[], false).unwrap();
+        let refusal = save_source_with(&env, "sentry", &parts(&[]), None, &[], false);
+        assert_eq!(
+            refusal.unwrap_err(),
+            "Couldn't read the credential store, so a stored Sentry token can't be removed. \
+             Nothing changed."
+        );
+        assert_eq!(
+            sentry_flags(&env),
+            (true, false),
+            "the refusal changed nothing"
+        );
+    }
+
+    #[test]
+    fn a_whole_number_of_events_or_nothing_is_the_quota() {
+        let env = Fake::new();
+        let refusal = save_source_with(
+            &env,
+            "sentry",
+            &parts(&["usage"]),
+            Some("t"),
+            &typed(&[("quota", "1.5")]),
+            false,
+        );
+        assert_eq!(
+            refusal.unwrap_err(),
+            "Enter a whole number of events, or leave the quota empty."
+        );
+        assert_eq!(sentry_token(&env), None, "a refused value writes nothing");
+        assert_eq!(sentry_flags(&env), (false, false));
+    }
+
+    #[test]
+    fn parts_sharing_a_key_declare_it_the_same_way() {
+        for spec in &SOURCES {
+            for part in spec.parts {
+                for other in spec.parts {
+                    let (Some(a), Some(b)) = (part.key, other.key) else {
+                        continue;
+                    };
+                    if a.secret == b.secret {
+                        assert_eq!(a.missing, b.missing, "{}", spec.kind);
+                        assert_eq!(a.unreadable, b.unreadable, "{}", spec.kind);
+                        assert_eq!(a.spend.is_some(), b.spend.is_some(), "{}", spec.kind);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -2727,8 +2727,10 @@ fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) 
 /// Which credentials currently hold a value — the "stored" badges, and whether
 /// each source's key is there. A read failure reads as "not stored" for a badge,
 /// which is a hint, and an unreadable keychain must not take the Settings window
-/// down with it. A source's key decides whether the source exists, so it keeps
-/// the failure as [`settings::StoredKey::Unread`].
+/// down with it. A key that decides whether a source exists keeps the failure as
+/// [`settings::StoredKey::Unread`]: the Neon, Sentry, Vercel, Anthropic Admin and
+/// OpenAI Admin keys. The OpenClaw bearer token and the host and account tokens
+/// are badges only, and read a failure as "not stored".
 fn stored_secrets(
     credentials: &dyn CredentialStore,
     hosts: &[Host],
@@ -2754,7 +2756,7 @@ fn stored_secrets(
     };
     StoredSecrets {
         neon: stored_key(SecretKey::NeonApiKey),
-        sentry: present(SecretKey::SentryUsageToken),
+        sentry: stored_key(SecretKey::SentryUsageToken),
         vercel: stored_key(SecretKey::VercelApiToken),
         anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
         openai_admin: stored_key(SecretKey::OpenAiAdminKey),
@@ -3346,11 +3348,12 @@ async fn poll_usage_providers(app: &Arc<App>) {
         read_credential(&*app.credentials, SecretKey::SentryUsageToken),
         read_credential(&*app.credentials, SecretKey::VercelApiToken),
     );
-    let (neon_org, sentry_slug, vercel_team) = {
+    let (neon_org, sentry_slug, sentry_on, vercel_team) = {
         let store = app.store.lock().expect("store poisoned");
         (
             store.settings().neon_org_id.clone(),
             store.settings().sentry_org_slug.clone(),
+            store.settings().sentry_usage_enabled,
             store.settings().vercel_team_id.clone(),
         )
     };
@@ -3421,7 +3424,15 @@ async fn poll_usage_providers(app: &Arc<App>) {
         }
     }
 
+    // The token also feeds Sentry Crons, so a token with this part unticked is
+    // "not set up" here, whatever the credential store says.
     match sentry_token {
+        _ if !sentry_on => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .sentry_mut()
+            .unconfigure(),
         Credential::Absent => app
             .usage
             .lock()
@@ -3772,6 +3783,21 @@ async fn plan_usage_loop(app: Arc<App>) {
 /// Settings edit apply without a relaunch — and [`App::crons_wake`] is what makes
 /// it apply *now* rather than up to an hour later.
 async fn poll_crons(app: &Arc<App>) {
+    // The token also feeds the Usage tile's Sentry section, so a token with this
+    // part unticked is "not set up" here, whatever the credential store says.
+    if !app
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .sentry_crons_enabled
+    {
+        app.crons
+            .lock()
+            .expect("crons state poisoned")
+            .unconfigure_part();
+        return;
+    }
     let token = match read_credential(&*app.credentials, SecretKey::SentryUsageToken) {
         Credential::Present(token) => token,
         // "No token" is the setup state and paints an instruction.
@@ -4862,6 +4888,12 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
         match wake {
             SourceWake::UsageEverything => wake_usage(self.0, UsageWake::Everything),
             SourceWake::UsageProviders => wake_usage(self.0, UsageWake::Providers),
+            // One token, two loops: both must hear of a save, or one of them
+            // keeps describing the previous token for up to an hour.
+            SourceWake::UsageProvidersAndCrons => {
+                wake_usage(self.0, UsageWake::Providers);
+                self.0.crons_wake.notify_one();
+            }
             SourceWake::Containers => self.0.containers_wake.notify_one(),
             SourceWake::StatusPagesOnly => {}
         }
@@ -5254,50 +5286,31 @@ mod account_org_tests {
         tripwire_fires(&f, "reload_hosts", reload_hosts);
     }
 }
-/// Every non-secret provider preference, in one argument.
-///
-/// One struct rather than seven positional parameters: both Settings tabs send
-/// the whole set on every Apply (each re-sends the other's fields, or a partial
-/// write blanks them), so they travel together by construction — and the fifth
-/// provider took the flat signature past clippy's argument limit, which is the
-/// shape complaining about itself.
+/// The one non-secret provider preference still saved outside a source's steps:
+/// Azure Cost's monthly budget. Neon, Vercel and Sentry set up their organization
+/// or team, rates, slug and quota through `settings_save_source`, so no second
+/// writer of those fields exists.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderPrefs {
-    neon_org_id: String,
-    sentry_org_slug: String,
-    sentry_monthly_event_quota: u64,
     azure_monthly_budget_usd: f64,
-    neon_usd_per_cu_hour: f64,
-    neon_usd_per_gib_month: f64,
-    vercel_team_id: String,
 }
 
 #[tauri::command]
 fn settings_save_providers(prefs: ProviderPrefs, state: tauri::State<'_, Arc<App>>) -> Value {
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        let current = store.settings_mut();
-        current.neon_org_id = prefs.neon_org_id.trim().to_owned();
-        current.sentry_org_slug = prefs.sentry_org_slug.trim().to_owned();
-        current.sentry_monthly_event_quota = prefs.sentry_monthly_event_quota;
         // A non-finite value would make the whole store unserialisable
         // (`StoreError::Serialize`), taking every other preference with it.
-        let launder = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
-        current.azure_monthly_budget_usd = launder(prefs.azure_monthly_budget_usd);
-        current.neon_usd_per_cu_hour = launder(prefs.neon_usd_per_cu_hour);
-        current.neon_usd_per_gib_month = launder(prefs.neon_usd_per_gib_month);
-        current.vercel_team_id = prefs.vercel_team_id.trim().to_owned();
+        let budget = prefs.azure_monthly_budget_usd;
+        store.settings_mut().azure_monthly_budget_usd = if budget.is_finite() {
+            budget.max(0.0)
+        } else {
+            0.0
+        };
         save_status(&store, "Saved.")
     };
-    // The Neon org id and the Sentry slug are *what those reads ask for*, so an
-    // edit that does not reach the loop leaves both sections describing the
-    // previous configuration for up to an hour. The Azure budget and the Sentry
-    // quota need no wake — both are read at render time, by design.
-    wake_usage(&state, UsageWake::Providers);
-    // The Sentry slug is a path segment of the cron-monitor read as well, so the
-    // Crons panel would otherwise ask the wrong org for another hour.
-    state.crons_wake.notify_one();
+    // No wake: the Azure budget is read at render time, by design.
     settings_response(&state, status)
 }
 
@@ -6351,19 +6364,6 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 /// loop to wake — its caller reconciles poll *tasks* instead.
 fn wake_for(app: &App, field: SecretField) {
     match field {
-        // Also the Services loop: `active_vendors` derives the Neon and Vercel
-        // status pages from exactly these credentials.
-        SecretField::Neon | SecretField::Vercel => {
-            wake_usage(app, UsageWake::Providers);
-            wake_services(app);
-        }
-        // One credential, two panels: the Usage panel's Sentry section and the
-        // Sentry Crons panel are separate loops, so a save has to reach both or
-        // one of them keeps describing the previous token for up to an hour.
-        SecretField::Sentry => {
-            wake_usage(app, UsageWake::Providers);
-            app.crons_wake.notify_one();
-        }
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
         // and re-handshaked, which is exactly what this wake does.
@@ -6941,7 +6941,7 @@ fn dump_settings() -> Value {
     let accounts = dump_accounts();
     let stored = StoredSecrets {
         neon: settings::StoredKey::Absent,
-        sentry: true,
+        sentry: settings::StoredKey::Stored,
         vercel: settings::StoredKey::Stored,
         anthropic_admin: settings::StoredKey::Absent,
         openai_admin: settings::StoredKey::Absent,
@@ -6963,6 +6963,10 @@ fn dump_settings() -> Value {
         // This machine is added and the three other sources with steps are
         // not, so the fixture has a row to reopen and a catalog entry to add.
         local_monitoring_enabled: true,
+        // Sentry with both of its parts, so its row reads as a source that is
+        // set up and its steps open with both ticked.
+        sentry_usage_enabled: true,
+        sentry_crons_enabled: true,
         // Exactly one panel configured, for the same reason: the cadence rows
         // render two ways — an override (whose **Use default** button is live)
         // and a panel nobody has ever set — and a fixture carrying only one of
@@ -8263,6 +8267,168 @@ mod tests {
             assert!(store.settings().neon_org_id.is_empty(), "{kind}");
             assert!(store.settings().vercel_team_id.is_empty(), "{kind}");
         }
+    }
+
+    /// Sentry's one token feeds two loops, so a save wakes both, writes the token
+    /// to the credential store only, and the slug beside it on disk. Unticking
+    /// one part keeps the token for the other, and Remove forgets everything.
+    #[test]
+    fn sentry_saves_one_token_for_both_parts_and_wakes_both_loops() {
+        let (dir, _rt, app) = test_app();
+        let typed = vec![
+            ("orgSlug".to_owned(), " acme ".to_owned()),
+            ("quota".to_owned(), "50000".to_owned()),
+        ];
+        let secret = "sntrys_secret_x";
+        save_source_with_in(
+            &app,
+            "sentry",
+            &parts(&["usage", "crons"]),
+            Some(secret),
+            &typed,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::SentryUsageToken)
+                .unwrap()
+                .as_deref(),
+            Some(secret)
+        );
+        assert!(woken(&app.crons_wake), "the crons loop heard of the save");
+        {
+            let store = app.store.lock().unwrap();
+            let settings = store.settings();
+            assert_eq!(settings.sentry_org_slug, "acme");
+            assert_eq!(settings.sentry_monthly_event_quota, 50_000);
+            assert!(settings.sentry_usage_enabled && settings.sentry_crons_enabled);
+        }
+        let on_disk = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .collect::<String>();
+        assert!(on_disk.contains("acme") && !on_disk.contains(secret));
+
+        save_source_in(&app, "sentry", &parts(&["crons"]), None, false).unwrap();
+        assert!(
+            app.credentials
+                .secret(SecretKey::SentryUsageToken)
+                .unwrap()
+                .is_some(),
+            "Scheduled jobs still reads the token"
+        );
+        {
+            let store = app.store.lock().unwrap();
+            assert!(!store.settings().sentry_usage_enabled);
+            assert!(store.settings().sentry_crons_enabled);
+        }
+        assert!(woken(&app.crons_wake));
+
+        save_source_in(&app, "sentry", &parts(&[]), None, false).unwrap();
+        assert_eq!(
+            app.credentials.secret(SecretKey::SentryUsageToken).unwrap(),
+            None
+        );
+        assert!(app
+            .store
+            .lock()
+            .unwrap()
+            .settings()
+            .sentry_org_slug
+            .is_empty());
+    }
+
+    /// A credential store that never answers: every pass reads `Unreadable`, so
+    /// a pass that does run stops at the keychain and never reaches the network.
+    struct Silent;
+    impl CredentialStore for Silent {
+        fn secret(&self, key: SecretKey) -> Result<Option<String>, store::SecretError> {
+            Err(store::SecretError::CorruptBlob {
+                account: key.account(),
+            })
+        }
+        fn set_secret(&self, _: SecretKey, _: &str) -> Result<(), store::SecretError> {
+            Ok(())
+        }
+        fn delete_secret(&self, _: SecretKey) -> Result<(), store::SecretError> {
+            Ok(())
+        }
+        fn secret_bytes(&self, _: SecretKey) -> Result<Option<Vec<u8>>, store::SecretError> {
+            Ok(None)
+        }
+        fn set_secret_bytes(&self, _: SecretKey, _: &[u8]) -> Result<(), store::SecretError> {
+            Ok(())
+        }
+    }
+
+    /// One token, two gates. A part switched off is "not set up" for its own
+    /// loop whatever the credential store says, and the other part's state is
+    /// left alone.
+    #[test]
+    fn each_sentry_flag_gates_only_its_own_loop() {
+        for (usage_on, crons_on) in [(false, true), (true, false), (true, true)] {
+            let (_dir, rt, app) = test_app_over(Silent);
+            {
+                let mut store = app.store.lock().unwrap();
+                store.settings_mut().sentry_usage_enabled = usage_on;
+                store.settings_mut().sentry_crons_enabled = crons_on;
+            }
+            let app = Arc::new(app);
+            rt.block_on(poll_usage_providers(&app));
+            rt.block_on(poll_crons(&app));
+
+            let usage_absent = app
+                .usage
+                .lock()
+                .unwrap()
+                .sentry_mut()
+                .configured
+                .is_absent();
+            assert_eq!(usage_absent, !usage_on, "usage {usage_on} crons {crons_on}");
+            let message = crons_unscoped(&app)["message"]["text"].clone();
+            if crons_on {
+                assert_ne!(message, json!(crons::PART_OFF_MESSAGE));
+                assert_ne!(message, json!(crons::UNCONFIGURED_MESSAGE));
+            } else {
+                assert_eq!(message, json!(crons::PART_OFF_MESSAGE));
+            }
+        }
+    }
+
+    /// With no token at all (and the part on), the Crons tile still asks for one.
+    #[test]
+    fn crons_with_the_part_on_and_no_token_asks_for_one() {
+        let (_dir, rt, app) = test_app();
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .sentry_crons_enabled = true;
+        let app = Arc::new(app);
+        rt.block_on(poll_crons(&app));
+        assert_eq!(
+            crons_unscoped(&app)["message"]["text"],
+            json!(crons::UNCONFIGURED_MESSAGE)
+        );
+    }
+
+    /// The Sentry token is read three ways, and only the badge-only credentials
+    /// read a failure as "not stored".
+    #[test]
+    fn a_credential_store_that_will_not_answer_leaves_sentry_unread_not_absent() {
+        let stored = stored_secrets(&Silent, &[], &[]);
+        for key in [
+            stored.neon,
+            stored.sentry,
+            stored.vercel,
+            stored.anthropic_admin,
+            stored.openai_admin,
+        ] {
+            assert_eq!(key, settings::StoredKey::Unread);
+        }
+        assert!(!stored.openclaw, "a badge-only credential reads as none");
     }
 
     /// A stored key is kept by leaving the field empty, and unticking the part

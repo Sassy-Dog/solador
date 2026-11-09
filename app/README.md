@@ -621,13 +621,15 @@ Settings opens on **Sources**, with one entry per GitHub account, remote
 host, usage provider, Azure export, OpenClaw gateway, custom status page and
 each of the sources below that you have added. Each entry names the panels it
 feeds. GitHub repos and runners share the account editor; Sentry usage and
-scheduled jobs share the Sentry editor. **Add source** lists every source there
+scheduled jobs share Sentry's steps. **Add source** lists every source there
 is, and nothing is built in: a fresh store has no sources and reads nothing. A
 store written before these existed reads This machine, Service health and Claude
-Code's logs as on, because they were.
+Code's logs as on, because they were, and a stored Sentry token feeds both its
+Usage section and Sentry Crons, as it did (`sentry_usage_enabled` and
+`sentry_crons_enabled` read as on when the file has neither).
 
-**This machine**, **Anthropic**, **OpenAI**, **Service health**, **Neon** and
-**Vercel** open as steps, and a row (or a Usage tile's **Manage source**)
+**This machine**, **Anthropic**, **OpenAI**, **Service health**, **Neon**,
+**Sentry** and **Vercel** open as steps, and a row (or a Usage tile's **Manage source**)
 reopens the same steps with its choices read back. Anthropic asks what to set
 up: **API key**, **Subscription**, **Local usage**. OpenAI asks the first two.
 Each part picked gets one step, then **Ready** summarises what the source will
@@ -635,9 +637,14 @@ show and offers its tile unless it has one (a hidden tile counts). A source with
 one part skips the question. Neon's one step asks for the organization API key
 and its organization ID, with the two rates behind **Advanced options**;
 Vercel's asks for the token and its team ID (blank is a personal account). The
-Usage tile is what Ready offers for both, and Sentry shares it. Neither key is
-saved by a button on its step: they and the IDs are written at **Finish**, so
-Back and Cancel leave no key, no ID and no tile. Nothing is applied until **Finish**, which
+Usage tile is what Ready offers for both. **Sentry** asks which parts: **Usage**
+(the Usage tile's Sentry section) and **Scheduled jobs** (Sentry Crons). Both
+read one `org:read` token and one organization slug, so the steps ask for them
+once, on the first part picked, and the monthly error quota (Usage's alone) sits
+behind **Advanced options**. Picking one part leaves the other tile's feed off,
+and Ready offers a tile for each part picked that has none (one tick covers
+both). No key is saved by a button on its step: keys and IDs are written at
+**Finish**, so Back and Cancel leave no key, no ID and no tile. Nothing is applied until **Finish**, which
 sends everything in one `settings_save_source` call, so Cancel has nothing to
 undo and no sign-in is read before the operator has finished saying they want it
 (see [the plans' own limits](#the-plans-own-limits)). Whatever can refuse (no
@@ -652,21 +659,26 @@ travel as `settings_save_source`'s `inputs` and are checked with every other
 refusal, then written under the same lock, in the same save, as the flags and
 the tile; a failed save puts them back. What a later source still adds is a new
 wake, spend or plan variant (an arm in the shell's `match`), and anything a
-part cannot say: the typed key goes to the source's first keyed part, so a
-source with a credential per account (GitHub) needs a keyed argument, and an
+part cannot say: the typed key goes to the source's first key, so a source with
+a different credential per account (GitHub) needs a keyed argument, and an
 input is never required, so a source that needs one (Azure's) needs a refusal
-sentence on the input. A refusal leaves the steps open. **Remove source**, on a
+sentence on the input. Parts may share a key (Sentry's two parts name one
+token) or an input id (its slug): a shared key is kept while any part that
+names it is ticked and deleted only when none is, and a shared input likewise,
+so unticking Usage keeps what Scheduled jobs still reads. Each ticked part
+sets its own flag (`sentry_usage_enabled`, `sentry_crons_enabled`), and a part
+may name its own tile source (Scheduled jobs adds a Sentry Crons tile). A refusal leaves the steps open. **Remove source**, on a
 source already added, unticks everything and jumps to Ready, and a stored key
 and a part's typed IDs are cleared by it (or by unticking the part). Removing a
 source leaves its tile for the operator to remove. The entry's line says what is
 set up, as `API key · Subscription`. While the credential store won't answer,
 the line says `API key not read` and the source stays a row, because that says
 nothing about whether there is a key. Its **API key** step stays ticked, so a walk
-leaves any key alone, and unticking it is refused. Neon and Vercel read the same
-way: with the store silent they stay a row (reading `Not read`, as Anthropic's and OpenAI's do), their
+leaves any key alone, and unticking it is refused. Neon, Sentry and Vercel read the same
+way: with the store silent they stay a row (reading `Not read`, as Anthropic's and OpenAI's do; one definition, `row_status_not_read`), their
 step says the credential store didn’t answer, and Finish goes through
 without a typed key and keeps whatever key is there. The other sources keep their
-own forms. **Sentry** and **Azure Cost** wait for their own steps, and so do
+own forms. **Azure Cost** waits for its own steps, and so do
 GitHub accounts. Three stay forms by design: **OpenClaw**, because pairing is a
 live exchange with the gateway and its token saves at once; **Remote host**,
 because trusting the agent's certificate is a confirmation the steps should not
@@ -1887,11 +1899,11 @@ since read`. A spend cap has no pace, because the reply states no reset for it.
 signed in as on this machine, it sits in its own block, and it is never merged
 into the rollups below it or attributed to a `VendorAccount`.
 
-**Applied without a restart**, like the GitHub panels: saving or clearing a
-Sentry token or slug, and Finish on Neon's or Vercel's steps (which write the key,
-the org or team id and the two Neon rates together), wake the usage loop *and*
-force its provider half to run on that pass, so a newly-saved key fills its
-section in seconds rather than within the hour. A SAS URL wakes the Azure loop
+**Applied without a restart**, like the GitHub panels: Finish on Neon's, Sentry's or Vercel's steps (which write the key,
+the org, team or slug and the Neon rates or Sentry quota together; Remove source on any of the three too) wakes the usage loop *and*
+forces its provider half to run on that pass, so a newly-saved key fills its
+section in seconds rather than within the hour; Sentry's Finish wakes the
+Crons loop too. A SAS URL wakes the Azure loop
 the same way. The Sentry quota and the Azure budget wake nothing on purpose —
 both are read at render time, so changing one repaints the bar it feeds on the
 next 10s frontend tick with no fetch involved. The two Neon rates are read at
@@ -1989,8 +2001,8 @@ inside `usage_loop` — same API, same rhythm — and since
 own whose *default* is that hour, so an unconfigured store still behaves as one
 constant and only an explicit edit parts them. Either way a newly-red monitor
 can be invisible for up to an hour. That is accepted: the outage that motivated the work ran seven
-days, and the daily Slack digest remains the prompt signal. Saving or clearing the
-Sentry token, or editing the org slug, wakes both loops; a first read that failed
+days, and the daily Slack digest remains the prompt signal. Finish on
+Sentry's steps (or Remove source) wakes both loops; a first read that failed
 retries after a minute rather than waiting out the hour. The monitor list is
 walked across `Link`-header pages (only a `results="true"` next relation means
 there is more — Sentry emits `next` on the last page too), and a list running past
@@ -2335,7 +2347,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `panel_interval_clear` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
 | `settings_save_source` | everything a source's steps chose, in one call at Finish (a thin command over `store::source_save::save_source_with`, which owns the source table, the refusals and their order, the writes and the rollback; the shell hands it the plan opt-in, the dashboard rules and the wakes): `kind`, the `parts` still ticked (an empty list is Remove source), the key if one was typed, `inputs` (the non-secret values typed on the parts, by input id, such as Neon's `orgId`; omitted for a source with none), and `addTile`. Answers `{status, settings, saved}`. `saved: false` keeps the steps open: every refusal comes before the first write and changes nothing, and only an I/O failure can follow a write, when the flags, the inputs and the tile go back, a key or plan already written stays, and Finish is safe to repeat. The key goes to the credential store, and the argument is never logged |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
-| `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Vercel team id, Azure budget (every non-secret provider preference in one go). Neon's and Vercel's are set through their steps (`settings_save_source`), so the Sentry and Azure forms send those back as they were |
+| `settings_save_providers` | the Azure budget, and only that: Neon's, Sentry's and Vercel's non-secret values are set through their steps (`settings_save_source`), so no second writer of them exists. Azure's Apply still calls it until Azure moves onto the steps |
 | `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop on a save (check or uncheck); a refusal changes nothing and wakes nothing — the selection is what the runners half of the pass polls |
 | `settings_save_azure` | where the cost export lives: storage account + container. Its own command for the same reason, and it **wakes the Azure poll** — that loop runs on a four-hour rhythm, so without the nudge an operator who just fixed a typo waits until teatime to learn whether it worked |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it. Add takes an optional `tlsFingerprint` — the one the operator **trusted** — validated through `crates/certpin` and stored as `Host.tls_fingerprint` (absent ⇒ plain HTTP) |
@@ -2354,7 +2366,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
 | `settings_probe_status_vendor` | step one of [adding a status page](#the-services-tab): one GET of `{base}/api/v2/summary.json` → its components, **or** the finding that stopped it. Deliberately not a `Result` — a failed probe found something, and the finding is the product |
 | `settings_save_status_vendor` / `settings_set_status_vendor_enabled` / `settings_remove_status_vendor` | step two, and the list it lands in |
-| `settings_save_secret` / `settings_clear_secret` | one credential, by key (`neon`/`sentry`/`vercel`/`openclaw`); the UI calls them for Sentry and OpenClaw only, because Neon's and Vercel's keys are written and cleared at Finish. The `github` key retired with its tab — a GitHub token is an account's now, written through `settings_save_account` |
+| `settings_save_secret` / `settings_clear_secret` | one credential, by key: `openclaw` only (`settings::SecretField`). Neon's, Sentry's and Vercel's keys are written and deleted only at Finish, beside the flags and IDs they go with, so these commands refuse them as an unknown credential. The `github` key retired with its tab — a GitHub token is an account's now, written through `settings_save_account` |
 
 **Every mutation wakes exactly the loop its data feeds, and no other.** A wake
 spends a whole poll pass, so nudging the GitHub loop after a Neon save would burn
@@ -2364,7 +2376,7 @@ a portfolio fetch on a credential it has no use for.
 |---|---|
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
-| the `neon` / `sentry` credential, the Neon org id, the Sentry slug; Finish on Neon's or Vercel's steps | the usage loop, *forcing* its provider half onto that pass. The `neon` and `vercel` credentials (and saving the Azure export) also wake the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from them |
+| Finish on Neon's, Sentry's or Vercel's steps (the key, the org, team or slug, and for Sentry the part flags; Remove source too) | the usage loop, *forcing* its provider half onto that pass; Sentry's Finish also wakes the Crons loop. Every Finish also wakes the Services loop, and saving the Azure export does, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from those |
 | Finish on a source's steps | the Services loop (`wake_services`): any part of a source can add or remove a watched vendor, so the pass does not wait for its cadence |
 | a plan opt-in changed at Finish | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read theirs at render time too, each its own, and their window is 1.5 cycles of it, so the save moves it in the same response ([#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
@@ -3285,7 +3297,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press the section's **Apply**; then set it to `30` and **Apply**; then press **Use default**; also type `10000000000` and press **Apply** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. `10000000000` is **refused** with `Not saved — … the largest cadence that can be stored` and never with `invalid value`, and the status line is unchanged: that decode at the IPC boundary is covered only by this checklist. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and the section's **Apply**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the GitHub Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
-| usage providers | Add source → **Neon** (key, then organization ID) and/or **Vercel**, **Finish**; save a Sentry `org:read` token and slug in its form | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h`. Before Finish nothing is stored: **Cancel** from either step leaves no key and no ID, and **Remove source** on the row clears both |
+| usage providers | Add source → **Neon** (key, then organization ID), **Vercel**, and **Sentry** (pick **Usage** and/or **Scheduled jobs**, then the `org:read` token and slug once), **Finish** | sections appear in seconds, and Sentry Crons reads the same token. With only **Usage** picked, a Sentry Crons tile reads `Sentry's Scheduled jobs isn't set up — add it in Settings → Sources` (not a request for a token, which is stored); with only **Scheduled jobs** picked, the Usage tile has no Sentry section. Unticking one part later keeps the token for the other, and **Remove source** clears it. A key with **no org id** renders `—` on both figures, never `0.0 CU-h`. Before Finish nothing is stored: **Cancel** from either step leaves no key and no ID, and **Remove source** on the row clears both |
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Sources carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
 | `machine_set_volume_hidden` | hover a machine on the Machines tile and press the Disk strip's **Hide**; expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under the Machines tile's **Configure** → **Volumes shown** | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
@@ -3458,12 +3470,12 @@ and that immediacy is itself the check on the corresponding wake:
 
    To exercise the provider half, open Settings → Sources → Add source →
    **Neon**, paste an organization API key, leave the organization ID empty
-   first, press Finish, and repeat with **Vercel** (token, team ID); then save a
-   Sentry `org:read` token and slug in Sentry's own form. Neither Neon nor Vercel
+   first, press Finish, and repeat with **Vercel** (token, team ID) and with
+   **Sentry** (both parts, one `org:read` token and slug). None of them
    writes anything before Finish: press Cancel after typing a key and an ID and
    check the keychain and `store.json` hold neither, and that **Remove source**
    on the saved row clears the key and the ID. All of them apply without a
-   relaunch — Finish and `settings_save_secret` wake the usage loop *and* force
+   relaunch — Finish (and Remove source) wakes the usage loop *and* forces
    its provider half — so the sections should appear within seconds. That
    immediacy is itself the check on the wake. A key with no org id is the
    interesting case: the section appears, both figures render `—`, and the panel
@@ -3707,7 +3719,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. A different footer, `couldn't read runners — GitHub has more than this build will count — …`, means the org registers more runners than the walk will read (`RUNNERS_PAGE_CAP` x 100); the token is fine and the rows are the last good fetch. |
 | The **Usage**, **Anthropic**, **OpenAI** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`anthropic`/`openai`/`azure_cost` command, or a script error in `usage.js`/`ai-sources.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
-| The Usage panel shows no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows the source's row; if it does, the provider read has not run yet — saving wakes it. For Sentry, re-save the token; for Neon or Vercel, reopen the row's steps and press **Finish** (the key field may stay empty, which keeps the stored key). |
+| The Usage panel shows no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows the source's row; if it does, the provider read has not run yet — saving wakes it. For Neon, Sentry or Vercel, reopen the row's steps and press **Finish** (the key field may stay empty, which keeps the stored key). |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |

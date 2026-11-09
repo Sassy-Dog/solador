@@ -123,11 +123,11 @@ Add these in **Settings**, in any order, whenever you feel like it.
 |---|---|
 | **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY backlog column. It finds your repos itself, and derives the organizations whose runners it watches — [step-by-step walkthrough](docs/github-setup.md) |
 | **Other machines** | the [agent](agent/) running on that host, plus its address and bearer token |
-| **Usage** | a Neon org key and its org ID, a Sentry `org:read` token, a Vercel token and its team ID — each optional and independent. Neon and Vercel are added in steps and saved only at Finish |
+| **Usage** | a Neon org key and its org ID, a Sentry `org:read` token and org slug, a Vercel token and its team ID — each optional and independent. Neon, Sentry and Vercel are added in steps and saved only at Finish |
 | **Claude and Codex plan limits** | nothing to paste: Settings → Sources → Add source → **Anthropic** or **OpenAI**, pick **Subscription**, and Solador reads that tool's own saved sign-in (on a Mac, Claude Code's keychain item, which macOS may ask you to allow; otherwise `~/.claude/.credentials.json` or `~/.codex/auth.json`), and, for Claude, the plan's name from `~/.claude.json`, keeping that one field and nothing else from the file. It only reads: the sign-in is never copied, stored, refreshed or changed. Both plan endpoints are undocumented and may change. Off until you pick it and press Finish |
 | **Anthropic and OpenAI API spend** | an Admin API key, in the same steps. Anthropic's starts `sk-ant-admin`, and only a Console organization can create one. OpenAI's comes from your organization's settings. An ordinary API key is refused. Kept in your OS credential store |
 | **Azure Cost** | a daily cost export in blob storage. There is no credential to paste: it signs each read itself with the `az` CLI you're already signed in to |
-| **Sentry Crons** | the same Sentry token as above — one credential, two panels |
+| **Sentry Crons** | the same Sentry token as above — one credential, two panels. Sentry's steps ask which of the two you want, and the token and slug once |
 
 **On reaching other machines:** the cockpit speaks HTTP to a host and a port —
 or HTTPS, for an agent you have paired with, in which case it trusts exactly

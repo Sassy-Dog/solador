@@ -199,24 +199,24 @@ test("Sources is the landing page and each saved source has one editor", async (
     await expect(row.locator(".connection-state")).toHaveText(entry.status.text);
   }
   await tab(page, "sentry").click();
-  await expect(page.locator("#sentry-org-slug")).toBeVisible();
+  await expect(page.locator(".walk")).toBeVisible();
+  await expect(page.locator(".walk-pick")).toHaveCount(2);
   await expect(page.locator("#neon-org-id")).toHaveCount(0);
-  await expect(page.locator("#secret-sentry")).toBeHidden();
-  await expect(page.locator(".connection-heading")).toContainText("Usage · Scheduled jobs");
+  await expect(page.locator("#walk-secret")).toHaveCount(0);
   expect(await calls(page, "settings_save_secret")).toEqual([]);
 });
 
 test("leaving or closing an editor protects typed fields and explicitly discards secrets", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
   await tab(page, "usage").click();
-  await page.locator("#sentry-org-slug").fill("draft-org");
-  await page.locator(".replace-secret").click();
-  await page.locator("#secret-sentry").fill("draft-token");
+  await next(page);
+  await page.locator("#walk-orgSlug").fill("draft-org");
+  await page.locator("#walk-secret").fill("draft-token");
   await page.locator('#settingsTabs [data-tab="general"]').click();
   await expect(page.locator("#settingsConfirm")).toBeVisible();
   await page.locator("#settingsConfirm .primary").click();
-  await expect(page.locator("#sentry-org-slug")).toHaveValue("draft-org");
-  await expect(page.locator("#secret-sentry")).toHaveValue("draft-token");
+  await expect(page.locator("#walk-orgSlug")).toHaveValue("draft-org");
+  await expect(page.locator("#walk-secret")).toHaveValue("draft-token");
   await page.locator("#settingsClose").click();
   await expect(page.locator("#settingsConfirm")).toBeVisible();
   await page.locator("#settingsConfirm .discard").click();
@@ -224,10 +224,25 @@ test("leaving or closing an editor protects typed fields and explicitly discards
   await expect(page.locator('#settings input[type="password"]')).toHaveCount(0);
   await page.locator(SETTINGS_BUTTON).click();
   await tab(page, "usage").click();
-  await expect(page.locator("#secret-sentry")).toHaveValue("");
-  await expect(page.locator("#sentry-org-slug")).not.toHaveValue("draft-org");
+  await next(page);
+  await expect(page.locator("#walk-secret")).toHaveValue("");
+  await expect(page.locator("#walk-orgSlug")).not.toHaveValue("draft-org");
   expect(await calls(page, "settings_save_secret")).toEqual([]);
-  expect(await calls(page, "settings_save_providers")).toEqual([]);
+  expect(await saves(page)).toEqual([]);
+});
+
+// The step focuses its key field on the next frame. A field the operator has
+// already clicked into must keep focus, or what they type lands in the key's
+// input instead: the cause of a once-seen failure in the test above.
+test("a step's deferred focus does not take focus from a field already clicked into", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await tab(page, "usage").click();
+  await next(page);
+  await page.locator("#walk-orgSlug").focus();
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await expect(page.locator("#walk-orgSlug")).toBeFocused();
+  await page.keyboard.type("typed-slug");
+  await expect(page.locator("#walk-secret")).toHaveValue("");
 });
 
 test("host edits retain the saved identity and replace the token only explicitly", async ({ page, baseURL }) => {
@@ -263,7 +278,7 @@ test("Replace… swaps the token caption for the field, so the label reads once"
 
 test("a rejected save keeps the connection draft and reports the failure", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "usage").click();
+  await tab(page, "azure").click();
   await page.evaluate(() => {
     const original = window.__TAURI__.core.invoke;
     window.__TAURI__.core.invoke = async (command, args) => {
@@ -271,10 +286,10 @@ test("a rejected save keeps the connection draft and reports the failure", async
       return original(command, args);
     };
   });
-  await page.locator("#sentry-org-slug").fill("keep-this-draft");
-  await page.locator(".btn.apply").click();
+  await page.locator("#azure-budget").fill("777");
+  await page.locator(".btn.apply").first().click();
   await expect(page.locator("#settingsStatus")).toHaveText(settings.connections.saveFailed);
-  await expect(page.locator("#sentry-org-slug")).toHaveValue("keep-this-draft");
+  await expect(page.locator("#azure-budget")).toHaveValue("777");
 });
 
 test("Sources and its editor fit a narrow window without clipped controls", async ({ page, baseURL }) => {
@@ -898,15 +913,6 @@ test("Neon's rates are typed in its step, behind Advanced options, and sent at F
   expect(save.args.inputs).toEqual({ orgId: "", usdPerCuHour: "0.106", usdPerGibMonth: "0.35" });
 });
 
-test("Sentry keeps its own form while Neon and Vercel use steps", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  expect(catalogEntry(settings, "sentry").walk).toBeUndefined();
-  await addConnection(page, "sentry");
-  await expect(page.locator(".walk")).toHaveCount(0);
-  await expect(page.locator("#sentry-org-slug")).toBeVisible();
-  await expect(page.locator('.group[data-secret="sentry"]')).toHaveCount(1);
-});
-
 test("leaving a walk with a key typed on an earlier step asks first", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
   await addConnection(page, "openai");
@@ -1117,20 +1123,21 @@ test("Add Host waits for a name and an address, and keeps the token out of the D
 });
 
 test("a credential saves, clears, and never comes back", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  // Sentry, not GitHub: the GitHub tab is retired (its token lives on
-  // accounts), and the fixture stores a Sentry token, which is the same
-  // claim with a subject that still exists.
-  await tab(page, "sentry").click();
+  // OpenClaw's bearer token: the one credential left with a form of its own
+  // (every source with steps writes its key at Finish instead), so it is the
+  // subject that still exists for the claim.
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, (s) => {
+    s.openclaw.secret.stored = true;
+  });
+  await tab(page, "openclaw").click();
   await page.locator(".replace-secret").click();
 
-  const secret = settings.usage.sentry.secret;
-  const box = page.locator('.group[data-secret="sentry"]');
-  const input = page.locator("#secret-sentry");
+  const secret = settings.openclaw.secret;
+  const box = page.locator('.group[data-secret="openclaw"]');
+  const input = page.locator("#secret-openclaw");
   await expect(input).toHaveAttribute("type", "password");
   await expect(input).toHaveValue("");
-  // The fixture stores a Sentry token, so the badge is up and Clear is live;
-  // Save waits for something to save.
+  // The badge is up and Clear is live; Save waits for something to save.
   await expect(box.locator(".badge-ok")).toHaveText(secret.storedLabel);
   await expect(box.locator(".save")).toBeDisabled();
   await expect(box.locator(".clear")).toBeEnabled();
@@ -1139,7 +1146,7 @@ test("a credential saves, clears, and never comes back", async ({ page, baseURL 
   await expect(box.locator(".save")).toBeEnabled();
   await box.locator(".save").click();
   expect(await calls(page, "settings_save_secret")).toEqual([
-    { command: "settings_save_secret", args: { key: "sentry", value: "sntryu_supersecret" } },
+    { command: "settings_save_secret", args: { key: "openclaw", value: "sntryu_supersecret" } },
   ]);
   await expect(input).toHaveValue("");
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
@@ -1147,7 +1154,7 @@ test("a credential saves, clears, and never comes back", async ({ page, baseURL 
   await box.locator(".replace-secret").click();
   await box.locator(".clear").click();
   expect(await calls(page, "settings_clear_secret")).toEqual([
-    { command: "settings_clear_secret", args: { key: "sentry" } },
+    { command: "settings_clear_secret", args: { key: "openclaw" } },
   ]);
 
   // Nothing in the payload, and therefore nothing in the page, can echo a
@@ -1207,17 +1214,16 @@ test("preferences no longer edits runner group labels", async ({ page, baseURL }
 });
 
 test("a credential with nothing stored offers nothing to clear", async ({ page, baseURL }) => {
-  // Sentry, not Azure: the Azure panel has no stored credential at all any more
-  // (it signs its own request per poll), so it can no longer stand for "a
-  // credential with nothing stored". Its token is taken out of the fixture,
-  // which is the same claim with a subject that still exists.
+  // OpenClaw, not Azure: the Azure panel has no stored credential at all (it
+  // signs its own request per poll), so it cannot stand for "a credential with
+  // nothing stored".
   const settings = await openSettings(page, baseURL, undefined, undefined, undefined, (s) => {
-    s.usage.sentry.secret.stored = false;
+    s.openclaw.secret.stored = false;
   });
-  await tab(page, "usage").click();
+  await tab(page, "openclaw").click();
   await page.locator(".replace-secret").click();
-  expect(settings.usage.sentry.secret.stored).toBe(false);
-  const box = page.locator('.group[data-secret="sentry"]');
+  expect(settings.openclaw.secret.stored).toBe(false);
+  const box = page.locator('.group[data-secret="openclaw"]');
   await expect(box.locator(".clear")).toBeDisabled();
   await expect(box.locator(".badge-ok")).toHaveCount(0);
 });
@@ -1687,80 +1693,214 @@ test("an account is added with its vendor, and re-saved without exposing its tok
   await expect(card.locator(`#account-token-${owning.id}`)).toHaveValue("");
 });
 
-test("Sentry and Azure write every provider preference together", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  await tab(page, "usage").click();
-
-  await expect(page.locator("#sentry-org-slug")).toHaveValue(settings.usage.sentry.orgSlug);
-  await expect(page.locator("#neon-org-id")).toHaveCount(0);
-  await expect(page.locator("#vercel-team-id")).toHaveCount(0);
-  await page.locator(".connection-advanced summary").click();
-
-  await page.locator("#sentry-org-slug").fill("acme-sentry");
-  await page.locator("#sentry-quota").fill("5000");
-  await page.locator(".btn.apply").click();
-
-  // Neon's and Vercel's values and the Azure budget travel with them,
-  // unchanged: `settings_save_providers` writes every non-secret provider
-  // preference in one go, so sending only this form's fields would blank the
-  // ones it doesn't show.
-  expect(await calls(page, "settings_save_providers")).toEqual([
-    {
-      command: "settings_save_providers",
-      args: {
-        prefs: {
-          neonOrgId: settings.usage.neon.orgId,
-          sentryOrgSlug: "acme-sentry",
-          sentryMonthlyEventQuota: 5000,
-          azureMonthlyBudgetUsd: settings.azure.budget.value,
-          neonUsdPerCuHour: settings.usage.neon.usdPerCuHour,
-          neonUsdPerGibMonth: settings.usage.neon.usdPerGibMonth,
-          vercelTeamId: settings.usage.vercel.teamId,
-        },
-      },
-    },
-  ]);
-});
-
-/// The mirror image, and the edit most likely to be missed: the Azure tab
-/// re-sends every Usage preference, so a save from *there* must carry the
-/// Vercel team id too or applying a budget silently blanks it.
-test("the Azure tab passes the Vercel team id through untouched", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
+// Azure Cost's budget is the one provider preference still written outside a
+// source's steps (until Azure moves onto them), so its Apply sends it alone: a
+// second writer of Neon's, Vercel's or Sentry's values would be a way around
+// Finish.
+test("the Azure budget's Apply sends the budget and nothing else", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
   await tab(page, "azure").click();
   await page.locator("#azure-budget").fill("250");
-  // `.first()`: the tab now carries a second Apply for the export address, and
-  // this test is about the budget one. Addressed by position rather than by a
-  // new hook because the order is the reading order.
+  // `.first()`: the tab also carries an Apply for the export address, and this
+  // test is about the budget one. Addressed by position because the order is
+  // the reading order.
   await page.locator(".btn.apply").first().click();
-
-  const [save] = await calls(page, "settings_save_providers");
-  expect(save.args.prefs.vercelTeamId).toBe(settings.usage.vercel.teamId);
-  expect(save.args.prefs.azureMonthlyBudgetUsd).toBe(250);
+  expect(await calls(page, "settings_save_providers")).toEqual([
+    { command: "settings_save_providers", args: { prefs: { azureMonthlyBudgetUsd: 250 } } },
+  ]);
 });
 
-test("a typed org slug survives saving that provider's key", async ({ page, baseURL }) => {
-  await openSettings(page, baseURL);
-  await tab(page, "usage").click();
+// MARK: Sentry's steps: two parts over one token and one slug
 
-  // The natural fill-in order: type the slug, paste the token, and press the
-  // Save sitting right under the token -- before the form's Apply. The secret
-  // save re-renders the form from persisted state, and the unapplied slug
-  // must survive that render or it is silently lost while the "Saved." status
-  // says otherwise.
-  await page.locator("#sentry-org-slug").fill("acme-fond-sea");
-  await page.locator(".replace-secret").click();
-  await page.locator("#secret-sentry").fill("sntryu_smoke");
-  await page.locator('.group[data-secret="sentry"] .btn.save').click();
-  expect(await calls(page, "settings_save_secret")).toEqual([
-    { command: "settings_save_secret", args: { key: "sentry", value: "sntryu_smoke" } },
-  ]);
-  await expect(page.locator("#sentry-org-slug")).toHaveValue("acme-fond-sea");
+/** A store where Sentry is not added, whatever the fixture holds. */
+function withoutSentry(settings) {
+  const entry = catalogEntry(settings, "sentry");
+  entry.walk.added = false;
+  for (const part of entry.walk.parts) {
+    part.on = false;
+    part.secret.stored = false;
+    // Neither tile is on the overview yet, so Ready offers both.
+    part.tile.present = false;
+    for (const input of part.inputs) input.value = "";
+  }
+  settings.connections.rows = settings.connections.rows.filter((row) => row.kind !== "sentry");
+}
 
-  // And the surviving value is what Apply hands to Rust.
-  await page.locator(".btn.apply").click();
-  const saved = await calls(page, "settings_save_providers");
-  expect(saved.at(-1).args.prefs.sentryOrgSlug).toBe("acme-fond-sea");
+test("Sentry asks which parts, then its token and slug once, whichever are picked", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutSentry);
+  const entry = catalogEntry(settings, "sentry");
+  const labels = settings.connections.walkLabels;
+  await addConnection(page, "sentry");
+
+  await expect(stepHeading(page)).toHaveText(labels.pickHeading);
+  await expect(page.locator(".walk-pick")).toHaveCount(2);
+  await expect(pick(page, "usage").locator("input")).not.toBeChecked();
+  await expect(pick(page, "crons").locator("input")).not.toBeChecked();
+  await expect(page.locator(".walk-next"), "nothing to set up yet").toBeDisabled();
+
+  await pick(page, "usage").locator("input").check();
+  await pick(page, "crons").locator("input").check();
+  await expect(stepLine(page)).toHaveText("Sentry · step 1 of 3");
+  await next(page);
+
+  // The first picked part asks for the token and the slug, and the quota that
+  // is the Usage tile's alone.
+  await expect(stepHeading(page)).toHaveText(partOf(entry, "usage").title);
+  await expect(stepLine(page)).toHaveText("Sentry · step 2 of 3");
+  await expect(page.locator("#walk-secret")).toHaveAttribute("type", "password");
+  await expect(page.locator('[data-secret]'), "no Save that writes before Finish").toHaveCount(0);
+  await next(page);
+  await expect(page.locator(".walk-problem")).toHaveText(labels.keyRequired);
+
+  await page.locator("#walk-secret").fill("sntrys_secret");
+  await page.locator("#walk-orgSlug").fill("acme-fond-sea");
+  await page.locator(".connection-advanced summary").click();
+  await page.locator("#walk-quota").fill("5000");
+  await next(page);
+
+  // Scheduled jobs has nothing left to ask, so the next step is Ready, with one
+  // offer covering both tiles.
+  await expect(stepHeading(page)).toHaveText(labels.readyHeading);
+  await expect(page.locator("#walk-secret")).toHaveCount(0);
+  await expect(page.locator(".walk-summary li")).toHaveCount(2);
+  await expect(page.locator(".walk-tile")).toHaveText("Add a Usage tile and a Sentry Crons tile");
+  expect(await saves(page), "nothing is applied before Finish").toEqual([]);
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await calls(page, "settings_save_providers")).toEqual([]);
+
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toEqual({
+    kind: "sentry", parts: ["usage", "crons"], secret: "sntrys_secret",
+    inputs: { orgSlug: "acme-fond-sea", quota: "5000" }, addTile: true,
+  });
+});
+
+test("Sentry picked for Scheduled jobs alone asks the token and slug there, and no quota", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutSentry);
+  const entry = catalogEntry(settings, "sentry");
+  await addConnection(page, "sentry");
+  await pick(page, "crons").locator("input").check();
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(partOf(entry, "crons").title);
+  await expect(page.locator("#walk-secret")).toBeVisible();
+  await expect(page.locator("#walk-orgSlug")).toBeVisible();
+  await expect(page.locator("#walk-quota")).toHaveCount(0);
+  await page.locator("#walk-secret").fill("sntrys_secret");
+  await page.locator("#walk-orgSlug").fill("acme");
+  await next(page);
+  await expect(page.locator(".walk-tile")).toHaveText("Add a Sentry Crons tile");
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toEqual({
+    kind: "sentry", parts: ["crons"], secret: "sntrys_secret", inputs: { orgSlug: "acme" }, addTile: true,
+  });
+});
+
+test("Sentry picked for Usage alone leaves the other tile's feed off", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, withoutSentry);
+  await addConnection(page, "sentry");
+  await pick(page, "usage").locator("input").check();
+  await next(page);
+  await page.locator("#walk-secret").fill("sntrys_secret");
+  await next(page);
+  await expect(page.locator(".walk-summary li").nth(1)).toHaveClass(/walk-off/);
+  await expect(page.locator(".walk-tile")).toHaveText("Add a Usage tile");
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toMatchObject({ kind: "sentry", parts: ["usage"], secret: "sntrys_secret" });
+});
+
+test("Sentry: Back and Cancel write nothing, and Cancel forgets the draft", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, withoutSentry);
+  await addConnection(page, "sentry");
+  await pick(page, "usage").locator("input").check();
+  await next(page);
+  await page.locator("#walk-secret").fill("sntrys_secret");
+  await page.locator("#walk-orgSlug").fill("acme");
+  await next(page);
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-secret"), "Back keeps what was typed").toHaveValue("sntrys_secret");
+  await expect(page.locator("#walk-orgSlug")).toHaveValue("acme");
+
+  await page.locator(".walk-cancel").click();
+  await expect(page.locator(".connection-list")).toBeVisible();
+  expect(await saves(page)).toEqual([]);
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await calls(page, "settings_save_providers")).toEqual([]);
+
+  await addConnection(page, "sentry");
+  await pick(page, "usage").locator("input").check();
+  await next(page);
+  await expect(page.locator("#walk-secret")).toHaveValue("");
+  await expect(page.locator("#walk-orgSlug")).toHaveValue("");
+});
+
+test("Sentry's row opens the same steps with both parts ticked and the saved slug", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const entry = catalogEntry(settings, "sentry");
+  await page.locator('.connection-row[data-kind="sentry"]').click();
+  await expect(pick(page, "usage").locator("input")).toBeChecked();
+  await expect(pick(page, "crons").locator("input")).toBeChecked();
+  await next(page);
+  await expect(page.locator("#walk-orgSlug")).toHaveValue(partOf(entry, "usage").inputs[0].value);
+  await expect(page.locator(".walk-stored")).toHaveText(partOf(entry, "usage").secret.storedLabel);
+  await expect(page.locator("#walk-secret")).toHaveValue("");
+
+  // Unticking one part: the token is kept by leaving the field empty, and the
+  // other part's slug is still sent.
+  await page.locator(".walk-back").click();
+  await pick(page, "crons").locator("input").uncheck();
+  await next(page);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toMatchObject({ kind: "sentry", parts: ["usage"], secret: null });
+  expect(save.args.inputs.orgSlug).toBe(partOf(entry, "usage").inputs[0].value);
+});
+
+test("Sentry: Remove source sends no parts, so Finish turns both parts off and clears the token", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await page.locator('.connection-row[data-kind="sentry"]').click();
+  await page.locator(".walk-remove").click();
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.removeHeading);
+  expect(await saves(page), "and it is still a draft").toEqual([]);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toEqual({ kind: "sentry", parts: [], secret: null, addTile: true });
+});
+
+test("a stored Sentry token with both parts off is still an added source that can be removed", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, (settings) => {
+    const entry = catalogEntry(settings, "sentry");
+    entry.walk.added = true;
+    for (const part of entry.walk.parts) part.on = false;
+  });
+  await page.locator('.connection-row[data-kind="sentry"]').click();
+  await expect(page.locator(".walk-next"), "nothing picked is how a source is removed").toBeEnabled();
+  await expect(page.locator(".walk-remove")).toBeVisible();
+  await page.locator(".walk-remove").click();
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({ kind: "sentry", parts: [], secret: null, addTile: true });
+});
+
+test("Sentry with a credential store that did not answer says so and finishes without a typed key", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, (settings) => {
+    const entry = catalogEntry(settings, "sentry");
+    for (const part of entry.walk.parts) {
+      part.secret.storedLabel = "The credential store didn\u2019t answer. Leave this empty to keep any token it holds.";
+    }
+    const row = settings.connections.rows.find((item) => item.kind === "sentry");
+    row.status = { text: "Not read", attention: true, color: "#f0b400" };
+  });
+  await expect(page.locator('.connection-row[data-kind="sentry"] .connection-state')).toHaveText("Not read");
+  await page.locator('.connection-row[data-kind="sentry"]').click();
+  await next(page);
+  await expect(page.locator(".walk-stored")).toContainText("didn\u2019t answer");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toMatchObject({ kind: "sentry", secret: null });
 });
 
 test("Services lists every watched status page with the component it watches", async ({ page, baseURL }) => {

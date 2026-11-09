@@ -161,10 +161,6 @@ function group(heading) {
   return box;
 }
 
-/** Whole numbers only: the Sentry quota is an integer in Rust, and a NaN is
- *  not even JSON. */
-const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
-
 // MARK: talking to Rust
 
 /** Typed-but-unapplied edits, as `[id, value]` pairs.
@@ -1211,20 +1207,11 @@ function azureTab(t) {
   const budget = numberInput(t.budget.value, 0);
   box.append(field("azure-budget", t.budget.label, budget), help(t.budget.help));
   const apply = button(t.budget.saveLabel, "apply");
-  // `settings_save_providers` writes every non-secret provider preference in
-  // one go, so the ones this tab doesn't show are sent back as they came --
-  // a partial write would silently blank the Usage tab's fields.
+  // The budget is the one provider preference still saved here: Neon, Vercel
+  // and Sentry are set up, values and all, through their source steps.
   apply.addEventListener("click", () =>
     mutate("settings_save_providers", {
-      prefs: {
-        neonOrgId: S.view.usage.neon.orgId,
-        sentryOrgSlug: S.view.usage.sentry.orgSlug,
-        sentryMonthlyEventQuota: int(S.view.usage.sentry.quota),
-        azureMonthlyBudgetUsd: Number(budget.value) || 0,
-        neonUsdPerCuHour: Number(S.view.usage.neon.usdPerCuHour) || 0,
-        neonUsdPerGibMonth: Number(S.view.usage.neon.usdPerGibMonth) || 0,
-        vercelTeamId: S.view.usage.vercel.teamId,
-      },
+      prefs: { azureMonthlyBudgetUsd: Number(budget.value) || 0 },
     })
   );
   box.appendChild(actionRow(apply));
@@ -1246,41 +1233,6 @@ function azureTab(t) {
   exp.appendChild(actionRow(saveExport));
 
   return [box, exp];
-}
-
-/** Sentry's own form: its org slug and quota, and its credential. Neon and
- *  Vercel are set up through the source steps (`walkEditor`) and have no group
- *  here, so Apply sends their saved values back as they came. */
-function usageTab(t) {
-  const sentry = group(t.sentry.heading);
-  const orgSlug = textInput(t.sentry.orgSlug);
-  const quota = numberInput(t.sentry.quota, 0);
-  sentry.appendChild(field("sentry-org-slug", t.sentry.orgSlugLabel, orgSlug));
-  sentry.append(advanced(
-    field("sentry-quota", t.sentry.quotaLabel, quota),
-    help(t.sentry.quotaHelp)
-  ));
-  secretControls(sentry, t.sentry.secret);
-
-  const apply = button(t.saveLabel, "apply");
-  // `settings_save_providers` writes every non-secret provider preference in
-  // one go, so the ones this form doesn't show are sent back as they came --
-  // a partial write would silently blank them.
-  apply.addEventListener("click", () =>
-    mutate("settings_save_providers", {
-      prefs: {
-        neonOrgId: t.neon.orgId,
-        sentryOrgSlug: orgSlug.value,
-        sentryMonthlyEventQuota: int(quota.value),
-        azureMonthlyBudgetUsd: Number(S.view.azure.budget.value) || 0,
-        neonUsdPerCuHour: Number(t.neon.usdPerCuHour) || 0,
-        neonUsdPerGibMonth: Number(t.neon.usdPerGibMonth) || 0,
-        vercelTeamId: t.vercel.teamId,
-      },
-    })
-  );
-
-  return [sentry, actionRow(apply)];
 }
 
 /** One watched status page: its name, its address, the component it is watched
@@ -1805,7 +1757,9 @@ function startWalk(entry) {
   return {
     kind: entry.kind,
     picked: new Set(parts.filter(part => part.on || parts.length === 1).map(part => part.id)),
-    added: parts.some(part => part.on),
+    // Rust says so when a source can exist with every part off (Sentry's token
+    // alone); otherwise a source is added when one of its parts is on.
+    added: entry.walk.added ?? parts.some(part => part.on),
     index: 0,
     secret: "",
     inputs,
@@ -1815,13 +1769,26 @@ function startWalk(entry) {
   };
 }
 
+/** Whether `part` asks for nothing an earlier picked part has not already asked:
+ *  it has a key or typed values, and every one of them is on an earlier step.
+ *  Sentry's two parts share one token and one slug, so they are asked once,
+ *  on whichever part is picked first. A part with neither (a plan opt-in) is
+ *  never covered, because its step is the consent itself. */
+function walkCovered(part, earlier) {
+  const inputs = part.inputs || [];
+  if (!part.secret && !inputs.length) return false;
+  return (!part.secret || earlier.some(item => item.secret)) &&
+    inputs.every(input => earlier.some(item => (item.inputs || []).some(seen => seen.id === input.id)));
+}
+
 /** What is asked, in order: which parts (when there is a choice), one step per
- *  part picked, then Ready. A tick changes this list, so it is derived rather
- *  than stored. */
+ *  part picked that has something left to ask, then Ready. A tick changes this
+ *  list, so it is derived rather than stored. */
 function walkSteps(parts, walk) {
+  const picked = pickedParts(parts, walk);
   return [
     ...(parts.length > 1 ? ["pick"] : []),
-    ...parts.filter(part => walk.picked.has(part.id)).map(part => part.id),
+    ...picked.filter((part, index) => !walkCovered(part, picked.slice(0, index))).map(part => part.id),
     "ready",
   ];
 }
@@ -1891,6 +1858,17 @@ function walkPartStep(part, walk, labels, onEnter) {
   return content;
 }
 
+/** The tiles Ready offers: one for each picked part that has none, by tile
+ *  source. A part may name its own tile; the rest use the source's. */
+function walkTileOffers(parts, tile, walk) {
+  const offers = [];
+  for (const part of pickedParts(parts, walk)) {
+    const offer = part.tile || tile;
+    if (!offer.present && !offers.some(seen => seen.source === offer.source)) offers.push(offer);
+  }
+  return offers;
+}
+
 function walkReadyStep(parts, tile, walk, labels) {
   if (!walk.picked.size) return [help(labels.removeHelp)];
   const summary = node("ul", "walk-summary");
@@ -1900,11 +1878,16 @@ function walkReadyStep(parts, tile, walk, labels) {
       on ? `\u2713 ${part.ready}` : `\u2014 ${part.ready}: ${labels.notSetUp}`));
   }
   const content = [help(labels.readyHelp), summary];
-  if (!tile.present) {
+  const offers = walkTileOffers(parts, tile, walk);
+  if (offers.length) {
     const offer = node("label", "walk-tile");
     const box = checkbox(walk.addTile);
     box.addEventListener("change", () => { walk.addTile = box.checked; });
-    offer.append(box, node("span", null, tile.label));
+    // One tick covers every tile offered; the sentence names each.
+    const text = offers.length === 1
+      ? offers[0].label
+      : `Add ${offers.map(item => item.noun).join(" and ")}`;
+    offer.append(box, node("span", null, text));
     content.push(offer);
   }
   return content;
@@ -2026,7 +2009,13 @@ function walkEditor(entry) {
   page.dataset.step = step;
   page.append(progress, node("h2", null, heading), ...content, actions);
   // A render replaces the page, so keyboard focus would fall back to the top.
-  requestAnimationFrame(() => page.querySelector("[data-walk-focus]")?.focus());
+  // Only if nothing in the new page has taken it since: the frame can land after
+  // the operator (or a fast test) has already clicked into another field, and
+  // moving focus then sends what they are typing into the wrong input.
+  requestAnimationFrame(() => {
+    if (page.contains(document.activeElement)) return;
+    page.querySelector("[data-walk-focus]")?.focus();
+  });
   return [page];
 }
 
@@ -2059,8 +2048,6 @@ function connectionEditor() {
     const hosts = S.view.hosts;
     content = hostsTab({ ...hosts, rows: hosts.rows.filter(h => h.id === entry.entityId) },
       { edit: !!entry.entityId, addOnly: !entry.entityId });
-  } else if (entry.kind === "sentry") {
-    content = usageTab(S.view.usage);
   } else if (entry.kind === "azure") content = azureTab(S.view.azure);
   else if (entry.kind === "openclaw") content = openclawTab(S.view.openclaw);
   else if (entry.kind === "vendor") {
@@ -2089,7 +2076,6 @@ function renderBody() {
     accounts: accountsTab,
     hosts: hostsTab,
     azure: azureTab,
-    usage: usageTab,
     services: servicesTab,
     openclaw: openclawTab,
     about: aboutTab,
