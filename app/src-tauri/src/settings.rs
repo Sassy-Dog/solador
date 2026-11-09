@@ -104,7 +104,7 @@ impl StoredKey {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StoredSecrets {
     pub neon: StoredKey,
-    pub sentry: bool,
+    pub sentry: StoredKey,
     pub vercel: StoredKey,
     /// Whether each vendor's Admin API key is stored, which is that part of the
     /// source being added.
@@ -901,7 +901,6 @@ pub fn view(
             },
         ),
         "azure": azure_tab(settings),
-        "usage": usage_tab(settings, stored),
         "services": services_tab(vendors),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(updates),
@@ -1067,14 +1066,33 @@ pub const SERVICES_TITLE: &str = store::source_save::SERVICES_TITLE;
 pub const NEON_TITLE: &str = store::source_save::NEON_TITLE;
 /// Vercel's billing usage.
 pub const VERCEL_TITLE: &str = store::source_save::VERCEL_TITLE;
+/// Sentry's error usage and its scheduled-job monitors.
+pub const SENTRY_TITLE: &str = store::source_save::SENTRY_TITLE;
 /// The button, and the heading of the catalog it opens.
 pub const ADD_SOURCE_LABEL: &str = "Add source";
 
 // The names of a source's parts, on its steps and on its row.
 const API_PART_TITLE: &str = "API key";
 const API_PART_UNREAD_TITLE: &str = "API key not read";
+const SENTRY_USAGE_PART_TITLE: &str = "Usage";
+const SENTRY_CRONS_PART_TITLE: &str = "Scheduled jobs";
 const SUBSCRIPTION_PART_TITLE: &str = "Subscription";
 const LOCAL_PART_TITLE: &str = "Local usage";
+
+/// A row's status: its words, and whether it needs the operator's attention.
+fn row_status(text: &str, attention: bool) -> Value {
+    json!({
+        "text": text, "attention": attention,
+        "color": color::hex(if attention { color::AMBER } else { color::MUTED }),
+    })
+}
+
+/// What a source's row says when the credential store would not answer about its
+/// key. Not "Setup incomplete" or "Token needed", which name a piece known to be
+/// missing: a store that won't answer says nothing about that.
+fn row_status_not_read() -> Value {
+    row_status("Not read", true)
+}
 
 /// The Sources page's one-line count.
 fn connections_summary(count: usize, attention: usize) -> String {
@@ -1093,12 +1111,7 @@ fn connections_section(
     stored: &StoredSecrets,
     openclaw: &openclaw::SettingsFacts,
 ) -> Value {
-    let status = |text: &str, attention: bool| {
-        json!({
-            "text": text, "attention": attention,
-            "color": color::hex(if attention { color::AMBER } else { color::MUTED }),
-        })
-    };
+    let status = row_status;
     let row = |id: String,
                kind: &str,
                entity: Option<String>,
@@ -1149,10 +1162,22 @@ fn connections_section(
     let s = store.settings;
     // Unread counts as there: a store that won't answer says nothing about
     // whether a key exists, so the source stays a row.
-    let (neon_there, vercel_there) = (
+    let (neon_there, sentry_there, vercel_there) = (
         stored.neon != StoredKey::Absent,
+        stored.sentry != StoredKey::Absent,
         stored.vercel != StoredKey::Absent,
     );
+    // Which of Sentry's parts are on is named, not implied by the token: the one
+    // token feeds both.
+    let sentry_feeds = added_parts(&[
+        (s.sentry_usage_enabled, SENTRY_USAGE_PART_TITLE),
+        (s.sentry_crons_enabled, SENTRY_CRONS_PART_TITLE),
+    ]);
+    let sentry_feeds = if sentry_feeds.is_empty() {
+        "No part picked"
+    } else {
+        sentry_feeds.as_str()
+    };
     for (kind, title, identity, feeds, credential, configured, complete, unread) in [
         (
             "neon",
@@ -1168,11 +1193,11 @@ fn connections_section(
             "sentry",
             "Sentry",
             s.sentry_org_slug.as_str(),
-            "Usage · Scheduled jobs",
-            stored.sentry,
-            !s.sentry_org_slug.is_empty() || stored.sentry,
-            stored.sentry && !s.sentry_org_slug.is_empty(),
-            false,
+            sentry_feeds,
+            sentry_there,
+            !s.sentry_org_slug.is_empty() || sentry_there,
+            stored.sentry == StoredKey::Stored && !s.sentry_org_slug.is_empty(),
+            stored.sentry == StoredKey::Unread,
         ),
         (
             "vercel",
@@ -1193,10 +1218,8 @@ fn connections_section(
                 title,
                 identity.into(),
                 feeds,
-                // The same word the Anthropic and OpenAI rows use for a store
-                // that won't answer; "incomplete" names a piece known missing.
                 if unread {
-                    status("Not read", true)
+                    row_status_not_read()
                 } else if complete {
                     status("Configured", false)
                 } else {
@@ -1257,7 +1280,7 @@ fn connections_section(
     }
     let key_status = |key: StoredKey| {
         if key == StoredKey::Unread {
-            status("Not read", true)
+            row_status_not_read()
         } else {
             status("Configured", false)
         }
@@ -1345,7 +1368,7 @@ fn connections_section(
             anthropic_entry(s, stored, store.tile_sources),
             openai_entry(s, stored, store.tile_sources),
             neon_entry(s, stored, store.tile_sources),
-            {"kind":"sentry", "title":"Sentry", "feeds":"Usage and scheduled jobs"},
+            sentry_entry(s, stored, store.tile_sources),
             vercel_entry(s, stored, store.tile_sources),
             {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
@@ -1450,6 +1473,7 @@ fn tile_offer(source: &str, tile_sources: &[String]) -> Value {
     json!({
         "source": source,
         "label": format!("Add {article} {title} tile"),
+        "noun": format!("{article} {title} tile"),
         "present": tile_sources.iter().any(|id| id == source),
     })
 }
@@ -1505,6 +1529,15 @@ fn walk_input(id: &str, label: &str, value: &str, rate: bool, advanced: bool) ->
     json!({"id": id, "label": label, "value": value, "number": rate, "advanced": advanced})
 }
 
+/// A quota as its field shows it: nothing for the zero that hides the bar.
+fn quota_text(quota: u64) -> String {
+    if quota == 0 {
+        String::new()
+    } else {
+        quota.to_string()
+    }
+}
+
 /// A rate as its field shows it: nothing for the zero that hides the row.
 fn rate_text(rate: f64) -> String {
     if rate == 0.0 {
@@ -1553,6 +1586,76 @@ fn neon_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> 
         "kind": "neon", "title": NEON_TITLE,
         "feeds": "Database usage and estimated charges",
         "walk": {"parts": [part], "tile": tile_offer("usage", tile_sources)},
+    })
+}
+
+fn sentry_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    let key = stored.sentry;
+    // A part is on only for a source that exists: a file from before the parts
+    // keeps both flags on, which says nothing about a Sentry that was never set up.
+    let there = key != StoredKey::Absent || !s.sentry_org_slug.is_empty();
+    let shared = "The token is kept in your OS credential store; the organization slug is not a secret and is stored as a normal preference. One token and one slug serve both Usage and Scheduled jobs.";
+    // Both parts name the token and the slug, and the steps ask for them once,
+    // on the first picked part that has them.
+    let part = |id: &str, title: &str, summary: &str, on: bool, ready: &str, help: &str| {
+        let mut part = with_secret(
+            walk_part(id, title, summary, on && there, ready, help),
+            key,
+            "API token",
+            "sntrys_\u{2026}",
+            "token",
+        );
+        part["inputs"] = json!([walk_input(
+            "orgSlug",
+            "Organization slug",
+            &s.sentry_org_slug,
+            false,
+            false
+        )]);
+        part
+    };
+    let tile = |source: &str| tile_offer(source, tile_sources);
+    let mut usage = part(
+        "usage",
+        SENTRY_USAGE_PART_TITLE,
+        "Accepted error events",
+        s.sentry_usage_enabled,
+        "Accepted error events",
+        &format!("Powers the Sentry row on the Usage tile (accepted error events over the last 30 days). Create a personal token under User settings \u{2192} Auth Tokens, or an internal-integration token, with the read-only org:read scope \u{2014} organization auth tokens carry a fixed CI-oriented scope set that doesn\u{2019}t include it. {shared}"),
+    );
+    usage["inputs"] = json!([
+        walk_input(
+            "orgSlug",
+            "Organization slug",
+            &s.sentry_org_slug,
+            false,
+            false
+        ),
+        walk_input(
+            "quota",
+            "Monthly error quota (events)",
+            &quota_text(s.sentry_monthly_event_quota),
+            true,
+            true
+        ),
+    ]);
+    usage["advancedHelp"] = json!("Leave the quota empty to hide the quota bar.");
+    usage["tile"] = tile("usage");
+    let mut crons = part(
+        "crons",
+        SENTRY_CRONS_PART_TITLE,
+        "Cron monitors that are not ok",
+        s.sentry_crons_enabled,
+        "Cron monitors that are not ok",
+        &format!("Powers the Sentry Crons tile: every cron monitor environment that is not ok, read with the same org:read token. {shared}"),
+    );
+    // Each part has its own tile, so the Ready step offers one for each part
+    // picked that has none.
+    crons["tile"] = tile("sentryCrons");
+    json!({
+        "kind": "sentry", "title": SENTRY_TITLE,
+        "feeds": "Usage and scheduled jobs",
+        "walk": {"parts": [usage, crons], "tile": tile("usage")},
     })
 }
 
@@ -2344,58 +2447,6 @@ fn azure_tab(settings: &Settings) -> Value {
     })
 }
 
-fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
-    json!({
-        "heading": "Usage",
-        "saveLabel": "Apply",
-        "neon": {
-            "heading": "Neon",
-            "orgIdLabel": "Organization ID",
-            "orgId": settings.neon_org_id,
-            "usdPerCuHourLabel": "$ per CU-hour",
-            "usdPerCuHour": settings.neon_usd_per_cu_hour,
-            "usdPerGibMonthLabel": "$ per GiB-month storage",
-            "usdPerGibMonth": settings.neon_usd_per_gib_month,
-            "ratesHelp": "Your plan's usage-based rates from the Neon console's Billing page. Both 0 hides the estimated-charges row; the app ships no price table, so the estimate can never silently rot when Neon reprices.",
-            "secret": secret_section(
-                SecretField::Neon,
-                "Organization API key",
-                stored.neon != StoredKey::Absent,
-                "Key stored",
-                "Powers the Neon rows on the Usage panel (month-to-date compute and branch storage). Create an organization API key in the Neon console — it is scoped to the org's projects and, unlike a personal key, isn't tied to one user account. Stored in your OS credential store; the org ID is not a secret and is stored as a normal preference.",
-            ),
-        },
-        "sentry": {
-            "heading": "Sentry",
-            "orgSlugLabel": "Organization slug",
-            "orgSlug": settings.sentry_org_slug,
-            "quotaLabel": "Monthly error quota (events)",
-            "quota": settings.sentry_monthly_event_quota,
-            "quotaHelp": "Leave the quota at 0 to hide the quota bar.",
-            "secret": secret_section(
-                SecretField::Sentry,
-                "API token",
-                stored.sentry,
-                "Token stored",
-                "Powers the Sentry row on the Usage panel (accepted error events over the last 30 days). Create a personal token under User settings → Auth Tokens, or an internal-integration token, with the read-only org:read scope — organization auth tokens carry a fixed CI-oriented scope set that doesn't include it. Stored in your OS credential store; the org slug and quota are not secrets and are stored as normal preferences.",
-            ),
-        },
-        "vercel": {
-            "heading": "Vercel",
-            "teamIdLabel": "Team ID",
-            "teamId": settings.vercel_team_id,
-            "teamIdHelp": "Leave blank for a personal account.",
-            "secret": secret_section(
-                SecretField::Vercel,
-                "API token",
-                stored.vercel != StoredKey::Absent,
-                "Token stored",
-                "Powers the Vercel rows on the Usage panel (month-to-date spend, and what falls beyond the plan). Create a token under Account settings → Tokens with read access to the team whose billing you want. Stored in your OS credential store; the team ID is not a secret and is stored as a normal preference.",
-            ),
-        },
-    })
-}
-
 // MARK: - operator-added status vendors
 
 /// One probe's answer, in the two shapes the Services tab can paint.
@@ -3123,6 +3174,8 @@ mod tests {
             neon_org_id: "org-abc".into(),
             sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
+            sentry_usage_enabled: true,
+            sentry_crons_enabled: true,
             azure_monthly_budget_usd: 250.0,
             azure_storage_account: "acmestorage".into(),
             azure_cost_container: "cost-exports".into(),
@@ -3140,7 +3193,7 @@ mod tests {
 
         let stored = StoredSecrets {
             neon: StoredKey::Absent,
-            sentry: true,
+            sentry: StoredKey::Stored,
             vercel: StoredKey::Absent,
             anthropic_admin: StoredKey::Absent,
             openai_admin: StoredKey::Absent,
@@ -3271,7 +3324,7 @@ mod tests {
     fn connections_share_sources_and_never_infer_liveness_from_saved_tokens() {
         let (mut settings, hosts, repos, mut stored) = sample();
         settings.sentry_org_slug = "sample-org".into();
-        stored.sentry = true;
+        stored.sentry = StoredKey::Stored;
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let rows = vm["connections"]["rows"].as_array().unwrap();
         let sentry = rows.iter().find(|r| r["kind"] == "sentry").unwrap();
@@ -3284,7 +3337,7 @@ mod tests {
             .unwrap();
         assert_eq!(remote["id"], format!("host:{}", hosts[0].id));
         assert_eq!(remote["feeds"], "Machines · Containers / VMs");
-        stored.sentry = false;
+        stored.sentry = StoredKey::Absent;
         let missing = view_of(&settings, &hosts, &repos, &stored, &facts());
         let sentry = missing["connections"]["rows"]
             .as_array()
@@ -3551,6 +3604,96 @@ mod tests {
 
     /// A keychain that won't answer is not "no key": the source stays added,
     /// the step says it didn't answer, and Finish needs no typed key.
+    /// The status every row shows for a store that would not answer, from one
+    /// definition.
+    #[test]
+    fn every_key_the_store_would_not_read_paints_the_one_not_read_status() {
+        assert_eq!(row_status_not_read(), row_status("Not read", true));
+        let stored = StoredSecrets {
+            neon: StoredKey::Unread,
+            sentry: StoredKey::Unread,
+            vercel: StoredKey::Unread,
+            anthropic_admin: StoredKey::Unread,
+            openai_admin: StoredKey::Unread,
+            ..StoredSecrets::default()
+        };
+        let (settings, hosts, repos, _) = sample();
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        for kind in ["neon", "sentry", "vercel", "anthropic", "openai"] {
+            let row = vm["connections"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["kind"] == kind)
+                .unwrap_or_else(|| panic!("{kind} must stay a row"));
+            assert_eq!(row["status"], row_status_not_read(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn sentry_with_an_unreadable_keychain_stays_a_row_even_with_no_slug() {
+        let (mut settings, hosts, repos, mut stored) = sample();
+        settings.sentry_org_slug.clear();
+        stored.sentry = StoredKey::Unread;
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let row = vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["kind"] == "sentry")
+            .expect("a store that won't answer says nothing about whether Sentry exists");
+        assert_eq!(row["status"]["text"], "Not read");
+        assert_eq!(row["status"]["attention"], true);
+
+        let part = &catalog_entry(&vm, "sentry")["walk"]["parts"][0];
+        assert_eq!(part["on"], true, "an unticked part would remove a key");
+        assert_eq!(part["secret"]["stored"], true);
+        assert!(part["secret"]["storedLabel"]
+            .as_str()
+            .unwrap()
+            .contains("didn\u{2019}t answer"));
+    }
+
+    /// Sentry is two parts over one token and one slug, each with its own tile;
+    /// a store written before the parts keeps both on, and a Sentry that was
+    /// never set up shows neither on.
+    #[test]
+    fn sentry_is_two_parts_over_one_token_that_read_back_what_is_on() {
+        let (mut settings, hosts, repos, stored) = sample();
+        settings.sentry_crons_enabled = false;
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let walk = &catalog_entry(&vm, "sentry")["walk"];
+        assert_eq!(walk["parts"][0]["id"], "usage");
+        assert_eq!(walk["parts"][1]["id"], "crons");
+        assert_eq!(walk["parts"][0]["on"], true);
+        assert_eq!(walk["parts"][1]["on"], false);
+        assert_eq!(walk["parts"][0]["tile"]["source"], "usage");
+        assert_eq!(walk["parts"][1]["tile"]["source"], "sentryCrons");
+        assert_eq!(walk["parts"][1]["tile"]["present"], false);
+        let row = vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["kind"] == "sentry")
+            .unwrap();
+        assert_eq!(row["feeds"], "Usage");
+
+        let fresh = Settings {
+            sentry_usage_enabled: true,
+            sentry_crons_enabled: true,
+            ..Settings::default()
+        };
+        let vm = view_of(&fresh, &hosts, &repos, &StoredSecrets::default(), &facts());
+        assert!(vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["kind"] != "sentry"));
+        let walk = &catalog_entry(&vm, "sentry")["walk"];
+        assert_eq!(walk["parts"][0]["on"], false);
+        assert_eq!(walk["parts"][1]["on"], false);
+    }
+
     #[test]
     fn neon_and_vercel_with_an_unreadable_keychain_keep_the_source_and_its_key() {
         let stored = StoredSecrets {
@@ -4251,12 +4394,15 @@ mod tests {
     fn a_stored_credential_is_a_badge_and_nothing_more() {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
-        assert_eq!(vm["usage"]["neon"]["secret"]["stored"], false);
-        assert_eq!(vm["usage"]["sentry"]["secret"]["stored"], true);
-
-        // Each section names the key its Save/Clear sends back.
-        assert_eq!(vm["usage"]["neon"]["secret"]["key"], "neon");
-        assert_eq!(vm["usage"]["sentry"]["secret"]["key"], "sentry");
+        // The Usage providers have no form of their own any more: their steps say
+        // only whether a key exists.
+        assert!(vm["usage"].is_null());
+        let step = |kind: &str, part: usize| {
+            catalog_entry(&vm, kind)["walk"]["parts"][part]["secret"].clone()
+        };
+        assert_eq!(step("neon", 0)["stored"], false);
+        assert_eq!(step("sentry", 0)["stored"], true);
+        assert_eq!(step("sentry", 1)["stored"], true);
 
         // The retired GitHub tab must stay retired: its token lives on
         // accounts, and a resurrected top-level section would be a second
@@ -4286,38 +4432,49 @@ mod tests {
             assert!(!raw.contains(&account), "payload names {account}");
         }
 
-        // …and structurally: a credential section is a label, two button
-        // labels, a badge and a boolean. The moment one grows a field that
+        // …and structurally: a step's credential is a label, a placeholder, a
+        // boolean and the sentence about it. The moment one grows a field that
         // could *hold* a value, this fails — which a substring search over the
         // rendered payload could not do, because it cannot know what the value
         // would have been.
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         for secret in [
-            &vm["usage"]["neon"]["secret"],
-            &vm["usage"]["sentry"]["secret"],
-            &vm["openclaw"]["secret"],
+            &catalog_entry(&vm, "neon")["walk"]["parts"][0]["secret"],
+            &catalog_entry(&vm, "sentry")["walk"]["parts"][0]["secret"],
+            &catalog_entry(&vm, "sentry")["walk"]["parts"][1]["secret"],
         ] {
             let mut keys: Vec<&str> = secret
                 .as_object()
-                .expect("a secret section")
+                .expect("a step's credential")
                 .keys()
                 .map(String::as_str)
                 .collect();
             keys.sort_unstable();
-            assert_eq!(
-                keys,
-                [
-                    "clearLabel",
-                    "fieldLabel",
-                    "help",
-                    "key",
-                    "saveLabel",
-                    "stored",
-                    "storedLabel"
-                ]
-            );
+            assert_eq!(keys, ["label", "placeholder", "stored", "storedLabel"]);
             assert!(secret["stored"].is_boolean());
         }
+        // …and OpenClaw's, which keeps its own form.
+        let secret = &vm["openclaw"]["secret"];
+        let mut keys: Vec<&str> = secret
+            .as_object()
+            .expect("a secret section")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "clearLabel",
+                "fieldLabel",
+                "help",
+                "key",
+                "saveLabel",
+                "stored",
+                "storedLabel"
+            ]
+        );
+        assert!(secret["stored"].is_boolean());
     }
 
     /// The device id is a *public* SHA-256 fingerprint the operator has to read
@@ -4393,16 +4550,17 @@ mod tests {
     fn the_non_secret_provider_settings_are_shown_so_they_can_be_edited() {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
-        assert_eq!(vm["usage"]["neon"]["orgId"], "org-abc");
-        assert_eq!(vm["usage"]["neon"]["usdPerCuHour"], 0.106);
-        assert_eq!(vm["usage"]["neon"]["usdPerGibMonth"], 0.35);
-        assert_eq!(vm["usage"]["neon"]["usdPerCuHourLabel"], "$ per CU-hour");
-        assert_eq!(
-            vm["usage"]["neon"]["usdPerGibMonthLabel"],
-            "$ per GiB-month storage"
-        );
-        assert_eq!(vm["usage"]["sentry"]["orgSlug"], "acme");
-        assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
+        let neon = &catalog_entry(&vm, "neon")["walk"]["parts"][0]["inputs"];
+        assert_eq!(neon[0]["value"], "org-abc");
+        assert_eq!(neon[1]["value"], "0.106");
+        assert_eq!(neon[1]["label"], "$ per CU-hour");
+        assert_eq!(neon[2]["value"], "0.35");
+        assert_eq!(neon[2]["label"], "$ per GiB-month storage");
+        let sentry = &catalog_entry(&vm, "sentry")["walk"]["parts"];
+        assert_eq!(sentry[0]["inputs"][0]["value"], "acme");
+        assert_eq!(sentry[0]["inputs"][1]["value"], "50000");
+        assert_eq!(sentry[1]["inputs"][0]["value"], "acme");
+        assert_eq!(sentry[1]["inputs"].as_array().unwrap().len(), 1);
         assert_eq!(vm["azure"]["budget"]["value"], 250.0);
         // The Azure tab has no credential section at all any more: the panel
         // signs its own request per poll and stores nothing. What it carries

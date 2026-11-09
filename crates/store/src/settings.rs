@@ -512,6 +512,8 @@ impl Settings {
             claude_local_logs_enabled: on_before_sources_were_added(),
             local_monitoring_enabled: on_before_sources_were_added(),
             service_health_enabled: on_before_sources_were_added(),
+            sentry_usage_enabled: on_before_sources_were_added(),
+            sentry_crons_enabled: on_before_sources_were_added(),
             ..Settings::default()
         }
     }
@@ -612,6 +614,15 @@ pub struct Settings {
     pub sentry_org_slug: String,
     /// Monthly accepted-error quota. `0` means "no quota set".
     pub sentry_monthly_event_quota: u64,
+    /// The Usage tile's Sentry section is on. Sentry's one token feeds this and
+    /// [`Self::sentry_crons_enabled`], so the token alone cannot say which of
+    /// the two the operator picked. A file from before the parts existed keeps
+    /// both on, and reads as it did: a token present switches both on.
+    #[serde(default = "on_before_sources_were_added")]
+    pub sentry_usage_enabled: bool,
+    /// Sentry Crons reads the token. See [`Self::sentry_usage_enabled`].
+    #[serde(default = "on_before_sources_were_added")]
+    pub sentry_crons_enabled: bool,
     /// Vercel team id (non-secret; the API token is a credential). Blank for a
     /// personal account, which is why the client omits the parameter rather
     /// than sending it empty — Vercel answers 400 to `teamId=`.
@@ -822,6 +833,8 @@ impl Default for Settings {
             neon_usd_per_gib_month: 0.0,
             sentry_org_slug: String::new(),
             sentry_monthly_event_quota: 0,
+            sentry_usage_enabled: false,
+            sentry_crons_enabled: false,
             vercel_team_id: String::new(),
             openclaw_gateway_url: String::new(),
             notify_on_approval_needed: true,
@@ -912,11 +925,13 @@ mod tests {
         assert!(!new.claude_local_logs_enabled);
         assert!(!new.local_monitoring_enabled);
         assert!(!new.service_health_enabled);
+        assert!(!new.sentry_usage_enabled && !new.sentry_crons_enabled);
 
         let upgraded: Settings = serde_json::from_str("{}").expect("deserialize");
         assert!(upgraded.claude_local_logs_enabled);
         assert!(upgraded.local_monitoring_enabled);
         assert!(upgraded.service_health_enabled);
+        assert!(upgraded.sentry_usage_enabled && upgraded.sentry_crons_enabled);
 
         let chosen: Settings =
             serde_json::from_str(r#"{"claude_local_logs_enabled":false}"#).expect("deserialize");
@@ -1020,6 +1035,8 @@ mod tests {
             neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
+            sentry_usage_enabled: true,
+            sentry_crons_enabled: false,
             vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             notify_on_approval_needed: false,
@@ -1074,6 +1091,8 @@ mod tests {
                 claude_local_logs_enabled: true,
                 local_monitoring_enabled: true,
                 service_health_enabled: true,
+                sentry_usage_enabled: true,
+                sentry_crons_enabled: true,
                 ..Settings::default()
             }
         );

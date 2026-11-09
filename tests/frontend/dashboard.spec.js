@@ -2185,7 +2185,8 @@ test("resource details open their editor while aggregate links show only relevan
   await action(page, "close").click();
   await tile(page, "sentryCrons").locator('[data-action="row"]').first().click();
   await action(page, "manage").click();
-  await expect(page.locator("#sentry-org-slug")).toBeVisible();
+  await expect(page.locator("#settings .walk")).toBeVisible();
+  await expect(page.locator("#settings .walk h2")).toHaveText("What do you want to set up?");
   await expect(page.locator("#neon-org-id")).toHaveCount(0);
   expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === "settings_view").at(-1).args.route.source)).toBe("sentryCrons");
 });
@@ -2193,15 +2194,19 @@ test("resource details open their editor while aggregate links show only relevan
 // The route is Rust's (`connection_route` sends a Usage row to neon, sentry or
 // vercel); the fixture has no Usage tile, so a tile that has a row stands in
 // and the stub supplies the route a Usage row would get.
-test("Manage source on a Usage row opens Neon's or Vercel's steps, not a form", async ({ page, baseURL }) => {
+test("Manage source on a Usage row opens Neon's, Sentry's or Vercel's steps, not a form", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
-  for (const [kind, key] of [["neon", "neon"], ["vercel", "vercel"]]) {
+  for (const [kind, key] of [["neon", "neon"], ["sentry", "sentry"], ["vercel", "vercel"]]) {
     await page.evaluate((k) => { window.__SETTINGS_ROUTE__ = {editor:{kind:k},kinds:["neon","sentry","vercel"]}; }, kind);
     await tile(page, "sentryCrons").locator('[data-action="row"]').first().click();
     await action(page, "manage").click();
     await expect(page.locator("#settings .walk")).toBeVisible();
-    await expect(page.locator("#settings .walk h2")).toHaveText(kind === "neon" ? "Neon" : "Vercel");
-    await expect(page.locator("#walk-secret")).toBeVisible();
+    // Sentry has two parts, so its steps open on the question; the others ask
+    // for their key at once.
+    await expect(page.locator("#settings .walk h2")).toHaveText(
+      kind === "sentry" ? "What do you want to set up?" : kind === "neon" ? "Neon" : "Vercel"
+    );
+    if (kind !== "sentry") await expect(page.locator("#walk-secret")).toBeVisible();
     await expect(page.locator(`[data-secret="${key}"]`)).toHaveCount(0);
     await page.locator("#settingsClose").click();
     await action(page, "close").click();
