@@ -2725,9 +2725,9 @@ fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) 
 }
 
 /// Which credentials currently hold a value — the "stored" badges, and whether
-/// each Admin key is there. A read failure reads as "not stored" for a badge,
+/// each source's key is there. A read failure reads as "not stored" for a badge,
 /// which is a hint, and an unreadable keychain must not take the Settings window
-/// down with it. An Admin key decides whether a source exists, so it keeps
+/// down with it. A source's key decides whether the source exists, so it keeps
 /// the failure as [`settings::StoredKey::Unread`].
 fn stored_secrets(
     credentials: &dyn CredentialStore,

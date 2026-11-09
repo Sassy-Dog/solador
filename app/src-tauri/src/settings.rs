@@ -73,7 +73,7 @@ fn label_for(version: Option<&str>) -> String {
 /// opened, and the Settings view renders it as its own title.
 pub const OPEN_LABEL: &str = "Settings";
 
-/// What the credential store said about an Admin key.
+/// What the credential store said about a source's key.
 ///
 /// Three answers rather than a bool, because this one decides whether a source
 /// exists, and a store that won't answer says nothing about that.
@@ -1153,7 +1153,7 @@ fn connections_section(
         stored.neon != StoredKey::Absent,
         stored.vercel != StoredKey::Absent,
     );
-    for (kind, title, identity, feeds, credential, configured, complete) in [
+    for (kind, title, identity, feeds, credential, configured, complete, unread) in [
         (
             "neon",
             "Neon",
@@ -1162,6 +1162,7 @@ fn connections_section(
             neon_there,
             !s.neon_org_id.is_empty() || neon_there,
             stored.neon == StoredKey::Stored,
+            stored.neon == StoredKey::Unread,
         ),
         (
             "sentry",
@@ -1171,6 +1172,7 @@ fn connections_section(
             stored.sentry,
             !s.sentry_org_slug.is_empty() || stored.sentry,
             stored.sentry && !s.sentry_org_slug.is_empty(),
+            false,
         ),
         (
             "vercel",
@@ -1180,6 +1182,7 @@ fn connections_section(
             vercel_there,
             !s.vercel_team_id.is_empty() || vercel_there,
             stored.vercel == StoredKey::Stored,
+            stored.vercel == StoredKey::Unread,
         ),
     ] {
         if configured {
@@ -1190,7 +1193,11 @@ fn connections_section(
                 title,
                 identity.into(),
                 feeds,
-                if complete {
+                // The same word the Anthropic and OpenAI rows use for a store
+                // that won't answer; "incomplete" names a piece known missing.
+                if unread {
+                    status("Not read", true)
+                } else if complete {
                     status("Configured", false)
                 } else {
                     status(
@@ -3563,7 +3570,9 @@ mod tests {
                     .contains("didn\u{2019}t answer"),
                 "{kind}"
             );
-            assert!(row_of(&vm, kind).is_some(), "{kind} stays a row");
+            let row = row_of(&vm, kind).unwrap_or_else(|| panic!("{kind} stays a row"));
+            assert_eq!(row["status"]["text"], "Not read", "{kind}");
+            assert_eq!(row["status"]["attention"], true, "{kind}");
         }
     }
 

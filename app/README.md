@@ -663,7 +663,7 @@ set up, as `API key · Subscription`. While the credential store won't answer,
 the line says `API key not read` and the source stays a row, because that says
 nothing about whether there is a key. Its **API key** step stays ticked, so a walk
 leaves any key alone, and unticking it is refused. Neon and Vercel read the same
-way: with the store silent they stay a row (reading `Setup incomplete`), their
+way: with the store silent they stay a row (reading `Not read`, as Anthropic's and OpenAI's do), their
 step says the credential store didn’t answer, and Finish goes through
 without a typed key and keeps whatever key is there. The other sources keep their
 own forms. **Sentry** and **Azure Cost** wait for their own steps, and so do
