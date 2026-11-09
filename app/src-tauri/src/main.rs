@@ -8904,11 +8904,6 @@ mod tests {
         }
     }
 
-    /// "Is this source added" has answers that can't share a function: the
-    /// Sources row names each part, Service health avoids the keychain where it
-    /// can, and the tile reads what the last pass found. This is what holds them
-    /// together, because a part added to one and not the others lists a source
-    /// whose tile asks to be set up, or drops a status row someone is relying on.
     /// Azure Cost has no key: finishing its steps writes the export location and
     /// the budget, wakes the Azure loop (four hours is too long to learn that a
     /// typo was fixed) and the status pages (a configured export is what makes
@@ -8968,6 +8963,11 @@ mod tests {
         assert_eq!(store.settings().azure_monthly_budget_usd, 0.0);
     }
 
+    /// "Is this source added" has answers that can't share a function: the
+    /// Sources row names each part, Service health avoids the keychain where it
+    /// can, and the tile reads what the last pass found. This is what holds them
+    /// together, because a part added to one and not the others lists a source
+    /// whose tile asks to be set up, or drops a status row someone is relying on.
     /// Each of the five parts is on or off by itself, so an answer that read the
     /// other vendor's part disagrees somewhere.
     #[test]

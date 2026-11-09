@@ -1709,6 +1709,13 @@ function withoutAzure(settings) {
   settings.connections.rows = settings.connections.rows.filter((row) => row.kind !== "azure");
 }
 
+/** Every command that writes a setting, in the order sent. A Finish on Azure
+ *  Cost's steps must send `settings_save_source` and nothing else: the stub
+ *  answers any unknown command with "Saved.", so only a list can prove it. */
+const writesOf = (page) =>
+  page.evaluate(() =>
+    window.__CALLS__.map((call) => call.command).filter((command) => /^settings_(save|set|add|remove)/.test(command)));
+
 test("Azure Cost asks which parts, then each picked part's values, and never for a key", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
   const entry = catalogEntry(settings, "azure");
@@ -1743,6 +1750,7 @@ test("Azure Cost asks which parts, then each picked part's values, and never for
     inputs: { account: "acmestorage", container: "cost-exports", budgetUsd: "250" }, addTile: true,
   });
   expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
   await expect(page.locator(".walk")).toHaveCount(0);
 });
 
@@ -1758,7 +1766,49 @@ test("Azure Cost's budget alone sends only the budget part's value", async ({ pa
   expect((await saves(page))[0].args).toEqual({
     kind: "azure", parts: ["budget"], secret: null, inputs: { budgetUsd: "40" }, addTile: true,
   });
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
 });
+
+// Back keeps the draft, Cancel forgets it, and neither writes anything.
+for (const [name, picks, fields] of [
+  ["Cost export", ["export"], ["account", "container"]],
+  ["Monthly budget", ["budget"], ["budgetUsd"]],
+  ["both parts", ["export", "budget"], ["account", "container", "budgetUsd"]],
+]) {
+  test(`Azure Cost (${name}): Back and Cancel write nothing, and Cancel forgets the draft`, async ({ page, baseURL }) => {
+    await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
+    await addConnection(page, "azure");
+    for (const id of picks) await pick(page, id).locator("input").check();
+    await next(page);
+    // Walk every field step, typing into each, then step back over the last.
+    const typed = { account: "acmestorage", container: "cost-exports", budgetUsd: "250" };
+    for (const id of picks) {
+      for (const field of fields.filter((f) => (id === "budget") === (f === "budgetUsd"))) {
+        await page.locator(`#walk-${field}`).fill(typed[field]);
+      }
+      await next(page);
+    }
+    await page.locator(".walk-back").click();
+    const last = fields[fields.length - 1];
+    await expect(page.locator(`#walk-${last}`), "Back keeps what was typed").toHaveValue(typed[last]);
+
+    await page.locator(".walk-cancel").click();
+    await expect(page.locator(".connection-list")).toBeVisible();
+    expect(await saves(page)).toEqual([]);
+    expect(await calls(page, "settings_save_secret")).toEqual([]);
+    expect(await writesOf(page)).toEqual([]);
+
+    await addConnection(page, "azure");
+    for (const id of picks) await pick(page, id).locator("input").check();
+    await next(page);
+    for (const id of picks) {
+      for (const field of fields.filter((f) => (id === "budget") === (f === "budgetUsd"))) {
+        await expect(page.locator(`#walk-${field}`)).toHaveValue("");
+      }
+      await next(page);
+    }
+  });
+}
 
 test("a refusal from Rust leaves the Azure steps open with what was typed", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
@@ -1802,19 +1852,17 @@ test("Azure Cost's row opens the same steps with both parts ticked and the saved
   expect(save.args.parts).toEqual(["export"]);
   expect(Object.keys(save.args.inputs)).toEqual(["account", "container"]);
   expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
 });
 
-test("Azure Cost: Remove source sends no parts, and no other command writes its settings", async ({ page, baseURL }) => {
+test("Azure Cost: Remove source sends no parts, and only settings_save_source writes", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await page.locator('.connection-row[data-kind="azure"]').click();
   await page.locator(".walk-remove").click();
   await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.removeHeading);
   await page.locator(".walk-finish").click();
   expect((await saves(page))[0].args).toEqual({ kind: "azure", parts: [], secret: null, addTile: true });
-  // The two commands that used to write Azure's settings are gone.
-  const sent = await page.evaluate(() => window.__CALLS__.map((call) => call.command));
-  expect(sent).not.toContain("settings_save_azure");
-  expect(sent).not.toContain("settings_save_providers");
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
 });
 
 // MARK: Sentry's steps: two parts over one token and one slug

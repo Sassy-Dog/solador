@@ -554,10 +554,11 @@ fn layout_with_tiles(
 
 /// Every typed input the parts a save leaves ticked were sent, written into
 /// `settings`; an unticked part writes empty, and an input not sent is left as
-/// it is.
+/// it is, unless it is required of a ticked part, which refuses it.
 ///
 /// # Errors
-/// The sentence refusing a value, or an input no part of the source declares.
+/// The sentence refusing a value, the sentence of a required input a ticked part
+/// sent empty or not at all, or an input no part of the source declares.
 fn apply_inputs(
     spec: &SourceSpec,
     wants: &dyn Fn(&str) -> bool,
