@@ -2725,9 +2725,9 @@ fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) 
 }
 
 /// Which credentials currently hold a value — the "stored" badges, and whether
-/// each Admin key is there. A read failure reads as "not stored" for a badge,
+/// each source's key is there. A read failure reads as "not stored" for a badge,
 /// which is a hint, and an unreadable keychain must not take the Settings window
-/// down with it. An Admin key decides whether a source exists, so it keeps
+/// down with it. A source's key decides whether the source exists, so it keeps
 /// the failure as [`settings::StoredKey::Unread`].
 fn stored_secrets(
     credentials: &dyn CredentialStore,
@@ -2753,9 +2753,9 @@ fn stored_secrets(
         Credential::Unreadable => settings::StoredKey::Unread,
     };
     StoredSecrets {
-        neon: present(SecretKey::NeonApiKey),
+        neon: stored_key(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
-        vercel: present(SecretKey::VercelApiToken),
+        vercel: stored_key(SecretKey::VercelApiToken),
         anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
         openai_admin: stored_key(SecretKey::OpenAiAdminKey),
         openclaw: present(SecretKey::OpenClawBearerToken),
@@ -4748,17 +4748,20 @@ fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>
 /// reading another program's sign-in stays behind the operator's Finish.
 ///
 /// `parts` are the ids still ticked, so an empty list is Remove source. `secret`
-/// is the Admin key the operator typed, if any; the argument is never logged and
-/// goes straight to the credential store.
+/// is the key the operator typed, if any; the argument is never logged and goes
+/// straight to the credential store. `inputs` are the non-secret values typed on
+/// the parts (an organization or team id), by input id, written with the rest.
 #[tauri::command]
 fn settings_save_source(
     kind: String,
     parts: Vec<String>,
     secret: Option<String>,
+    inputs: Option<std::collections::BTreeMap<String, String>>,
     add_tile: bool,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
-    let outcome = save_source_in(&state, &kind, &parts, secret.as_deref(), add_tile);
+    let inputs: Vec<(String, String)> = inputs.unwrap_or_default().into_iter().collect();
+    let outcome = save_source_with_in(&state, &kind, &parts, secret.as_deref(), &inputs, add_tile);
     let saved = outcome.is_ok();
     let status = outcome.unwrap_or_else(|refusal| refusal);
     let mut response = settings_response(&state, Some(status));
@@ -4769,6 +4772,19 @@ fn settings_save_source(
 /// [`settings_save_source`], apart from the Tauri state so tests can drive it.
 /// The table, the refusals and their order, the writes and the rollback are
 /// `store::source_save`'s; this only hands it what the shell owns.
+fn save_source_with_in(
+    app: &App,
+    kind: &str,
+    parts: &[String],
+    secret: Option<&str>,
+    inputs: &[(String, String)],
+    add_tile: bool,
+) -> Result<String, String> {
+    store::source_save::save_source_with(&AppSourceSave(app), kind, parts, secret, inputs, add_tile)
+}
+
+/// [`save_source_with_in`] for the tests of the sources that send no typed input.
+#[cfg(test)]
 fn save_source_in(
     app: &App,
     kind: &str,
@@ -4776,7 +4792,7 @@ fn save_source_in(
     secret: Option<&str>,
     add_tile: bool,
 ) -> Result<String, String> {
-    store::source_save::save_source(&AppSourceSave(app), kind, parts, secret, add_tile)
+    save_source_with_in(app, kind, parts, secret, &[], add_tile)
 }
 
 /// What `store::source_save` needs from the shell: the app's handles, its
@@ -6924,9 +6940,9 @@ fn dump_settings() -> Value {
     // and the *absent* prompt are covered too).
     let accounts = dump_accounts();
     let stored = StoredSecrets {
-        neon: false,
+        neon: settings::StoredKey::Absent,
         sentry: true,
-        vercel: true,
+        vercel: settings::StoredKey::Stored,
         anthropic_admin: settings::StoredKey::Absent,
         openai_admin: settings::StoredKey::Absent,
         openclaw: false,
@@ -8189,6 +8205,64 @@ mod tests {
             .collect::<String>();
         assert!(!on_disk.is_empty());
         assert!(!on_disk.contains("sk-admin-x"));
+    }
+
+    /// Neon's key and organization, and Vercel's token and team, go through the
+    /// shell's own handles: the key to the credential store, the id to the store
+    /// on disk and never beside the key, and Remove forgets both.
+    #[test]
+    fn neon_and_vercel_save_their_key_and_id_at_finish_and_remove_forgets_both() {
+        for (kind, key, input, secret) in [
+            ("neon", SecretKey::NeonApiKey, "orgId", "napi_secret_x"),
+            (
+                "vercel",
+                SecretKey::VercelApiToken,
+                "teamId",
+                "vercel_secret_x",
+            ),
+        ] {
+            let (dir, _rt, app) = test_app();
+            let typed = vec![(input.to_owned(), " id-1 ".to_owned())];
+            let status =
+                save_source_with_in(&app, kind, &parts(&[kind]), Some(secret), &typed, true)
+                    .unwrap();
+            assert!(status.ends_with("saved."), "{kind}: {status}");
+            assert_eq!(
+                app.credentials.secret(key).unwrap().as_deref(),
+                Some(secret)
+            );
+            {
+                let store = app.store.lock().unwrap();
+                let settings = store.settings();
+                let id = if kind == "neon" {
+                    &settings.neon_org_id
+                } else {
+                    &settings.vercel_team_id
+                };
+                assert_eq!(id, "id-1", "{kind}");
+                assert!(store
+                    .dashboard()
+                    .unwrap()
+                    .tiles
+                    .iter()
+                    .any(|tile| tile.source == "usage"));
+            }
+            let on_disk = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .collect::<String>();
+            assert!(
+                on_disk.contains("id-1") && !on_disk.contains(secret),
+                "{kind}"
+            );
+
+            save_source_with_in(&app, kind, &parts(&[]), None, &[], false).unwrap();
+            assert_eq!(app.credentials.secret(key).unwrap(), None, "{kind}");
+            let store = app.store.lock().unwrap();
+            assert!(store.settings().neon_org_id.is_empty(), "{kind}");
+            assert!(store.settings().vercel_team_id.is_empty(), "{kind}");
+        }
     }
 
     /// A stored key is kept by leaving the field empty, and unticking the part

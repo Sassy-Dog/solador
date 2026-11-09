@@ -181,7 +181,7 @@ const tab = (page, id) => ({ click: async () => {
     return;
   }
   if (id === "services") { await addConnection(page, "vendor"); return; }
-  const kind = { accounts: "account", hosts: "host", usage: "neon" }[id] || id;
+  const kind = { accounts: "account", hosts: "host", usage: "sentry" }[id] || id;
   await page.locator('.tab[data-tab="connections"]').click();
   const row = page.locator(`.connection-row[data-kind="${kind}"]`).first();
   if (await row.count()) await row.click();
@@ -209,14 +209,14 @@ test("Sources is the landing page and each saved source has one editor", async (
 test("leaving or closing an editor protects typed fields and explicitly discards secrets", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
   await tab(page, "usage").click();
-  await page.locator("#neon-org-id").fill("draft-org");
+  await page.locator("#sentry-org-slug").fill("draft-org");
   await page.locator(".replace-secret").click();
-  await page.locator("#secret-neon").fill("draft-token");
+  await page.locator("#secret-sentry").fill("draft-token");
   await page.locator('#settingsTabs [data-tab="general"]').click();
   await expect(page.locator("#settingsConfirm")).toBeVisible();
   await page.locator("#settingsConfirm .primary").click();
-  await expect(page.locator("#neon-org-id")).toHaveValue("draft-org");
-  await expect(page.locator("#secret-neon")).toHaveValue("draft-token");
+  await expect(page.locator("#sentry-org-slug")).toHaveValue("draft-org");
+  await expect(page.locator("#secret-sentry")).toHaveValue("draft-token");
   await page.locator("#settingsClose").click();
   await expect(page.locator("#settingsConfirm")).toBeVisible();
   await page.locator("#settingsConfirm .discard").click();
@@ -224,8 +224,8 @@ test("leaving or closing an editor protects typed fields and explicitly discards
   await expect(page.locator('#settings input[type="password"]')).toHaveCount(0);
   await page.locator(SETTINGS_BUTTON).click();
   await tab(page, "usage").click();
-  await expect(page.locator("#secret-neon")).toHaveValue("");
-  await expect(page.locator("#neon-org-id")).not.toHaveValue("draft-org");
+  await expect(page.locator("#secret-sentry")).toHaveValue("");
+  await expect(page.locator("#sentry-org-slug")).not.toHaveValue("draft-org");
   expect(await calls(page, "settings_save_secret")).toEqual([]);
   expect(await calls(page, "settings_save_providers")).toEqual([]);
 });
@@ -271,10 +271,10 @@ test("a rejected save keeps the connection draft and reports the failure", async
       return original(command, args);
     };
   });
-  await page.locator("#neon-org-id").fill("keep-this-draft");
+  await page.locator("#sentry-org-slug").fill("keep-this-draft");
   await page.locator(".btn.apply").click();
   await expect(page.locator("#settingsStatus")).toHaveText(settings.connections.saveFailed);
-  await expect(page.locator("#neon-org-id")).toHaveValue("keep-this-draft");
+  await expect(page.locator("#sentry-org-slug")).toHaveValue("keep-this-draft");
 });
 
 test("Sources and its editor fit a narrow window without clipped controls", async ({ page, baseURL }) => {
@@ -747,6 +747,166 @@ test("Remove source does not come back on the Ready step of a one-part source", 
   await expect(page.locator(".walk-remove"), "the steps are only Ready now, which is index 0 again").toHaveCount(0);
 });
 
+// Neon and Vercel: one part and one typed id each, so the question is skipped.
+const PROVIDERS = [
+  { kind: "neon", part: "neon", title: "Neon", id: "orgId", field: "#walk-orgId", typed: "org-fond-sea-1" },
+  { kind: "vercel", part: "vercel", title: "Vercel", id: "teamId", field: "#walk-teamId", typed: "team_abc" },
+];
+
+/** A store where the provider is not added, whatever the fixture holds. */
+function withoutProvider({ kind }) {
+  return (settings) => {
+    const part = catalogEntry(settings, kind).walk.parts[0];
+    part.on = false;
+    part.secret.stored = false;
+    for (const input of part.inputs) input.value = "";
+    settings.connections.rows = settings.connections.rows.filter((row) => row.kind !== kind);
+  };
+}
+
+/** A store where the provider is added: its row, its key and its saved id. */
+function withProvider({ kind, id }, saved) {
+  return (settings) => {
+    withoutProvider({ kind })(settings);
+    const entry = catalogEntry(settings, kind);
+    const part = entry.walk.parts[0];
+    part.on = true;
+    part.secret.stored = true;
+    part.inputs.find((input) => input.id === id).value = saved;
+    settings.connections.rows.push({
+      id: kind,
+      kind,
+      title: entry.title,
+      feeds: "Usage",
+      status: { text: "Configured", attention: false, color: "#8090ac" },
+    });
+  };
+}
+
+for (const provider of PROVIDERS) {
+  const { kind, part, title, id, field, typed } = provider;
+
+  test(`${title} has one step for its key and ${id}, then Ready, and only Finish applies it`, async ({ page, baseURL }) => {
+    const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutProvider(provider));
+    const entry = catalogEntry(settings, kind);
+    const labels = settings.connections.walkLabels;
+    await addConnection(page, kind);
+
+    await expect(page.locator(".walk-pick"), "one part, so nothing to pick").toHaveCount(0);
+    await expect(stepLine(page)).toHaveText(`${title} · step 1 of 2`);
+    await expect(stepHeading(page)).toHaveText(entry.walk.parts[0].title);
+    await expect(page.locator("#walk-secret")).toHaveAttribute("type", "password");
+    await expect(page.locator(field)).toHaveValue("");
+    await expect(page.locator('[data-secret]'), "no Save that writes before Finish").toHaveCount(0);
+
+    await next(page);
+    await expect(page.locator(".walk-problem")).toHaveText(labels.keyRequired);
+    await expect(stepLine(page)).toHaveText(`${title} · step 1 of 2`);
+
+    await page.locator("#walk-secret").fill("tok_secret");
+    await page.locator(field).fill(typed);
+    await next(page);
+    await expect(stepHeading(page)).toHaveText(labels.readyHeading);
+    await expect(page.locator(".walk-tile")).toHaveText(entry.walk.tile.label);
+    expect(await saves(page), "nothing is applied before Finish").toEqual([]);
+    expect(await calls(page, "settings_save_secret")).toEqual([]);
+    expect(await calls(page, "settings_save_providers")).toEqual([]);
+
+    await page.locator(".walk-finish").click();
+    const [save] = await saves(page);
+    expect(save.args).toMatchObject({ kind, parts: [part], secret: "tok_secret", addTile: true });
+    expect(save.args.inputs[id]).toBe(typed);
+    await expect(page.locator(".walk")).toHaveCount(0);
+    await expect(page.locator("#settingsStatus")).toHaveText("Source saved.");
+  });
+
+  test(`${title}: Back and Cancel write nothing, and Cancel forgets the draft`, async ({ page, baseURL }) => {
+    await openSettings(page, baseURL, undefined, undefined, undefined, withoutProvider(provider));
+    await addConnection(page, kind);
+    await page.locator("#walk-secret").fill("tok_secret");
+    await page.locator(field).fill(typed);
+    await next(page);
+    await page.locator(".walk-back").click();
+    await expect(page.locator("#walk-secret"), "Back keeps what was typed").toHaveValue("tok_secret");
+    await expect(page.locator(field)).toHaveValue(typed);
+
+    await page.locator(".walk-cancel").click();
+    await expect(page.locator(".connection-list")).toBeVisible();
+    expect(await saves(page)).toEqual([]);
+    expect(await calls(page, "settings_save_secret")).toEqual([]);
+    expect(await calls(page, "settings_save_providers")).toEqual([]);
+
+    await addConnection(page, kind);
+    await expect(page.locator("#walk-secret")).toHaveValue("");
+    await expect(page.locator(field)).toHaveValue("");
+  });
+
+  test(`${title}: its row opens the same steps with the saved ${id} and no key shown`, async ({ page, baseURL }) => {
+    const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withProvider(provider, "saved-id"));
+    const stored = catalogEntry(settings, kind).walk.parts[0].secret.storedLabel;
+    await page.locator(`.connection-row[data-kind="${kind}"]`).click();
+    await expect(page.locator(".walk-pick")).toHaveCount(0);
+    await expect(page.locator(field)).toHaveValue("saved-id");
+    await expect(page.locator(".walk-stored")).toHaveText(stored);
+    await expect(page.locator("#walk-secret")).toHaveValue("");
+
+    // The stored key is kept by leaving the field empty.
+    await page.locator(field).fill(typed);
+    await next(page);
+    await page.locator(".walk-finish").click();
+    const [save] = await saves(page);
+    expect(save.args).toMatchObject({ kind, parts: [part], secret: null });
+    expect(save.args.inputs[id]).toBe(typed);
+  });
+
+  test(`${title}: Remove source sends no parts, so Finish clears its key and ${id}`, async ({ page, baseURL }) => {
+    const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withProvider(provider, "saved-id"));
+    await page.locator(`.connection-row[data-kind="${kind}"]`).click();
+    await page.locator(".walk-remove").click();
+    await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.removeHeading);
+    expect(await saves(page), "and it is still a draft").toEqual([]);
+    await page.locator(".walk-finish").click();
+    const [save] = await saves(page);
+    expect(save.args).toEqual({ kind, parts: [], secret: null, addTile: true });
+  });
+
+  test(`${title}: leaving with a typed ${id} asks first`, async ({ page, baseURL }) => {
+    await openSettings(page, baseURL, undefined, undefined, undefined, withProvider(provider, "saved-id"));
+    await page.locator(`.connection-row[data-kind="${kind}"]`).click();
+    await page.locator(field).fill(typed);
+    // Past the step, the value is only in the draft, not in a field on screen.
+    await next(page);
+    await expect(page.locator(field)).toHaveCount(0);
+    await page.locator('.tab[data-tab="general"]').click();
+    await expect(page.locator("#settingsConfirm")).toBeVisible();
+    await page.locator("#settingsConfirm .discard").click();
+    await expect(page.locator(".walk")).toHaveCount(0);
+    expect(await saves(page)).toEqual([]);
+  });
+}
+
+test("Neon's rates are typed in its step, behind Advanced options, and sent at Finish", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, withoutProvider(PROVIDERS[0]));
+  await addConnection(page, "neon");
+  await page.locator("#walk-secret").fill("tok_secret");
+  await page.locator(".connection-advanced summary").click();
+  await page.locator("#walk-usdPerCuHour").fill("0.106");
+  await page.locator("#walk-usdPerGibMonth").fill("0.35");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args.inputs).toEqual({ orgId: "", usdPerCuHour: "0.106", usdPerGibMonth: "0.35" });
+});
+
+test("Sentry keeps its own form while Neon and Vercel use steps", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  expect(catalogEntry(settings, "sentry").walk).toBeUndefined();
+  await addConnection(page, "sentry");
+  await expect(page.locator(".walk")).toHaveCount(0);
+  await expect(page.locator("#sentry-org-slug")).toBeVisible();
+  await expect(page.locator('.group[data-secret="sentry"]')).toHaveCount(1);
+});
+
 test("leaving a walk with a key typed on an earlier step asks first", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
   await addConnection(page, "openai");
@@ -1047,15 +1207,17 @@ test("preferences no longer edits runner group labels", async ({ page, baseURL }
 });
 
 test("a credential with nothing stored offers nothing to clear", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  // Neon, not Azure: the Azure panel has no stored credential at all any more
+  // Sentry, not Azure: the Azure panel has no stored credential at all any more
   // (it signs its own request per poll), so it can no longer stand for "a
-  // credential with nothing stored". The fixture deliberately stores no Neon
-  // key, which is the same claim with a subject that still exists.
+  // credential with nothing stored". Its token is taken out of the fixture,
+  // which is the same claim with a subject that still exists.
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, (s) => {
+    s.usage.sentry.secret.stored = false;
+  });
   await tab(page, "usage").click();
   await page.locator(".replace-secret").click();
-  expect(settings.usage.neon.secret.stored).toBe(false);
-  const box = page.locator('.group[data-secret="neon"]');
+  expect(settings.usage.sentry.secret.stored).toBe(false);
+  const box = page.locator('.group[data-secret="sentry"]');
   await expect(box.locator(".clear")).toBeDisabled();
   await expect(box.locator(".badge-ok")).toHaveCount(0);
 });
@@ -1525,34 +1687,34 @@ test("an account is added with its vendor, and re-saved without exposing its tok
   await expect(card.locator(`#account-token-${owning.id}`)).toHaveValue("");
 });
 
-test("Usage and Azure write every provider preference together", async ({ page, baseURL }) => {
+test("Sentry and Azure write every provider preference together", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "usage").click();
 
-  await expect(page.locator("#neon-org-id")).toHaveValue(settings.usage.neon.orgId);
-  await expect(page.locator("#sentry-org-slug")).toHaveCount(0);
+  await expect(page.locator("#sentry-org-slug")).toHaveValue(settings.usage.sentry.orgSlug);
+  await expect(page.locator("#neon-org-id")).toHaveCount(0);
+  await expect(page.locator("#vercel-team-id")).toHaveCount(0);
   await page.locator(".connection-advanced summary").click();
 
-  await page.locator("#neon-org-id").fill("org-abc");
-  await page.locator("#neon-usd-cu-hour").fill("0.106");
-  await page.locator("#neon-usd-gib-month").fill("0.35");
-  await expect(page.locator("#vercel-team-id")).toHaveCount(0);
+  await page.locator("#sentry-org-slug").fill("acme-sentry");
+  await page.locator("#sentry-quota").fill("5000");
   await page.locator(".btn.apply").click();
 
-  // The Azure budget travels with them, unchanged: `settings_save_providers`
-  // writes every non-secret provider preference in one go, so sending only
-  // this tab's fields would blank the ones it doesn't show.
+  // Neon's and Vercel's values and the Azure budget travel with them,
+  // unchanged: `settings_save_providers` writes every non-secret provider
+  // preference in one go, so sending only this form's fields would blank the
+  // ones it doesn't show.
   expect(await calls(page, "settings_save_providers")).toEqual([
     {
       command: "settings_save_providers",
       args: {
         prefs: {
-          neonOrgId: "org-abc",
-          sentryOrgSlug: settings.usage.sentry.orgSlug,
-          sentryMonthlyEventQuota: settings.usage.sentry.quota,
+          neonOrgId: settings.usage.neon.orgId,
+          sentryOrgSlug: "acme-sentry",
+          sentryMonthlyEventQuota: 5000,
           azureMonthlyBudgetUsd: settings.azure.budget.value,
-          neonUsdPerCuHour: 0.106,
-          neonUsdPerGibMonth: 0.35,
+          neonUsdPerCuHour: settings.usage.neon.usdPerCuHour,
+          neonUsdPerGibMonth: settings.usage.neon.usdPerGibMonth,
           vercelTeamId: settings.usage.vercel.teamId,
         },
       },
@@ -1577,28 +1739,28 @@ test("the Azure tab passes the Vercel team id through untouched", async ({ page,
   expect(save.args.prefs.azureMonthlyBudgetUsd).toBe(250);
 });
 
-test("a typed org ID survives saving that provider's key", async ({ page, baseURL }) => {
+test("a typed org slug survives saving that provider's key", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
   await tab(page, "usage").click();
 
-  // The natural fill-in order: type the org ID, paste the key, and press the
-  // Save sitting right under the key — before the tab-level Apply. The secret
-  // save re-renders the tab from persisted state, and the unapplied org ID
+  // The natural fill-in order: type the slug, paste the token, and press the
+  // Save sitting right under the token -- before the form's Apply. The secret
+  // save re-renders the form from persisted state, and the unapplied slug
   // must survive that render or it is silently lost while the "Saved." status
   // says otherwise.
-  await page.locator("#neon-org-id").fill("org-fond-sea-12345678");
+  await page.locator("#sentry-org-slug").fill("acme-fond-sea");
   await page.locator(".replace-secret").click();
-  await page.locator("#secret-neon").fill("napi_smoke");
-  await page.locator('.group[data-secret="neon"] .btn.save').click();
+  await page.locator("#secret-sentry").fill("sntryu_smoke");
+  await page.locator('.group[data-secret="sentry"] .btn.save').click();
   expect(await calls(page, "settings_save_secret")).toEqual([
-    { command: "settings_save_secret", args: { key: "neon", value: "napi_smoke" } },
+    { command: "settings_save_secret", args: { key: "sentry", value: "sntryu_smoke" } },
   ]);
-  await expect(page.locator("#neon-org-id")).toHaveValue("org-fond-sea-12345678");
+  await expect(page.locator("#sentry-org-slug")).toHaveValue("acme-fond-sea");
 
   // And the surviving value is what Apply hands to Rust.
   await page.locator(".btn.apply").click();
   const saved = await calls(page, "settings_save_providers");
-  expect(saved.at(-1).args.prefs.neonOrgId).toBe("org-fond-sea-12345678");
+  expect(saved.at(-1).args.prefs.sentryOrgSlug).toBe("acme-fond-sea");
 });
 
 test("Services lists every watched status page with the component it watches", async ({ page, baseURL }) => {

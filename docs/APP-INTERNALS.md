@@ -465,7 +465,10 @@
   `results`, which the reader uses, and its published `UsageTimeBucket` schema
   says `result`.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
-  normal preference, not a credential-store item.
+  normal preference, not a credential-store item. Neon and Vercel (a token and
+  a team id) are added through the source steps, so the key and the id are
+  written together at Finish by `store::source_save`, never by a Save beside the
+  key; Sentry still saves its token on its own.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`
   token and org slug — one credential, two panels, so saving or clearing it
   wakes both poll loops or one keeps describing the previous token for an hour.
