@@ -1083,35 +1083,45 @@ mod tests {
     }
 
     /// A `SamplePass` whose passes block their thread for `block`, standing in
-    /// for a slow disk or process walk, and count themselves. The same fake can
-    /// panic instead (`panic_on_pass`) for a test of the supervisor's restart.
+    /// for a slow disk or process walk. It records how many ticks the test's
+    /// ticker task made while the pass slept.
     struct SlowPass {
-        block: Duration,
-        panic_on_pass: bool,
-        passes: Arc<std::sync::atomic::AtomicU32>,
+        ticks: Arc<std::sync::atomic::AtomicU32>,
+        pass_ticks: Arc<std::sync::atomic::AtomicU32>,
+        done: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    const SLOW_BLOCK: Duration = Duration::from_millis(300);
+
+    /// Sleep `SLOW_BLOCK` and return the ticks the ticker made meanwhile.
+    fn ticks_during_block(ticks: &std::sync::atomic::AtomicU32) -> u32 {
+        use std::sync::atomic::Ordering;
+        let before = ticks.load(Ordering::SeqCst);
+        std::thread::sleep(SLOW_BLOCK);
+        ticks.load(Ordering::SeqCst) - before
     }
 
     impl SamplePass for SlowPass {
         fn pass(&mut self, _gpu: Gpu) -> Snapshot {
-            std::thread::sleep(self.block);
-            if self.panic_on_pass {
-                panic!("fake sampler pass panicked");
-            }
-            self.passes
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            use std::sync::atomic::Ordering;
+            let seen = ticks_during_block(&self.ticks);
+            self.pass_ticks.store(seen, Ordering::SeqCst);
+            self.done.store(true, Ordering::SeqCst);
             empty_snapshot()
         }
     }
 
     /// Fails if `sampler_loop_with` (and so `sampler_loop`) builds its sampler
     /// or runs a pass inline: on this current-thread runtime a ticker task can
-    /// only tick while the slow construction and pass run elsewhere. Inlining
-    /// either holds the runtime thread for 300 ms, costing ~30 of the ~60
-    /// ticks available across the 600 ms the two take.
+    /// only tick while the slow construction and pass run elsewhere. Each stage
+    /// counts the ticks made during its own blocking sleep. An inlined stage
+    /// sees exactly 0, because the runtime's only thread is asleep; an
+    /// offloaded one sees ~30 (Unix) or ~19 (Windows' 15.6 ms timer tick).
+    /// The threshold of 5 matches the helper test's and is independent of the
+    /// timer's resolution.
     #[tokio::test]
     async fn sampler_loop_keeps_construction_and_passes_off_the_runtime_thread() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        const BLOCK: Duration = Duration::from_millis(300);
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         let state = MetricsState {
             inner: Arc::new(RwLock::new(empty_snapshot())),
             last_sample: Arc::new(Mutex::new(Instant::now())),
@@ -1124,23 +1134,30 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         });
-        let passes = Arc::new(AtomicU32::new(0));
-        let fake_passes = passes.clone();
+        let new_ticks = Arc::new(AtomicU32::new(0));
+        let pass_ticks = Arc::new(AtomicU32::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let (t, nt, pt, d) = (
+            ticks.clone(),
+            new_ticks.clone(),
+            pass_ticks.clone(),
+            done.clone(),
+        );
         let looped = tokio::spawn(sampler_loop_with(
             state,
             crate::gpu::GpuState::unknown(),
             Duration::from_millis(10),
             move || {
-                std::thread::sleep(BLOCK);
+                nt.store(ticks_during_block(&t), Ordering::SeqCst);
                 SlowPass {
-                    block: BLOCK,
-                    panic_on_pass: false,
-                    passes: fake_passes,
+                    ticks: t,
+                    pass_ticks: pt,
+                    done: d,
                 }
             },
         ));
         tokio::time::timeout(Duration::from_secs(10), async {
-            while passes.load(Ordering::SeqCst) == 0 {
+            while !done.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -1148,9 +1165,14 @@ mod tests {
         .expect("the loop never completed a pass");
         looped.abort();
         ticker.abort();
+        let (built, passed) = (
+            new_ticks.load(Ordering::SeqCst),
+            pass_ticks.load(Ordering::SeqCst),
+        );
         assert!(
-            ticks.load(Ordering::SeqCst) >= 40,
-            "the runtime thread was held while the sampler built or passed"
+            built >= 5 && passed >= 5,
+            "the runtime thread was held while the sampler built or passed \
+             (ticks during construction: {built}, during the pass: {passed}; need >= 5 each)"
         );
     }
 
