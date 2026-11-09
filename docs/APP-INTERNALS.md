@@ -285,7 +285,8 @@
   to store this as a `bool` a completed fetch set, so the first frame — before
   any pass had looked — was indistinguishable from "there is no credential":
   Repos and Runners opened on `connect a GitHub token in Settings`, Azure on
-  `Add an Azure storage account in Settings`, Containers on `no containers
+  `Add an Azure Cost SAS URL in Settings` (now `Add an Azure storage account in
+  Settings`), Containers on `no containers
   detected`, on a machine where all of it was fine. Only `Absent` may paint a
   setup instruction; `Unknown` renders the panel's loading line. **A defaulted
   state is as much a fabrication as a defaulted number.**

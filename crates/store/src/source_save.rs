@@ -5,8 +5,8 @@
 //! This is the logic behind the shell's `settings_save_source` command, so
 //! each source #721 puts on the steps starts as a row in [`SOURCES`] and is
 //! testable without the shell. A row describes its parts as data (a key, a
-//! plan, a flag, typed non-secret inputs); [`SOURCES`] says what a row still
-//! cannot hold. What only the shell can do comes in
+//! plan, a flag, typed non-secret inputs, any of them required); [`SOURCES`]
+//! says what a row still cannot hold. What only the shell can do comes in
 //! through [`SourceSaveEnv`]: the store and credential handles, the dashboard
 //! rules, the plan opt-in (it resets the shell's in-memory state) and the
 //! wakes.
@@ -36,6 +36,8 @@ pub const NEON_TITLE: &str = "Neon";
 pub const VERCEL_TITLE: &str = "Vercel";
 /// Sentry's error usage and its scheduled-job monitors.
 pub const SENTRY_TITLE: &str = "Sentry";
+/// Azure Cost's daily export and monthly budget.
+pub const AZURE_TITLE: &str = "Azure Cost";
 
 /// A provider whose own sign-in a plan opt-in reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,9 @@ pub enum SourceWake {
     UsageProvidersAndCrons,
     /// The containers loop.
     Containers,
+    /// The Azure Cost loop, whose four-hour rhythm would otherwise leave a
+    /// corrected export location unread until the next pass.
+    Azure,
     /// Nothing besides the status pages.
     StatusPagesOnly,
 }
@@ -95,7 +100,8 @@ type ApplyInput = fn(&mut Settings, &str) -> Result<(), &'static str>;
 ///
 /// The value arrives trimmed. An empty value is the empty setting, and a part
 /// left unticked writes empty too, so removing a source forgets what it was
-/// told. A value the walk did not send is left as it is.
+/// told. A value the walk did not send is left as it is, unless the input is
+/// [`Self::required`].
 #[derive(Clone, Copy)]
 pub struct SourceInput {
     pub id: &'static str,
@@ -104,6 +110,12 @@ pub struct SourceInput {
     /// field cannot drift from the input that saves it.
     pub number: bool,
     pub advanced: bool,
+    /// The sentence refusing a ticked part that sends this input empty or not at
+    /// all (Azure's storage account), or `None` when an empty value is fine. It
+    /// is checked with every other refusal, before anything is written, and
+    /// only while a part that names the input is ticked: an unticked part is
+    /// being removed, and removing needs no value.
+    pub required: Option<&'static str>,
     apply: ApplyInput,
 }
 
@@ -151,6 +163,7 @@ const ADMIN_KEY_MISSING: &str = "Enter an Admin API key, or untick API key.";
 const ADMIN_KEY_UNREADABLE: &str = "Couldn't read the credential store, so a stored API key \
     can't be removed. Nothing changed.";
 
+const NO_BUDGET: &str = "Enter a monthly budget above zero.";
 const NO_RATE: &str = "Enter a rate of zero or more.";
 const NO_QUOTA: &str = "Enter a whole number of events, or leave the quota empty.";
 
@@ -168,6 +181,7 @@ const SENTRY_SLUG: SourceInput = SourceInput {
     id: "orgSlug",
     number: false,
     advanced: false,
+    required: None,
     apply: |settings, value| {
         value.clone_into(&mut settings.sentry_org_slug);
         Ok(())
@@ -196,6 +210,21 @@ fn rate(value: &str) -> Result<f64, &'static str> {
         .ok_or(NO_RATE)
 }
 
+/// A monthly budget in dollars: empty is zero (no budget, which hides the bar),
+/// and anything else must be a finite number above zero. A ticked budget with
+/// nothing typed is refused by the input's `required` sentence first, so zero
+/// here is only ever a part being removed.
+fn budget(value: &str) -> Result<f64, &'static str> {
+    if value.is_empty() {
+        return Ok(0.0);
+    }
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|amount| amount.is_finite() && *amount > 0.0)
+        .ok_or(NO_BUDGET)
+}
+
 /// Every source the steps know.
 ///
 /// A row is a source's whole description, as parts: each part names its id, and
@@ -208,9 +237,14 @@ fn rate(value: &str) -> Result<f64, &'static str> {
 /// variant, which needs an arm in the shell's `match` on it, and anything the
 /// shape cannot say: several different credentials in one source (GitHub's
 /// per-account tokens), since the typed secret goes to the source's first keyed
-/// part, and an input a part must have (Azure's), since an input is never
-/// required.
-pub const SOURCES: [SourceSpec; 7] = [
+/// part.
+///
+/// An input may be `required`: a ticked part that sends it empty, or not at all,
+/// is refused with the input's own sentence (Azure Cost's export location and
+/// budget). A source with no key at all is a source whose reads are signed
+/// elsewhere; Azure Cost's are by the `az` CLI session, so its parts hold inputs
+/// and nothing else.
+pub const SOURCES: [SourceSpec; 8] = [
     SourceSpec {
         kind: "anthropic",
         title: ANTHROPIC_TITLE,
@@ -294,6 +328,7 @@ pub const SOURCES: [SourceSpec; 7] = [
                     id: "orgId",
                     number: false,
                     advanced: false,
+                    required: None,
                     apply: |settings, value| {
                         value.clone_into(&mut settings.neon_org_id);
                         Ok(())
@@ -303,6 +338,7 @@ pub const SOURCES: [SourceSpec; 7] = [
                     id: "usdPerCuHour",
                     number: true,
                     advanced: true,
+                    required: None,
                     apply: |settings, value| {
                         settings.neon_usd_per_cu_hour = rate(value)?;
                         Ok(())
@@ -312,6 +348,7 @@ pub const SOURCES: [SourceSpec; 7] = [
                     id: "usdPerGibMonth",
                     number: true,
                     advanced: true,
+                    required: None,
                     apply: |settings, value| {
                         settings.neon_usd_per_gib_month = rate(value)?;
                         Ok(())
@@ -338,6 +375,7 @@ pub const SOURCES: [SourceSpec; 7] = [
                 id: "teamId",
                 number: false,
                 advanced: false,
+                required: None,
                 apply: |settings, value| {
                     value.clone_into(&mut settings.vercel_team_id);
                     Ok(())
@@ -361,6 +399,7 @@ pub const SOURCES: [SourceSpec; 7] = [
                         id: "quota",
                         number: true,
                         advanced: true,
+                        required: None,
                         apply: |settings, value| {
                             settings.sentry_monthly_event_quota = quota(value)?;
                             Ok(())
@@ -378,6 +417,52 @@ pub const SOURCES: [SourceSpec; 7] = [
             },
         ],
         wake: SourceWake::UsageProvidersAndCrons,
+    },
+    SourceSpec {
+        kind: "azure",
+        title: AZURE_TITLE,
+        tile_source: "azureCost",
+        parts: &[
+            SourcePart {
+                inputs: &[
+                    SourceInput {
+                        id: "account",
+                        number: false,
+                        advanced: false,
+                        required: Some("Enter the storage account that holds the cost export."),
+                        apply: |settings, value| {
+                            value.clone_into(&mut settings.azure_storage_account);
+                            Ok(())
+                        },
+                    },
+                    SourceInput {
+                        id: "container",
+                        number: false,
+                        advanced: false,
+                        required: Some("Enter the container the cost export is written to."),
+                        apply: |settings, value| {
+                            value.clone_into(&mut settings.azure_cost_container);
+                            Ok(())
+                        },
+                    },
+                ],
+                ..SourcePart::new("export")
+            },
+            SourcePart {
+                inputs: &[SourceInput {
+                    id: "budgetUsd",
+                    number: true,
+                    advanced: false,
+                    required: Some(NO_BUDGET),
+                    apply: |settings, value| {
+                        settings.azure_monthly_budget_usd = budget(value)?;
+                        Ok(())
+                    },
+                }],
+                ..SourcePart::new("budget")
+            },
+        ],
+        wake: SourceWake::Azure,
     },
 ];
 
@@ -469,10 +554,11 @@ fn layout_with_tiles(
 
 /// Every typed input the parts a save leaves ticked were sent, written into
 /// `settings`; an unticked part writes empty, and an input not sent is left as
-/// it is.
+/// it is, unless it is required of a ticked part, which refuses it.
 ///
 /// # Errors
-/// The sentence refusing a value, or an input no part of the source declares.
+/// The sentence refusing a value, the sentence of a required input a ticked part
+/// sent empty or not at all, or an input no part of the source declares.
 fn apply_inputs(
     spec: &SourceSpec,
     wants: &dyn Fn(&str) -> bool,
@@ -503,9 +589,12 @@ fn apply_inputs(
             let sent = inputs.iter().find(|(id, _)| id == input.id);
             let value = match (ticked, sent) {
                 (true, Some((_, value))) => value.trim(),
-                (true, None) => continue,
-                (false, _) => "",
+                (true, None) if input.required.is_none() => continue,
+                (true, None) | (false, _) => "",
             };
+            if let (true, true, Some(missing)) = (ticked, value.is_empty(), input.required) {
+                return Err(missing);
+            }
             (input.apply)(settings, value)?;
         }
     }
@@ -829,7 +918,8 @@ mod tests {
                 "services",
                 "neon",
                 "vercel",
-                "sentry"
+                "sentry",
+                "azure"
             ]
         );
         for kind in kinds {
@@ -1450,6 +1540,210 @@ mod tests {
             ids.sort_unstable();
             ids.dedup();
             assert_eq!(ids.len(), spec.parts.len(), "{}", spec.kind);
+        }
+    }
+
+    fn azure_settings(env: &Fake) -> (String, String, f64) {
+        let store = env.store.lock().unwrap();
+        let settings = store.settings();
+        (
+            settings.azure_storage_account.clone(),
+            settings.azure_cost_container.clone(),
+            settings.azure_monthly_budget_usd,
+        )
+    }
+
+    fn azure_export(env: &Fake) {
+        save_source_with(
+            env,
+            "azure",
+            &parts(&["export", "budget"]),
+            None,
+            &typed(&[
+                ("account", "acmestorage"),
+                ("container", "cost-exports"),
+                ("budgetUsd", "250"),
+            ]),
+            false,
+        )
+        .unwrap();
+        env.woken.borrow_mut().clear();
+    }
+
+    #[test]
+    fn azure_saves_its_export_and_budget_with_no_key_and_wakes_its_loop() {
+        let env = Fake::new();
+        let status = save_source_with(
+            &env,
+            "azure",
+            &parts(&["export", "budget"]),
+            Some("never-a-key"),
+            &typed(&[
+                ("account", " acmestorage "),
+                ("container", "cost-exports"),
+                ("budgetUsd", "250.5"),
+            ]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(status, "Azure Cost saved.");
+        assert_eq!(
+            azure_settings(&env),
+            ("acmestorage".to_owned(), "cost-exports".to_owned(), 250.5)
+        );
+        assert_eq!(*env.tiles_asked.borrow(), ["azureCost"]);
+        assert_eq!(*env.woken.borrow(), [SourceWake::Azure]);
+        for key in [SecretKey::NeonApiKey, SecretKey::VercelApiToken] {
+            assert!(env.credentials.secret(key).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn a_ticked_export_with_no_location_is_refused_in_its_own_words_before_a_write() {
+        for (account, container, sentence) in [
+            (
+                "",
+                "cost-exports",
+                "Enter the storage account that holds the cost export.",
+            ),
+            (
+                "  ",
+                "cost-exports",
+                "Enter the storage account that holds the cost export.",
+            ),
+            (
+                "acmestorage",
+                "",
+                "Enter the container the cost export is written to.",
+            ),
+        ] {
+            let env = Fake::new();
+            let refusal = save_source_with(
+                &env,
+                "azure",
+                &parts(&["export"]),
+                None,
+                &typed(&[("account", account), ("container", container)]),
+                true,
+            );
+            assert_eq!(refusal.unwrap_err(), sentence);
+            assert_eq!(azure_settings(&env), (String::new(), String::new(), 0.0));
+            assert!(env.woken.borrow().is_empty());
+            assert!(env.store.lock().unwrap().dashboard().is_none());
+        }
+    }
+
+    #[test]
+    fn a_ticked_input_that_was_not_sent_at_all_is_refused_when_it_is_required() {
+        let env = Fake::new();
+        let refusal = save_source_with(&env, "azure", &parts(&["budget"]), None, &[], false);
+        assert_eq!(refusal.unwrap_err(), "Enter a monthly budget above zero.");
+        // A source whose inputs are optional still leaves an unsent one alone.
+        let status = save_source_with(&env, "vercel", &parts(&["vercel"]), Some("t"), &[], false);
+        assert_eq!(status.unwrap(), "Vercel saved.");
+    }
+
+    #[test]
+    fn a_ticked_budget_needs_an_amount_above_zero() {
+        for amount in ["", "0", "-5", "nan", "inf", "ten"] {
+            let env = Fake::new();
+            let refusal = save_source_with(
+                &env,
+                "azure",
+                &parts(&["budget"]),
+                None,
+                &typed(&[("budgetUsd", amount)]),
+                false,
+            );
+            assert_eq!(
+                refusal.unwrap_err(),
+                "Enter a monthly budget above zero.",
+                "{amount:?}"
+            );
+            assert_eq!(azure_settings(&env).2, 0.0, "{amount:?}");
+        }
+    }
+
+    #[test]
+    fn a_refused_azure_save_leaves_what_was_saved_exactly_as_it_was() {
+        let env = Fake::new();
+        azure_export(&env);
+        let refusal = save_source_with(
+            &env,
+            "azure",
+            &parts(&["export", "budget"]),
+            None,
+            &typed(&[("account", ""), ("container", "other"), ("budgetUsd", "9")]),
+            false,
+        );
+        assert!(refusal.is_err());
+        assert_eq!(
+            azure_settings(&env),
+            ("acmestorage".to_owned(), "cost-exports".to_owned(), 250.0)
+        );
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn unticking_one_azure_part_forgets_only_its_values_and_needs_none_typed() {
+        let env = Fake::new();
+        azure_export(&env);
+        // The budget part is unticked and its field arrives empty: that is how a
+        // budget is removed, and a required input does not refuse a removal.
+        save_source_with(
+            &env,
+            "azure",
+            &parts(&["export"]),
+            None,
+            &typed(&[
+                ("account", "acmestorage"),
+                ("container", "cost-exports"),
+                ("budgetUsd", ""),
+            ]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            azure_settings(&env),
+            ("acmestorage".to_owned(), "cost-exports".to_owned(), 0.0)
+        );
+        save_source_with(
+            &env,
+            "azure",
+            &parts(&["budget"]),
+            None,
+            &typed(&[("budgetUsd", "40")]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(azure_settings(&env), (String::new(), String::new(), 40.0));
+    }
+
+    #[test]
+    fn removing_azure_forgets_the_export_and_the_budget() {
+        let env = Fake::new();
+        azure_export(&env);
+        let status = save_source(&env, "azure", &parts(&[]), None, true).unwrap();
+        assert_eq!(status, "Azure Cost removed.");
+        assert_eq!(azure_settings(&env), (String::new(), String::new(), 0.0));
+        assert_eq!(*env.woken.borrow(), [SourceWake::Azure]);
+    }
+
+    #[test]
+    fn only_azure_requires_an_input_so_every_other_source_keeps_its_refusals() {
+        for spec in &SOURCES {
+            let required: Vec<_> = spec
+                .parts
+                .iter()
+                .flat_map(|part| part.inputs)
+                .filter(|input| input.required.is_some())
+                .map(|input| input.id)
+                .collect();
+            if spec.kind == "azure" {
+                assert_eq!(required, ["account", "container", "budgetUsd"]);
+            } else {
+                assert!(required.is_empty(), "{}", spec.kind);
+            }
         }
     }
 }

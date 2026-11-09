@@ -282,14 +282,19 @@ test("a rejected save keeps the connection draft and reports the failure", async
   await page.evaluate(() => {
     const original = window.__TAURI__.core.invoke;
     window.__TAURI__.core.invoke = async (command, args) => {
-      if (command === "settings_save_providers") throw new Error("IPC unavailable");
+      if (command === "settings_save_source") throw new Error("IPC unavailable");
       return original(command, args);
     };
   });
-  await page.locator("#azure-budget").fill("777");
-  await page.locator(".btn.apply").first().click();
+  await next(page);
+  await next(page);
+  await page.locator("#walk-budgetUsd").fill("777");
+  await next(page);
+  await page.locator(".walk-finish").click();
   await expect(page.locator("#settingsStatus")).toHaveText(settings.connections.saveFailed);
-  await expect(page.locator("#azure-budget")).toHaveValue("777");
+  await expect(page.locator(".walk"), "the steps stay open").toBeVisible();
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-budgetUsd")).toHaveValue("777");
 });
 
 test("Sources and its editor fit a narrow window without clipped controls", async ({ page, baseURL }) => {
@@ -825,7 +830,6 @@ for (const provider of PROVIDERS) {
     await expect(page.locator(".walk-tile")).toHaveText(entry.walk.tile.label);
     expect(await saves(page), "nothing is applied before Finish").toEqual([]);
     expect(await calls(page, "settings_save_secret")).toEqual([]);
-    expect(await calls(page, "settings_save_providers")).toEqual([]);
 
     await page.locator(".walk-finish").click();
     const [save] = await saves(page);
@@ -849,7 +853,6 @@ for (const provider of PROVIDERS) {
     await expect(page.locator(".connection-list")).toBeVisible();
     expect(await saves(page)).toEqual([]);
     expect(await calls(page, "settings_save_secret")).toEqual([]);
-    expect(await calls(page, "settings_save_providers")).toEqual([]);
 
     await addConnection(page, kind);
     await expect(page.locator("#walk-secret")).toHaveValue("");
@@ -1693,21 +1696,185 @@ test("an account is added with its vendor, and re-saved without exposing its tok
   await expect(card.locator(`#account-token-${owning.id}`)).toHaveValue("");
 });
 
-// Azure Cost's budget is the one provider preference still written outside a
-// source's steps (until Azure moves onto them), so its Apply sends it alone: a
-// second writer of Neon's, Vercel's or Sentry's values would be a way around
-// Finish.
-test("the Azure budget's Apply sends the budget and nothing else", async ({ page, baseURL }) => {
-  await openSettings(page, baseURL);
-  await tab(page, "azure").click();
-  await page.locator("#azure-budget").fill("250");
-  // `.first()`: the tab also carries an Apply for the export address, and this
-  // test is about the budget one. Addressed by position because the order is
-  // the reading order.
-  await page.locator(".btn.apply").first().click();
-  expect(await calls(page, "settings_save_providers")).toEqual([
-    { command: "settings_save_providers", args: { prefs: { azureMonthlyBudgetUsd: 250 } } },
-  ]);
+// MARK: Azure Cost's steps: two parts, no key, and inputs a ticked part must have
+
+/** A store where Azure Cost is not added, whatever the fixture holds. */
+function withoutAzure(settings) {
+  const entry = catalogEntry(settings, "azure");
+  for (const part of entry.walk.parts) {
+    part.on = false;
+    for (const input of part.inputs) input.value = "";
+  }
+  entry.walk.tile.present = false;
+  settings.connections.rows = settings.connections.rows.filter((row) => row.kind !== "azure");
+}
+
+/** Every command sent that is not a known read: the stub answers any unknown
+ *  command with "Saved.", so a stray write of any name (`dashboard_save`,
+ *  `settings_clear_secret`, `panel_interval_save`...) would otherwise pass
+ *  unseen. A Finish on Azure Cost's steps must leave exactly
+ *  `["settings_save_source"]`, and Back and Cancel `[]`. */
+const READS = new Set([
+  "cockpit", "dashboard_view", "settings_view", "settings_test_host",
+  // The panels' own reads, which the overview polls under Settings.
+  "containers", "repos", "runners", "anthropic", "openai", "usage", "azure_cost",
+  "services", "crons", "openclaw",
+  "settings_probe_status_vendor", "settings_probe_host_certificate",
+  "settings_discover_repos", "settings_search_repos",
+]);
+const writesOf = (page) =>
+  page.evaluate(
+    (reads) => window.__CALLS__.map((call) => call.command).filter((command) => !reads.includes(command)),
+    [...READS],
+  );
+
+test("Azure Cost asks which parts, then each picked part's values, and never for a key", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
+  const entry = catalogEntry(settings, "azure");
+  const labels = settings.connections.walkLabels;
+  await addConnection(page, "azure");
+
+  await expect(stepHeading(page)).toHaveText(labels.pickHeading);
+  await expect(page.locator(".walk-pick")).toHaveCount(2);
+  await expect(page.locator(".walk-next"), "nothing to set up yet").toBeDisabled();
+  await pick(page, "export").locator("input").check();
+  await pick(page, "budget").locator("input").check();
+  await expect(stepLine(page)).toHaveText("Azure Cost · step 1 of 4");
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(partOf(entry, "export").title);
+  await expect(page.locator("#walk-secret"), "the az CLI session signs each read").toHaveCount(0);
+  await expect(page.locator('[data-secret]'), "no Save that writes before Finish").toHaveCount(0);
+  await page.locator("#walk-account").fill("acmestorage");
+  await page.locator("#walk-container").fill("cost-exports");
+  await next(page);
+  await expect(stepHeading(page)).toHaveText(partOf(entry, "budget").title);
+  await page.locator("#walk-budgetUsd").fill("250");
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(labels.readyHeading);
+  await expect(page.locator(".walk-tile")).toHaveText(entry.walk.tile.label);
+  expect(await saves(page), "nothing is applied before Finish").toEqual([]);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toEqual({
+    kind: "azure", parts: ["export", "budget"], secret: null,
+    inputs: { account: "acmestorage", container: "cost-exports", budgetUsd: "250" }, addTile: true,
+  });
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
+  await expect(page.locator(".walk")).toHaveCount(0);
+});
+
+test("Azure Cost's budget alone sends only the budget part's value", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
+  await addConnection(page, "azure");
+  await pick(page, "budget").locator("input").check();
+  await expect(stepLine(page)).toHaveText("Azure Cost · step 1 of 3");
+  await next(page);
+  await page.locator("#walk-budgetUsd").fill("40");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({
+    kind: "azure", parts: ["budget"], secret: null, inputs: { budgetUsd: "40" }, addTile: true,
+  });
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
+});
+
+// Back keeps the draft, Cancel forgets it, and neither writes anything.
+for (const [name, picks, fields] of [
+  ["Cost export", ["export"], ["account", "container"]],
+  ["Monthly budget", ["budget"], ["budgetUsd"]],
+  ["both parts", ["export", "budget"], ["account", "container", "budgetUsd"]],
+]) {
+  test(`Azure Cost (${name}): Back and Cancel write nothing, and Cancel forgets the draft`, async ({ page, baseURL }) => {
+    await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
+    await addConnection(page, "azure");
+    for (const id of picks) await pick(page, id).locator("input").check();
+    await next(page);
+    // Walk every field step, typing into each, then step back over the last.
+    const typed = { account: "acmestorage", container: "cost-exports", budgetUsd: "250" };
+    for (const id of picks) {
+      for (const field of fields.filter((f) => (id === "budget") === (f === "budgetUsd"))) {
+        await page.locator(`#walk-${field}`).fill(typed[field]);
+      }
+      await next(page);
+    }
+    await page.locator(".walk-back").click();
+    const last = fields[fields.length - 1];
+    await expect(page.locator(`#walk-${last}`), "Back keeps what was typed").toHaveValue(typed[last]);
+
+    await page.locator(".walk-cancel").click();
+    await expect(page.locator(".connection-list")).toBeVisible();
+    expect(await saves(page)).toEqual([]);
+    expect(await calls(page, "settings_save_secret")).toEqual([]);
+    expect(await writesOf(page)).toEqual([]);
+
+    await addConnection(page, "azure");
+    for (const id of picks) await pick(page, id).locator("input").check();
+    await next(page);
+    for (const id of picks) {
+      for (const field of fields.filter((f) => (id === "budget") === (f === "budgetUsd"))) {
+        await expect(page.locator(`#walk-${field}`)).toHaveValue("");
+      }
+      await next(page);
+    }
+  });
+}
+
+test("a refusal from Rust leaves the Azure steps open with what was typed", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, withoutAzure);
+  await page.evaluate((view) => {
+    window.__SAVE_SOURCE__ = {
+      status: "Enter the storage account that holds the cost export.", settings: view, saved: false,
+    };
+  }, settings);
+  await addConnection(page, "azure");
+  await pick(page, "export").locator("input").check();
+  await next(page);
+  await page.locator("#walk-container").fill("cost-exports");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  await expect(page.locator("#settingsStatus")).toHaveText("Enter the storage account that holds the cost export.");
+  await expect(page.locator(".walk")).toBeVisible();
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-container")).toHaveValue("cost-exports");
+});
+
+test("Azure Cost's row opens the same steps with both parts ticked and the saved values", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const entry = catalogEntry(settings, "azure");
+  await page.locator('.connection-row[data-kind="azure"]').click();
+  await expect(pick(page, "export").locator("input")).toBeChecked();
+  await expect(pick(page, "budget").locator("input")).toBeChecked();
+  await next(page);
+  await expect(page.locator("#walk-account")).toHaveValue(partOf(entry, "export").inputs[0].value);
+  await expect(page.locator("#walk-container")).toHaveValue(partOf(entry, "export").inputs[1].value);
+  await next(page);
+  await expect(page.locator("#walk-budgetUsd")).toHaveValue(partOf(entry, "budget").inputs[0].value);
+
+  // Unticking the budget sends only the export's values: the budget is forgotten.
+  await page.locator(".walk-back").click();
+  await page.locator(".walk-back").click();
+  await pick(page, "budget").locator("input").uncheck();
+  await next(page);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args.parts).toEqual(["export"]);
+  expect(Object.keys(save.args.inputs)).toEqual(["account", "container"]);
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
+});
+
+test("Azure Cost: Remove source sends no parts, and only settings_save_source writes", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await page.locator('.connection-row[data-kind="azure"]').click();
+  await page.locator(".walk-remove").click();
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.removeHeading);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({ kind: "azure", parts: [], secret: null, addTile: true });
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
 });
 
 // MARK: Sentry's steps: two parts over one token and one slug
@@ -1766,7 +1933,6 @@ test("Sentry asks which parts, then its token and slug once, whichever are picke
   await expect(page.locator(".walk-tile")).toHaveText("Add a Usage tile and a Sentry Crons tile");
   expect(await saves(page), "nothing is applied before Finish").toEqual([]);
   expect(await calls(page, "settings_save_secret")).toEqual([]);
-  expect(await calls(page, "settings_save_providers")).toEqual([]);
 
   await page.locator(".walk-finish").click();
   const [save] = await saves(page);
@@ -1828,7 +1994,6 @@ test("Sentry: Back and Cancel write nothing, and Cancel forgets the draft", asyn
   await expect(page.locator(".connection-list")).toBeVisible();
   expect(await saves(page)).toEqual([]);
   expect(await calls(page, "settings_save_secret")).toEqual([]);
-  expect(await calls(page, "settings_save_providers")).toEqual([]);
 
   await addConnection(page, "sentry");
   await pick(page, "usage").locator("input").check();

@@ -1202,39 +1202,6 @@ function accountsTab(t, options = {}) {
   return out;
 }
 
-function azureTab(t) {
-  const box = group(t.budget.heading);
-  const budget = numberInput(t.budget.value, 0);
-  box.append(field("azure-budget", t.budget.label, budget), help(t.budget.help));
-  const apply = button(t.budget.saveLabel, "apply");
-  // The budget is the one provider preference still saved here: Neon, Vercel
-  // and Sentry are set up, values and all, through their source steps.
-  apply.addEventListener("click", () =>
-    mutate("settings_save_providers", {
-      prefs: { azureMonthlyBudgetUsd: Number(budget.value) || 0 },
-    })
-  );
-  box.appendChild(actionRow(apply));
-
-  // Where the export lives. No credential group: the panel signs its own
-  // read using the operator's Azure CLI session and stores nothing.
-  const exp = group(t.export.heading);
-  const account = textInput(t.export.account);
-  const container = textInput(t.export.container);
-  exp.append(
-    field("azure-account", t.export.accountLabel, account),
-    field("azure-container", t.export.containerLabel, container),
-    help(t.export.help)
-  );
-  const saveExport = button(t.export.saveLabel, "apply");
-  saveExport.addEventListener("click", () =>
-    mutate("settings_save_azure", { account: account.value, container: container.value })
-  );
-  exp.appendChild(actionRow(saveExport));
-
-  return [box, exp];
-}
-
 /** One watched status page: its name, its address, the component it is watched
  *  through, and the two controls that pause or remove it. */
 function vendorRow(t, vendor) {
@@ -2048,8 +2015,7 @@ function connectionEditor() {
     const hosts = S.view.hosts;
     content = hostsTab({ ...hosts, rows: hosts.rows.filter(h => h.id === entry.entityId) },
       { edit: !!entry.entityId, addOnly: !entry.entityId });
-  } else if (entry.kind === "azure") content = azureTab(S.view.azure);
-  else if (entry.kind === "openclaw") content = openclawTab(S.view.openclaw);
+  } else if (entry.kind === "openclaw") content = openclawTab(S.view.openclaw);
   else if (entry.kind === "vendor") {
     const services = S.view.services;
     content = servicesTab({ ...services, rows: services.rows.filter(v => v.id === entry.entityId) },
@@ -2075,7 +2041,6 @@ function renderBody() {
     general: generalTab,
     accounts: accountsTab,
     hosts: hostsTab,
-    azure: azureTab,
     services: servicesTab,
     openclaw: openclawTab,
     about: aboutTab,
