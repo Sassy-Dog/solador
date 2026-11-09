@@ -2190,6 +2190,24 @@ test("resource details open their editor while aggregate links show only relevan
   expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === "settings_view").at(-1).args.route.source)).toBe("sentryCrons");
 });
 
+// The route is Rust's (`connection_route` sends a Usage row to neon, sentry or
+// vercel); the fixture has no Usage tile, so a tile that has a row stands in
+// and the stub supplies the route a Usage row would get.
+test("Manage source on a Usage row opens Neon's or Vercel's steps, not a form", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  for (const [kind, key] of [["neon", "neon"], ["vercel", "vercel"]]) {
+    await page.evaluate((k) => { window.__SETTINGS_ROUTE__ = {editor:{kind:k},kinds:["neon","sentry","vercel"]}; }, kind);
+    await tile(page, "sentryCrons").locator('[data-action="row"]').first().click();
+    await action(page, "manage").click();
+    await expect(page.locator("#settings .walk")).toBeVisible();
+    await expect(page.locator("#settings .walk h2")).toHaveText(kind === "neon" ? "Neon" : "Vercel");
+    await expect(page.locator("#walk-secret")).toBeVisible();
+    await expect(page.locator(`[data-secret="${key}"]`)).toHaveCount(0);
+    await page.locator("#settingsClose").click();
+    await action(page, "close").click();
+  }
+});
+
 test("a late preview cannot replace a newer scope choice", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await action(page, "edit").click();

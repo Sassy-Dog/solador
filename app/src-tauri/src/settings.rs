@@ -1063,6 +1063,10 @@ pub fn not_set_up_message(title: &str) -> String {
 pub const LOCAL_TITLE: &str = store::source_save::LOCAL_TITLE;
 /// The status pages of the sources this store has added.
 pub const SERVICES_TITLE: &str = store::source_save::SERVICES_TITLE;
+/// Neon's database usage and estimated charges.
+pub const NEON_TITLE: &str = store::source_save::NEON_TITLE;
+/// Vercel's billing usage.
+pub const VERCEL_TITLE: &str = store::source_save::VERCEL_TITLE;
 /// The button, and the heading of the catalog it opens.
 pub const ADD_SOURCE_LABEL: &str = "Add source";
 
@@ -1327,9 +1331,9 @@ fn connections_section(
             local_entry(s, store.tile_sources),
             anthropic_entry(s, stored, store.tile_sources),
             openai_entry(s, stored, store.tile_sources),
-            {"kind":"neon", "title":"Neon", "feeds":"Database usage and estimated charges"},
+            neon_entry(s, stored, store.tile_sources),
             {"kind":"sentry", "title":"Sentry", "feeds":"Usage and scheduled jobs"},
-            {"kind":"vercel", "title":"Vercel", "feeds":"Billing usage"},
+            vercel_entry(s, stored, store.tile_sources),
             {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
             services_entry(s, store.tile_sources),
@@ -1424,7 +1428,8 @@ fn tile_offer(source: &str, tile_sources: &[String]) -> Value {
         .iter()
         .find(|(id, _)| *id == source)
         .map_or("", |(_, title)| *title);
-    let article = if title.starts_with(['A', 'E', 'I', 'O', 'U']) {
+    // No `U`: the tile names that start with one ("Usage") say "you".
+    let article = if title.starts_with(['A', 'E', 'I', 'O']) {
         "an"
     } else {
         "a"
@@ -1448,7 +1453,7 @@ fn api_part(key: StoredKey, help: &str, placeholder: &str) -> Value {
     // Ticked unless the store said there is none: an unticked key is removed at
     // Finish, and a store that won't answer can't remove anything.
     let on = key != StoredKey::Absent;
-    let mut part = walk_part(
+    let part = walk_part(
         "api",
         API_PART_TITLE,
         "Spend from an Admin API key",
@@ -1456,17 +1461,125 @@ fn api_part(key: StoredKey, help: &str, placeholder: &str) -> Value {
         "API spend",
         help,
     );
+    with_secret(part, key, "Admin API key", placeholder, "key")
+}
+
+/// `part` with the credential it asks for. `stored` says a credential exists
+/// and never what it is; `noun` is what the stored line calls it.
+fn with_secret(
+    mut part: Value,
+    key: StoredKey,
+    label: &str,
+    placeholder: &str,
+    noun: &str,
+) -> Value {
     part["secret"] = json!({
-        "label": "Admin API key",
+        "label": label,
         "placeholder": placeholder,
-        "stored": on,
+        "stored": key != StoredKey::Absent,
         "storedLabel": if key == StoredKey::Unread {
-            "The credential store didn\u{2019}t answer. Leave this empty to keep any key it holds."
+            format!("The credential store didn\u{2019}t answer. Leave this empty to keep any {noun} it holds.")
         } else {
-            "A key is stored. Leave this empty to keep it."
+            format!("A {noun} is stored. Leave this empty to keep it.")
         },
     });
     part
+}
+
+/// A non-secret value a part asks for, written at Finish with the rest. `id`
+/// is the input's name in `store::source_save`; `rate` makes it a number.
+fn walk_input(id: &str, label: &str, value: &str, rate: bool, advanced: bool) -> Value {
+    json!({"id": id, "label": label, "value": value, "number": rate, "advanced": advanced})
+}
+
+/// A rate as its field shows it: nothing for the zero that hides the row.
+fn rate_text(rate: f64) -> String {
+    if rate == 0.0 {
+        String::new()
+    } else {
+        rate.to_string()
+    }
+}
+
+fn stored_key(stored: bool) -> StoredKey {
+    if stored {
+        StoredKey::Stored
+    } else {
+        StoredKey::Absent
+    }
+}
+
+fn neon_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    let key = stored_key(stored.neon);
+    let mut part = with_secret(
+        walk_part(
+            "neon",
+            NEON_TITLE,
+            "Compute and storage usage",
+            // The same test as the row: an org id with no key is a half-made source.
+            key != StoredKey::Absent || !s.neon_org_id.is_empty(),
+            "Compute and storage usage",
+            "Powers the Neon rows on the Usage tile (month-to-date compute and branch storage). Create an organization API key in the Neon console; it is scoped to the organization\u{2019}s projects and, unlike a personal key, isn\u{2019}t tied to one user account. The key is kept in your OS credential store; the organization ID is not a secret and is stored as a normal preference.",
+        ),
+        key,
+        "Organization API key",
+        "napi_\u{2026}",
+        "key",
+    );
+    part["inputs"] = json!([
+        walk_input("orgId", "Organization ID", &s.neon_org_id, false, false),
+        walk_input(
+            "usdPerCuHour",
+            "$ per CU-hour",
+            &rate_text(s.neon_usd_per_cu_hour),
+            true,
+            true
+        ),
+        walk_input(
+            "usdPerGibMonth",
+            "$ per GiB-month storage",
+            &rate_text(s.neon_usd_per_gib_month),
+            true,
+            true
+        ),
+    ]);
+    part["advancedHelp"] = json!("Your plan\u{2019}s usage-based rates from the Neon console\u{2019}s Billing page. Both empty hides the estimated-charges row; the app ships no price table, so the estimate can never silently rot when Neon reprices.");
+    json!({
+        "kind": "neon", "title": NEON_TITLE,
+        "feeds": "Database usage and estimated charges",
+        "walk": {"parts": [part], "tile": tile_offer("usage", tile_sources)},
+    })
+}
+
+fn vercel_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    let key = stored_key(stored.vercel);
+    let mut part = with_secret(
+        walk_part(
+            "vercel",
+            VERCEL_TITLE,
+            "Billing usage",
+            key != StoredKey::Absent || !s.vercel_team_id.is_empty(),
+            "Billing usage",
+            "Powers the Vercel rows on the Usage tile (month-to-date spend, and what falls beyond the plan). Create a token under Account settings \u{2192} Tokens with read access to the team whose billing you want. The token is kept in your OS credential store; the team ID is not a secret and is stored as a normal preference.",
+        ),
+        key,
+        "API token",
+        "",
+        "token",
+    );
+    part["inputs"] = json!([walk_input(
+        "teamId",
+        "Team ID",
+        &s.vercel_team_id,
+        false,
+        false
+    )]);
+    part["inputsHelp"] = json!("Leave the team ID blank for a personal account.");
+    json!({
+        "kind": "vercel", "title": VERCEL_TITLE,
+        "feeds": "Billing usage",
+        "walk": {"parts": [part], "tile": tile_offer("usage", tile_sources)},
+    })
 }
 
 fn subscription_part(plan: &Value, on: bool, summary: &str) -> Value {
@@ -3381,6 +3494,77 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("credential store"));
+    }
+
+    /// The steps the catalog draws and the save table that applies them are two
+    /// lists, and a part or input in one and not the other is a step whose
+    /// Finish drops what was typed, or a save that waits for a step never drawn.
+    #[test]
+    fn every_walk_in_the_catalog_matches_its_row_in_the_save_table() {
+        let vm = empty_view();
+        for spec in &store::source_save::SOURCES {
+            let entry = catalog_entry(&vm, spec.kind);
+            let wanted: Vec<_> = spec.parts.iter().map(|part| part.id).collect();
+            assert_eq!(part_ids(&entry), wanted, "{}", spec.kind);
+            for (drawn, part) in entry["walk"]["parts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(spec.parts)
+            {
+                let inputs: Vec<_> = drawn["inputs"]
+                    .as_array()
+                    .map(|inputs| inputs.iter().map(|i| i["id"].as_str().unwrap()).collect())
+                    .unwrap_or_default();
+                let saved: Vec<_> = part.inputs.iter().map(|input| input.id).collect();
+                assert_eq!(inputs, saved, "{} {}", spec.kind, part.id);
+                assert_eq!(
+                    !drawn["secret"].is_null(),
+                    part.key.is_some(),
+                    "{} {}",
+                    spec.kind,
+                    part.id
+                );
+            }
+        }
+    }
+
+    /// Neon and Vercel are one part each, so their steps skip the question; the
+    /// current organization or team, and whether a key exists, read back.
+    #[test]
+    fn neon_and_vercel_read_back_their_ids_and_only_whether_a_key_exists() {
+        let settings = Settings {
+            neon_org_id: "org-1".into(),
+            neon_usd_per_cu_hour: 0.106,
+            vercel_team_id: "team_1".into(),
+            ..Settings::default()
+        };
+        let stored = StoredSecrets {
+            neon: true,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&settings, &[], &[], &stored, &facts());
+        let neon = &catalog_entry(&vm, "neon")["walk"]["parts"][0];
+        assert_eq!(neon["on"], true);
+        assert_eq!(neon["secret"]["stored"], true);
+        assert_eq!(neon["inputs"][0]["value"], "org-1");
+        assert_eq!(neon["inputs"][1]["value"], "0.106");
+        assert_eq!(neon["inputs"][2]["value"], "");
+        let vercel = &catalog_entry(&vm, "vercel")["walk"]["parts"][0];
+        assert_eq!(vercel["on"], true, "a team with no token is half made");
+        assert_eq!(vercel["secret"]["stored"], false);
+        assert_eq!(vercel["inputs"][0]["value"], "team_1");
+        assert_eq!(
+            catalog_entry(&vm, "neon")["walk"]["tile"]["label"],
+            "Add a Usage tile"
+        );
+
+        let vm = empty_view();
+        for kind in ["neon", "vercel"] {
+            let part = &catalog_entry(&vm, kind)["walk"]["parts"][0];
+            assert_eq!(part["on"], false, "{kind}");
+            assert_eq!(part["secret"]["stored"], false, "{kind}");
+        }
     }
 
     /// Reopening a source shows what it has, without showing the key.

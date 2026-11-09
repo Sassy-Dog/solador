@@ -1,11 +1,12 @@
 //! What a source's guided steps apply when the operator presses Finish: the
 //! table of sources, every refusal, the credential write, the plan toggle and
-//! the one flag-and-tile save with its rollback.
+//! the one flag, input and tile save with its rollback.
 //!
 //! This is the logic behind the shell's `settings_save_source` command, so
 //! each source #721 puts on the steps starts as a row in [`SOURCES`] and is
-//! testable without the shell. A row is enough only for a source shaped like
-//! today's four (see [`SOURCES`]). What only the shell can do comes in
+//! testable without the shell. A row describes its parts as data (a key, a
+//! plan, a flag, typed non-secret inputs); [`SOURCES`] says what a row still
+//! cannot hold. What only the shell can do comes in
 //! through [`SourceSaveEnv`]: the store and credential handles, the dashboard
 //! rules, the plan opt-in (it resets the shell's in-memory state) and the
 //! wakes.
@@ -29,6 +30,10 @@ pub const OPENAI_TITLE: &str = "OpenAI";
 pub const LOCAL_TITLE: &str = "This machine";
 /// The status pages of the sources this store has added.
 pub const SERVICES_TITLE: &str = "Service health";
+/// Neon's database usage and estimated charges.
+pub const NEON_TITLE: &str = "Neon";
+/// Vercel's billing usage.
+pub const VERCEL_TITLE: &str = "Vercel";
 
 /// A provider whose own sign-in a plan opt-in reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,19 +64,58 @@ pub enum SourceWake {
     StatusPagesOnly,
 }
 
-/// A source's Admin key and the spend figure it feeds.
+/// The credential one part of a source holds, the sentences that refuse it, and
+/// the spend figure it feeds, if any.
 #[derive(Debug, Clone, Copy)]
-pub struct ApiKey {
+pub struct PartKey {
     pub secret: SecretKey,
-    pub spend: SpendFigure,
+    /// Refuses a ticked part that has no key typed and none stored.
+    pub missing: &'static str,
+    /// Refuses unticking a part whose stored key cannot be read, because a store
+    /// that won't answer can't say whether there is anything to delete.
+    pub unreadable: &'static str,
+    /// The in-memory figure that goes with the key when it is removed.
+    pub spend: Option<SpendFigure>,
 }
 
-/// The one flag a source's steps own, and the part that sets it. A source with
-/// neither a flag nor a local part is derived from its key and its plan alone.
+/// Writes one typed, non-secret value into the settings. `Err` is the sentence
+/// refusing the value, and it is raised before anything is written.
+type ApplyInput = fn(&mut Settings, &str) -> Result<(), &'static str>;
+
+/// A non-secret value a part writes at Finish, such as an organization id.
+///
+/// The value arrives trimmed. An empty value is the empty setting, and a part
+/// left unticked writes empty too, so removing a source forgets what it was
+/// told. A value the walk did not send is left as it is.
 #[derive(Clone, Copy)]
-pub struct SourceFlag {
-    pub part: &'static str,
-    access: fn(&mut Settings) -> &mut bool,
+pub struct SourceInput {
+    pub id: &'static str,
+    apply: ApplyInput,
+}
+
+/// One step of a source's walk: the part's id, as the frontend names it, and
+/// what ticking it sets. Every field is optional, so a part is any mix of a key,
+/// a plan opt-in, a flag and typed values.
+#[derive(Clone, Copy)]
+pub struct SourcePart {
+    pub id: &'static str,
+    pub key: Option<PartKey>,
+    pub plan: Option<PlanProvider>,
+    /// The flag this part sets: on when ticked, off when not.
+    flag: Option<fn(&mut Settings) -> &mut bool>,
+    pub inputs: &'static [SourceInput],
+}
+
+impl SourcePart {
+    const fn new(id: &'static str) -> Self {
+        Self {
+            id,
+            key: None,
+            plan: None,
+            flag: None,
+            inputs: &[],
+        }
+    }
 }
 
 /// One source the steps can add, change or remove.
@@ -80,74 +124,169 @@ pub struct SourceSpec {
     pub title: &'static str,
     /// The dashboard tile source its tile is added under.
     pub tile_source: &'static str,
-    pub key: Option<ApiKey>,
-    pub plan: Option<PlanProvider>,
-    pub flag: Option<SourceFlag>,
+    pub parts: &'static [SourcePart],
     pub wake: SourceWake,
+}
+
+const ADMIN_KEY_MISSING: &str = "Enter an Admin API key, or untick API key.";
+const ADMIN_KEY_UNREADABLE: &str = "Couldn't read the credential store, so a stored API key \
+    can't be removed. Nothing changed.";
+
+const NO_RATE: &str = "Enter a rate of zero or more.";
+
+/// A rate in dollars: empty is zero (the shipped default, which hides the row),
+/// and anything else must be a finite number of zero or more.
+fn rate(value: &str) -> Result<f64, &'static str> {
+    if value.is_empty() {
+        return Ok(0.0);
+    }
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|rate| rate.is_finite() && *rate >= 0.0)
+        .ok_or(NO_RATE)
 }
 
 /// Every source the steps know.
 ///
-/// A row is not the whole of a new source. A [`SourceSpec`] holds at most one
-/// Admin key, one plan and one flag; [`save_source`] takes no non-secret input
-/// and fixes the `"api"` and `"subscription"` part ids and the sentence that
-/// refuses a missing key. A source with a non-secret input or per-account
-/// credentials means extending [`save_source`] and [`SourceSaveEnv`], and a new
-/// wake, spend or plan variant needs an arm in the shell's `match` on it.
-pub const SOURCES: [SourceSpec; 4] = [
+/// A row is a source's whole description, as parts: each part names its id, and
+/// may hold a key (with its refusal sentences and the spend figure it feeds), a
+/// plan opt-in, a flag and typed non-secret inputs. [`save_source_with`] reads
+/// nothing else. What a later source still has to add is a new wake, spend or
+/// plan variant, which needs an arm in the shell's `match` on it, and anything
+/// the shape cannot say: several credentials in one source (GitHub's
+/// per-account tokens), since the typed secret goes to the source's first keyed
+/// part, and an input a part must have, since an input is never required.
+pub const SOURCES: [SourceSpec; 6] = [
     SourceSpec {
         kind: "anthropic",
         title: ANTHROPIC_TITLE,
         tile_source: "anthropic",
-        key: Some(ApiKey {
-            secret: SecretKey::AnthropicAdminKey,
-            spend: SpendFigure::Anthropic,
-        }),
-        plan: Some(PlanProvider::Claude),
-        flag: Some(SourceFlag {
-            part: "local",
-            access: |settings| &mut settings.claude_local_logs_enabled,
-        }),
+        parts: &[
+            SourcePart {
+                key: Some(PartKey {
+                    secret: SecretKey::AnthropicAdminKey,
+                    missing: ADMIN_KEY_MISSING,
+                    unreadable: ADMIN_KEY_UNREADABLE,
+                    spend: Some(SpendFigure::Anthropic),
+                }),
+                ..SourcePart::new("api")
+            },
+            SourcePart {
+                plan: Some(PlanProvider::Claude),
+                ..SourcePart::new("subscription")
+            },
+            SourcePart {
+                flag: Some(|settings| &mut settings.claude_local_logs_enabled),
+                ..SourcePart::new("local")
+            },
+        ],
         wake: SourceWake::UsageEverything,
     },
     SourceSpec {
         kind: "openai",
         title: OPENAI_TITLE,
         tile_source: "openai",
-        key: Some(ApiKey {
-            secret: SecretKey::OpenAiAdminKey,
-            spend: SpendFigure::OpenAi,
-        }),
-        plan: Some(PlanProvider::Codex),
-        flag: None,
+        parts: &[
+            SourcePart {
+                key: Some(PartKey {
+                    secret: SecretKey::OpenAiAdminKey,
+                    missing: ADMIN_KEY_MISSING,
+                    unreadable: ADMIN_KEY_UNREADABLE,
+                    spend: Some(SpendFigure::OpenAi),
+                }),
+                ..SourcePart::new("api")
+            },
+            SourcePart {
+                plan: Some(PlanProvider::Codex),
+                ..SourcePart::new("subscription")
+            },
+        ],
         wake: SourceWake::UsageProviders,
     },
     SourceSpec {
         kind: "local",
         title: LOCAL_TITLE,
         tile_source: "hosts",
-        key: None,
-        plan: None,
-        flag: Some(SourceFlag {
-            part: "local",
-            access: |settings| &mut settings.local_monitoring_enabled,
-        }),
+        parts: &[SourcePart {
+            flag: Some(|settings| &mut settings.local_monitoring_enabled),
+            ..SourcePart::new("local")
+        }],
         wake: SourceWake::Containers,
     },
     SourceSpec {
         kind: "services",
         title: SERVICES_TITLE,
         tile_source: "services",
-        key: None,
-        plan: None,
-        flag: Some(SourceFlag {
-            part: "services",
-            access: |settings| &mut settings.service_health_enabled,
-        }),
+        parts: &[SourcePart {
+            flag: Some(|settings| &mut settings.service_health_enabled),
+            ..SourcePart::new("services")
+        }],
         wake: SourceWake::StatusPagesOnly,
     },
+    SourceSpec {
+        kind: "neon",
+        title: NEON_TITLE,
+        tile_source: "usage",
+        parts: &[SourcePart {
+            key: Some(PartKey {
+                secret: SecretKey::NeonApiKey,
+                missing: "Enter an organization API key.",
+                unreadable: "Couldn't read the credential store, so a stored organization API \
+                    key can't be removed. Nothing changed.",
+                spend: None,
+            }),
+            inputs: &[
+                SourceInput {
+                    id: "orgId",
+                    apply: |settings, value| {
+                        value.clone_into(&mut settings.neon_org_id);
+                        Ok(())
+                    },
+                },
+                SourceInput {
+                    id: "usdPerCuHour",
+                    apply: |settings, value| {
+                        settings.neon_usd_per_cu_hour = rate(value)?;
+                        Ok(())
+                    },
+                },
+                SourceInput {
+                    id: "usdPerGibMonth",
+                    apply: |settings, value| {
+                        settings.neon_usd_per_gib_month = rate(value)?;
+                        Ok(())
+                    },
+                },
+            ],
+            ..SourcePart::new("neon")
+        }],
+        wake: SourceWake::UsageProviders,
+    },
+    SourceSpec {
+        kind: "vercel",
+        title: VERCEL_TITLE,
+        tile_source: "usage",
+        parts: &[SourcePart {
+            key: Some(PartKey {
+                secret: SecretKey::VercelApiToken,
+                missing: "Enter an API token.",
+                unreadable: "Couldn't read the credential store, so a stored API token can't \
+                    be removed. Nothing changed.",
+                spend: None,
+            }),
+            inputs: &[SourceInput {
+                id: "teamId",
+                apply: |settings, value| {
+                    value.clone_into(&mut settings.vercel_team_id);
+                    Ok(())
+                },
+            }],
+            ..SourcePart::new("vercel")
+        }],
+        wake: SourceWake::UsageProviders,
+    },
 ];
-
 /// The source named `kind`, or `None` for one the steps do not know.
 #[must_use]
 pub fn spec(kind: &str) -> Option<&'static SourceSpec> {
@@ -212,28 +351,80 @@ fn layout_with_tile(
         .map(|next| (next, current.revision)))
 }
 
+/// Every typed input the parts a save leaves ticked were sent, written into
+/// `settings`; an unticked part writes empty, and an input not sent is left as
+/// it is.
+///
+/// # Errors
+/// The sentence refusing a value, or an input no part of the source declares.
+fn apply_inputs(
+    spec: &SourceSpec,
+    wants: &dyn Fn(&str) -> bool,
+    inputs: &[(String, String)],
+    settings: &mut Settings,
+) -> Result<(), &'static str> {
+    let declared = |id: &str| {
+        spec.parts
+            .iter()
+            .any(|part| part.inputs.iter().any(|input| input.id == id))
+    };
+    if inputs.iter().any(|(id, _)| !declared(id)) {
+        return Err("Skipped \u{2014} unknown field.");
+    }
+    for part in spec.parts {
+        for input in part.inputs {
+            let sent = inputs.iter().find(|(id, _)| id == input.id);
+            let value = match (wants(part.id), sent) {
+                (true, Some((_, value))) => value.trim(),
+                (true, None) => continue,
+                (false, _) => "",
+            };
+            (input.apply)(settings, value)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`save_source_with`] for a source that is sent no typed input.
+///
+/// # Errors
+/// As [`save_source_with`].
+pub fn save_source(
+    env: &dyn SourceSaveEnv,
+    kind: &str,
+    parts: &[String],
+    secret: Option<&str>,
+    add_tile: bool,
+) -> Result<String, String> {
+    save_source_with(env, kind, parts, secret, &[], add_tile)
+}
+
 /// Everything a source's steps apply, all at once on Finish.
 ///
 /// `Err` is the sentence to show, and the steps stay open with the operator's
 /// choices. Every refusal is checked before the first write, so it changes
 /// nothing. Only a failure can follow a write: an I/O error, or a dashboard edit
 /// that filled the last slot while Finish ran, because the tile is derived again
-/// inside the save's lock. Finish is safe to repeat after either: the flag and
-/// the tile go back, and a key or plan already written stays.
+/// inside the save's lock. Finish is safe to repeat after either: the flags, the
+/// typed inputs and the tile go back, and a key or plan already written stays.
 ///
-/// `secret` is the Admin key the operator typed, if any. It goes straight to
-/// the credential store and is never logged.
+/// `secret` is the key the operator typed, if any, for the source's first keyed
+/// part. It goes straight to the credential store and is never logged.
+/// `inputs` are the non-secret values typed on the parts, as `(input id, value)`;
+/// they are checked first, like every refusal, and written under the same lock
+/// and in the same save as the flags and the tile.
 ///
 /// # Errors
 /// The refusal or failure sentence, as above.
 ///
 /// # Panics
 /// If the store's lock is poisoned.
-pub fn save_source(
+pub fn save_source_with(
     env: &dyn SourceSaveEnv,
     kind: &str,
     parts: &[String],
     secret: Option<&str>,
+    inputs: &[(String, String)],
     add_tile: bool,
 ) -> Result<String, String> {
     let wants = |part: &str| parts.iter().any(|id| id == part);
@@ -243,20 +434,38 @@ pub fn save_source(
 
     // Whatever can refuse goes first.
     let secret = secret.map(str::trim).filter(|value| !value.is_empty());
-    let credential = spec
-        .key
-        .map(|key| read_credential(env.credentials(), key.secret));
-    if wants("api") && secret.is_none() && matches!(credential, Some(Credential::Absent)) {
-        return Err("Enter an Admin API key, or untick API key.".to_owned());
+    // Each keyed part, its credential as read now, and the key typed for it.
+    let keyed: Vec<_> = spec
+        .parts
+        .iter()
+        .filter_map(|part| part.key.map(|key| (part, key)))
+        .enumerate()
+        .map(|(index, (part, key))| {
+            let credential = read_credential(env.credentials(), key.secret);
+            (part, key, credential, secret.filter(|_| index == 0))
+        })
+        .collect();
+    for (part, key, credential, typed) in &keyed {
+        if wants(part.id) && typed.is_none() && matches!(credential, Credential::Absent) {
+            return Err(key.missing.to_owned());
+        }
     }
     // Unticked means delete, and a store that won't answer can't say whether
     // there is anything to delete. "Removed" would be a guess.
-    if !wants("api") && matches!(credential, Some(Credential::Unreadable)) {
-        return Err(
-            "Couldn't read the credential store, so a stored API key can't be removed. \
-             Nothing changed."
-                .to_owned(),
-        );
+    for (part, key, credential, _) in &keyed {
+        if !wants(part.id) && matches!(credential, Credential::Unreadable) {
+            return Err(key.unreadable.to_owned());
+        }
+    }
+    {
+        // A scratch copy takes the values first, so a refused one changes nothing.
+        let mut scratch = env
+            .store()
+            .lock()
+            .expect("store poisoned")
+            .settings()
+            .clone();
+        apply_inputs(spec, &wants, inputs, &mut scratch).map_err(str::to_owned)?;
     }
     let wants_tile = add_tile && !parts.is_empty();
     if wants_tile {
@@ -267,9 +476,9 @@ pub fn save_source(
         )?;
     }
 
-    if let Some(key) = spec.key {
-        let stored = matches!(credential, Some(Credential::Present(_)));
-        let written = match (wants("api"), secret) {
+    for (part, key, credential, typed) in &keyed {
+        let stored = matches!(credential, Credential::Present(_));
+        let written = match (wants(part.id), typed) {
             (true, Some(value)) => env.credentials().set_secret(key.secret, value),
             (false, _) if stored => env.credentials().delete_secret(key.secret),
             _ => Ok(()),
@@ -282,18 +491,20 @@ pub fn save_source(
             );
         }
         // The figure goes with the key, rather than when a pass reaches it.
-        if stored && !wants("api") {
-            env.unconfigure_spend(key.spend);
+        if let (true, false, Some(spend)) = (stored, wants(part.id), key.spend) {
+            env.unconfigure_spend(spend);
         }
     }
 
     // Only on a change: a toggle resets the provider, which would un-park a
     // refused keychain and re-read a sign-in because a walk was reopened.
-    if let Some(provider) = spec.plan {
-        if env.plan_enabled(provider) != wants("subscription") {
-            let status = env.set_plan(provider, wants("subscription"));
-            if let Some(failed) = status.filter(|status| status.starts_with("Failed")) {
-                return Err(failed);
+    for part in spec.parts {
+        if let Some(provider) = part.plan {
+            if env.plan_enabled(provider) != wants(part.id) {
+                let status = env.set_plan(provider, wants(part.id));
+                if let Some(failed) = status.filter(|status| status.starts_with("Failed")) {
+                    return Err(failed);
+                }
             }
         }
     }
@@ -302,22 +513,26 @@ pub fn save_source(
     // can land between the read and the write.
     {
         let mut store = env.store().lock().expect("store poisoned");
-        let previous = spec
-            .flag
-            .map(|flag| std::mem::replace((flag.access)(store.settings_mut()), wants(flag.part)));
+        // Taken under the lock and put back under it, so nothing else is undone.
+        let before = store.settings().clone();
+        for part in spec.parts {
+            if let Some(flag) = part.flag {
+                *flag(store.settings_mut()) = wants(part.id);
+            }
+        }
+        let applied =
+            apply_inputs(spec, &wants, inputs, store.settings_mut()).map_err(str::to_owned);
         let tile = if wants_tile {
             layout_with_tile(env, &store, spec.tile_source)
         } else {
             Ok(None)
         };
-        let written = tile.and_then(|tile| match tile {
+        let written = applied.and(tile).and_then(|tile| match tile {
             Some((next, revision)) => env.persist_dashboard(&mut store, next, revision),
             None => store.save().map_err(|error| format!("Failed: {error}")),
         });
         if let Err(failed) = written {
-            if let (Some(previous), Some(flag)) = (previous, spec.flag) {
-                *(flag.access)(store.settings_mut()) = previous;
-            }
+            *store.settings_mut() = before;
             return Err(failed);
         }
     }
@@ -326,7 +541,6 @@ pub fn save_source(
     let word = if parts.is_empty() { "removed" } else { "saved" };
     Ok(format!("{} {word}.", spec.title))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,7 +683,10 @@ mod tests {
     #[test]
     fn every_kind_is_listed_once_and_found_by_name() {
         let kinds: Vec<_> = SOURCES.iter().map(|spec| spec.kind).collect();
-        assert_eq!(kinds, ["anthropic", "openai", "local", "services"]);
+        assert_eq!(
+            kinds,
+            ["anthropic", "openai", "local", "services", "neon", "vercel"]
+        );
         for kind in kinds {
             assert_eq!(spec(kind).map(|spec| spec.kind), Some(kind));
         }
@@ -637,5 +854,202 @@ mod tests {
             .is_some());
         assert!(env.spend_dropped.borrow().is_empty());
         assert!(env.woken.borrow().is_empty());
+    }
+
+    fn typed(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(id, value)| ((*id).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_walk_with_typed_inputs_writes_the_key_and_the_values_only_at_finish() {
+        let env = Fake::new();
+        let status = save_source_with(
+            &env,
+            "neon",
+            &parts(&["neon"]),
+            Some(" napi_x "),
+            &typed(&[
+                ("orgId", " org-1 "),
+                ("usdPerCuHour", "0.106"),
+                ("usdPerGibMonth", ""),
+            ]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(status, "Neon saved.");
+        assert_eq!(
+            env.credentials
+                .secret(SecretKey::NeonApiKey)
+                .unwrap()
+                .as_deref(),
+            Some("napi_x")
+        );
+        let store = env.store.lock().unwrap();
+        assert_eq!(store.settings().neon_org_id, "org-1");
+        assert!((store.settings().neon_usd_per_cu_hour - 0.106).abs() < f64::EPSILON);
+        assert!(store.settings().neon_usd_per_gib_month.abs() < f64::EPSILON);
+        assert!(store
+            .dashboard()
+            .unwrap()
+            .tiles
+            .iter()
+            .any(|tile| tile.source == "usage"));
+        drop(store);
+        assert_eq!(*env.woken.borrow(), [SourceWake::UsageProviders]);
+    }
+
+    #[test]
+    fn a_ticked_part_with_no_key_is_refused_in_its_own_words_and_writes_no_value() {
+        for (kind, part, input, sentence) in [
+            ("neon", "neon", "orgId", "Enter an organization API key."),
+            ("vercel", "vercel", "teamId", "Enter an API token."),
+        ] {
+            let env = Fake::new();
+            let refusal = save_source_with(
+                &env,
+                kind,
+                &parts(&[part]),
+                Some("  "),
+                &typed(&[(input, "typed")]),
+                true,
+            );
+            assert_eq!(refusal.unwrap_err(), sentence, "{kind}");
+            let store = env.store.lock().unwrap();
+            assert!(store.settings().neon_org_id.is_empty(), "{kind}");
+            assert!(store.settings().vercel_team_id.is_empty(), "{kind}");
+            assert!(store.dashboard().is_none(), "{kind}");
+            assert!(env.woken.borrow().is_empty(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_refused_value_or_unknown_field_changes_nothing_not_even_the_key() {
+        for (input, value, sentence) in [
+            ("usdPerCuHour", "-1", "Enter a rate of zero or more."),
+            ("usdPerGibMonth", "lots", "Enter a rate of zero or more."),
+            ("usdPerCuHour", "inf", "Enter a rate of zero or more."),
+            ("teamId", "team", "Skipped \u{2014} unknown field."),
+        ] {
+            let env = Fake::new();
+            let refusal = save_source_with(
+                &env,
+                "neon",
+                &parts(&["neon"]),
+                Some("napi_x"),
+                &typed(&[("orgId", "org-1"), (input, value)]),
+                true,
+            );
+            assert_eq!(refusal.unwrap_err(), sentence, "{input}={value}");
+            assert!(env
+                .credentials
+                .secret(SecretKey::NeonApiKey)
+                .unwrap()
+                .is_none());
+            let store = env.store.lock().unwrap();
+            assert!(store.settings().neon_org_id.is_empty());
+            assert!(store.dashboard().is_none());
+            assert!(env.woken.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_value_not_sent_is_kept_and_removing_the_source_forgets_every_value_and_the_key() {
+        let env = Fake::new();
+        save_source_with(
+            &env,
+            "vercel",
+            &parts(&["vercel"]),
+            Some("tok"),
+            &typed(&[("teamId", "team_1")]),
+            false,
+        )
+        .unwrap();
+        // Reopened and left alone: the key stays and so does the team.
+        save_source_with(&env, "vercel", &parts(&["vercel"]), None, &[], false).unwrap();
+        assert_eq!(
+            env.store.lock().unwrap().settings().vercel_team_id,
+            "team_1"
+        );
+        assert!(env
+            .credentials
+            .secret(SecretKey::VercelApiToken)
+            .unwrap()
+            .is_some());
+
+        let status = save_source_with(&env, "vercel", &parts(&[]), None, &[], true).unwrap();
+        assert_eq!(status, "Vercel removed.");
+        assert!(env
+            .store
+            .lock()
+            .unwrap()
+            .settings()
+            .vercel_team_id
+            .is_empty());
+        assert!(env
+            .credentials
+            .secret(SecretKey::VercelApiToken)
+            .unwrap()
+            .is_none());
+        // Vercel's token has no spend figure to drop.
+        assert!(env.spend_dropped.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_save_puts_the_typed_values_back() {
+        let env = Fake::new();
+        env.store.lock().unwrap().settings_mut().neon_org_id = "org-before".to_owned();
+        // A directory where the file goes makes the write fail.
+        let file = env.store.lock().unwrap().path().to_owned();
+        std::fs::remove_file(&file).ok();
+        std::fs::create_dir_all(&file).unwrap();
+        let refusal = save_source_with(
+            &env,
+            "neon",
+            &parts(&["neon"]),
+            Some("napi_x"),
+            &typed(&[("orgId", "org-after"), ("usdPerCuHour", "1")]),
+            false,
+        );
+        assert!(refusal.unwrap_err().starts_with("Failed"));
+        let store = env.store.lock().unwrap();
+        assert_eq!(store.settings().neon_org_id, "org-before");
+        assert!(store.settings().neon_usd_per_cu_hour.abs() < f64::EPSILON);
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_credential_store_refuses_removing_neon_or_vercel_in_its_own_words() {
+        for (kind, sentence) in [
+            (
+                "neon",
+                "Couldn't read the credential store, so a stored organization API key can't \
+                 be removed. Nothing changed.",
+            ),
+            (
+                "vercel",
+                "Couldn't read the credential store, so a stored API token can't be removed. \
+                 Nothing changed.",
+            ),
+        ] {
+            let env = Fake::new();
+            env.credentials.fail_read.set(true);
+            let refusal = save_source_with(&env, kind, &parts(&[]), None, &[], true);
+            assert_eq!(refusal.unwrap_err(), sentence, "{kind}");
+            assert!(env.store.lock().unwrap().dashboard().is_none());
+            assert!(env.woken.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn every_part_id_is_unique_within_its_source() {
+        for spec in &SOURCES {
+            let mut ids: Vec<_> = spec.parts.iter().map(|part| part.id).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), spec.parts.len(), "{}", spec.kind);
+        }
     }
 }

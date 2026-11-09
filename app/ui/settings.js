@@ -1248,24 +1248,10 @@ function azureTab(t) {
   return [box, exp];
 }
 
-function usageTab(t, provider) {
-  // One group per provider, each carrying its own non-secret fields *and* its
-  // credential -- the original tab's shape, where adding a provider is adding a
-  // section.
-  const neon = group(t.neon.heading);
-  const orgId = textInput(t.neon.orgId);
-  neon.appendChild(field("neon-org-id", t.neon.orgIdLabel, orgId));
-  const cuRate = numberInput(t.neon.usdPerCuHour, 0);
-  cuRate.step = "any"; // rates are fractional; the default step=1 would flag 0.106 invalid
-  const gibRate = numberInput(t.neon.usdPerGibMonth, 0);
-  gibRate.step = "any";
-  neon.append(advanced(
-    field("neon-usd-cu-hour", t.neon.usdPerCuHourLabel, cuRate),
-    field("neon-usd-gib-month", t.neon.usdPerGibMonthLabel, gibRate),
-    help(t.neon.ratesHelp)
-  ));
-  secretControls(neon, t.neon.secret);
-
+/** Sentry's own form: its org slug and quota, and its credential. Neon and
+ *  Vercel are set up through the source steps (`walkEditor`) and have no group
+ *  here, so Apply sends their saved values back as they came. */
+function usageTab(t) {
   const sentry = group(t.sentry.heading);
   const orgSlug = textInput(t.sentry.orgSlug);
   const quota = numberInput(t.sentry.quota, 0);
@@ -1276,33 +1262,25 @@ function usageTab(t, provider) {
   ));
   secretControls(sentry, t.sentry.secret);
 
-  const vercel = group(t.vercel.heading);
-  const teamId = textInput(t.vercel.teamId);
-  vercel.append(
-    field("vercel-team-id", t.vercel.teamIdLabel, teamId),
-    help(t.vercel.teamIdHelp)
-  );
-  secretControls(vercel, t.vercel.secret);
-
   const apply = button(t.saveLabel, "apply");
+  // `settings_save_providers` writes every non-secret provider preference in
+  // one go, so the ones this form doesn't show are sent back as they came --
+  // a partial write would silently blank them.
   apply.addEventListener("click", () =>
     mutate("settings_save_providers", {
       prefs: {
-        neonOrgId: orgId.value,
+        neonOrgId: t.neon.orgId,
         sentryOrgSlug: orgSlug.value,
         sentryMonthlyEventQuota: int(quota.value),
         azureMonthlyBudgetUsd: Number(S.view.azure.budget.value) || 0,
-        neonUsdPerCuHour: Number(cuRate.value) || 0,
-        neonUsdPerGibMonth: Number(gibRate.value) || 0,
-        vercelTeamId: teamId.value,
+        neonUsdPerCuHour: Number(t.neon.usdPerCuHour) || 0,
+        neonUsdPerGibMonth: Number(t.neon.usdPerGibMonth) || 0,
+        vercelTeamId: t.vercel.teamId,
       },
     })
   );
 
-  // One Apply for both, because `settings_save_providers` writes every
-  // non-secret provider preference in one go.
-  const groups = { neon, sentry, vercel };
-  return [...(provider ? [groups[provider]] : [neon, sentry, vercel]), actionRow(apply)];
+  return [sentry, actionRow(apply)];
 }
 
 /** One watched status page: its name, its address, the component it is watched
@@ -1711,8 +1689,9 @@ function advanced(...content) {
 function navigate(next) {
   const dirty = unappliedEdits().length > 0 ||
     Array.from(document.querySelectorAll('#settings input[type="password"]')).some(el => el.value) ||
-    // A key typed in a walk lives in `walk.secret` once its step is left.
-    Boolean(S.walk?.secret);
+    // A key typed in a walk lives in `walk.secret` once its step is left, and
+    // so does a value typed into one of its inputs.
+    Boolean(S.walk?.secret) || walkInputsEdited(S.walk);
   if (!dirty) { next(); return; }
   const labels = S.view.connections;
   const box = $s("settingsConfirm");
@@ -1818,12 +1797,19 @@ function connectionsTab(t) {
  *  part has nothing to ask, so that part starts picked. */
 function startWalk(entry) {
   const { parts } = entry.walk;
+  // What each part's inputs hold now, so leaving can tell an edit from a
+  // reopened step, and a value is shown before it is ever sent.
+  const inputs = Object.fromEntries(
+    parts.flatMap(part => (part.inputs || []).map(input => [input.id, input.value])),
+  );
   return {
     kind: entry.kind,
     picked: new Set(parts.filter(part => part.on || parts.length === 1).map(part => part.id)),
     added: parts.some(part => part.on),
     index: 0,
     secret: "",
+    inputs,
+    inputsStart: { ...inputs },
     addTile: true,
     problem: "",
   };
@@ -1841,6 +1827,21 @@ function walkSteps(parts, walk) {
 }
 
 const pickedParts = (parts, walk) => parts.filter(part => walk.picked.has(part.id));
+
+/** Whether a typed value differs from what the steps opened with. */
+const walkInputsEdited = walk =>
+  Boolean(walk) && Object.keys(walk.inputs).some(id => walk.inputs[id] !== walk.inputsStart[id]);
+
+/** One typed, non-secret value. It lives in the draft, so it survives Back and
+ *  Next, and goes to Rust only at Finish. */
+function walkInput(item, walk, onEnter) {
+  const input = item.number ? numberInput(walk.inputs[item.id], 0) : textInput(walk.inputs[item.id]);
+  // Rates are fractional; the default step of 1 would flag 0.106 invalid.
+  if (item.number) input.step = "any";
+  input.addEventListener("input", () => { walk.inputs[item.id] = input.value; });
+  input.addEventListener("keydown", event => { if (event.key === "Enter") onEnter(); });
+  return field(`walk-${item.id}`, item.label, input);
+}
 
 function walkPickStep(parts, walk, onChange) {
   const list = node("div", "walk-picks");
@@ -1877,6 +1878,16 @@ function walkPartStep(part, walk, labels, onEnter) {
     if (part.secret.stored) content.push(node("p", "help walk-stored", part.secret.storedLabel));
     if (walk.problem) content.push(node("p", "help walk-problem", labels.keyRequired));
   }
+  const inputs = part.inputs || [];
+  for (const item of inputs.filter(item => !item.advanced)) content.push(walkInput(item, walk, onEnter));
+  if (part.inputsHelp) content.push(help(part.inputsHelp));
+  const extra = inputs.filter(item => item.advanced);
+  if (extra.length) {
+    content.push(advanced(
+      ...extra.map(item => walkInput(item, walk, onEnter)),
+      ...(part.advancedHelp ? [help(part.advancedHelp)] : []),
+    ));
+  }
   return content;
 }
 
@@ -1906,11 +1917,18 @@ async function finishWalk(entry, control) {
   const { parts } = entry.walk;
   control.disabled = true;
   let result;
+  const picked = pickedParts(parts, walk);
+  // Only a picked part's inputs are sent; an unpicked part's are forgotten.
+  const inputs = Object.fromEntries(
+    picked.flatMap(part => (part.inputs || []).map(input => [input.id, walk.inputs[input.id]])),
+  );
   try {
     result = await callRust("settings_save_source", {
       kind: walk.kind,
-      parts: pickedParts(parts, walk).map(part => part.id),
-      secret: walk.picked.has("api") && walk.secret ? walk.secret : null,
+      parts: picked.map(part => part.id),
+      secret: picked.some(part => part.secret) && walk.secret ? walk.secret : null,
+      // Left out for a source with none, so its call is the one it always was.
+      ...(Object.keys(inputs).length ? { inputs } : {}),
       addTile: walk.addTile,
     });
   } catch {
@@ -2041,8 +2059,8 @@ function connectionEditor() {
     const hosts = S.view.hosts;
     content = hostsTab({ ...hosts, rows: hosts.rows.filter(h => h.id === entry.entityId) },
       { edit: !!entry.entityId, addOnly: !entry.entityId });
-  } else if (["neon", "sentry", "vercel"].includes(entry.kind)) {
-    content = usageTab(S.view.usage, entry.kind);
+  } else if (entry.kind === "sentry") {
+    content = usageTab(S.view.usage);
   } else if (entry.kind === "azure") content = azureTab(S.view.azure);
   else if (entry.kind === "openclaw") content = openclawTab(S.view.openclaw);
   else if (entry.kind === "vendor") {
