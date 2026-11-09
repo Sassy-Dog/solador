@@ -129,15 +129,14 @@ pub struct StoredSecrets {
     pub accounts: HashSet<Uuid>,
 }
 
-/// The credentials the Settings surface can write, as the frontend names them.
+/// The credentials the Settings surface can write on the spot, as the frontend
+/// names them. Every source with steps writes its key at Finish instead, with the
+/// flags it goes with, so only OpenClaw's bearer token is left.
 ///
 /// A closed set mapped to [`SecretKey`], so an unknown key from the webview is
 /// a rejected command rather than a silently-ignored save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretField {
-    Neon,
-    Sentry,
-    Vercel,
     /// The OpenClaw gateway's *bearer* token, which is optional — most gateways
     /// authenticate by device pairing instead. Deliberately not the device key:
     /// that is 32 raw bytes minted by this app, never typed by a human, and it
@@ -150,9 +149,6 @@ impl SecretField {
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
-            SecretField::Neon => "neon",
-            SecretField::Sentry => "sentry",
-            SecretField::Vercel => "vercel",
             SecretField::OpenClaw => "openclaw",
         }
     }
@@ -161,9 +157,6 @@ impl SecretField {
     #[must_use]
     pub const fn key(self) -> SecretKey {
         match self {
-            SecretField::Neon => SecretKey::NeonApiKey,
-            SecretField::Sentry => SecretKey::SentryUsageToken,
-            SecretField::Vercel => SecretKey::VercelApiToken,
             SecretField::OpenClaw => SecretKey::OpenClawBearerToken,
         }
     }
@@ -171,14 +164,9 @@ impl SecretField {
     /// Parses the identifier the frontend sent.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
-        [
-            SecretField::Neon,
-            SecretField::Sentry,
-            SecretField::Vercel,
-            SecretField::OpenClaw,
-        ]
-        .into_iter()
-        .find(|field| field.id() == raw)
+        [SecretField::OpenClaw]
+            .into_iter()
+            .find(|field| field.id() == raw)
     }
 }
 
@@ -1655,7 +1643,9 @@ fn sentry_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
     json!({
         "kind": "sentry", "title": SENTRY_TITLE,
         "feeds": "Usage and scheduled jobs",
-        "walk": {"parts": [usage, crons], "tile": tile("usage")},
+        // `added` is sent, not derived from the parts: a token or slug with both
+        // parts off is still a source that exists, and has something to remove.
+        "walk": {"parts": [usage, crons], "tile": tile("usage"), "added": there},
     })
 }
 
@@ -3694,6 +3684,38 @@ mod tests {
         assert_eq!(walk["parts"][1]["on"], false);
     }
 
+    /// A stored token (or slug) with both parts off is still an added source: its
+    /// steps must offer Remove, which they only do for one that is added.
+    #[test]
+    fn a_sentry_token_with_both_parts_off_is_still_an_added_source() {
+        let off = Settings::default();
+        for (key, slug, added) in [
+            (StoredKey::Stored, "", true),
+            (StoredKey::Unread, "", true),
+            (StoredKey::Absent, "acme", true),
+            (StoredKey::Absent, "", false),
+        ] {
+            let settings = Settings {
+                sentry_org_slug: slug.into(),
+                ..off.clone()
+            };
+            let stored = StoredSecrets {
+                sentry: key,
+                ..StoredSecrets::default()
+            };
+            let vm = view_of(&settings, &[], &[], &stored, &facts());
+            let walk = &catalog_entry(&vm, "sentry")["walk"];
+            assert_eq!(walk["added"], added, "{key:?} {slug:?}");
+            assert_eq!(walk["parts"][0]["on"], false);
+            assert_eq!(walk["parts"][1]["on"], false);
+        }
+        // Neon's and Vercel's walks carry no such field: the steps read their one
+        // part, as before.
+        let vm = view_of(&off, &[], &[], &StoredSecrets::default(), &facts());
+        assert!(catalog_entry(&vm, "neon")["walk"]["added"].is_null());
+        assert!(catalog_entry(&vm, "vercel")["walk"]["added"].is_null());
+    }
+
     #[test]
     fn neon_and_vercel_with_an_unreadable_keychain_keep_the_source_and_its_key() {
         let stored = StoredSecrets {
@@ -4696,11 +4718,12 @@ mod tests {
 
     #[test]
     fn every_secret_field_id_round_trips_and_maps_to_its_own_key() {
-        let fields = [
-            SecretField::Neon,
-            SecretField::Sentry,
-            SecretField::OpenClaw,
-        ];
+        let fields = [SecretField::OpenClaw];
+        // Neon's, Sentry's and Vercel's keys are written and deleted only at
+        // Finish, with their flags: no command takes them by name.
+        for retired in ["neon", "sentry", "vercel"] {
+            assert_eq!(SecretField::parse(retired), None, "{retired}");
+        }
         for field in fields {
             assert_eq!(SecretField::parse(field.id()), Some(field));
         }

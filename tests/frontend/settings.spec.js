@@ -231,6 +231,20 @@ test("leaving or closing an editor protects typed fields and explicitly discards
   expect(await saves(page)).toEqual([]);
 });
 
+// The step focuses its key field on the next frame. A field the operator has
+// already clicked into must keep focus, or what they type lands in the key's
+// input instead: the cause of a once-seen failure in the test above.
+test("a step's deferred focus does not take focus from a field already clicked into", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await tab(page, "usage").click();
+  await next(page);
+  await page.locator("#walk-orgSlug").focus();
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await expect(page.locator("#walk-orgSlug")).toBeFocused();
+  await page.keyboard.type("typed-slug");
+  await expect(page.locator("#walk-secret")).toHaveValue("");
+});
+
 test("host edits retain the saved identity and replace the token only explicitly", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   const host = settings.hosts.rows[0];

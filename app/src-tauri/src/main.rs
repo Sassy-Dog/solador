@@ -3795,7 +3795,7 @@ async fn poll_crons(app: &Arc<App>) {
         app.crons
             .lock()
             .expect("crons state poisoned")
-            .unconfigure();
+            .unconfigure_part();
         return;
     }
     let token = match read_credential(&*app.credentials, SecretKey::SentryUsageToken) {
@@ -6364,19 +6364,6 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 /// loop to wake — its caller reconciles poll *tasks* instead.
 fn wake_for(app: &App, field: SecretField) {
     match field {
-        // Also the Services loop: `active_vendors` derives the Neon and Vercel
-        // status pages from exactly these credentials.
-        SecretField::Neon | SecretField::Vercel => {
-            wake_usage(app, UsageWake::Providers);
-            wake_services(app);
-        }
-        // One credential, two panels: the Usage panel's Sentry section and the
-        // Sentry Crons panel are separate loops, so a save has to reach both or
-        // one of them keeps describing the previous token for up to an hour.
-        SecretField::Sentry => {
-            wake_usage(app, UsageWake::Providers);
-            app.crons_wake.notify_one();
-        }
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
         // and re-handshaked, which is exactly what this wake does.
@@ -8353,30 +8340,84 @@ mod tests {
             .is_empty());
     }
 
+    /// A credential store that never answers: every pass reads `Unreadable`, so
+    /// a pass that does run stops at the keychain and never reaches the network.
+    struct Silent;
+    impl CredentialStore for Silent {
+        fn secret(&self, key: SecretKey) -> Result<Option<String>, store::SecretError> {
+            Err(store::SecretError::CorruptBlob {
+                account: key.account(),
+            })
+        }
+        fn set_secret(&self, _: SecretKey, _: &str) -> Result<(), store::SecretError> {
+            Ok(())
+        }
+        fn delete_secret(&self, _: SecretKey) -> Result<(), store::SecretError> {
+            Ok(())
+        }
+        fn secret_bytes(&self, _: SecretKey) -> Result<Option<Vec<u8>>, store::SecretError> {
+            Ok(None)
+        }
+        fn set_secret_bytes(&self, _: SecretKey, _: &[u8]) -> Result<(), store::SecretError> {
+            Ok(())
+        }
+    }
+
+    /// One token, two gates. A part switched off is "not set up" for its own
+    /// loop whatever the credential store says, and the other part's state is
+    /// left alone.
+    #[test]
+    fn each_sentry_flag_gates_only_its_own_loop() {
+        for (usage_on, crons_on) in [(false, true), (true, false), (true, true)] {
+            let (_dir, rt, app) = test_app_over(Silent);
+            {
+                let mut store = app.store.lock().unwrap();
+                store.settings_mut().sentry_usage_enabled = usage_on;
+                store.settings_mut().sentry_crons_enabled = crons_on;
+            }
+            let app = Arc::new(app);
+            rt.block_on(poll_usage_providers(&app));
+            rt.block_on(poll_crons(&app));
+
+            let usage_absent = app
+                .usage
+                .lock()
+                .unwrap()
+                .sentry_mut()
+                .configured
+                .is_absent();
+            assert_eq!(usage_absent, !usage_on, "usage {usage_on} crons {crons_on}");
+            let message = crons_unscoped(&app)["message"]["text"].clone();
+            if crons_on {
+                assert_ne!(message, json!(crons::PART_OFF_MESSAGE));
+                assert_ne!(message, json!(crons::UNCONFIGURED_MESSAGE));
+            } else {
+                assert_eq!(message, json!(crons::PART_OFF_MESSAGE));
+            }
+        }
+    }
+
+    /// With no token at all (and the part on), the Crons tile still asks for one.
+    #[test]
+    fn crons_with_the_part_on_and_no_token_asks_for_one() {
+        let (_dir, rt, app) = test_app();
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .sentry_crons_enabled = true;
+        let app = Arc::new(app);
+        rt.block_on(poll_crons(&app));
+        assert_eq!(
+            crons_unscoped(&app)["message"]["text"],
+            json!(crons::UNCONFIGURED_MESSAGE)
+        );
+    }
+
     /// The Sentry token is read three ways, and only the badge-only credentials
     /// read a failure as "not stored".
     #[test]
     fn a_credential_store_that_will_not_answer_leaves_sentry_unread_not_absent() {
-        struct Silent;
-        impl CredentialStore for Silent {
-            fn secret(&self, key: SecretKey) -> Result<Option<String>, store::SecretError> {
-                Err(store::SecretError::CorruptBlob {
-                    account: key.account(),
-                })
-            }
-            fn set_secret(&self, _: SecretKey, _: &str) -> Result<(), store::SecretError> {
-                Ok(())
-            }
-            fn delete_secret(&self, _: SecretKey) -> Result<(), store::SecretError> {
-                Ok(())
-            }
-            fn secret_bytes(&self, _: SecretKey) -> Result<Option<Vec<u8>>, store::SecretError> {
-                Ok(None)
-            }
-            fn set_secret_bytes(&self, _: SecretKey, _: &[u8]) -> Result<(), store::SecretError> {
-                Ok(())
-            }
-        }
         let stored = stored_secrets(&Silent, &[], &[]);
         for key in [
             stored.neon,

@@ -62,6 +62,12 @@ pub fn stale_after_secs(cadence_secs: u64) -> u64 {
 /// message [`Configured::Absent`] may paint.
 pub const UNCONFIGURED_MESSAGE: &str = "Connect a Sentry token in Settings";
 
+/// The panel's state when Sentry is set up but its Scheduled jobs part is not
+/// (a token stored for the Usage tile alone). Also an instruction, and not the
+/// one above: a token exists, so asking for one would be wrong.
+pub const PART_OFF_MESSAGE: &str =
+    "Sentry\u{2019}s Scheduled jobs isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources";
+
 /// Nothing has read the credential store yet, or a read is in flight.
 pub const LOADING_MESSAGE: &str = "reading monitors…";
 
@@ -93,6 +99,9 @@ pub struct CronsState {
     /// True from startup (or a newly-saved token) until the first read settles —
     /// what separates [`LOADING_MESSAGE`] from [`NO_DATA_MESSAGE`].
     loading: bool,
+    /// The token (if any) is not this panel's to read: Scheduled jobs is not
+    /// ticked. Only meaningful with [`Configured::Absent`].
+    part_off: bool,
 }
 
 impl CronsState {
@@ -110,6 +119,16 @@ impl CronsState {
     pub fn unconfigure(&mut self) {
         *self = CronsState {
             token: Configured::Absent,
+            ..CronsState::default()
+        };
+    }
+
+    /// A pass found Scheduled jobs unticked. Like [`Self::unconfigure`], but the
+    /// panel says so rather than asking for a token that may well be stored.
+    pub fn unconfigure_part(&mut self) {
+        *self = CronsState {
+            token: Configured::Absent,
+            part_off: true,
             ..CronsState::default()
         };
     }
@@ -309,6 +328,7 @@ pub fn view(state: &CronsState, cadence_secs: u64, now: u64) -> Value {
     let Some(summary) = state.summary.as_ref().filter(|_| state.token.is_present()) else {
         payload["message"] = match (state.token, state.last_error.as_deref()) {
             (Configured::Unknown, _) => message(LOADING_MESSAGE, color::MUTED),
+            (Configured::Absent, _) if state.part_off => message(PART_OFF_MESSAGE, color::MUTED),
             (Configured::Absent, _) => message(UNCONFIGURED_MESSAGE, color::MUTED),
             // Red, and the failure named: this one *is* broken.
             (Configured::Present, Some(error)) => message(error, color::RED),

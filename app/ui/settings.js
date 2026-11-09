@@ -1757,7 +1757,9 @@ function startWalk(entry) {
   return {
     kind: entry.kind,
     picked: new Set(parts.filter(part => part.on || parts.length === 1).map(part => part.id)),
-    added: parts.some(part => part.on),
+    // Rust says so when a source can exist with every part off (Sentry's token
+    // alone); otherwise a source is added when one of its parts is on.
+    added: entry.walk.added ?? parts.some(part => part.on),
     index: 0,
     secret: "",
     inputs,
@@ -2007,7 +2009,13 @@ function walkEditor(entry) {
   page.dataset.step = step;
   page.append(progress, node("h2", null, heading), ...content, actions);
   // A render replaces the page, so keyboard focus would fall back to the top.
-  requestAnimationFrame(() => page.querySelector("[data-walk-focus]")?.focus());
+  // Only if nothing in the new page has taken it since: the frame can land after
+  // the operator (or a fast test) has already clicked into another field, and
+  // moving focus then sends what they are typing into the wrong input.
+  requestAnimationFrame(() => {
+    if (page.contains(document.activeElement)) return;
+    page.querySelector("[data-walk-focus]")?.focus();
+  });
   return [page];
 }
 
