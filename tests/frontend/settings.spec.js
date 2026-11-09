@@ -1715,6 +1715,7 @@ test("the Azure budget's Apply sends the budget and nothing else", async ({ page
 /** A store where Sentry is not added, whatever the fixture holds. */
 function withoutSentry(settings) {
   const entry = catalogEntry(settings, "sentry");
+  entry.walk.added = false;
   for (const part of entry.walk.parts) {
     part.on = false;
     part.secret.stored = false;
@@ -1868,6 +1869,20 @@ test("Sentry: Remove source sends no parts, so Finish turns both parts off and c
   await page.locator(".walk-finish").click();
   const [save] = await saves(page);
   expect(save.args).toEqual({ kind: "sentry", parts: [], secret: null, addTile: true });
+});
+
+test("a stored Sentry token with both parts off is still an added source that can be removed", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, undefined, undefined, undefined, (settings) => {
+    const entry = catalogEntry(settings, "sentry");
+    entry.walk.added = true;
+    for (const part of entry.walk.parts) part.on = false;
+  });
+  await page.locator('.connection-row[data-kind="sentry"]').click();
+  await expect(page.locator(".walk-next"), "nothing picked is how a source is removed").toBeEnabled();
+  await expect(page.locator(".walk-remove")).toBeVisible();
+  await page.locator(".walk-remove").click();
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({ kind: "sentry", parts: [], secret: null, addTile: true });
 });
 
 test("Sentry with a credential store that did not answer says so and finishes without a typed key", async ({ page, baseURL }) => {
