@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { dashboardWithTiles, openTileFull, PANEL_SOURCE_READS } from './tile-full.js';
+import { dashboardWithTiles, openTileFull, PANEL_SOURCE_READS, swapReport } from './tile-full.js';
 
 test.beforeEach(async ({ page }) => {
   page.statusErrors = [];
@@ -22,10 +22,16 @@ async function open(page, baseURL, sources = null) {
   await page.addInitScript(frames => {
     window.framesForTest = frames;
     window.dashboardReads = 0;
+    window.dashboardReadsDone = 0;
     window.__TAURI__ = { core: { invoke: async command => {
       if (command === 'dashboard_view') {
         window.dashboardReads += 1;
-        if (window.failDashboard) throw new Error('Connection interrupted');
+        try {
+          if (window.failDashboard) throw new Error('Connection interrupted');
+          return window.framesForTest.dashboard_view ?? null;
+        } finally {
+          window.dashboardReadsDone += 1;
+        }
       }
       return window.framesForTest[command] ?? null;
     } } };
@@ -46,8 +52,10 @@ const bounds = (page, selector) => page.locator(selector).evaluateAll(elements =
 const layoutSettled = page => page.evaluate(() => new Promise(done =>
   requestAnimationFrame(() => requestAnimationFrame(done))));
 async function changeDashboard(page, model) {
-  await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, model);
-  await expect(page.locator('.db-value').first()).toHaveText(model.tiles[0].rows[0].value);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, model);
+    await expect(page.locator('.db-value').first()).toHaveText(model.tiles[0].rows[0].value);
+  });
 }
 
 for (const width of [375, 1024, 1600]) {
@@ -166,12 +174,16 @@ for (const presentation of ['summary', 'detailed']) test(`all overview sources r
   next.tiles = next.sources.map(source => ({ ...next.tiles[0], id:source.id, source:source.id, title:source.title, presentation, rows:source.rows.slice(0, 5), warnings:source.warnings }));
   next.layout.tiles = next.tiles.map(({id, source, title}) => ({ id, source, title, presentation, width:'medium', scope:'all', hidden:false }));
   next.layout.revision += 1;
-  await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, next);
-  await expect(page.locator('.db-tile')).toHaveCount(next.sources.length);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, next);
+    await expect(page.locator('.db-tile')).toHaveCount(next.sources.length);
+  });
   const before = await bounds(page, '.db-tile, .db-tile-footer');
   next.tiles.forEach(t => { t.rows = []; t.warnings = []; });
-  await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, next);
-  await expect(page.locator('.db-grid .db-item')).toHaveCount(0);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, next);
+    await expect(page.locator('.db-grid .db-item')).toHaveCount(0);
+  });
   expect(await bounds(page, '.db-tile, .db-tile-footer')).toEqual(before);
 });
 
@@ -256,8 +268,10 @@ test('the Machines tile warns when every remote host is unreachable, and clears 
   down.tiles.find(t => t.source === 'hosts').warnings = [{ text: warningText, color: '#e0a03a' }];
   down.attention = [...down.attention, { source: 'hosts', label: 'Machines · check readings', color: '#e0a03a' }];
   down.tiles[0].rows[0].value = 'unreachable';
-  await page.evaluate(down => { window.framesForTest.dashboard_view = down; }, down);
-  await expect(hostsTile().locator('.db-warning')).toHaveText(warningText);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(down => { window.framesForTest.dashboard_view = down; }, down);
+    await expect(hostsTile().locator('.db-warning')).toHaveText(warningText);
+  });
   expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
 
   // The next frame in which any remote host answers clears it — recomputed
@@ -266,8 +280,10 @@ test('the Machines tile warns when every remote host is unreachable, and clears 
   recovered.tiles.find(t => t.source === 'hosts').warnings = [];
   recovered.attention = recovered.attention.filter(a => a.source !== 'hosts');
   recovered.tiles[0].rows[0].value = 'recovered';
-  await page.evaluate(recovered => { window.framesForTest.dashboard_view = recovered; }, recovered);
-  await expect(hostsTile().locator('.db-warning')).toHaveCount(0);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(recovered => { window.framesForTest.dashboard_view = recovered; }, recovered);
+    await expect(hostsTile().locator('.db-warning')).toHaveCount(0);
+  });
   expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
 });
 
@@ -280,8 +296,10 @@ test('live resource details keep the inspector and its actions anchored', async 
   hosts.rows = [];
   hosts.trailing = '';
   hosts.warnings = [{text:'Long diagnostic '.repeat(40),color:'#ff9384'}];
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect(page.locator('.db-detail-resource')).toHaveCount(0);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('.db-detail-resource')).toHaveCount(0);
+  });
   expect(await bounds(page, '.db-inspector, .db-inspector > .db-form-actions, .db-grid')).toEqual(before);
 });
 
@@ -292,15 +310,19 @@ test('live hidden previews keep Restore and Remove anchored', async ({ page, bas
   next.hiddenTiles = [hidden];
   next.layout.tiles.find(t => t.id === hidden.id).hidden = true;
   next.layout.revision += 1;
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect(page.locator('.db-tile')).toHaveCount(next.tiles.length);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('.db-tile')).toHaveCount(next.tiles.length);
+  });
   await page.locator('[data-action="edit"]').click();
   await page.locator('.db-hidden-count').click();
   const before = await bounds(page, '.db-inspector, .db-hidden-preview .db-form-actions');
   hidden.rows = [];
   hidden.warnings = [{text:'Long diagnostic '.repeat(40),color:'#ff9384'}];
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect(page.locator('.db-hidden-preview .db-item')).toHaveCount(0);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('.db-hidden-preview .db-item')).toHaveCount(0);
+  });
   expect(await bounds(page, '.db-inspector, .db-hidden-preview .db-form-actions')).toEqual(before);
 });
 
@@ -323,8 +345,10 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   const individual = next.sources.find(s => s.id === 'ghRunners').rows[0];
   runners.runnerView = 'list';
   runners.rows = Array.from({length:12}, (_, i) => ({...individual, id:`runner-${i}`, name:`runner-${i}`}));
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect(page.locator('[data-source="ghRunners"] .db-item')).toHaveCount(12);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('[data-source="ghRunners"] .db-item')).toHaveCount(12);
+  });
   const clipped = () => page.locator('.db-tile-content, .card, .panel-body').evaluateAll(elements => elements.filter(el => el.getClientRects().length && el.scrollHeight > el.clientHeight + 1).map(el => el.className));
   await expect.poll(clipped).toEqual([]);
   const padding = await page.locator('.db-attention').evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]);
@@ -334,8 +358,10 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   // tile per source: every panel with every row.
   const full = dashboardWithTiles(frames.dashboard_view, next.sources.map(s => s.id));
   full.layout.revision += 1;
-  await page.evaluate(view => { window.framesForTest.dashboard_view = view; }, full);
-  await expect(page.locator('.db-tile')).toHaveCount(full.tiles.length);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(view => { window.framesForTest.dashboard_view = view; }, full);
+    await expect(page.locator('.db-tile')).toHaveCount(full.tiles.length);
+  });
   for (const { source } of full.tiles) {
     await openTileFull(page, source);
     await expect(page.locator('#fullView')).not.toHaveAttribute('data-tile-loading');
@@ -355,13 +381,20 @@ test('resizing releases obsolete height reservations without clipping content', 
   const runners = next.tiles.find(t => t.source === 'ghRunners');
   runners.runnerView = 'list';
   runners.rows = Array.from({length:20}, (_, i) => ({...next.sources.find(s => s.id === 'ghRunners').rows[0], id:`runner-${i}`}));
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   const body = page.locator('.db-tile[data-source="ghRunners"] .db-tile-content');
-  await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);
+  // The stub keeps `next` until the test replaces it, so the app's 1s read
+  // cannot miss it; what can end the wait is a page that stopped reading, and
+  // `swapReport` says which it was.
+  await swapReport(page, 'the 20-runner frame', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);
+  });
   const tall = await body.boundingBox();
   runners.rows = [];
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect(page.locator('.db-tile[data-source="ghRunners"] .db-item')).toHaveCount(0);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('.db-tile[data-source="ghRunners"] .db-item')).toHaveCount(0);
+  });
   expect((await body.boundingBox()).height).toEqual(tall.height);
   await page.setViewportSize({width:1600,height:900});
   await expect.poll(() => body.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(tall.height);
@@ -373,18 +406,22 @@ test('changing Detailed to Summary releases the old tile height', async ({page, 
   const next = structuredClone(frames.dashboard_view);
   next.tiles[0].presentation = 'detailed';
   next.layout.revision += 1;
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   const content = page.locator('.db-tile').first().locator('.db-tile-content');
   // Wait for the presentation itself: a Machines summary is already taller
   // than Detailed's 360px floor, so the floor alone no longer proves the
   // Detailed frame was painted.
-  await expect(page.locator('.db-tile').first()).toHaveAttribute('data-presentation', 'detailed');
-  await expect.poll(() => content.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(360);
+  await swapReport(page, 'the Detailed frame', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('.db-tile').first()).toHaveAttribute('data-presentation', 'detailed');
+    await expect.poll(() => content.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(360);
+  });
   const detailed = (await content.boundingBox()).height;
   next.tiles[0].presentation = 'summary';
   next.layout.revision += 1;
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect.poll(() => content.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(detailed);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect.poll(() => content.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(detailed);
+  });
 });
 
 test('resizing releases shared row heights and immediately establishes new reservations', async ({page, baseURL}) => {
@@ -393,12 +430,16 @@ test('resizing releases shared row heights and immediately establishes new reser
   const next = structuredClone(frames.dashboard_view);
   const hosts = next.tiles[0];
   hosts.rows = Array.from({length:20}, (_, i) => ({...hosts.rows[0], id:`host-${i}`}));
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   const bodies = page.locator('.db-tile-content');
-  await expect.poll(() => bodies.nth(1).evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(1000);
+  await swapReport(page, 'the 20-host frame', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect.poll(() => bodies.nth(1).evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(1000);
+  });
   hosts.rows = [];
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
-  await expect(page.locator('.db-tile').first().locator('.db-item')).toHaveCount(0);
+  await swapReport(page, 'a frame swap', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect(page.locator('.db-tile').first().locator('.db-item')).toHaveCount(0);
+  });
   await page.setViewportSize({width:1500,height:900});
   await expect.poll(() => bodies.nth(1).evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(500);
   await expect.poll(() => bodies.evaluateAll(els => els.every(el => parseFloat(el.style.minHeight) > 0))).toBe(true);

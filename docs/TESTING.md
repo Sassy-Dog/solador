@@ -245,6 +245,36 @@ The window is intra-test and independent of #401's server-startup one. A
 longer timeout on the frame-1 assertion cannot help — once frame 2 has been
 served, frame 1 is gone — so do not reach for one; hold the frame instead.
 
+**The dashboard stubs hold a swapped answer, and `swapReport` says why a wait
+ended (#722).** `dashboard.spec.js` (`__SET_DASHBOARD__`, `__SET_SOURCE_ROWS__`)
+and `status-layout.spec.js` (`window.framesForTest.dashboard_view = …`) change
+the answer in place and wait for the app's own 1s `dashboard_view` read to paint
+it. Like `stubCockpit`, they keep the new answer until the test swaps again, so
+the read cannot miss the frame. By a reading of the code, not a tested
+guarantee, `refresh()` can skip a read in these ways, and in these tests each
+costs one read, not a run of them: the early return on `pending`, `busy` or
+`settingsOpen` (`app/ui/dashboard.js` ~798); the drops after a read completes,
+`busy || version !== acknowledgementVersion` (~807, ~833), the shape check
+(~808) and the older `layout.revision` check (~810); and the interval's own
+gate (~2849: `mode === "overview" || fullTile`, `!settingsOpen`). Three of
+these waits (the Detail focus test, the open-chip focus test, the runner
+height-reservation test) each failed once or twice locally with no cause found
+and never in CI; 36 runs of the three under eight CPU burners and ten workers
+did not reproduce it. Every in-place swap in `status-layout.spec.js` runs its
+paint wait inside `swapReport` (`tile-full.js`), as do the Detail focus and
+open-chip focus tests in `dashboard.spec.js`; the other swaps in that file are
+left as they were, because the waits #722 saw fail are the routed ones.
+`swapReport` on failure appends how many reads the stub saw begun and answered
+since the swap. None begun: a stalled renderer, a `refresh()` skip (~798,
+~2849) or a `pending` flag stuck by a read that never answered. Begun but not
+answered: a held or slow IPC read. Begun and answered: an app bug or a dropped
+read (~807, ~810, ~833). Do not raise the timeout either way. The config keeps a failing
+test's trace (`trace: "retain-on-failure"`) in `tests/frontend/test-results/`;
+Playwright clears it at the start of the next run, so copy it out first and
+read it with `npx playwright show-trace <trace.zip>`. CI keeps no artifact
+(`ci.yml` has no upload step), so a CI occurrence leaves only `swapReport`'s
+text.
+
 **Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
 `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
 `tests/frontend/tile-full.js`: it stubs the IPC, boots the overview with one
