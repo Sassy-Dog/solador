@@ -888,7 +888,6 @@ pub fn view(
                 latest: agent_release,
             },
         ),
-        "azure": azure_tab(settings),
         "services": services_tab(vendors),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(updates),
@@ -1056,6 +1055,8 @@ pub const NEON_TITLE: &str = store::source_save::NEON_TITLE;
 pub const VERCEL_TITLE: &str = store::source_save::VERCEL_TITLE;
 /// Sentry's error usage and its scheduled-job monitors.
 pub const SENTRY_TITLE: &str = store::source_save::SENTRY_TITLE;
+/// Azure Cost's daily export and monthly budget.
+pub const AZURE_TITLE: &str = store::source_save::AZURE_TITLE;
 /// The button, and the heading of the catalog it opens.
 pub const ADD_SOURCE_LABEL: &str = "Add source";
 
@@ -1064,6 +1065,8 @@ const API_PART_TITLE: &str = "API key";
 const API_PART_UNREAD_TITLE: &str = "API key not read";
 const SENTRY_USAGE_PART_TITLE: &str = "Usage";
 const SENTRY_CRONS_PART_TITLE: &str = "Scheduled jobs";
+const AZURE_EXPORT_PART_TITLE: &str = "Cost export";
+const AZURE_BUDGET_PART_TITLE: &str = "Monthly budget";
 const SUBSCRIPTION_PART_TITLE: &str = "Subscription";
 const LOCAL_PART_TITLE: &str = "Local usage";
 
@@ -1223,7 +1226,8 @@ fn connections_section(
             ));
         }
     }
-    if !s.azure_storage_account.is_empty() || !s.azure_cost_container.is_empty() {
+    if azure_export_there(s) || azure_budget_there(s) {
+        // A budget alone is a half-made source: the panel has no export to read.
         let complete = !s.azure_storage_account.is_empty() && !s.azure_cost_container.is_empty();
         rows.push(row(
             "azure".into(),
@@ -1358,7 +1362,7 @@ fn connections_section(
             neon_entry(s, stored, store.tile_sources),
             sentry_entry(s, stored, store.tile_sources),
             vercel_entry(s, stored, store.tile_sources),
-            {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
+            azure_entry(s, store.tile_sources),
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
             services_entry(s, store.tile_sources),
             {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
@@ -1646,6 +1650,68 @@ fn sentry_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
         // `added` is sent, not derived from the parts: a token or slug with both
         // parts off is still a source that exists, and has something to remove.
         "walk": {"parts": [usage, crons], "tile": tile("usage"), "added": there},
+    })
+}
+
+/// Whether any part of the Azure export location is saved.
+fn azure_export_there(s: &Settings) -> bool {
+    !s.azure_storage_account.is_empty() || !s.azure_cost_container.is_empty()
+}
+
+/// Whether a monthly budget is saved: zero is the shipped default, no budget.
+fn azure_budget_there(s: &Settings) -> bool {
+    s.azure_monthly_budget_usd > 0.0
+}
+
+/// Azure Cost: two parts and no key, because each read is signed by the `az`
+/// CLI session and nothing is stored. A part is on when its values are saved,
+/// which is all there is to say about whether it exists. Every input is
+/// required of a ticked part (`store::source_save`), so none is marked here:
+/// Rust refuses it at Finish, with the sentence the table carries.
+fn azure_entry(s: &Settings, tile_sources: &[String]) -> Value {
+    let mut export = walk_part(
+        "export",
+        AZURE_EXPORT_PART_TITLE,
+        "Daily cost export in a storage account",
+        azure_export_there(s),
+        "Cost export",
+        "The panel signs its own read-only request using the Azure CLI, so `az` must be installed and signed in (`az login`). Nothing is stored: the signature is minted per refresh and lives only as long as one read. Name the storage account and the container the daily cost export is written to.",
+    );
+    export["inputs"] = json!([
+        walk_input(
+            "account",
+            "Storage account",
+            &s.azure_storage_account,
+            false,
+            false
+        ),
+        walk_input(
+            "container",
+            "Container (e.g. cost-exports)",
+            &s.azure_cost_container,
+            false,
+            false
+        ),
+    ]);
+    let mut budget = walk_part(
+        "budget",
+        AZURE_BUDGET_PART_TITLE,
+        "Projected month against a budget",
+        azure_budget_there(s),
+        "Projected vs budget",
+        "Powers the projected-vs-budget bar on the Azure Cost panel. Untick this to hide the bar.",
+    );
+    budget["inputs"] = json!([walk_input(
+        "budgetUsd",
+        "Monthly budget (USD)",
+        &rate_text(s.azure_monthly_budget_usd),
+        true,
+        false
+    )]);
+    json!({
+        "kind": "azure", "title": AZURE_TITLE,
+        "feeds": "Cost exports and monthly budget",
+        "walk": {"parts": [export, budget], "tile": tile_offer("azureCost", tile_sources)},
     })
 }
 
@@ -2408,31 +2474,6 @@ fn hosts_tab(
             "repairHelp": "The agent now presents a different certificate than the one pinned. If you replaced or reset its certificate, check it again and trust the new one; otherwise leave it, because something else may be answering at this address.",
             "unpairedHelp": "This host isn't paired, and its address is neither this machine nor a Tailscale address, so the cockpit is not polling it: it never sends the token over plain HTTP anywhere else. Check its certificate and trust it, then save.",
             "help": "Fetches the certificate this address presents so you can compare its fingerprint with the one `solador-agent tls-fingerprint` printed on the host. Nothing is trusted until you press Trust.",
-        },
-    })
-}
-
-fn azure_tab(settings: &Settings) -> Value {
-    json!({
-        "heading": "Azure Cost",
-        "budget": {
-            "heading": "Budget",
-            "label": "Monthly budget (USD)",
-            "value": settings.azure_monthly_budget_usd,
-            "help": "Powers the projected-vs-budget bar on the Azure Cost panel. Leave at 0 to hide the bar.",
-            "saveLabel": "Apply",
-        },
-        // No credential section: the Azure Cost panel has no stored secret.
-        // It mints a short-lived SAS per poll from the operator's own Azure
-        // CLI session, so what it needs is an address, not a token.
-        "export": {
-            "heading": "Cost Export",
-            "accountLabel": "Storage account",
-            "account": settings.azure_storage_account,
-            "containerLabel": "Container (e.g. cost-exports)",
-            "container": settings.azure_cost_container,
-            "help": "The panel signs its own read-only request using the Azure CLI, so `az` must be installed and signed in (`az login`). Nothing is stored: the signature is minted per refresh and lives only as long as one read.",
-            "saveLabel": "Save",
         },
     })
 }
@@ -3445,6 +3486,71 @@ mod tests {
             .iter()
             .find(|r| r["kind"] == kind)
             .cloned()
+    }
+
+    fn azure_view(settings: &Settings) -> Value {
+        view_of(settings, &[], &[], &StoredSecrets::default(), &facts())
+    }
+
+    /// Azure Cost holds no credential, so a part exists exactly when its values
+    /// are saved, and a fresh store has neither.
+    #[test]
+    fn azure_cost_has_two_parts_with_no_key_and_each_is_on_only_when_saved() {
+        let fresh = azure_view(&Settings::default());
+        assert!(row_of(&fresh, "azure").is_none(), "no source is built in");
+        let entry = catalog_entry(&fresh, "azure");
+        assert_eq!(part_ids(&entry), ["export", "budget"]);
+        for part in entry["walk"]["parts"].as_array().unwrap() {
+            assert_eq!(part["on"], false);
+            assert!(
+                part["secret"].is_null(),
+                "the az CLI session signs each read"
+            );
+        }
+
+        let saved = Settings {
+            azure_storage_account: "acmestorage".into(),
+            azure_cost_container: "cost-exports".into(),
+            ..Settings::default()
+        };
+        let parts = catalog_entry(&azure_view(&saved), "azure")["walk"]["parts"].clone();
+        assert_eq!(parts[0]["on"], true);
+        assert_eq!(parts[1]["on"], false);
+        assert_eq!(parts[1]["inputs"][0]["value"], "", "zero is no budget");
+        let row = row_of(&azure_view(&saved), "azure").unwrap();
+        assert_eq!(row["status"]["text"], "Uses Azure CLI");
+        assert_eq!(row["status"]["attention"], false);
+    }
+
+    /// A budget with no export to read, or half an export, is a source that
+    /// exists and is not finished: its row says so.
+    #[test]
+    fn a_budget_alone_or_half_an_export_is_a_row_that_needs_attention() {
+        for settings in [
+            Settings {
+                azure_monthly_budget_usd: 100.0,
+                ..Settings::default()
+            },
+            Settings {
+                azure_storage_account: "acmestorage".into(),
+                ..Settings::default()
+            },
+        ] {
+            let vm = azure_view(&settings);
+            let row = row_of(&vm, "azure").expect("saved values are a source");
+            assert_eq!(row["status"]["text"], "Setup incomplete");
+            assert_eq!(row["status"]["attention"], true);
+        }
+        let budget_only = catalog_entry(
+            &azure_view(&Settings {
+                azure_monthly_budget_usd: 100.0,
+                ..Settings::default()
+            }),
+            "azure",
+        );
+        assert_eq!(budget_only["walk"]["parts"][1]["on"], true);
+        assert_eq!(budget_only["walk"]["parts"][1]["inputs"][0]["value"], "100");
+        assert_eq!(budget_only["walk"]["parts"][0]["on"], false);
     }
 
     /// No source is built in: a new store has none, and each one is in Add
@@ -4583,16 +4689,11 @@ mod tests {
         assert_eq!(sentry[0]["inputs"][1]["value"], "50000");
         assert_eq!(sentry[1]["inputs"][0]["value"], "acme");
         assert_eq!(sentry[1]["inputs"].as_array().unwrap().len(), 1);
-        assert_eq!(vm["azure"]["budget"]["value"], 250.0);
-        // The Azure tab has no credential section at all any more: the panel
-        // signs its own request per poll and stores nothing. What it carries
-        // instead is an address.
-        assert!(
-            vm["azure"]["secret"].is_null(),
-            "the Azure panel has no stored credential"
-        );
-        assert_eq!(vm["azure"]["export"]["account"], "acmestorage");
-        assert_eq!(vm["azure"]["export"]["container"], "cost-exports");
+        let azure = &catalog_entry(&vm, "azure")["walk"]["parts"];
+        assert_eq!(azure[0]["inputs"][0]["value"], "acmestorage");
+        assert_eq!(azure[0]["inputs"][1]["value"], "cost-exports");
+        assert_eq!(azure[1]["inputs"][0]["value"], "250");
+        assert!(vm["azure"].is_null(), "Azure Cost has no tab of its own");
     }
 
     #[test]

@@ -86,7 +86,7 @@ uuid = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tauri = { version = "2", features = [] }
 # `derive` for the one command argument that is a struct rather than a
-# positional list (`ProviderPrefs`).
+# positional list (`ConnectionRoute`).
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri-plugin-opener = "2.5.4"

@@ -629,7 +629,7 @@ Usage section and Sentry Crons, as it did (`sentry_usage_enabled` and
 `sentry_crons_enabled` read as on when the file has neither).
 
 **This machine**, **Anthropic**, **OpenAI**, **Service health**, **Neon**,
-**Sentry** and **Vercel** open as steps, and a row (or a Usage tile's **Manage source**)
+**Sentry**, **Vercel** and **Azure Cost** open as steps, and a row (or a Usage tile's **Manage source**)
 reopens the same steps with its choices read back. Anthropic asks what to set
 up: **API key**, **Subscription**, **Local usage**. OpenAI asks the first two.
 Each part picked gets one step, then **Ready** summarises what the source will
@@ -641,7 +641,17 @@ Usage tile is what Ready offers for both. **Sentry** asks which parts: **Usage**
 (the Usage tile's Sentry section) and **Scheduled jobs** (Sentry Crons). Both
 read one `org:read` token and one organization slug, so the steps ask for them
 once, on the first part picked, and the monthly error quota (Usage's alone) sits
-behind **Advanced options**. Picking one part leaves the other tile's feed off,
+behind **Advanced options**. **Azure Cost** asks which parts: **Cost export**
+(the storage account and the container the daily export is written to) and
+**Monthly budget** (the amount the Azure Cost tile draws the projected month
+against). It holds no key, because the `az` CLI session signs each read and
+nothing is stored, and the export location is two names rather than a
+credential, so both are plain preferences in `store.json`. Every field is
+required of a ticked part: an empty storage account, container or budget is
+refused with its own sentence before anything is written, and a budget must be
+above zero. Unticking a part forgets its values, and a budget with no export is a
+row that reads `Setup incomplete`, because there is nothing to read. Picking
+one part leaves the other tile's feed off,
 and Ready offers a tile for each part picked that has none (one tick covers
 both). No key is saved by a button on its step: keys and IDs are written at
 **Finish**, so Back and Cancel leave no key, no ID and no tile. Nothing is applied until **Finish**, which
@@ -660,9 +670,11 @@ refusal, then written under the same lock, in the same save, as the flags and
 the tile; a failed save puts them back. What a later source still adds is a new
 wake, spend or plan variant (an arm in the shell's `match`), and anything a
 part cannot say: the typed key goes to the source's first key, so a source with
-a different credential per account (GitHub) needs a keyed argument, and an
-input is never required, so a source that needs one (Azure's) needs a refusal
-sentence on the input. Parts may share a key (Sentry's two parts name one
+a different credential per account (GitHub) needs a keyed argument. An input
+may be **required**: it carries the sentence refusing a ticked part that sends
+it empty or not at all (Azure's export location and budget), checked with every
+other refusal and so before the first write. An unticked part is never refused
+for it, because sending nothing is how a part is removed. Parts may share a key (Sentry's two parts name one
 token) or an input id (its slug): a shared key is kept while any part that
 names it is ticked and deleted only when none is, and a shared input likewise,
 so unticking Usage keeps what Scheduled jobs still reads. Each ticked part
@@ -678,8 +690,7 @@ leaves any key alone, and unticking it is refused. Neon, Sentry and Vercel read 
 way: with the store silent they stay a row (reading `Not read`, as Anthropic's and OpenAI's do; one definition, `row_status_not_read`), their
 step says the credential store didn’t answer, and Finish goes through
 without a typed key and keeps whatever key is there. The other sources keep their
-own forms. **Azure Cost** waits for its own steps, and so do
-GitHub accounts. Three stay forms by design: **OpenClaw**, because pairing is a
+own forms. GitHub accounts wait for their own steps. Three stay forms by design: **OpenClaw**, because pairing is a
 live exchange with the gateway and its token saves at once; **Remote host**,
 because trusting the agent's certificate is a confirmation the steps should not
 hide; and **Status page**, because it is one repeatable entry with nothing to
@@ -1903,8 +1914,9 @@ into the rollups below it or attributed to a `VendorAccount`.
 the org, team or slug and the Neon rates or Sentry quota together; Remove source on any of the three too) wakes the usage loop *and*
 forces its provider half to run on that pass, so a newly-saved key fills its
 section in seconds rather than within the hour; Sentry's Finish wakes the
-Crons loop too. A SAS URL wakes the Azure loop
-the same way. The Sentry quota and the Azure budget wake nothing on purpose —
+Crons loop too. Finish on Azure Cost's steps wakes the Azure loop, so a
+corrected export location is read in seconds rather than at the next
+four-hour pass. The Sentry quota and the Azure budget need no wake of their own —
 both are read at render time, so changing one repaints the bar it feeds on the
 next 10s frontend tick with no fetch involved. The two Neon rates are read at
 render time too, but they can only be set in Neon's steps now, and that Finish
@@ -2347,9 +2359,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `panel_interval_clear` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
 | `settings_save_source` | everything a source's steps chose, in one call at Finish (a thin command over `store::source_save::save_source_with`, which owns the source table, the refusals and their order, the writes and the rollback; the shell hands it the plan opt-in, the dashboard rules and the wakes): `kind`, the `parts` still ticked (an empty list is Remove source), the key if one was typed, `inputs` (the non-secret values typed on the parts, by input id, such as Neon's `orgId`; omitted for a source with none), and `addTile`. Answers `{status, settings, saved}`. `saved: false` keeps the steps open: every refusal comes before the first write and changes nothing, and only an I/O failure can follow a write, when the flags, the inputs and the tile go back, a key or plan already written stays, and Finish is safe to repeat. The key goes to the credential store, and the argument is never logged |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
-| `settings_save_providers` | the Azure budget, and only that: Neon's, Sentry's and Vercel's non-secret values are set through their steps (`settings_save_source`), so no second writer of them exists. Azure's Apply still calls it until Azure moves onto the steps |
 | `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop on a save (check or uncheck); a refusal changes nothing and wakes nothing — the selection is what the runners half of the pass polls |
-| `settings_save_azure` | where the cost export lives: storage account + container. Its own command for the same reason, and it **wakes the Azure poll** — that loop runs on a four-hour rhythm, so without the nudge an operator who just fixed a typo waits until teatime to learn whether it worked |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it. Add takes an optional `tlsFingerprint` — the one the operator **trusted** — validated through `crates/certpin` and stored as `Host.tls_fingerprint` (absent ⇒ plain HTTP) |
 | `settings_probe_host_certificate` | pairing step one (#448): the certificate an address presents, fetched **without trusting it** → `{status: "tls" \| "no-tls" \| "failed", fingerprint, message}`. One unauthenticated request; nothing stored, no token sent |
 | `settings_save_host` | edit a host's name / address / port and, on request, replace its token. An optional `tlsFingerprint` **replaces the pin** (Re-pair); absent leaves it exactly as it is, so a rename can never touch it |
@@ -2376,12 +2386,12 @@ a portfolio fetch on a credential it has no use for.
 |---|---|
 | the portfolio, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
-| Finish on Neon's, Sentry's or Vercel's steps (the key, the org, team or slug, and for Sentry the part flags; Remove source too) | the usage loop, *forcing* its provider half onto that pass; Sentry's Finish also wakes the Crons loop. Every Finish also wakes the Services loop, and saving the Azure export does, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from those |
+| Finish on Neon's, Sentry's or Vercel's steps (the key, the org, team or slug, and for Sentry the part flags; Remove source too) | the usage loop, *forcing* its provider half onto that pass; Sentry's Finish also wakes the Crons loop. Every Finish also wakes the Services loop, and a Finish on Azure Cost's steps wakes the Azure loop (`SourceWake::Azure`), because `services::active_vendors` derives the Neon, Vercel and Azure vendors from those |
 | Finish on a source's steps | the Services loop (`wake_services`): any part of a source can add or remove a watched vendor, so the pass does not wait for its cadence |
 | a plan opt-in changed at Finish | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read theirs at render time too, each its own, and their window is 1.5 cycles of it, so the save moves it in the same response ([#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
-| the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
+| the Sentry quota, the Azure budget, the two Neon rates | nothing of their own — all four are read at render time. They are saved at a source's Finish, which wakes that source's loops as above |
 | a container group rule (`container_rule_*`, from a Containers tile's Configure) | nothing — the rules are read at render time too, by `containers` |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
@@ -3297,6 +3307,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press the section's **Apply**; then set it to `30` and **Apply**; then press **Use default**; also type `10000000000` and press **Apply** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. `10000000000` is **refused** with `Not saved — … the largest cadence that can be stored` and never with `invalid value`, and the status line is unchanged: that decode at the IPC boundary is covered only by this checklist. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and the section's **Apply**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the GitHub Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
+| Azure Cost (`settings_save_source`, a source with no key) | Add source → **Azure Cost**, tick **Cost export** and **Monthly budget**. **Finish** with the storage account empty, then again with the budget empty; then fill all three (storage account, container, a budget above zero) and **Finish**. Open the row, untick **Monthly budget**, **Finish** | each empty field is refused at **Finish** with its own sentence (`Enter the storage account that holds the cost export.`, `Enter the container the cost export is written to.`, `Enter a monthly budget above zero.`), the steps stay open with what was typed, and nothing is saved. Settings never asks for a key. With all three saved, the Azure Cost tile reads the export within seconds (not at the next four-hour pass) and draws the budget bar; Service health gains Azure. Unticking the budget removes the bar and leaves the export. Before Finish nothing is stored, and **Remove source** clears all three. A budget bar that needs a separate Apply, or an export that waits hours to be read after a save, is the defect this row exists to catch |
 | usage providers | Add source → **Neon** (key, then organization ID), **Vercel**, and **Sentry** (pick **Usage** and/or **Scheduled jobs**, then the `org:read` token and slug once), **Finish** | sections appear in seconds, and Sentry Crons reads the same token. With only **Usage** picked, a Sentry Crons tile reads `Sentry's Scheduled jobs isn't set up — add it in Settings → Sources` (not a request for a token, which is stored); with only **Scheduled jobs** picked, the Usage tile has no Sentry section. Unticking one part later keeps the token for the other, and **Remove source** clears it. A key with **no org id** renders `—` on both figures, never `0.0 CU-h`. Before Finish nothing is stored: **Cancel** from either step leaves no key and no ID, and **Remove source** on the row clears both |
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Sources carry no limits at all |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with a ✓ beside the value, and the saved choice survives relaunch. A critical reading still needs attention and has no ✓. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |

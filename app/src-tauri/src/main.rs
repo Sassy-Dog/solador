@@ -307,9 +307,9 @@ struct App {
     crons_wake: tokio::sync::Notify,
     /// The Azure Cost panel's state, on its own 4h cadence.
     azure: Mutex<AzureState>,
-    /// Cuts the Azure loop's sleep short after a SAS URL is saved or cleared.
+    /// Cuts the Azure loop's sleep short after Azure Cost's steps are finished.
     /// A four-hour cadence is long enough that waiting one out is
-    /// indistinguishable from the credential not having been accepted.
+    /// indistinguishable from the export location not having been accepted.
     azure_wake: tokio::sync::Notify,
     /// The OpenClaw panel's state. **Not on a poll cadence**: it is written by
     /// a live WebSocket session as frames arrive, and the `openclaw` command
@@ -4895,6 +4895,10 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
                 self.0.crons_wake.notify_one();
             }
             SourceWake::Containers => self.0.containers_wake.notify_one(),
+            // The export location is read on a four-hour rhythm, so without this
+            // an operator who has just fixed a typo waits to find out whether it
+            // worked. The budget is read at render time and needs no wake.
+            SourceWake::Azure => self.0.azure_wake.notify_one(),
             SourceWake::StatusPagesOnly => {}
         }
         // Any save can add or remove a watched status page.
@@ -5000,34 +5004,6 @@ fn apply_plan_usage(
         .plan_mut(provider)
         .reset();
     PlanApply::Applied(status)
-}
-
-/// Where the Azure cost export lives.
-///
-/// Its own command for the same reason as the GitHub org: `ProviderPrefs` is
-/// sent whole by two tabs, so a third sender would have to re-send fields it
-/// does not show or blank them.
-#[tauri::command]
-fn settings_save_azure(
-    account: String,
-    container: String,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        let current = store.settings_mut();
-        current.azure_storage_account = account.trim().to_owned();
-        current.azure_cost_container = container.trim().to_owned();
-        save_status(&store, "Saved.")
-    };
-    // Woken, unlike the GitHub org: the Azure poll runs on a four-hour rhythm,
-    // so without this an operator who has just fixed a typo waits until
-    // teatime to find out whether it worked.
-    state.azure_wake.notify_one();
-    // And Services: an Azure export being configured is what makes Azure a
-    // watched vendor (`services::active_vendors`).
-    wake_services(&state);
-    settings_response(&state, status)
 }
 
 /// One org checked or unchecked on one account's runner-org selection.
@@ -5286,34 +5262,6 @@ mod account_org_tests {
         tripwire_fires(&f, "reload_hosts", reload_hosts);
     }
 }
-/// The one non-secret provider preference still saved outside a source's steps:
-/// Azure Cost's monthly budget. Neon, Vercel and Sentry set up their organization
-/// or team, rates, slug and quota through `settings_save_source`, so no second
-/// writer of those fields exists.
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderPrefs {
-    azure_monthly_budget_usd: f64,
-}
-
-#[tauri::command]
-fn settings_save_providers(prefs: ProviderPrefs, state: tauri::State<'_, Arc<App>>) -> Value {
-    let status = {
-        let mut store = state.store.lock().expect("store poisoned");
-        // A non-finite value would make the whole store unserialisable
-        // (`StoreError::Serialize`), taking every other preference with it.
-        let budget = prefs.azure_monthly_budget_usd;
-        store.settings_mut().azure_monthly_budget_usd = if budget.is_finite() {
-            budget.max(0.0)
-        } else {
-            0.0
-        };
-        save_status(&store, "Saved.")
-    };
-    // No wake: the Azure budget is read at render time, by design.
-    settings_response(&state, status)
-}
-
 #[tauri::command]
 fn settings_add_host(
     name: String,
@@ -6967,6 +6915,10 @@ fn dump_settings() -> Value {
         // set up and its steps open with both ticked.
         sentry_usage_enabled: true,
         sentry_crons_enabled: true,
+        // Azure Cost with both of its parts, for the same reason.
+        azure_storage_account: "acmestorage".into(),
+        azure_cost_container: "cost-exports".into(),
+        azure_monthly_budget_usd: 250.0,
         // Exactly one panel configured, for the same reason: the cadence rows
         // render two ways — an override (whose **Use default** button is live)
         // and a panel nobody has ever set — and a fixture carrying only one of
@@ -7986,8 +7938,6 @@ fn main() {
             panel_interval_clear,
             settings_set_crash_reporting,
             settings_save_source,
-            settings_save_azure,
-            settings_save_providers,
             settings_add_host,
             settings_probe_host_certificate,
             settings_set_host_enabled,
@@ -8959,6 +8909,65 @@ mod tests {
     /// can, and the tile reads what the last pass found. This is what holds them
     /// together, because a part added to one and not the others lists a source
     /// whose tile asks to be set up, or drops a status row someone is relying on.
+    /// Azure Cost has no key: finishing its steps writes the export location and
+    /// the budget, wakes the Azure loop (four hours is too long to learn that a
+    /// typo was fixed) and the status pages (a configured export is what makes
+    /// Azure a watched vendor), and writes nothing to the credential store.
+    #[test]
+    fn azure_cost_saves_through_its_steps_and_wakes_its_loop_and_the_status_pages() {
+        let (_dir, _rt, app) = test_app();
+        let typed = vec![
+            ("account".to_owned(), " acmestorage ".to_owned()),
+            ("container".to_owned(), "cost-exports".to_owned()),
+            ("budgetUsd".to_owned(), "250".to_owned()),
+        ];
+        save_source_with_in(
+            &app,
+            "azure",
+            &parts(&["export", "budget"]),
+            None,
+            &typed,
+            true,
+        )
+        .unwrap();
+        assert!(woken(&app.azure_wake), "the Azure loop heard of the save");
+        {
+            let store = app.store.lock().unwrap();
+            let settings = store.settings();
+            assert_eq!(settings.azure_storage_account, "acmestorage");
+            assert_eq!(settings.azure_cost_container, "cost-exports");
+            assert_eq!(settings.azure_monthly_budget_usd, 250.0);
+            assert!(store
+                .dashboard()
+                .is_some_and(|layout| layout.tiles.iter().any(|tile| tile.source == "azureCost")));
+        }
+        let vm = settings_payload(&app);
+        let row = vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["kind"] == "azure")
+            .cloned()
+            .expect("a saved export is a row");
+        assert_eq!(row["status"]["text"], "Uses Azure CLI");
+
+        let refused = save_source_in(&app, "azure", &parts(&["export"]), None, false);
+        assert_eq!(
+            refused.unwrap_err(),
+            "Enter the storage account that holds the cost export."
+        );
+        assert_eq!(
+            app.store.lock().unwrap().settings().azure_storage_account,
+            "acmestorage",
+            "a refusal changes nothing"
+        );
+
+        save_source_in(&app, "azure", &parts(&[]), None, false).unwrap();
+        let store = app.store.lock().unwrap();
+        assert_eq!(store.settings().azure_storage_account, "");
+        assert_eq!(store.settings().azure_monthly_budget_usd, 0.0);
+    }
+
     /// Each of the five parts is on or off by itself, so an answer that read the
     /// other vendor's part disagrees somewhere.
     #[test]
@@ -13307,7 +13316,7 @@ mod tests {
         assert_eq!(rows[1]["enabled"], false);
 
         assert!(vm["github"].is_null(), "the GitHub tab stays retired");
-        assert!(vm["azure"]["secret"].is_null(), "no Azure credential");
+        assert!(vm["azure"].is_null(), "Azure Cost has no tab of its own");
 
         // Both states of the org list, same rule as the account badges below:
         // one account watching an org, one watching none.
