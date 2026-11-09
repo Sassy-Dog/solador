@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { dashboardWithTiles, openTileFull, PANEL_SOURCE_READS } from './tile-full.js';
+import { dashboardWithTiles, openTileFull, PANEL_SOURCE_READS, swapReport } from './tile-full.js';
 
 test.beforeEach(async ({ page }) => {
   page.statusErrors = [];
@@ -22,10 +22,16 @@ async function open(page, baseURL, sources = null) {
   await page.addInitScript(frames => {
     window.framesForTest = frames;
     window.dashboardReads = 0;
+    window.dashboardReadsDone = 0;
     window.__TAURI__ = { core: { invoke: async command => {
       if (command === 'dashboard_view') {
         window.dashboardReads += 1;
-        if (window.failDashboard) throw new Error('Connection interrupted');
+        try {
+          if (window.failDashboard) throw new Error('Connection interrupted');
+          return window.framesForTest.dashboard_view ?? null;
+        } finally {
+          window.dashboardReadsDone += 1;
+        }
       }
       return window.framesForTest[command] ?? null;
     } } };
@@ -355,9 +361,14 @@ test('resizing releases obsolete height reservations without clipping content', 
   const runners = next.tiles.find(t => t.source === 'ghRunners');
   runners.runnerView = 'list';
   runners.rows = Array.from({length:20}, (_, i) => ({...next.sources.find(s => s.id === 'ghRunners').rows[0], id:`runner-${i}`}));
-  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   const body = page.locator('.db-tile[data-source="ghRunners"] .db-tile-content');
-  await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);
+  // The stub keeps `next` until the test replaces it, so the app's 1s read
+  // cannot miss it; what can end the wait is a page that stopped reading, and
+  // `swapReport` says which it was.
+  await swapReport(page, 'the 20-runner frame', async () => {
+    await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+    await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);
+  });
   const tall = await body.boundingBox();
   runners.rows = [];
   await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);

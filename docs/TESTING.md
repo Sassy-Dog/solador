@@ -245,6 +245,23 @@ The window is intra-test and independent of #401's server-startup one. A
 longer timeout on the frame-1 assertion cannot help — once frame 2 has been
 served, frame 1 is gone — so do not reach for one; hold the frame instead.
 
+**The dashboard stubs hold a swapped answer, and `swapReport` says why a wait
+ended (#722).** `dashboard.spec.js` (`__SET_DASHBOARD__`, `__SET_SOURCE_ROWS__`)
+and `status-layout.spec.js` (`window.framesForTest.dashboard_view = …`) change
+the answer in place and wait for the app's own 1s `dashboard_view` read to paint
+it. Like `stubCockpit`, they keep the new answer until the test swaps again, so
+the read cannot miss the frame, and in these tests `refresh()`'s early returns
+(`pending`, `busy`, `settingsOpen`) cost one read, not a run of them. Three of these waits (the Detail focus
+test, the open-chip focus test, the runner height-reservation test) each failed
+once or twice locally with no cause found and never in CI; 36 runs of the three
+under eight CPU burners and ten workers did not reproduce it. Each now runs its
+wait inside `swapReport` (`tile-full.js`), which on failure appends how many
+reads the stub saw begun and answered since the swap: none begun means the
+page stopped reading (a stalled renderer), begun and answered means it read and
+did not paint (an app bug). Do not raise the timeout either way. The config
+keeps a failing test's trace (`trace: "retain-on-failure"`); Playwright clears
+`test-results/` at the start of the next run, so copy it out first.
+
 **Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
 `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
 `tests/frontend/tile-full.js`: it stubs the IPC, boots the overview with one

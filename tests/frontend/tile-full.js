@@ -142,3 +142,26 @@ export const advance = (page, command) =>
     if (next >= frames.length) throw new Error(`advance(${command}) past the last frame`);
     window.__FRAME__[command] = next;
   }, command);
+
+/**
+ * Runs `wait`, a swap of the stub's `dashboard_view` answer plus the assertion
+ * that the app painted it, and on failure says whether the page was reading.
+ * The dashboard stubs (dashboard.spec.js, status-layout.spec.js) hold a
+ * swapped answer until the test swaps again, so the app's once-a-second read
+ * cannot miss it; the wait can only end because no read landed in time (a
+ * stalled renderer) or because reads landed and nothing was painted (an app
+ * bug). Those two look identical in Playwright's own message (#722), so the
+ * counts the stubs keep (`dashboardReads` begun, `dashboardReadsDone`
+ * answered) are appended to it.
+ */
+export async function swapReport(page, what, wait) {
+  const count = () => page.evaluate(() => [window.dashboardReads, window.dashboardReadsDone]);
+  const [begun, answered] = await count();
+  try {
+    await wait();
+  } catch (error) {
+    const [nowBegun, nowAnswered] = await count().catch(() => [NaN, NaN]);
+    error.message += `\n\nswapReport: while waiting for ${what}, dashboard_view reads begun ${nowBegun - begun}, answered ${nowAnswered - answered} (one a second expected; none begun means the page stopped reading, begun and answered means it read and did not paint)`;
+    throw error;
+  }
+}

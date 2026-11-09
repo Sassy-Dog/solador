@@ -37,7 +37,9 @@ export default {
   // correct. `npm test` skips it; `npm run screenshots` runs only it.
   testMatch: SCREENSHOTS ? ["**/screenshots.spec.js"] : ["**/*.spec.js"],
   testIgnore: SCREENSHOTS ? [] : ["**/screenshots.spec.js"],
-  use: { baseURL: `http://127.0.0.1:${PORT}` },
+  // A failure keeps its trace in test-results/, which the next run clears:
+  // copy it out before re-running (#722).
+  use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {
     // `-u`: stdout is a pipe here, not a tty, so Python would otherwise buffer
     // the startup line past the point it is useful.

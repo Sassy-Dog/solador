@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { lastArgs } from "./tile-full.js";
+import { lastArgs, swapReport } from "./tile-full.js";
 
 // Real UI and Rust-dumped readings under Tauri's CSP. The IPC double projects
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
@@ -33,6 +33,9 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
         JSON.parse(localStorage.getItem("test-dashboard") || "null") ||
         original.layout;
       window.__CALLS__ = [];
+      // Counted per `dashboard_view` read, for `swapReport` (tile-full.js).
+      window.dashboardReads = 0;
+      window.dashboardReadsDone = 0;
       window.__SET_LAYOUT__ = (next) => { layout = structuredClone(next); };
       window.__SET_DASHBOARD__ = (next) => { Object.assign(original, structuredClone(next)); };
       window.__SET_SOURCE_ROWS__ = (id, rows) => { original.sources.find(s => s.id === id).rows = structuredClone(rows); };
@@ -214,15 +217,20 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             }
             if (command === "settings_view" && args?.route) return { ...fixtures.settings_view, connectionRoute: window.__SETTINGS_ROUTE__ };
             if (command === "dashboard_view") {
-              if (window.__FAIL_READ__) throw new Error("Reading unavailable");
-              const snapshot = project();
-              if (window.__HOLD_READ__) {
-                window.__HOLD_READ__ = false;
-                return await new Promise((resolve) => {
-                  window.__RELEASE_READ__ = () => resolve(snapshot);
-                });
+              window.dashboardReads += 1;
+              try {
+                if (window.__FAIL_READ__) throw new Error("Reading unavailable");
+                const snapshot = project();
+                if (window.__HOLD_READ__) {
+                  window.__HOLD_READ__ = false;
+                  return await new Promise((resolve) => {
+                    window.__RELEASE_READ__ = () => resolve(snapshot);
+                  });
+                }
+                return snapshot;
+              } finally {
+                window.dashboardReadsDone += 1;
               }
-              return snapshot;
             }
             if (command === "dashboard_save") {
               if (window.__HOLD_SAVE__) {
@@ -848,15 +856,22 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   expect(scrollLeft).toBeGreaterThan(0);
   const changed = structuredClone(model.sources.find(s => s.id === 'ghWorkflows').rows);
   changed[0].value = 'Running';
-  await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
-  await expect(rows.first()).toContainText('Running');
+  // The stub keeps the swapped rows until the next swap, so the app's 1s read
+  // cannot miss them; what can end the wait is a page that stopped reading,
+  // and `swapReport` says which it was.
+  await swapReport(page, 'the Running reading', async () => {
+    await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
+    await expect(rows.first()).toContainText('Running');
+  });
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'true');
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
   expect(await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
   await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').focus();
   changed[0].value = 'Healthy';
-  await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
-  await expect(rows.first()).toContainText('Healthy');
+  await swapReport(page, 'the Healthy reading', async () => {
+    await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
+    await expect(rows.first()).toContainText('Healthy');
+  });
   await expect(page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll')).toBeFocused();
   expect(await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
   const expandedHeight = (await page.locator('.db-inspector-body').boundingBox()).height;
@@ -2803,7 +2818,13 @@ test("an open chip flips between a tile's Detail and the trouble panel with the 
 test("a reading that flips an open chip keeps focus outside the inspector and the status message", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL, "chips");
   const covered = await (await fetch(`${baseURL}/sample-dashboard.json`)).json();
-  const set = (attention) => page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), attention);
+  // The stub keeps the swapped answer until the next swap, so the app's 1s
+  // read cannot miss it; what can end the wait is a page that stopped reading,
+  // and `swapReport` says which it was.
+  const set = (attention, kind) => swapReport(page, "an attention swap", async () => {
+    await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), attention);
+    if (kind) await expect(inspector(page)).toHaveAttribute("data-kind", kind);
+  });
   await set(covered.attention);
   await chip(page, "GitHub Repos").click();
   await expect(inspector(page)).toHaveAttribute("data-kind", "details");
@@ -2814,20 +2835,19 @@ test("a reading that flips an open chip keeps focus outside the inspector and th
   await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
   const grid = viewButton(page, "hosts");
   await grid.focus();
-  await set(model.attention);
-  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await set(model.attention, "trouble");
   await expect(grid).toBeFocused();
   await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
-  await set(covered.attention);
-  await expect(inspector(page)).toHaveAttribute("data-kind", "details");
+  await set(covered.attention, "details");
   await expect(grid).toBeFocused();
   await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
   // The same for the way back, and for the panel closing.
-  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), model.attention);
-  await expect(inspector(page)).toHaveAttribute("data-kind", "trouble");
+  await set(model.attention, "trouble");
   await expect(grid).toBeFocused();
-  await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), model.attention.filter((a) => a.source !== "ghWorkflows"));
-  await expect(inspector(page)).toBeHidden();
+  await swapReport(page, "the chip going", async () => {
+    await page.evaluate((attention) => window.__SET_DASHBOARD__({ attention }), model.attention.filter((a) => a.source !== "ghWorkflows"));
+    await expect(inspector(page)).toBeHidden();
+  });
   await expect(grid).toBeFocused();
   await expect(message).toHaveText("Could not save the dashboard: disk unavailable.");
 });
