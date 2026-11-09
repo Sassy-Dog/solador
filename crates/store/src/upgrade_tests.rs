@@ -678,6 +678,21 @@ fn each_saved_usage_tile_splits_on_its_own() {
     );
 }
 
+/// A scope this build does not recognise (say, one a later build wrote) is not
+/// guessed at: the tile stays on Usage with that scope, and nothing is added,
+/// even with the Codex plan on.
+#[test]
+fn a_scope_the_split_does_not_recognise_is_left_unchanged() {
+    let (_dir, opened) = open(&store_of(
+        vec![old_usage("z", "some-future-scope", "Usage")],
+        settings(CODEX_ON),
+    ));
+    assert_eq!(
+        tiles_of(&opened),
+        [row("z", "usage", "some-future-scope", "Usage")]
+    );
+}
+
 /// Only the default name follows the tile to its new source. A name the
 /// operator chose stays, and an added tile is new, so it takes the source's.
 #[test]

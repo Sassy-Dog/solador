@@ -291,8 +291,12 @@ impl<S> ProviderState<S> {
     /// A pass read this provider's key. Called before the request goes out, so
     /// the section can say it is loading rather than waiting on the round trip
     /// to learn it exists at all.
+    ///
+    /// The last read's reason is cleared too: a keychain that has recovered
+    /// must not keep showing the reason it was locked until the next read lands.
     pub fn begin(&mut self) {
         self.configured = Configured::Present;
+        self.last_error = None;
     }
 
     /// A successful read. `error` carries the "answered, but measured nothing"
@@ -2144,6 +2148,19 @@ mod tests {
         assert!(payload["footer"].is_null());
         let text = payload["freshness"]["text"].as_str().unwrap_or_default();
         assert!(!text.contains("ago"), "no fabricated age: {text}");
+    }
+
+    /// A read that begins drops the reason the last one failed with, so a
+    /// recovered keychain is not shown under its old error for one more read.
+    #[test]
+    fn beginning_a_read_clears_the_previous_reason() {
+        let mut state = UsageState::new();
+        state.neon_mut().begin();
+        state.neon_mut().failed("the keychain is locked".to_owned());
+        assert!(!state.neon.is_loading());
+        state.neon_mut().begin();
+        assert!(state.neon.last_error.is_none());
+        assert!(state.neon.is_loading());
     }
 
     /// The log root could not even be located, so nothing was read. Distinct

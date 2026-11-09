@@ -2131,7 +2131,7 @@ samples to diff. Unmeasured values are shown as unknown and omitted from their
 history series; a sample without CPU usage is not plotted. Inventing a `0.0`
 for a history buffer would draw a spike from a floor nobody measured.
 
-"No hosts configured. Add one in Settings." is therefore about *monitored* hosts
+"No hosts configured. Add This machine or a remote host in Settings → Sources." is therefore about *monitored* hosts
 and still appears beside the local card when This machine is the only source. It counts the hosts
 configured, never the cards a Machines tile's scope kept, so a tile's Full view
 scoped to *This machine* does not claim there are none.
@@ -3661,7 +3661,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The page shows a raw error text (the IPC's own) in the same place, no tiles, and the `cockpit: first frontend request` terminal line is missing | **Both** rejected: a broken capability set or registration, not one command. `#dashboardLoadError` falls back to the rejection's text because neither payload could carry Rust's sentence. The webview console has a `cockpit failed:` and a `dashboard_view failed:` line. |
 | The card's structure is there but every field is blank.                                       | `app.js` never ran at all — a CSP violation or a script error, so nothing ever reached the IPC boundary. Check the console before suspecting the ACL.                    |
 | A card renders with plausible numbers that never change, and the host name is `ubu-01` rather than the one you passed. | You skipped step 1. That is the fixture, not the boundary. Delete `app/ui/sample*.json` and re-run.                                                                     |
-| `No hosts configured. Add one in Settings.` and no card at all.                                | A malformed `SOLADOR_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
+| `No hosts configured. Add This machine or a remote host in Settings → Sources.` and no card at all.                                | A malformed `SOLADOR_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
 | The window opens and stays up, but the `cockpit: first frontend request …` line never prints.  | The boundary is broken and the window is hiding it. This is the definitive terminal-side failure: `invoke` never reached Rust. Verified as a real discriminator on 2026-07-31 by renaming the command in `app.js` — the app still launched and still held a window, and the line stayed absent. |
 | The cards paint, but clicking **Settings** does nothing and `settings: first frontend request …` never prints. | The cockpit half of the boundary is fine and the settings half is not: an unregistered `settings_view`, or a script error in `settings.js` that stopped it before it wired the button. Check the webview console. |
 | Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or the dashboard labels carry no `settings`. Regenerate the fixtures and check the payload shape, not the ACL. |

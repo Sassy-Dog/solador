@@ -1710,7 +1710,9 @@ function advanced(...content) {
 // alive until the operator either returns to it or explicitly discards it.
 function navigate(next) {
   const dirty = unappliedEdits().length > 0 ||
-    Array.from(document.querySelectorAll('#settings input[type="password"]')).some(el => el.value);
+    Array.from(document.querySelectorAll('#settings input[type="password"]')).some(el => el.value) ||
+    // A key typed in a walk lives in `walk.secret` once its step is left.
+    Boolean(S.walk?.secret);
   if (!dirty) { next(); return; }
   const labels = S.view.connections;
   const box = $s("settingsConfirm");
@@ -1978,7 +1980,8 @@ function walkEditor(entry) {
   cancel.addEventListener("click", showConnections);
   const actions = node("div", "row walk-actions");
   actions.appendChild(cancel);
-  if (walk.added && walk.index === 0) {
+  // A one-part source's steps are just Ready once Remove clears the picks.
+  if (walk.added && walk.index === 0 && step !== "ready") {
     const remove = button(labels.removeLabel, "discard walk-remove");
     remove.addEventListener("click", () => {
       walk.picked.clear();

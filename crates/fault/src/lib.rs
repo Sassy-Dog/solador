@@ -142,7 +142,7 @@ pub enum Fault {
     /// and trust it) in Settings, which moves it onto pinned TLS.
     PlainHttpRefused,
     /// A sign-in **another program owns** — Claude Code's or Codex's, which
-    /// the Usage panel's plan rows borrow read-only — has expired or been
+    /// the Anthropic panel's plan rows borrow read-only — has expired or been
     /// revoked: the service answered 401.
     ///
     /// Not [`Fault::CredentialRejected`], whose fix is "update it in Settings":
@@ -326,7 +326,7 @@ mod tests {
         "GitHub",
         "Azure CLI",
         "Azure Storage",
-        // The Usage panel's plan rows (`crates/subscription`): the service each
+        // The Anthropic panel's plan rows (`crates/subscription`): the service each
         // request goes to, and the program whose saved sign-in it borrows.
         "Anthropic",
         "ChatGPT",

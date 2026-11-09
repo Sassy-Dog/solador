@@ -399,6 +399,11 @@
   and must not be modelled as one**: an account id on these rollups would be an
   attribution invented to fill a gap — the unknown-as-zero error in another
   costume. If a number cannot be attributed, say so rather than attributing it.
+- **The three source switches and a downgrade**: `claude_local_logs_enabled`,
+  `local_monitoring_enabled` and `service_health_enabled` read as on when their
+  key is missing from `store.json` (`on_before_sources_were_added`), so a
+  downgrade to a build that drops them followed by an upgrade turns all three
+  back on, whatever they were set to before.
 - **Anthropic and OpenAI → plan limits**: **another program's credential,
   read only while the operator has opted in** (`store.json`'s
   `claude_plan_usage_enabled` / `codex_plan_usage_enabled`, both `false` in a

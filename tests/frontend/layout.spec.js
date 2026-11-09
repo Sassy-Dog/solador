@@ -954,7 +954,10 @@ const ROW_LISTS = [
   { source: "ghRunners", command: "runners", file: "sample-runners.json", list: "#runnersBody .gh-list", row: ".gh-row", tile: { runnerFullView: "list" } },
   { source: "anthropic", command: "anthropic", file: "sample-anthropic.json", list: "#anthropicBody .pv-section", row: ".pv-row, .pv-item" },
   // One plan and no other list, so the pair here is the plan's row and its
-  // meters, which keep their own 7px margin on top of the spacing.
+  // meters, which keep their own margin on top of the spacing. `margin: 7`
+  // mirrors `margin-top: 7px` on `.db-host-stats` in `app/ui/dashboard.css`
+  // (the `:is(#dashboardOverview, #anthropicPanel, #openaiPanel)` rule); change
+  // them together.
   { source: "openai", command: "openai", file: "sample-openai.json", list: "#openaiBody .pv-section", row: ".pv-row, .pv-item, .db-host-stats", margin: 7 },
   { source: "usage", command: "usage", file: "sample-usage.json", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
   { source: "azureCost", command: "azure_cost", file: "sample-azure.json", list: "#azureBody .pv-section", row: ".pv-item" },
