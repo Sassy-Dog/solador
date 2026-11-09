@@ -149,8 +149,21 @@ async fn body<T: serde::de::DeserializeOwned>(
     let text = response.text().await.map_err(unreachable)?;
     serde_json::from_str(&text).map_err(|e| ApiSpendError::DecodeFailed {
         vendor,
-        reason: e.to_string(),
+        reason: decode_reason(&e),
     })
+}
+
+/// A fixed reason for a reply serde could not read: its category and where it
+/// failed. serde's own message is left out, because it quotes the value it
+/// choked on (`invalid type: string "…"`), and `poll_api_spend` logs `Display`.
+/// A line and a column quote nothing.
+fn decode_reason(e: &serde_json::Error) -> String {
+    format!(
+        "{:?} error at line {} column {}",
+        e.classify(),
+        e.line(),
+        e.column()
+    )
 }
 
 fn undecodable(vendor: &'static str, reason: &str) -> ApiSpendError {
@@ -512,6 +525,28 @@ mod tests {
             client.month_to_date(at(NOW)).await.unwrap(),
             ApiSpendSummary::Measured { usd, .. } if (usd - 3.0).abs() < 1e-9
         ));
+    }
+
+    /// serde quotes the value it choked on, and the app logs this error's
+    /// `Display` on every failed read: none of the reply may reach it.
+    #[tokio::test]
+    async fn a_reply_that_cannot_be_decoded_is_not_quoted_in_the_error() {
+        const MARKER: &str = "distinctive-reply-text-4f9a";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": MARKER,
+                "has_more": false,
+            })))
+            .mount(&server)
+            .await;
+        let client = AnthropicCostClient::with_base_url(&server.uri(), "k").unwrap();
+        let err = client.month_to_date(at(NOW)).await.unwrap_err();
+        assert!(matches!(err, ApiSpendError::DecodeFailed { .. }), "{err:?}");
+        for text in [err.to_string(), format!("{err:?}"), err.user_message()] {
+            assert!(!text.contains(MARKER), "the reply reached: {text}");
+        }
+        assert!(err.to_string().contains("line 1"), "{err}");
     }
 
     #[tokio::test]

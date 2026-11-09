@@ -264,6 +264,10 @@ pub struct ProviderState<S> {
     pub summary: Option<S>,
     pub last_updated: Option<u64>,
     pub last_error: Option<String>,
+    /// Whether `last_error` is the credential store's refusal
+    /// ([`unreadable`](Self::unreadable)) rather than a vendor's failure. Only
+    /// that reason is dropped when the next read begins.
+    reason_is_unreadable: bool,
 }
 
 impl<S> Default for ProviderState<S> {
@@ -273,6 +277,7 @@ impl<S> Default for ProviderState<S> {
             summary: None,
             last_updated: None,
             last_error: None,
+            reason_is_unreadable: false,
         }
     }
 }
@@ -286,13 +291,23 @@ impl<S> ProviderState<S> {
         self.summary = None;
         self.last_updated = None;
         self.last_error = None;
+        self.reason_is_unreadable = false;
     }
 
     /// A pass read this provider's key. Called before the request goes out, so
     /// the section can say it is loading rather than waiting on the round trip
     /// to learn it exists at all.
+    ///
+    /// A reason the credential store set is cleared too: a keychain that has
+    /// recovered must not keep showing the reason it was locked until the next
+    /// read lands. A vendor's failure keeps its reason while the next read is in
+    /// flight, so a provider that keeps failing does not flip to loading.
     pub fn begin(&mut self) {
         self.configured = Configured::Present;
+        if self.reason_is_unreadable {
+            self.last_error = None;
+            self.reason_is_unreadable = false;
+        }
     }
 
     /// A successful read. `error` carries the "answered, but measured nothing"
@@ -303,6 +318,7 @@ impl<S> ProviderState<S> {
         self.summary = Some(summary);
         self.last_updated = Some(at);
         self.last_error = error;
+        self.reason_is_unreadable = false;
     }
 
     /// A failed read: the reason is published, everything else is left exactly
@@ -315,9 +331,12 @@ impl<S> ProviderState<S> {
     pub fn failed(&mut self, error: String) {
         self.configured = Configured::Present;
         self.last_error = Some(error);
+        self.reason_is_unreadable = false;
     }
 
-    /// Whether this provider is still waiting on the answer to its first read.
+    /// Whether this provider is configured and has neither a figure nor a
+    /// reason yet: no read has settled, or the credential store's refusal was
+    /// dropped when a new read began.
     #[must_use]
     pub fn is_loading(&self) -> bool {
         self.configured.is_present() && self.summary.is_none() && self.last_error.is_none()
@@ -337,6 +356,7 @@ impl<S> ProviderState<S> {
     pub fn unreadable(&mut self, error: String) {
         if !self.configured.is_absent() {
             self.last_error = Some(error);
+            self.reason_is_unreadable = true;
         }
     }
 
@@ -2144,6 +2164,38 @@ mod tests {
         assert!(payload["footer"].is_null());
         let text = payload["freshness"]["text"].as_str().unwrap_or_default();
         assert!(!text.contains("ago"), "no fabricated age: {text}");
+    }
+
+    /// A read that begins drops the credential store's refusal, so a recovered
+    /// keychain is not shown under its old error for one more read.
+    #[test]
+    fn beginning_a_read_clears_a_credential_store_reason() {
+        let mut state = UsageState::new();
+        state.neon_mut().begin();
+        state
+            .neon_mut()
+            .unreadable("the keychain is locked".to_owned());
+        assert!(!state.neon.is_loading());
+        state.neon_mut().begin();
+        assert!(state.neon.last_error.is_none());
+        assert!(state.neon.is_loading());
+    }
+
+    /// A vendor failure that persists keeps its own reason while the next read
+    /// is in flight, rather than flipping to loading for each round trip.
+    #[test]
+    fn beginning_a_read_keeps_a_vendor_failures_reason() {
+        let mut state = UsageState::new();
+        state.neon_mut().begin();
+        state
+            .neon_mut()
+            .failed("Neon API request failed".to_owned());
+        state.neon_mut().begin();
+        assert_eq!(
+            state.neon.last_error.as_deref(),
+            Some("Neon API request failed")
+        );
+        assert!(!state.neon.is_loading());
     }
 
     /// The log root could not even be located, so nothing was read. Distinct

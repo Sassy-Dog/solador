@@ -728,6 +728,39 @@ test("Remove source unticks everything and jumps to a Ready step that says so", 
   expect((await saves(page))[0].args).toMatchObject({ kind: "anthropic", parts: [], secret: null });
 });
 
+test("Remove source does not come back on the Ready step of a one-part source", async ({ page, baseURL }) => {
+  const addedServices = (settings) => {
+    const entry = catalogEntry(settings, "services");
+    entry.walk.parts[0].on = true;
+    settings.connections.rows.push({
+      id: "services",
+      kind: "services",
+      title: entry.title,
+      feeds: entry.walk.parts[0].title,
+      status: { text: "Configured", attention: false, color: "#8090ac" },
+    });
+  };
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, addedServices);
+  await page.locator('.connection-row[data-kind="services"]').click();
+  await page.locator(".walk-remove").click();
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.removeHeading);
+  await expect(page.locator(".walk-remove"), "the steps are only Ready now, which is index 0 again").toHaveCount(0);
+});
+
+test("leaving a walk with a key typed on an earlier step asks first", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "openai");
+  await pick(page, "api").click();
+  await next(page);
+  await page.locator("#walk-secret").fill("sk-admin-x");
+  await next(page);
+  await expect(page.locator("#walk-secret"), "the key's input is gone from the screen").toHaveCount(0);
+  await page.locator('.tab[data-tab="general"]').click();
+  await expect(page.locator("#settingsConfirm")).toBeVisible();
+  await page.locator("#settingsConfirm .discard").click();
+  await expect(page.locator("#settingsConfirm")).toBeHidden();
+});
+
 test("a source not yet added has nothing to remove", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
   await addConnection(page, "anthropic");

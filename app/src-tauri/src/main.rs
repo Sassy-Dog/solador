@@ -682,7 +682,7 @@ fn cockpit_payload(input: CockpitInput) -> Value {
     // reads it (`dashboard::source_view`). A Full view has only its cards, so
     // with none it carries this as `tileEmpty` (`cockpit_for_tile`).
     let empty = if remote_count == 0 {
-        json!({ "message": "No hosts configured. Add one in Settings." })
+        json!({ "message": "No hosts configured. Add This machine or a remote host in Settings → Sources." })
     } else {
         Value::Null
     };
@@ -3246,7 +3246,7 @@ fn apply_machine_preferences(
 // re-read the interval, sleep interruptibly — so a Settings edit applies now
 // rather than on the far side of a cadence that can be four hours long.
 
-/// One walk of Claude Code's logs for the Usage panel's token rollups.
+/// One walk of Claude Code's logs for the Anthropic panel's token rollups.
 ///
 /// Stamped when the walk returns, not before it starts, like every provider
 /// below: a reading is as old as the moment it was taken.
@@ -3599,7 +3599,8 @@ impl UsageClocks {
     }
 }
 
-/// The Usage panel's poll loop: one loop, two halves, each on **its own**
+/// The poll loop for the Anthropic panel's Claude rollups and the Usage
+/// panel's metered providers: one loop, two halves, each on **its own**
 /// cadence (#635).
 ///
 /// The Claude rollups are a local walk of `~/.claude/projects` on
@@ -3651,7 +3652,7 @@ async fn usage_loop(app: Arc<App>) {
     }
 }
 
-// MARK: the Usage panel's plan rows
+// MARK: the Anthropic panel's plan rows
 //
 // Their own loop rather than a fourth provider inside `poll_usage_providers`:
 // they run on their own cadence, and they are the only reads in the app that
@@ -4053,7 +4054,7 @@ async fn azure_loop(app: Arc<App>) {
     }
 }
 
-/// Guards the Usage panel's counterpart to [`FIRST_REQUEST`].
+/// Guards the Anthropic panel's counterpart to [`FIRST_REQUEST`].
 static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
@@ -8953,7 +8954,7 @@ mod tests {
         assert!(none["hosts"].as_array().unwrap().is_empty());
         assert_eq!(
             none["tileEmpty"],
-            "No hosts configured. Add one in Settings."
+            "No hosts configured. Add This machine or a remote host in Settings → Sources."
         );
     }
 
@@ -9926,7 +9927,7 @@ mod tests {
     #[test]
     fn a_store_with_no_remotes_says_so_scoped_or_not() {
         let (_dir, _rt, app) = app_with_remotes(0);
-        let message = json!({ "message": "No hosts configured. Add one in Settings." });
+        let message = json!({ "message": "No hosts configured. Add This machine or a remote host in Settings → Sources." });
         let local = keep_of(&["local".to_owned()]);
         for (case, keep) in [
             ("unscoped", None),
@@ -11576,7 +11577,7 @@ mod tests {
         assert!(vm["hosts"].as_array().expect("hosts array").is_empty());
         assert_eq!(
             vm["empty"]["message"],
-            "No hosts configured. Add one in Settings."
+            "No hosts configured. Add This machine or a remote host in Settings → Sources."
         );
 
         let populated = stacked_payload(vec![view_for(&state_with(None, None, None))], 1, 1000.0);
@@ -13075,7 +13076,7 @@ mod tests {
         assert_eq!(cards[0]["id"], local::CARD_ID);
         assert_eq!(
             none["empty"]["message"],
-            "No hosts configured. Add one in Settings."
+            "No hosts configured. Add This machine or a remote host in Settings → Sources."
         );
     }
 
