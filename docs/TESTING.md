@@ -260,12 +260,15 @@ gate (~2849: `mode === "overview" || fullTile`, `!settingsOpen`). Three of
 these waits (the Detail focus test, the open-chip focus test, the runner
 height-reservation test) each failed once or twice locally with no cause found
 and never in CI; 36 runs of the three under eight CPU burners and ten workers
-did not reproduce it. The dashboard waits that follow an in-place swap now run
-inside `swapReport` (`tile-full.js`), which on failure appends how many reads
-the stub saw begun and answered since the swap. None begun: a stalled
-renderer, a `refresh()` skip (~798, ~2849) or a `pending` flag stuck by a read
-that never answered. Begun and answered: an app bug or a dropped read (~807,
-~810, ~833). Do not raise the timeout either way. The config keeps a failing
+did not reproduce it. Every in-place swap in `status-layout.spec.js` runs its
+paint wait inside `swapReport` (`tile-full.js`), as do the Detail focus and
+open-chip focus tests in `dashboard.spec.js`; the other swaps in that file are
+left as they were, because the waits #722 saw fail are the routed ones.
+`swapReport` on failure appends how many reads the stub saw begun and answered
+since the swap. None begun: a stalled renderer, a `refresh()` skip (~798,
+~2849) or a `pending` flag stuck by a read that never answered. Begun but not
+answered: a held or slow IPC read. Begun and answered: an app bug or a dropped
+read (~807, ~810, ~833). Do not raise the timeout either way. The config keeps a failing
 test's trace (`trace: "retain-on-failure"`) in `tests/frontend/test-results/`;
 Playwright clears it at the start of the next run, so copy it out first and
 read it with `npx playwright show-trace <trace.zip>`. CI keeps no artifact
