@@ -33,7 +33,9 @@ set -euo pipefail
 # update`'s forward-only rule, and `install.sh` re-run over an installed release
 # (a fresh install, and an installed `+dev` source build, have nothing to
 # compare against and are not covered by that last one). The provenance of the
-# commit is `prd`'s required reviewer's, not this script's.
+# commit is the tag-pusher's, not this script's: `prd` has no required reviewer
+# (#749), so the choice of commit is made by whoever may push a release tag,
+# which the "release tags" ruleset limits to the repository admin role.
 # The agent mint's `create` path asks `gh release view`; a refused tag can reach
 # it, so a refusal here may also say that `gh` could not answer — which is still
 # a refusal, and the cause named is the mint's own.
@@ -78,9 +80,11 @@ set -euo pipefail
 # commit in this month, and no other. It does not establish where the commit
 # came from — nothing here requires it to be on `main` (publish.sh does,
 # locally, at mint time), and a committer date is author-chosen. Provenance
-# is `prd`'s required reviewer's, who approves the run before any leg holds a
-# credential; this check is what makes the number that reviewer sees mean
-# something.
+# is the tag-pusher's: pushing the tag IS the approval (#749, `prd` has no
+# required reviewer), and the "release tags" ruleset lets only the repository
+# admin role create, move or delete one. A deployment policy that admits only
+# `v*` and `agent-v*` tags is what keeps `main` and forks away from the
+# credentials. This check is what makes the number on that tag mean something.
 #
 # WHAT IS REFUSED BEFORE THE MINT RUNS — the shapes the ladder itself cannot
 # see. A name that is not `vYYYY.M.P` is a hand-made tag whatever the mint

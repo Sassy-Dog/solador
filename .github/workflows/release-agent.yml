@@ -1,8 +1,8 @@
 name: Release agent
 
 # The metrics agent's own release train (#472): pushing an `agent-v*` tag builds
-# the agent's four minisigned target binaries and attaches them to a DRAFT
-# release. It reverses #390's "one tag, one release, both products": the
+# the agent's four minisigned target binaries, attaches them to a DRAFT
+# release, publishes it and publishes its feed. It reverses #390's "one tag, one release, both products": the
 # cockpit's `v*` tags (release.yml) no longer build or attach an agent, and this
 # file is where the third leg that used to live there went.
 #
@@ -10,31 +10,45 @@ name: Release agent
 # name, and the name starts with `a`), and `agent-v*` does not match `v…`, so
 # neither train triggers the other. `./dev publish --agent` mints and pushes the
 # tag (scripts/publish.sh, through `get-version-info.sh --agent-tag --push`).
-# Publishing the draft is a second, separate act that triggers
-# publish-agent-feed.yml, which is what signs the feed hosts update from.
+# Pushing the tag is the whole approval (#749); nothing waits for a person:
 #
-#   build   → cross-compile the four targets, prove the Linux ones are static
-#   verify  → execute `--version` for EACH target on a runner matching it
-#   publish → sign the exact files that were verified, then upload them
+#   build           → cross-compile the four targets, prove the Linux ones are static
+#   verify          → execute `--version` for EACH target on a runner matching it
+#   publish         → sign the exact files that were verified, then upload them
+#                     to a draft
+#   publish-release → make the draft a public, NOT-latest release
+#   feed            → call publish-agent-feed.yml, which signs and serves the
+#                     feed hosts update from
 #
-# Three stages rather than one, and the split is the acceptance criterion. Only
-# `publish` declares `environment: prd`, because only it needs a secret. Build
-# and verify hold no credential and start without waiting on the environment's
-# reviewer — and, more to the point, the signing key touches one runner instead
-# of six. `ci.yml`'s `secrets-guard` asserts that by job name AND by the presence
-# of the environment line, not by allow-listing this file: a secret reference in
-# `build` or `verify`, or in `publish` with its environment removed, fails CI.
+# The split is the acceptance criterion. Only `publish` declares `environment:
+# prd`, because only it needs a secret. Build and verify hold no credential —
+# and, more to the point, the signing key touches one runner instead of six.
+# `publish-release` and `feed` hold no credential either: the first runs `gh
+# release edit` with the workflow's own token, and the second is a call to
+# publish-agent-feed.yml, whose protected job (`agent-feed`) reads the feed key
+# under its OWN `environment: prd`. `ci.yml`'s `secrets-guard` asserts that by
+# job name AND by the presence of the environment line, not by allow-listing this
+# file: a secret reference in any job but `publish`, or in `publish` with its
+# environment removed, fails CI.
+#
+# WHY A CALL AND NOT `release: published`. A release published with the
+# workflow's own `GITHUB_TOKEN` does NOT fire `release: published` (GitHub
+# suppresses events raised by that token), so publish-agent-feed.yml would never
+# start from `publish-release`'s edit. Hence the `feed` job calls it directly.
+# Its `release: published` and `workflow_dispatch` triggers stay, as the door for
+# a draft someone holds back and publishes by hand, and for replays.
+#
+# THE GATE. `prd` has no required reviewer. Its deployment policy admits only
+# `v*` and `agent-v*` tags, so `main` and forks cannot reach it, and a tag ruleset
+# named "release tags" restricts creating, updating and deleting those tags to the
+# repository admin role. Pushing the tag is therefore the approval (`./dev publish
+# --agent` pushes as the admin). Both of those are repository settings, not
+# files; `prd`'s policy must name `agent-v*` beside `v*` (#492 step 6), or a run
+# at an `agent-v*` tag is refused the environment and `publish` never starts.
 #
 # `-p solador-agent` (inside build-agent.sh) is load-bearing on the Linux runner:
 # a bare `cargo build` would resolve the whole workspace, including
 # app/src-tauri and its webkit2gtk system dependencies.
-#
-# RUNBOOK NOTE. `prd`'s required reviewer is prompted ONCE on a tagged run: for
-# `publish`, which becomes ready only after build and verify. Publishing the
-# draft prompts it once more, in publish-agent-feed.yml. And `prd`'s deployment
-# policy has to allow `agent-v*` tags beside `v*` (a repository setting, not a
-# file; #492 step 6): a run at an `agent-v*` tag is refused the environment until
-# it does, so `publish` never starts.
 #
 # A `push` of a tag runs the workflow file AS IT IS AT THE TAGGED COMMIT, so a
 # fix to this file reaches a release only through a NEW tag — and an `agent-v*`
@@ -52,8 +66,9 @@ on:
   push:
     tags: ['agent-v*']
 
-# Read by default; `publish` alone restates `contents: write` for the draft
-# release, because job permissions replace the workflow's block.
+# Read by default; `publish`, `publish-release` and `feed` restate `contents:
+# write` (the draft, publishing it, and the feed call's upload), because job
+# permissions replace the workflow's block.
 permissions:
   contents: read
 
@@ -207,10 +222,10 @@ jobs:
     needs: [build, verify]
     runs-on: ubuntu-latest
     # The only job here that declares it, because it is the only one holding a
-    # credential. `prd` carries a required reviewer and a tag-only deployment
-    # policy, so this job starts only when a person approves it AND the run is at
-    # a release tag — and that policy must name `agent-v*` (see the RUNBOOK NOTE
-    # in the header). `ci.yml`'s `secrets-guard` requires this line to be here.
+    # credential. `prd` has no required reviewer; its tag-only deployment policy
+    # starts this job only when the run is at a release tag, and that policy must
+    # name `agent-v*` (see THE GATE in the header). `ci.yml`'s `secrets-guard`
+    # requires this line to be here.
     environment: prd
     # Job-level permissions REPLACE the workflow's block, so this restates what
     # the draft release needs.
@@ -362,12 +377,12 @@ jobs:
           done
           echo "All four signatures verify under agent/release-signing-key.pub."
 
-      # A DRAFT, with `make_latest: false` (`--latest=false`). The reviewer gate
-      # approved exposing a credential, not publishing to users — a draft is
-      # deletable, a public release has to be retracted. A draft is also what
-      # publish-agent-feed.yml hangs off: its trigger is `release: published`, so
-      # "a draft can never serve a feed" is a property of the trigger, not a rule
-      # to remember. And `--latest=false` is half of keeping `releases/latest`
+      # A DRAFT, with `make_latest: false` (`--latest=false`), and the draft is
+      # not published HERE: this job holds the signing key, and publishing is
+      # the next job's, which holds none, and only runs once every binary has
+      # been signed, re-verified and attached. A draft is also what makes "a draft
+      # can never serve a feed" true: publish-agent-feed.yml refuses a release that
+      # is still one. And `--latest=false` is half of keeping `releases/latest`
       # the cockpit's (the other half is that workflow's latest guard, because a
       # draft's flag does not obviously survive being published from the UI).
       #
@@ -403,6 +418,54 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" --draft --latest=false --generate-notes \
               --title "$GITHUB_REF_NAME" "${assets[@]}"
-            echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy:"
-            echo "publishing is what signs the agent feed (publish-agent-feed.yml)."
+            echo "Created draft release $GITHUB_REF_NAME; publish-release publishes it next."
           fi
+
+  # Pushing the tag was the approval (#749), so the release is published HERE,
+  # once `publish` has signed, re-verified and attached all eight assets. No
+  # environment and no secret: `gh release edit` runs with the workflow's own
+  # token, which is why `contents: write` is restated for this job.
+  #
+  # `--latest=false` again, explicitly: a published release the cockpit's
+  # updater could read as `releases/latest` is the failure publish-agent-feed.yml's
+  # latest guard exists for, and it is cheaper never to cause it.
+  #
+  # A release that is already public is left alone, so a re-run of this job
+  # after it published (but before the feed did) passes instead of failing on the
+  # second edit.
+  publish-release:
+    name: Publish the agent release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # No checkout in this job, so `gh` has no repository to infer.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish the draft as a normal, not-latest release
+        run: |
+          is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" == "true" ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false
+            echo "Published $GITHUB_REF_NAME."
+          else
+            echo "$GITHUB_REF_NAME is already public; nothing to publish."
+          fi
+
+  # The signed feed hosts update from, written by publish-agent-feed.yml. A CALL,
+  # because the edit above raises no `release: published` event (see the header).
+  # That workflow's `agent-eligibility` job still requires the run to be AT this
+  # tag, the release to be public with all eight assets, and both guards to pass;
+  # its `agent-feed` job reads the feed key under its own `environment: prd`.
+  # Nothing is passed down but the tag: the call hands over no secret at all.
+  # `contents: write` is the most the called workflow's upload job may use.
+  feed:
+    name: Publish the agent feed
+    needs: publish-release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-agent-feed.yml
+    with:
+      tag: ${{ github.ref_name }}

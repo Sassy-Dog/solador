@@ -15,8 +15,9 @@ set -euo pipefail
 # — every credential-holding job in release.yml (the cockpit's release, allowed
 # wholesale, by file), and exactly two other jobs, allowed by `file:job` PAIR:
 # `release-agent.yml:publish`, which signs the agent's binaries, and
-# `publish-agent-feed.yml:agent-feed`, which signs `agent-latest.json` when an
-# agent release is published. Nothing else. The jobs beside them stay
+# `publish-agent-feed.yml:agent-feed`, which signs `agent-latest.json` — mostly
+# reached through the call from release-agent.yml's `feed` job once its release
+# is public (#749), and also on `release: published` or a dispatch. Nothing else. The jobs beside them stay
 # credential-free, publish-feed.yml (the cockpit's feed) has no allowance at all
 # since #491 moved the agent's feed job out of it, and neither does any other
 # workflow.
@@ -173,7 +174,7 @@ for wf in "$WORKFLOWS_DIR"/*.yml "$WORKFLOWS_DIR"/*.yaml; do
             if [[ -n "$job_secrets" ]] \
                 && ! awk -F '\t' -v job="$job" '$1 == "environment" && $3 == job { found = 1 } END { exit !found }' <<< "$findings"; then
                 echo "::error file=$rel::$name's $job job references secrets but does not carry the job-level line 'environment: prd' (exactly that spelling)"
-                echo "The environment is what scopes the credential to a reviewed, tag-only run." >&2
+                echo "The environment is what scopes the credential to a tag-only run." >&2
                 fail=1
             fi
         done

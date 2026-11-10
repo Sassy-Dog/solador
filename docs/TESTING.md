@@ -166,8 +166,8 @@ not go fails `assert_dmg_layout`, naming it and `hdiutil detach -force <dev>`:
 the check runs before signing, so a re-run is cheap, and a release machine that
 shrugged would accumulate devices. That holds for a detach that fails after a
 successful attach and a passing layout check: on GitHub Actions that case only
-warns (the runner is thrown away, and failing would cost a `prd` approval and a
-rebuild for a correct artifact). A device that cannot be detached during a
+warns (the runner is thrown away, and failing would cost a full release rebuild
+for a correct artifact). A device that cannot be detached during a
 failed attempt fails the build everywhere. The
 suite's EXIT trap detaches everything under its temp dir before deleting it,
 ends by asserting nothing is left, and at start reaps earlier runs' leaks by

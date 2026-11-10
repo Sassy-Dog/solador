@@ -322,7 +322,7 @@ expect_absent 'would replace a newer' "...and it does not give the freeze remedy
 
 page "$work/page1.json" agent-v2026.10.16:draft agent-v2026.10.12
 run_guard newest agent-v2026.10.16 --force
-expect refuse "a draft candidate, even forced (pulled back to a draft during the approval wait)" 'not among'
+expect refuse "a draft candidate, even forced (pulled back to a draft while the run was in flight)" 'not among'
 
 page "$work/page1.json"
 run_guard newest agent-v2026.10.15

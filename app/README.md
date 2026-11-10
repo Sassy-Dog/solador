@@ -809,8 +809,10 @@ walks through, and the Apple wait is up to 60 minutes; the volume holds
 mounted image ([#539](https://github.com/Sassy-Dog/solador/issues/539)). Pushing a `v*` tag
 runs that same build on CI against the `prd` environment
 ([#307](https://github.com/Sassy-Dog/solador/issues/307)) and attaches a
-**draft** release; publishing that draft is what generates the signed update
-feed ([#308](https://github.com/Sassy-Dog/solador/issues/308)). The release
+**draft** release; the run then publishes it, with no one to approve it, once
+the signed update feed has verified
+([#308](https://github.com/Sassy-Dog/solador/issues/308),
+[#749](https://github.com/Sassy-Dog/solador/issues/749)). The release
 train ([#15](https://github.com/Sassy-Dog/solador/issues/15)) is closed, and
 the root [README](../README.md#download) is where a user is sent to download it.
 

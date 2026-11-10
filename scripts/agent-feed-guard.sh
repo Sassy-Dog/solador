@@ -3,7 +3,8 @@ set -euo pipefail
 
 # The two publish-time guards of the agent feed (#491, part of #472): the logic
 # `.github/workflows/publish-agent-feed.yml`'s credential-free `agent-eligibility`
-# job runs before `prd`'s reviewer is ever asked to approve a signing run.
+# job runs before the protected `agent-feed` job (the one that holds the signing
+# key) is entered.
 #
 #   scripts/agent-feed-guard.sh newest TAG [--force]   the FREEZE guard
 #   scripts/agent-feed-guard.sh latest                 the LATEST guard
@@ -55,7 +56,7 @@ set -euo pipefail
 # it is reported and ignored rather than allowed to wedge or to win. The
 # candidate itself must be on that list: eligibility has already required a
 # published, stable release, so a candidate this guard cannot find (a release
-# pulled back to a draft during `prd`'s approval wait, say) is a contradiction,
+# pulled back to a draft while the build and signing ran, say) is a contradiction,
 # and a contradiction is a refusal.
 #
 # `--force` waives exactly one refusal: "not the newest". The list must still be
@@ -68,8 +69,8 @@ set -euo pipefail
 # THE LATEST GUARD (`latest`). `releases/latest` must name a `v*` tag. The
 # cockpit's updater and its in-app check read `releases/latest`, and an agent
 # release that took the slot (published from the UI with "Set as the latest
-# release" ticked; the draft was created with `--latest=false`, and a draft's
-# flag does not obviously survive a UI publish) would point every installed
+# release" ticked; the draft was created, and is published, with
+# `--latest=false`, and a draft's flag does not obviously survive a UI publish) would point every installed
 # cockpit's updater at a release with no `latest.json` and no `.app.tar.gz`. It
 # fails naming the remedy, `gh release edit <tag> --latest=false`.
 
