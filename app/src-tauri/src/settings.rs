@@ -110,27 +110,23 @@ pub struct StoredSecrets {
     /// source being added.
     pub anthropic_admin: StoredKey,
     pub openai_admin: StoredKey,
-    /// Whether an OpenClaw *bearer* token is stored. The device key is not
-    /// represented here at all: it is minted by the app, and whether one exists
-    /// is answered by the device id the Device Pairing block shows.
-    pub openclaw: bool,
+    /// Whether an OpenClaw *bearer* token is stored, which keeps the row alive
+    /// when no gateway URL is saved. The device key is not represented here at
+    /// all: it is minted by the app, and whether one exists is answered by the
+    /// device id the Device Pairing block shows.
+    pub openclaw: StoredKey,
     /// Host ids with a non-empty agent token.
     pub hosts: HashSet<Uuid>,
-    /// Vendor-account ids with a non-empty token, read from the credential item
-    /// [`VendorAccount::secret_account`] names.
-    ///
-    /// Same shape as [`Self::hosts`], and with the same limit: an account whose
-    /// stored item name this build cannot resolve is simply absent from the
-    /// set, so its badge reads "No token". That is the weaker of the two claims
-    /// and deliberately so — the *distinct* fact ("unrecognised credential
-    /// item") is already reported where it costs something, on the Repos
-    /// panel's per-account footer, and the account's steps are what repair it:
-    /// a token typed on the Token step moves the account onto its own
-    /// `vendor-<id>` item.
-    pub accounts: HashSet<Uuid>,
-    /// The same item in three states, for the account's steps: a store that
-    /// would not answer is [`StoredKey::Unread`], not "no token". An id absent
-    /// here falls back to [`Self::accounts`].
+    /// Each account's token, read once from the credential item
+    /// [`VendorAccount::secret_account`] names, in three states: a store that
+    /// would not answer is [`StoredKey::Unread`], not "no token". The account's
+    /// steps, its row and its card all read this one answer. An account whose
+    /// stored item name this build cannot resolve is [`StoredKey::Absent`] --
+    /// the weaker claim, and deliberately so: the *distinct* fact
+    /// ("unrecognised credential item") is reported on the Repos panel's
+    /// per-account footer, and the account's steps repair it (a token typed on
+    /// the Token step moves the account onto its own `vendor-<id>` item). An id
+    /// missing here is also `Absent`.
     pub account_keys: HashMap<Uuid, StoredKey>,
 }
 
@@ -138,13 +134,7 @@ impl StoredSecrets {
     /// What the credential store said of this account's token.
     #[must_use]
     pub fn account_key(&self, id: Uuid) -> StoredKey {
-        self.account_keys.get(&id).copied().unwrap_or_else(|| {
-            if self.accounts.contains(&id) {
-                StoredKey::Stored
-            } else {
-                StoredKey::Absent
-            }
-        })
+        self.account_keys.get(&id).copied().unwrap_or_default()
     }
 }
 
@@ -1148,7 +1138,7 @@ fn connections_section(
             } else if stored.account_key(account.id) == StoredKey::Unread {
                 // A store that won't answer says nothing about the token.
                 row_status_not_read()
-            } else if stored.accounts.contains(&account.id) {
+            } else if stored.account_key(account.id) == StoredKey::Stored {
                 status("Configured", false)
             } else {
                 status("Token needed", true)
@@ -1281,7 +1271,7 @@ fn connections_section(
             ),
         ));
     }
-    if !s.openclaw_gateway_url.is_empty() || stored.openclaw {
+    if !s.openclaw_gateway_url.is_empty() || stored.openclaw != StoredKey::Absent {
         let (text, tint) = openclaw_status(&openclaw.connection);
         rows.push(row(
             "openclaw".into(),
@@ -1290,8 +1280,13 @@ fn connections_section(
             "OpenClaw",
             s.openclaw_gateway_url.clone(),
             "OpenClaw",
-            json!({"text": text, "color": color::hex(tint),
-                "attention": openclaw.pairing.is_some() || tint == color::RED}),
+            if s.openclaw_gateway_url.is_empty() && stored.openclaw == StoredKey::Unread {
+                // The row exists only because the token might be there.
+                row_status_not_read()
+            } else {
+                json!({"text": text, "color": color::hex(tint),
+                    "attention": openclaw.pairing.is_some() || tint == color::RED})
+            },
         ));
     }
     if s.local_monitoring_enabled {
@@ -2230,7 +2225,7 @@ fn accounts_tab(
                 "vendorLabel": vendor_label(account.vendor),
                 "label": account.label,
                 "enabled": account.enabled,
-                "stored": stored.accounts.contains(&account.id),
+                "stored": stored.account_key(account.id) == StoredKey::Stored,
                 // A store that would not answer is neither stored nor missing.
                 "unread": stored.account_key(account.id) == StoredKey::Unread,
                 // Full rows, not just slugs: the card is where a repo is
@@ -2660,7 +2655,7 @@ fn openclaw_tab(
         "secret": secret_section(
             SecretField::OpenClaw,
             "Bearer token (optional)",
-            stored.openclaw,
+            stored.openclaw == StoredKey::Stored,
             "Token stored",
             "Solador monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
         ),
@@ -3234,11 +3229,10 @@ mod tests {
             vercel: StoredKey::Absent,
             anthropic_admin: StoredKey::Absent,
             openai_admin: StoredKey::Absent,
-            openclaw: false,
+            openclaw: StoredKey::Absent,
             hosts: [host.id].into_iter().collect(),
             // The Accounts tab's own tests name their accounts (see
             // `accounts_view`); every other test's store has none.
-            accounts: HashSet::new(),
             ..StoredSecrets::default()
         };
         // Explicit, not `seeded_repos()`: nothing is seeded any more, and a
@@ -3731,6 +3725,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("{kind} must stay a row"));
             assert_eq!(row["status"], row_status_not_read(), "{kind}");
         }
+    }
+
+    /// With no gateway URL saved, the bearer token alone keeps OpenClaw's row;
+    /// a store that won't answer must not read as "no token".
+    #[test]
+    fn openclaw_with_an_unreadable_keychain_and_no_url_reads_not_read() {
+        let (mut settings, hosts, repos, mut stored) = sample();
+        settings.openclaw_gateway_url.clear();
+        let row_of = |stored: &StoredSecrets| {
+            view_of(&settings, &hosts, &repos, stored, &facts())["connections"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["kind"] == "openclaw")
+                .cloned()
+        };
+        stored.openclaw = StoredKey::Absent;
+        assert!(row_of(&stored).is_none(), "no URL and no token is no row");
+        stored.openclaw = StoredKey::Unread;
+        let row = row_of(&stored).expect("an unread token may be there");
+        assert_eq!(row["status"], row_status_not_read());
+        stored.openclaw = StoredKey::Stored;
+        let row = row_of(&stored).expect("a stored token keeps the row");
+        assert_ne!(row["status"], row_status_not_read());
     }
 
     #[test]
@@ -5188,7 +5206,7 @@ mod tests {
         );
 
         let stored = StoredSecrets {
-            accounts: [account.id].into_iter().collect(),
+            account_keys: [(account.id, StoredKey::Stored)].into_iter().collect(),
             ..StoredSecrets::default()
         };
         let rows = account_rows(&accounts_view(one, &repos, &stored));
@@ -5779,7 +5797,7 @@ mod tests {
         work.orgs = Some(vec!["acme".to_owned(), "globex".to_owned()]);
         let personal = account("personal");
         let stored = StoredSecrets {
-            accounts: [work.id].into_iter().collect(),
+            account_keys: [(work.id, StoredKey::Stored)].into_iter().collect(),
             ..StoredSecrets::default()
         };
         let vm = accounts_view(&[work.clone(), personal.clone()], &repos, &stored);

@@ -1050,13 +1050,14 @@ pub fn save_source_with(
         );
         // What the row's change says it did, once it is made.
         let mut said: Option<String> = None;
+        // Set in the closure, reported once the removal is saved: a failed save
+        // rolls the account back, and a line printed first would have implied a
+        // removal that did not happen.
+        let mut left_unrecognised = false;
         let row_written = applied.and_then(|()| match (&row, draft_row) {
             (Some(row), _) if removing => {
                 if row.adopts {
-                    // The item name only, never a token.
-                    eprintln!(
-                        "left an unrecognised credential item in place: nothing here can name it"
-                    );
+                    left_unrecognised = true;
                 }
                 let removed = store.remove_account(row.draft.id);
                 said = removed.map(|removed| {
@@ -1106,6 +1107,10 @@ pub fn save_source_with(
                 }
             }
             return Err(failed);
+        }
+        if left_unrecognised {
+            // A fixed sentence: it names no item and carries no token.
+            eprintln!("left an unrecognised credential item in place: nothing here can name it");
         }
         said
     };

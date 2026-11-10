@@ -2717,15 +2717,19 @@ fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) 
         .forget_absent(&org, &name);
 }
 
-/// Which credentials currently hold a value — the "stored" badges, and whether
-/// each source's key is there. A read failure reads as "not stored" for a badge,
-/// which is a hint, and an unreadable keychain must not take the Settings window
-/// down with it. A key that decides whether a source exists keeps the failure as
-/// [`settings::StoredKey::Unread`]: the Neon, Sentry, Vercel, Anthropic Admin and
-/// OpenAI Admin keys, and each account's token (`account_keys`, which the
-/// account's steps, its row and its card read; the `accounts` set stays the
-/// weaker badge claim). The OpenClaw bearer token and the host tokens are badges
-/// only, and read a failure as "not stored".
+/// Which credentials currently hold a value -- the "stored" badges, and whether
+/// each source's key is there. An unreadable keychain must not take the Settings
+/// window down with it, so no read here can fail the call. What a failed read
+/// *becomes* depends on what the key decides:
+///
+/// - A key that decides whether a source's row exists keeps the failure as
+///   [`settings::StoredKey::Unread`]: the Neon, Sentry, Vercel, Anthropic Admin
+///   and OpenAI Admin keys, and the OpenClaw bearer token (which alone keeps
+///   its row when no gateway URL is saved).
+/// - An account's token does not decide whether its row exists, but it keeps
+///   `Unread` too, so the account's steps, row and card never read a silent
+///   store as "no token" (one read, `account_keys`, answers all three).
+/// - The host tokens are badges only, and read a failure as "not stored".
 fn stored_secrets(
     credentials: &dyn CredentialStore,
     hosts: &[Host],
@@ -2755,7 +2759,7 @@ fn stored_secrets(
         vercel: stored_key(SecretKey::VercelApiToken),
         anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
         openai_admin: stored_key(SecretKey::OpenAiAdminKey),
-        openclaw: present(SecretKey::OpenClawBearerToken),
+        openclaw: stored_key(SecretKey::OpenClawBearerToken),
         hosts: hosts
             .iter()
             .filter(|host| present(SecretKey::HostToken(host.id)))
@@ -2767,16 +2771,13 @@ fn stored_secrets(
         // report "No token" over a token that is right there. An account whose
         // stored item name this build cannot resolve reads as not-stored; the
         // Repos panel is where that distinct finding is reported.
-        accounts: accounts
-            .iter()
-            .filter(|account| account_secret_key(account).is_some_and(present))
-            .map(|account| account.id)
-            .collect(),
-        // The same item, read in three states: the account's steps must not
-        // turn a store that would not answer into "no token stored", which
+        // Through `account_secret_key`, so the read follows the item the
+        // account actually names -- the migrated account still points at the v1
+        // `github_access_token` item. Three states: the account's steps must
+        // not turn a store that would not answer into "no token stored", which
         // would demand a new token to rename the account. An item name this
         // build cannot resolve stays `Absent`, so the repair path still asks
-        // for a token.
+        // for a token (the Repos panel reports that distinct finding).
         account_keys: accounts
             .iter()
             .map(|account| {
@@ -3806,6 +3807,12 @@ async fn poll_crons(app: &Arc<App>) {
             .unconfigure_part();
         return;
     }
+    // The first pass after the part was ticked: "not set up" is stale, and an
+    // unreadable store must not leave it painted.
+    app.crons
+        .lock()
+        .expect("crons state poisoned")
+        .resume_part();
     let token = match read_credential(&*app.credentials, SecretKey::SentryUsageToken) {
         Credential::Present(token) => token,
         // "No token" is the setup state and paints an instruction.
@@ -6758,10 +6765,11 @@ fn dump_settings() -> Value {
         vercel: settings::StoredKey::Stored,
         anthropic_admin: settings::StoredKey::Absent,
         openai_admin: settings::StoredKey::Absent,
-        openclaw: false,
+        openclaw: settings::StoredKey::Absent,
         hosts: [live.id].into_iter().collect(),
-        accounts: [accounts[0].id].into_iter().collect(),
-        ..StoredSecrets::default()
+        account_keys: [(accounts[0].id, settings::StoredKey::Stored)]
+            .into_iter()
+            .collect(),
     };
     // A gateway configured *and* waiting on approval, so the fixture carries the
     // pairing block — the one part of this tab that only exists in a live
@@ -8219,6 +8227,35 @@ mod tests {
         }
     }
 
+    /// Part off, then on, with a store that won't answer: the tile must never
+    /// keep saying the part isn't set up, nor ask for a token it can't know is
+    /// missing.
+    #[test]
+    fn ticking_scheduled_jobs_with_an_unreadable_store_never_paints_part_off() {
+        let (_dir, rt, app) = test_app_over(Silent);
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .sentry_crons_enabled = false;
+        let app = Arc::new(app);
+        rt.block_on(poll_crons(&app));
+        assert_eq!(
+            crons_unscoped(&app)["message"]["text"],
+            json!(crons::PART_OFF_MESSAGE)
+        );
+
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .sentry_crons_enabled = true;
+        rt.block_on(poll_crons(&app));
+        let message = crons_unscoped(&app)["message"]["text"].clone();
+        assert_ne!(message, json!(crons::PART_OFF_MESSAGE));
+        assert_ne!(message, json!(crons::UNCONFIGURED_MESSAGE));
+    }
+
     /// With no token at all (and the part on), the Crons tile still asks for one.
     #[test]
     fn crons_with_the_part_on_and_no_token_asks_for_one() {
@@ -8250,7 +8287,7 @@ mod tests {
         ] {
             assert_eq!(key, settings::StoredKey::Unread);
         }
-        assert!(!stored.openclaw, "a badge-only credential reads as none");
+        assert_eq!(stored.openclaw, settings::StoredKey::Unread);
     }
 
     /// A stored key is kept by leaving the field empty, and unticking the part
@@ -13447,11 +13484,11 @@ mod tests {
             &[],
             &[migrated.clone(), own.clone(), stranger.clone()],
         );
-        assert!(stored.accounts.contains(&migrated.id));
-        assert!(stored.accounts.contains(&own.id));
+        assert_eq!(stored.account_key(migrated.id), settings::StoredKey::Stored);
         assert_eq!(stored.account_key(own.id), settings::StoredKey::Stored);
-        assert!(
-            !stored.accounts.contains(&stranger.id),
+        assert_ne!(
+            stored.account_key(stranger.id),
+            settings::StoredKey::Stored,
             "an item name this build cannot resolve must not read as a stored token"
         );
     }
@@ -13473,7 +13510,6 @@ mod tests {
             &[own.clone(), stray.clone()],
         );
         assert_eq!(stored.account_key(own.id), settings::StoredKey::Unread);
-        assert!(!stored.accounts.contains(&own.id));
         assert_eq!(stored.account_key(stray.id), settings::StoredKey::Absent);
     }
 
