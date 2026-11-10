@@ -60,9 +60,10 @@ detail. Solador is public, so the org's `APPLE_*` secrets (visibility `private`)
 resolve to the empty string here; environment secrets are repo-scoped, so that
 visibility never applies to them. **`prd` has no required reviewer (#749); two
 repository settings stand where one stood.** Its deployment policy admits only
-tags — `v*` for the cockpit's train, plus `agent-v*` for the agent's, added by
-hand (#492 step 6); the policy names `agent-v*` beside `v*`, and remove it and
-neither agent credential job can enter `prd` — which is what stops a push to `main`, or a fork, minting a signed build.
+tags (`v*` for the cockpit's train, `agent-v*` for the agent's) — which is what
+stops a push to `main`, or a fork, minting a signed build. The policy names
+`agent-v*` beside `v*` (#492 step 6); remove it and neither agent credential job
+can enter `prd`.
 And a tag ruleset named **"release tags"** (id 26979876, active) covers
 `refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
 deleting them to the repository admin role (`./dev publish` pushes as the
@@ -381,13 +382,14 @@ draft** with a red run that says why, and "a draft can never serve updates" is a
 property of the order rather than a rule. The converse failure is worse: if a
 step AFTER publishing fails (the publish step's own `publishedAt` read-back, the
 rebuild, the upload, the endpoint check), the release is public with no served
-`latest.json`. If it took `releases/latest`, every installed cockpit's update
-check fails until it is fixed; if it was published `--latest=false` (an older
-draft re-published after a newer release shipped), it has no feed and
-`releases/latest` still serves the newer release's, so no user is affected. The
-job's last step reads the release's `isDraft` and says which in an `::error::`
-(it says the state is unknown, never a guess, if that read fails); use
-**Re-run failed jobs**, where the publish step finds the release already public
+`latest.json` confirmed. If it holds `releases/latest`, installed cockpits'
+update checks fail until the feed is uploaded and served. If `releases/latest`
+was not moved to it (an older draft re-published after a newer release shipped),
+the hint says so and does not check what `releases/latest` serves. It also says
+whether `latest.json` was uploaded or only unconfirmed by the endpoint check.
+The job's last step reads the release's `isDraft` and `isLatest` and says this
+in an `::error::` (it says the state is unknown, never a guess, if that read
+fails); use **Re-run failed jobs**, where the publish step finds the release already public
 and does nothing, then rebuilds and uploads. That remedy is for failures after
 publishing only: a mis-signed build, or a missing payload or `.sig`, fails
 identically on a re-run of the failed jobs, which re-downloads the same draft

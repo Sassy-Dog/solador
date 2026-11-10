@@ -470,6 +470,7 @@ jobs:
           cat feed/latest.json
 
       - name: Upload latest.json to the release
+        id: upload
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -482,6 +483,7 @@ jobs:
       # between "we uploaded an asset" and "the endpoint the app polls serves a
       # manifest" — which are two claims, and only the second one matters.
       - name: Confirm the configured endpoint serves a manifest
+        id: endpoint
         env:
           ENDPOINT: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/latest.json
         run: |
@@ -521,21 +523,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
-          LATEST: ${{ steps.publish.outputs.latest }}
+          UPLOAD: ${{ steps.upload.outcome }}
         run: |
-          if [[ -z "$TAG" ]] || ! is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"; then
+          if [[ -z "$TAG" ]] || ! state="$(gh release view "$TAG" --json isDraft,isLatest --jq '[.isDraft, .isLatest] | @tsv')"; then
             echo "::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft; check with 'gh release view ${TAG:-<tag>} --json isDraft,isLatest' before re-running"
             exit 0
           fi
+          read -r is_draft is_latest <<< "$state"
           if [[ "$is_draft" != "false" ]]; then
             exit 0
           fi
-          case "$LATEST" in
-            true)
-              echo "::error::the release is now PUBLIC and took releases/latest, but latest.json was not uploaded and confirmed, so every installed cockpit's update check fails until it is" ;;
-            false)
-              echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed; it was published with --latest=false, so this release has no feed and releases/latest still serves the newest published release's feed (no installed cockpit is affected)" ;;
-            *)
-              echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed; whether it took releases/latest is not known to this step (check 'gh release view $TAG --json isLatest'): if it did, every installed cockpit's update check fails until the feed is uploaded" ;;
-          esac
+          if [[ "$UPLOAD" == "success" ]]; then
+            feed="latest.json was uploaded but the endpoint check did not confirm it"
+          else
+            feed="latest.json was not uploaded"
+          fi
+          if [[ "$is_latest" == "true" ]]; then
+            echo "::error::the release is now PUBLIC and holds releases/latest, and $feed, so installed cockpits' update checks fail until the feed is uploaded and served"
+          else
+            echo "::error::the release is now PUBLIC; $feed; releases/latest was not moved to this release; this step did not check what it serves"
+          fi
           echo "Use 'Re-run failed jobs' on this run: the publish step finds the release already public and does nothing, then the manifest is rebuilt and uploaded." >&2
