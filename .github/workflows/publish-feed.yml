@@ -415,12 +415,18 @@ jobs:
             top="$(printf '%s\n%s\n' "$newest" "$TAG" | grep -E '^v[0-9]' | sort -V | tail -n1)"
             if [[ "$top" == "$TAG" ]]; then
               latest_flag="--latest"
+              took_latest=true
               echo "Publishing $TAG with --latest: it sorts at or above the newest published release (${newest:-none published yet})."
             else
               latest_flag="--latest=false"
+              took_latest=false
               echo "Publishing $TAG with --latest=false: $newest is a newer published release and keeps releases/latest."
             fi
             gh release edit "$TAG" --draft=false "$latest_flag"
+            # Recorded for the failure hint's wording: whether THIS release took
+            # `releases/latest` decides whether a missing feed hurts anyone. Not
+            # written on the already-public path, where it is not known here.
+            echo "latest=$took_latest" >> "$GITHUB_OUTPUT"
             echo "Published $TAG."
           else
             echo "$TAG is already public; nothing to publish."
@@ -502,12 +508,34 @@ jobs:
           echo "The configured endpoint currently offers $served."
 
       # The one failure that leaves users worse off than a red draft: the release
-      # was published and a LATER step (the rebuild, the upload, the endpoint
-      # check) failed, so the release is public with no served `latest.json`.
-      # It is the last step because `failure()` is only true for steps that run
-      # after the failing one. Prints the state and the way out; changes nothing.
+      # went public and a LATER step failed, so it is public with no served
+      # `latest.json`. That includes the publish step itself, whose read-back of
+      # `publishedAt` follows the edit: the step can fail with the release
+      # already public. So this keys on the run's failure and the release's own
+      # state (`isDraft`), not on the publish step's outcome. It is the last step
+      # because `failure()` is only true for steps that run after the failing
+      # one. Prints the state and the way out; changes nothing, and never states
+      # a release state it could not read.
       - name: Say what a failure after publishing means
-        if: failure() && steps.publish.outcome == 'success'
+        if: failure() && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          LATEST: ${{ steps.publish.outputs.latest }}
         run: |
-          echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed, so every installed cockpit's update check fails until it is"
-          echo "Use 'Re-run failed jobs' on this run: the publish step skips (the release is no longer a draft), then the manifest is rebuilt and uploaded." >&2
+          if [[ -z "$TAG" ]] || ! is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"; then
+            echo "::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft; check with 'gh release view ${TAG:-<tag>} --json isDraft,isLatest' before re-running"
+            exit 0
+          fi
+          if [[ "$is_draft" != "false" ]]; then
+            exit 0
+          fi
+          case "$LATEST" in
+            true)
+              echo "::error::the release is now PUBLIC and took releases/latest, but latest.json was not uploaded and confirmed, so every installed cockpit's update check fails until it is" ;;
+            false)
+              echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed; it was published with --latest=false, so this release has no feed and releases/latest still serves the newest published release's feed (no installed cockpit is affected)" ;;
+            *)
+              echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed; whether it took releases/latest is not known to this step (check 'gh release view $TAG --json isLatest'): if it did, every installed cockpit's update check fails until the feed is uploaded" ;;
+          esac
+          echo "Use 'Re-run failed jobs' on this run: the publish step finds the release already public and does nothing, then the manifest is rebuilt and uploaded." >&2

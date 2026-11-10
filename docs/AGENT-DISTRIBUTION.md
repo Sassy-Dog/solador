@@ -767,8 +767,8 @@ is a draft until the run publishes it. So `publish-agent-feed.yml` (#391 put thi
 `publish-feed.yml`; #491 moved it out with the rest of the agent's train) has
 one protected job, `agent-feed`, declaring `environment: prd` and reading exactly
 that one secret, behind the same tag-only deployment policy and the same tag
-ruleset — the policy must name `agent-v*` beside `v*`, a repository setting rather than
-a file (#492 step 6), so until it does neither agent job can enter `prd`. A
+ruleset — the policy names `agent-v*` beside `v*`, a repository setting rather than
+a file (#492 step 6); remove it and neither agent job can enter `prd`. A
 credential-free `agent-eligibility` job in front of it refuses a draft, a
 prerelease, a release without the eight agent assets, a candidate that is not
 the newest published agent release, a release holding `releases/latest` (§2) and
@@ -880,7 +880,10 @@ account with write access, with no approval, since `prd` has no reviewer:
 - a `workflow_dispatch` of `publish-agent-feed.yml` run from an existing tag,
   including `force=true`, which waives the freeze guard and could sign and serve
   an older agent feed so that hosts stop updating;
-- re-running a tag-push run of `release-agent.yml`;
+- re-running ANY existing run of either `release-agent.yml` or
+  `publish-agent-feed.yml` (a `workflow_dispatch` run or a `release: published`
+  run as much as a tag-push one). A re-run keeps its original ref and inputs, so
+  a past `force=true` dispatch replays with `force=true`;
 - publishing a held-back draft by hand, which fires `release: published`.
 
 (A dispatch of `publish-feed.yml` is not a door: it declares no environment and
@@ -891,12 +894,14 @@ A dispatch or re-run at an existing tag runs THAT TAG's own copy of the
 workflow, so no check added to the workflows now can close these doors for tags
 that already exist. This is accepted because the repository admin is the only
 collaborator. **Before anyone is granted write access, restore a required
-reviewer on `prd` (or otherwise close these doors).** What still holds differs
-by door. Only the re-run door runs `release-agent.yml`'s `publish`, which
-re-verifies every signature against `agent/release-signing-key.pub`. On the
-dispatch and hand-publish doors what holds is `publish-agent-feed.yml`'s own
-check of the binaries against that key, plus the freeze and latest guards (the
-freeze guard unless `force` waives it). It should be a known acceptance rather
+reviewer on `prd` (or otherwise close these doors).** What still holds:
+on every door. Two checks hold on EVERY door: `prd`'s tag-only deployment policy
+(the run must be at a release tag), and `agent-feed`'s own verification of the
+binaries against `agent/release-signing-key.pub`. Beyond those, only a re-run
+of `release-agent.yml` that re-runs its `publish` job (**Re-run all jobs**;
+**Re-run failed jobs** on a run whose only failure was `feed` does not) also
+re-verifies every signature there. The dispatch and hand-publish doors add the
+freeze and latest guards (the freeze guard unless `force` waives it). It should be a known acceptance rather
 than a later discovery.
 
 ### 6. Installing — SHIPPED (#392)
