@@ -3741,8 +3741,7 @@ mod tests {
         }
     }
 
-    /// With no gateway URL saved, the bearer token alone keeps OpenClaw's row;
-    /// a store that won't answer must not read as "no token".
+    /// An unread token paints `unread`, not `stored`, in the OpenClaw token field.
     #[test]
     fn openclaws_token_field_claims_neither_a_token_nor_its_absence_when_unread() {
         let (settings, _, _, _) = sample();
@@ -3769,6 +3768,8 @@ mod tests {
         );
     }
 
+    /// With no gateway URL saved, the bearer token alone keeps OpenClaw's row;
+    /// a store that won't answer must not read as "no token".
     #[test]
     fn openclaw_with_an_unreadable_keychain_and_no_url_reads_not_read() {
         let (mut settings, hosts, repos, mut stored) = sample();
