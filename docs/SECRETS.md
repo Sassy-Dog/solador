@@ -328,8 +328,13 @@ deployment policy is tag-only (`v*` for the cockpit's train and, once #492 step
 6 adds it, `agent-v*` for the agent's), so nothing on `main` or on a fork can
 reach one. And a tag ruleset named "release tags" (id 26979876, active) covers
 `refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
-deleting them to the repository admin role, so only an admin can start a signing
-run, a release tag cannot be moved, and an `agent-v*` tag cannot be deleted:
+deleting them to the repository admin role, so pushing a new release tag (the
+approval) is admin-only, a release tag cannot be moved, and an `agent-v*` tag
+cannot be deleted. The ruleset does **not** gate entry to `prd`: a dispatch or
+re-run at an existing tag, or a hand-published draft, reaches it for any account
+with write access. That is accepted while the admin is the only collaborator;
+docs/AGENT-DISTRIBUTION.md §5 states it in full, including what to do before
+anyone else is granted write access:
 
 - `release.yml`, on a `v*` tag push (the cockpit's train): the Apple and Tauri
   updater secrets for the macOS leg, `SENTRY_DSN` for both cockpit legs, and

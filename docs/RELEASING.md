@@ -66,9 +66,13 @@ hand (#492 step 6), so until it is there neither agent credential job can enter
 And a tag ruleset named **"release tags"** (id 26979876, active) covers
 `refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
 deleting them to the repository admin role (`./dev publish` pushes as the
-admin). That is what now decides who may start a signing run, and it is also what
-enforces "never delete an `agent-v*` tag" and stops a release tag being moved.
-Both are settings, not files. Three workflows declare the environment:
+admin). That makes pushing a new release tag, which is the approval, admin-only,
+and it enforces "never delete an `agent-v*` tag" and stops a release tag being
+moved. It does not gate entry to `prd`: a dispatch or re-run at an existing tag,
+or a hand-published draft, reaches it for any account with write access, which
+is accepted while the admin is the only collaborator (docs/AGENT-DISTRIBUTION.md
+§5 states it in full, and says to restore a reviewer before granting write
+access). Both are settings, not files. Three workflows declare the environment:
 the two credential-holding jobs in `release.yml`; `release-agent.yml`'s
 `publish` (its other jobs deliberately do not); and
 `publish-agent-feed.yml`'s `agent-feed`, which signs `agent-latest.json` at

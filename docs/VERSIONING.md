@@ -268,10 +268,10 @@ The cockpit's:
    the tag's) and sets no pin; `publish-agent-feed.yml`'s `agent-feed` job
    asserts the run's *commit* (the one the tag named when the run started)
    rather than the tag (#391, moved there by #491), as before. What is still
-   true of a **draft**: its assets are not public until it is published, and a
-   feed is written only for a public release (since #749 the train publishes the
-   release itself and calls the feed workflow) — but the month no longer matters
-   to either workflow. **Only tags cut after #404 merged get this assertion**: both
+   true of a **draft**: its assets are not public until it is published, so a
+   draft can never serve updates (since #749 the train publishes the release
+   itself, and only then calls the feed workflow) — but the month no longer
+   matters to either workflow. **Only tags cut after #404 merged get this assertion**: both
    workflows run the copy of themselves at the tagged commit
    (`publish-feed.yml`'s header records the measurement), so a re-run or a
    publish of a tag cut *before* still runs that tag's bare comparison, and

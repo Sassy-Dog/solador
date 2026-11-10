@@ -305,9 +305,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
-          release="$(gh release view "$TAG" --json isDraft,body,publishedAt)"
+          release="$(gh release view "$TAG" --json isDraft,isPrerelease,body,publishedAt)"
           jq -j '.body // ""' <<< "$release" > feed/notes.md
+          # The called path has no `!prerelease` clause in the job's `if:` (a
+          # call carries no release payload), so the guard that keeps a
+          # prerelease from becoming `releases/latest` is made here, before
+          # anything is built or published.
+          if [[ "$PUBLISH" == "true" && "$(jq -r '.isPrerelease' <<< "$release")" == "true" ]]; then
+            echo "::error::$TAG is a prerelease — publishing it with --latest would offer a prerelease to every stable install"
+            exit 1
+          fi
           is_draft="$(jq -r '.isDraft' <<< "$release")"
           published_at=""
           if [[ "$is_draft" == "false" ]]; then
@@ -369,9 +378,15 @@ jobs:
       # Pushing the tag was the approval, and this is the only step that acts on
       # it — after the build above has verified both updater signatures against
       # the app's public key, so a mis-signed build is a red run on a draft and
-      # never a public release with a feed nobody can verify. `--latest`
-      # because this is a cockpit release: `releases/latest` is the endpoint the
-      # app polls.
+      # never a public release with a feed nobody can verify.
+      #
+      # `--latest` only when this tag sorts at or above the newest PUBLISHED,
+      # non-prerelease `v*` release: `releases/latest` is the endpoint the app
+      # polls, and re-running the failed jobs of an OLDER draft after a newer
+      # release has shipped must not hand it the older one. Otherwise
+      # `--latest=false`. The feed upload below is unchanged either way: an older
+      # release's `latest.json` is not what `releases/latest` serves, and the
+      # endpoint step checks shape only.
       #
       # A release that is already public (a re-run of a run that got this far)
       # is left alone: publishing is a no-op the second time, so a re-run
@@ -386,7 +401,17 @@ jobs:
           IS_DRAFT: ${{ steps.release.outputs.is_draft }}
         run: |
           if [[ "$IS_DRAFT" == "true" ]]; then
-            gh release edit "$TAG" --draft=false --latest
+            newest="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 \
+              --json tagName --jq '.[].tagName' | grep -E '^v[0-9]' | sort -V | tail -n1 || true)"
+            top="$(printf '%s\n%s\n' "$newest" "$TAG" | grep -E '^v[0-9]' | sort -V | tail -n1)"
+            if [[ "$top" == "$TAG" ]]; then
+              latest_flag="--latest"
+              echo "Publishing $TAG with --latest: it sorts at or above the newest published release (${newest:-none})."
+            else
+              latest_flag="--latest=false"
+              echo "Publishing $TAG with --latest=false: $newest is a newer published release and keeps releases/latest."
+            fi
+            gh release edit "$TAG" --draft=false "$latest_flag"
             echo "Published $TAG."
           else
             echo "$TAG is already public; nothing to publish."
