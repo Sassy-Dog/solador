@@ -133,6 +133,18 @@ impl CronsState {
         };
     }
 
+    /// A pass found Scheduled jobs ticked. Only the off-to-on transition does
+    /// anything: the part-off state said "not set up", which is no longer true,
+    /// and what is true now is "not yet looked", so the panel goes back to
+    /// loading until a pass has read the credential store. Any other state is
+    /// left alone, because resetting a `Present` token on every pass would let
+    /// a frame painted before [`Self::begin`] show the loading line.
+    pub fn resume_part(&mut self) {
+        if self.part_off {
+            *self = CronsState::new();
+        }
+    }
+
     /// A token is configured and a read is in flight.
     ///
     /// Called **before** the request, not after it: the panel is what tells the
@@ -543,6 +555,22 @@ fn fixture_monitors(
 mod tests {
     use super::*;
     use usage::sentry::CronSuppression;
+
+    /// Ticking the part again drops the part-off line for the loading one, and
+    /// a configured token is not reset by later passes.
+    #[test]
+    fn resume_part_only_acts_on_the_off_to_on_transition() {
+        let mut off = CronsState::new();
+        off.unconfigure_part();
+        off.resume_part();
+        assert!(!off.part_off);
+        assert!(!off.token.is_absent(), "not looked yet is not 'absent'");
+
+        let mut present = CronsState::new();
+        present.begin();
+        present.resume_part();
+        assert!(present.token.is_present());
+    }
 
     const NOW: u64 = 1_700_000_000;
 
