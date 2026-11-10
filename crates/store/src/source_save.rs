@@ -782,6 +782,11 @@ pub fn save_source(
     save_source_with(env, kind, None, parts, secret, &[], add_tile)
 }
 
+/// The sentence for a source with rows sent some of its parts: a row is set up
+/// with all of them, or removed with none.
+const PARTIAL_ROW: &str =
+    "Skipped \u{2014} an account is set up with all of its steps, or removed.";
+
 /// The sentence for a new row asked to be removed: it has nothing to remove.
 const NOTHING_TO_SET_UP: &str = "Skipped \u{2014} nothing to set up.";
 
@@ -889,6 +894,11 @@ pub fn save_source_with(
     let Some(spec) = spec(kind) else {
         return Err("Skipped \u{2014} unknown source.".to_owned());
     };
+    // Unticking the token deletes it, and a row created without it has no name:
+    // the steps always send every part, so anything between is refused.
+    if spec.rows.is_some() && !parts.is_empty() && !spec.parts.iter().all(|part| wants(part.id)) {
+        return Err(PARTIAL_ROW.to_owned());
+    }
     let mut row = resolve_row(env, spec, row, parts)?;
     let removing = row.is_some() && parts.is_empty();
     let row_id = row.as_ref().map(|row| row.draft.id);
@@ -965,7 +975,7 @@ pub fn save_source_with(
         layout_with_tiles(env, &env.store().lock().expect("store poisoned"), &tiles)?;
     }
 
-    let mut minted = false;
+    let mut wrote_row_token = false;
     for (key, item, credential, typed, ticked) in &keyed {
         let stored = matches!(credential, Credential::Present(_));
         let written = match (ticked, typed) {
@@ -986,7 +996,7 @@ pub fn save_source_with(
             if row.adopts && *item == row.key {
                 row.draft.secret_account = item.account();
             }
-            minted |= row.before.is_none();
+            wrote_row_token = true;
         }
         // The figure goes with the key, rather than when a pass reaches it.
         if let (true, false, Some(spend)) = (stored, ticked, key.spend) {
@@ -1074,11 +1084,20 @@ pub fn save_source_with(
         if let Err(failed) = written {
             *store.settings_mut() = before;
             store.replace_accounts(accounts_before);
-            drop(store);
             // A token written for a row that was never saved would be named by
-            // nothing, and the next try mints another.
-            if let (true, Some(row)) = (minted, &row) {
-                let _ = env.credentials().delete_secret(row.key);
+            // nothing, and the next try mints another. The same goes for one
+            // written for a row removed while Finish ran: its remover has already
+            // deleted the item this write put back.
+            let orphaned = row.as_ref().filter(|row| {
+                wrote_row_token && (row.before.is_none() || store.account(row.draft.id).is_none())
+            });
+            let orphaned_key = orphaned.map(|row| row.key);
+            drop(store);
+            if let Some(key) = orphaned_key {
+                // `SecretError` carries the account name and never the value.
+                if let Err(e) = env.credentials().delete_secret(key) {
+                    eprintln!("could not delete a token no account names: {e}");
+                }
             }
             return Err(failed);
         }
@@ -1101,6 +1120,8 @@ mod tests {
         inner: MemoryCredentialStore,
         fail_read: Cell<bool>,
         fail_write: Cell<bool>,
+        /// Every credential item a write was made to, in order.
+        written: RefCell<Vec<SecretKey>>,
     }
 
     impl Flaky {
@@ -1122,6 +1143,7 @@ mod tests {
             if self.fail_write.get() {
                 return Err(Self::refusal(key));
             }
+            self.written.borrow_mut().push(key);
             self.inner.set_secret(key, value)
         }
         fn delete_secret(&self, key: SecretKey) -> Result<(), SecretError> {
@@ -1147,6 +1169,11 @@ mod tests {
         woken: RefCell<Vec<SourceWake>>,
         spend_dropped: RefCell<Vec<SpendFigure>>,
         refuse_tile: Cell<bool>,
+        /// Offers a tile even where the layout has one, so a save has a
+        /// dashboard write to fail.
+        offer_tile: Cell<bool>,
+        /// Refuses the dashboard write the save ends in.
+        fail_persist: Cell<bool>,
         /// Every tile source the save asked the dashboard rules about.
         tiles_asked: RefCell<Vec<String>>,
         _dir: tempfile::TempDir,
@@ -1163,6 +1190,8 @@ mod tests {
                 woken: RefCell::default(),
                 spend_dropped: RefCell::default(),
                 refuse_tile: Cell::new(false),
+                offer_tile: Cell::new(false),
+                fail_persist: Cell::new(false),
                 tiles_asked: RefCell::default(),
                 _dir: dir,
             }
@@ -1189,7 +1218,7 @@ mod tests {
                 asked.push(source.to_owned());
             }
             drop(asked);
-            if current.tiles.iter().any(|tile| tile.source == source) {
+            if !self.offer_tile.get() && current.tiles.iter().any(|tile| tile.source == source) {
                 return Ok(None);
             }
             let mut next = current.clone();
@@ -1207,6 +1236,9 @@ mod tests {
             mut layout: DashboardLayout,
             _expected_revision: u64,
         ) -> Result<(), String> {
+            if self.fail_persist.get() {
+                return Err("persist refused".to_owned());
+            }
             layout.revision += 1;
             store
                 .save_dashboard(layout)
@@ -2314,7 +2346,7 @@ mod tests {
                 &env,
                 "account",
                 Some(row),
-                &parts(&["token"]),
+                &parts(&["token", "orgs"]),
                 Some("t"),
                 &typed(&[("name", "x")]),
                 false,
@@ -2360,5 +2392,171 @@ mod tests {
             env.store.lock().unwrap().accounts()[0].secret_account,
             SecretKey::GitHubAccessToken.account()
         );
+    }
+
+    fn edit_account(
+        env: &Fake,
+        id: Uuid,
+        token: Option<&str>,
+        name: &str,
+        orgs: &str,
+    ) -> Result<String, String> {
+        save_source_with(
+            env,
+            "account",
+            Some(&id.to_string()),
+            &parts(&["token", "orgs"]),
+            token,
+            &typed(&[("name", name), ("orgs", orgs)]),
+            false,
+        )
+    }
+
+    fn account_named(env: &Fake, label: &str) -> VendorAccount {
+        let store = env.store.lock().unwrap();
+        store
+            .accounts()
+            .iter()
+            .find(|account| account.label == label)
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn an_account_takes_all_of_its_parts_or_none() {
+        let env = Fake::new();
+        add_account(&env, "work", "tok-work", "acme").unwrap();
+        let work = account_named(&env, "work");
+        // A partial list would delete the token (`["orgs"]`) or create a row with
+        // no name and no token; neither is a thing the steps can send.
+        let edited = save_source_with(
+            &env,
+            "account",
+            Some(&work.id.to_string()),
+            &parts(&["orgs"]),
+            None,
+            &typed(&[("orgs", "acme")]),
+            false,
+        );
+        assert_eq!(edited.unwrap_err(), PARTIAL_ROW);
+        let created = save_source_with(
+            &env,
+            "account",
+            None,
+            &parts(&["orgs"]),
+            Some("tok"),
+            &typed(&[("orgs", "acme")]),
+            false,
+        );
+        assert_eq!(created.unwrap_err(), PARTIAL_ROW);
+        assert_eq!(account_named(&env, "work"), work);
+        assert_eq!(env.store.lock().unwrap().accounts().len(), 1);
+        assert_eq!(token_of(&env, work.id).as_deref(), Some("tok-work"));
+    }
+
+    #[test]
+    fn a_failed_save_deletes_the_token_minted_for_the_row_it_never_saved() {
+        let env = Fake::new();
+        env.offer_tile.set(true);
+        env.fail_persist.set(true);
+        let refusal = save_source_with(
+            &env,
+            "account",
+            None,
+            &parts(&["token", "orgs"]),
+            Some("tok-new"),
+            &typed(&[("name", "work"), ("orgs", "")]),
+            true,
+        );
+        assert_eq!(refusal.unwrap_err(), "persist refused");
+        assert!(env.store.lock().unwrap().accounts().is_empty());
+        let written = env.credentials.written.borrow().clone();
+        assert_eq!(written.len(), 1, "the token was written before the save");
+        for key in written {
+            assert!(
+                env.credentials.secret(key).unwrap().is_none(),
+                "nothing may name the minted token"
+            );
+        }
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_refused_edit_leaves_the_token_and_the_row_as_they_were() {
+        let env = Fake::new();
+        add_account(&env, "alpha", "tok-alpha", "acme").unwrap();
+        add_account(&env, "beta", "tok-beta", "globex").unwrap();
+        let alpha = account_named(&env, "alpha");
+        let taken = edit_account(&env, alpha.id, Some("tok-new"), "BETA", "acme");
+        assert_eq!(taken.unwrap_err(), NAME_TAKEN);
+        let watched = edit_account(&env, alpha.id, Some("tok-new"), "alpha", "acme, Globex");
+        assert_eq!(
+            watched.unwrap_err(),
+            "Skipped \u{2014} Globex is already watched by beta."
+        );
+        assert_eq!(account_named(&env, "alpha"), alpha);
+        assert_eq!(token_of(&env, alpha.id).as_deref(), Some("tok-alpha"));
+    }
+
+    #[test]
+    fn removing_an_account_on_the_v1_item_deletes_that_item() {
+        let env = Fake::new();
+        env.credentials
+            .set_secret(SecretKey::GitHubAccessToken, "legacy")
+            .unwrap();
+        let legacy = VendorAccount::new(
+            VendorKind::GitHub,
+            "legacy",
+            SecretKey::GitHubAccessToken.account(),
+        );
+        let id = legacy.id.to_string();
+        env.store.lock().unwrap().upsert_account(legacy);
+        let status =
+            save_source_with(&env, "account", Some(&id), &parts(&[]), None, &[], false).unwrap();
+        assert_eq!(status, "legacy removed.");
+        assert!(env.store.lock().unwrap().accounts().is_empty());
+        assert!(env
+            .credentials
+            .secret(SecretKey::GitHubAccessToken)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn an_account_on_an_unrecognised_item_is_repaired_by_a_typed_token() {
+        let env = Fake::new();
+        let stray = VendorAccount::new(VendorKind::GitHub, "stray", "vendor-somebody-else");
+        let id = stray.id;
+        env.store.lock().unwrap().upsert_account(stray);
+        // Nothing is readable under its own item yet, so a token is asked for.
+        let asked = edit_account(&env, id, None, "stray", "");
+        assert_eq!(asked.unwrap_err(), "Enter a fine-grained token.");
+        assert_eq!(
+            env.store.lock().unwrap().accounts()[0].secret_account,
+            "vendor-somebody-else"
+        );
+        edit_account(&env, id, Some("tok-repair"), "stray", "").unwrap();
+        assert_eq!(
+            env.store.lock().unwrap().accounts()[0].secret_account,
+            SecretKey::VendorToken(id).account()
+        );
+        assert_eq!(token_of(&env, id).as_deref(), Some("tok-repair"));
+    }
+
+    #[test]
+    fn a_store_that_will_not_answer_still_lets_a_name_and_organizations_finish() {
+        let env = Fake::new();
+        add_account(&env, "work", "tok-work", "acme").unwrap();
+        let work = account_named(&env, "work");
+        env.credentials.fail_read.set(true);
+        // No typed token: the steps painted "didn't answer", not "no token".
+        edit_account(&env, work.id, None, "work-2", "acme, initech").unwrap();
+        env.credentials.fail_read.set(false);
+        let saved = account_named(&env, "work-2");
+        assert_eq!(
+            saved.orgs,
+            Some(vec!["acme".to_owned(), "initech".to_owned()])
+        );
+        assert_eq!(token_of(&env, work.id).as_deref(), Some("tok-work"));
     }
 }

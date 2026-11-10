@@ -473,7 +473,8 @@
   for one that does not exist yet and is created, under an id minted at Finish.
   Its key is `KeyAt::Row`, resolved from the row (`VendorAccount::secret_key`);
   its name and organizations are inputs written into the row, not the settings;
-  no parts is that row removed, with its token. Back and Cancel write nothing,
+  no parts is that row removed, with its token, and a partial list is refused
+  before the first write. Back and Cancel write nothing,
   and a token minted for a row whose save then failed is deleted again. Repos
   stay tracked on the account's card (`settings_set_repo_tracked`), after Finish.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a

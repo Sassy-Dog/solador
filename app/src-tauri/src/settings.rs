@@ -13,7 +13,7 @@
 //! stop there; what the view-model carries is a boolean per credential — that
 //! is what the "stored" badge is drawn from.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use agentclient::AgentError;
 use serde_json::{json, Value};
@@ -127,6 +127,24 @@ pub struct StoredSecrets {
     /// panel's per-account footer, and re-saving the account's token from this
     /// tab is what repairs it.
     pub accounts: HashSet<Uuid>,
+    /// The same item in three states, for the account's steps: a store that
+    /// would not answer is [`StoredKey::Unread`], not "no token". An id absent
+    /// here falls back to [`Self::accounts`].
+    pub account_keys: HashMap<Uuid, StoredKey>,
+}
+
+impl StoredSecrets {
+    /// What the credential store said of this account's token.
+    #[must_use]
+    pub fn account_key(&self, id: Uuid) -> StoredKey {
+        self.account_keys.get(&id).copied().unwrap_or_else(|| {
+            if self.accounts.contains(&id) {
+                StoredKey::Stored
+            } else {
+                StoredKey::Absent
+            }
+        })
+    }
 }
 
 /// The credentials the Settings surface can write on the spot, as the frontend
@@ -1126,6 +1144,9 @@ fn connections_section(
             "GitHub repos · Runners",
             if !account.enabled {
                 status("Paused", false)
+            } else if stored.account_key(account.id) == StoredKey::Unread {
+                // A store that won't answer says nothing about the token.
+                row_status_not_read()
             } else if stored.accounts.contains(&account.id) {
                 status("Configured", false)
             } else {
@@ -1136,7 +1157,7 @@ fn connections_section(
         let orphaned = account_removal_impact(store.repos, account.id);
         entry["walk"] = account_walk(
             Some(account),
-            stored.accounts.contains(&account.id),
+            stored.account_key(account.id),
             account_removal_prompt(
                 &account.label,
                 &orphaned,
@@ -1368,7 +1389,7 @@ fn connections_section(
         "catalogHelp": "One source can feed several tiles.",
         "catalog": [
             {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners",
-                "walk": account_walk(None, false, None, store.tile_sources)},
+                "walk": account_walk(None, StoredKey::Absent, None, store.tile_sources)},
             {"kind":"host", "title":"Remote host", "feeds":"Machines, containers and virtual machines"},
             local_entry(s, store.tile_sources),
             anthropic_entry(s, stored, store.tile_sources),
@@ -1567,7 +1588,7 @@ const GITHUB_ORGS_PART_TITLE: &str = "Organizations";
 /// (`cardLabel` is the way there), since tracking is per repo and repeatable.
 fn account_walk(
     account: Option<&VendorAccount>,
-    stored: bool,
+    key: StoredKey,
     removal_prompt: Option<String>,
     tile_sources: &[String],
 ) -> Value {
@@ -1585,11 +1606,7 @@ fn account_walk(
             "Repositories",
             "The token is stored in your OS credential store under this account\u{2019}s own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY column. The name labels this account\u{2019}s lines on the Repos panel.",
         ),
-        if stored {
-            StoredKey::Stored
-        } else {
-            StoredKey::Absent
-        },
+        key,
         "Fine-grained PAT",
         "github_pat_\u{2026}",
         "token",
@@ -2018,8 +2035,8 @@ pub const fn vendor_label(kind: VendorKind) -> &'static str {
 /// *unattributed* rather than being silently re-homed onto whichever account
 /// survives — the invented owner [`TrackedRepo::account_id`] exists to prevent.
 /// So this list is the whole of what a removal costs, which is why it is
-/// reported **before** it happens: the row carries it (`removePrompt`) and the
-/// receipt repeats it ([`account_removed_status`]).
+/// reported **before** it happens: the account's Remove source step carries it
+/// (`walk.removeHelp`) and the receipt repeats it ([`account_removed_status`]).
 #[must_use]
 pub fn account_removal_impact(repos: &[TrackedRepo], id: Uuid) -> Vec<String> {
     repos
@@ -2205,7 +2222,6 @@ fn accounts_tab(
     let rows: Vec<Value> = accounts
         .iter()
         .map(|account| {
-            let orphaned = account_removal_impact(repos, account.id);
             let orgs = account.orgs.clone().unwrap_or_default();
             json!({
                 "id": account.id.to_string(),
@@ -2232,8 +2248,6 @@ fn accounts_tab(
                 // The stored selection, always rendered — editable with no
                 // discovery request in flight.
                 "orgs": orgs,
-                // Null when the removal costs nothing.
-                "removePrompt": account_removal_prompt(&account.label, &orphaned, &orgs),
             })
         })
         .collect();
@@ -3225,6 +3239,7 @@ mod tests {
             // The Accounts tab's own tests name their accounts (see
             // `accounts_view`); every other test's store has none.
             accounts: HashSet::new(),
+            ..StoredSecrets::default()
         };
         // Explicit, not `seeded_repos()`: nothing is seeded any more, and a
         // fixture built from an empty seed would leave every portfolio
@@ -5109,6 +5124,19 @@ mod tests {
         vm["accounts"]["rows"].as_array().expect("rows").clone()
     }
 
+    /// The sentence the account's Remove source step shows, if removal costs
+    /// something.
+    fn remove_help(vm: &Value, id: Uuid) -> Option<String> {
+        vm["connections"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| row["entityId"] == id.to_string())
+            .expect("the account's row")["walk"]["removeHelp"]
+            .as_str()
+            .map(str::to_owned)
+    }
+
     /// The reason this function exists at all: a repo whose account is removed
     /// is unattributed, and the operator is owed that list *before* the removal
     /// rather than after.
@@ -5188,7 +5216,12 @@ mod tests {
             vec!["acme/widget", "acme/gadget"],
             "the slugs themselves, not just a count — a number names nothing"
         );
-        let prompt = rows[0]["removePrompt"].as_str().expect("a prompt");
+        let vm = accounts_view(
+            std::slice::from_ref(&account),
+            &repos,
+            &StoredSecrets::default(),
+        );
+        let prompt = remove_help(&vm, account.id).expect("a prompt");
         assert!(prompt.contains("acme/widget"), "{prompt}");
         assert!(prompt.contains("acme/gadget"), "{prompt}");
     }
@@ -5630,12 +5663,12 @@ mod tests {
     fn the_removal_prompt_names_the_orgs_that_stop_being_watched() {
         let mut watching = account("work");
         watching.orgs = Some(vec!["acme".into()]);
-        let rows = account_rows(&accounts_view(
+        let vm = accounts_view(
             std::slice::from_ref(&watching),
             &[],
             &StoredSecrets::default(),
-        ));
-        let prompt = rows[0]["removePrompt"].as_str().expect("a prompt");
+        );
+        let prompt = remove_help(&vm, watching.id).expect("a prompt");
         assert!(prompt.contains("acme"), "{prompt}");
 
         let status = account_removed_status("work", &[], &["acme".to_owned()]);
@@ -5653,13 +5686,13 @@ mod tests {
     #[test]
     fn an_account_with_no_repos_has_nothing_to_warn_about() {
         let account = account("spare");
-        let rows = account_rows(&accounts_view(
+        let vm = accounts_view(
             std::slice::from_ref(&account),
             &[],
             &StoredSecrets::default(),
-        ));
-        assert_eq!(rows[0]["repos"], json!([]));
-        assert_eq!(rows[0]["removePrompt"], Value::Null);
+        );
+        assert_eq!(account_rows(&vm)[0]["repos"], json!([]));
+        assert_eq!(remove_help(&vm, account.id), None);
     }
 
     /// The removal's own receipt names them too. The row said it beforehand;
@@ -5673,6 +5706,48 @@ mod tests {
         assert!(line.starts_with("Removed work."), "{line}");
         assert!(line.contains("acme/widget"), "{line}");
         assert!(line.contains("unattributed"), "{line}");
+    }
+
+    /// A credential store that would not answer is not "no token stored": the
+    /// steps say so and Next does not demand a new token, so the account can
+    /// still be renamed or its organizations changed. The row says `Not read`.
+    #[test]
+    fn a_store_that_will_not_answer_is_not_a_missing_token_on_the_steps() {
+        let (work, repos) = one_account_and_two_repos();
+        let stored = StoredSecrets {
+            account_keys: [(work.id, StoredKey::Unread)].into_iter().collect(),
+            ..StoredSecrets::default()
+        };
+        let vm = accounts_view(std::slice::from_ref(&work), &repos, &stored);
+        let row = vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["entityId"] == work.id.to_string())
+            .unwrap()
+            .clone();
+        let secret = &row["walk"]["parts"][0]["secret"];
+        assert_eq!(secret["stored"], true, "the step must not demand a token");
+        assert!(secret["storedLabel"]
+            .as_str()
+            .unwrap()
+            .contains("didn\u{2019}t answer"));
+        assert_eq!(row["status"], row_status_not_read());
+
+        // An account whose item name nothing recognises is a distinct finding:
+        // it stays absent, so the repair path still asks for a token.
+        let vm = accounts_view(
+            std::slice::from_ref(&work),
+            &repos,
+            &StoredSecrets::default(),
+        );
+        let walk = &vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["entityId"] == work.id.to_string())
+            .unwrap()["walk"];
+        assert_eq!(walk["parts"][0]["secret"]["stored"], false);
     }
 
     /// A store with no accounts has no row, and the steps Add source opens have

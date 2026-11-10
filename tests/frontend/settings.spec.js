@@ -1186,8 +1186,9 @@ test("the retired GitHub tab is gone and the account's organizations are edited 
   const watchingRow = page.locator(`.group[data-account="${watching.id}"]`);
   await expect(watchingRow.locator(`[data-org="${watching.orgs[0]}"]`)).toBeVisible();
 
-  // No control on the card writes an organization one click at a time; the
-  // steps do, together, at Finish.
+  // Typing and removing organizations is the steps' and writes at Finish. The
+  // card keeps only #724's discovery offer (`.org-watch`), which deliberately
+  // saves on its click.
   await expect(watchingRow.locator(".org-remove, .org-add")).toHaveCount(0);
   expect(await calls(page, "settings_set_account_org")).toEqual([]);
 });

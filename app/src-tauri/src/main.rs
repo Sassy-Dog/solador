@@ -2770,6 +2770,19 @@ fn stored_secrets(
             .filter(|account| account_secret_key(account).is_some_and(present))
             .map(|account| account.id)
             .collect(),
+        // The same item, read in three states: the account's steps must not
+        // turn a store that would not answer into "no token stored", which
+        // would demand a new token to rename the account. An item name this
+        // build cannot resolve stays `Absent`, so the repair path still asks
+        // for a token.
+        account_keys: accounts
+            .iter()
+            .map(|account| {
+                let key =
+                    account_secret_key(account).map_or(settings::StoredKey::Absent, stored_key);
+                (account.id, key)
+            })
+            .collect(),
     }
 }
 
@@ -6746,6 +6759,7 @@ fn dump_settings() -> Value {
         openclaw: false,
         hosts: [live.id].into_iter().collect(),
         accounts: [accounts[0].id].into_iter().collect(),
+        ..StoredSecrets::default()
     };
     // A gateway configured *and* waiting on approval, so the fixture carries the
     // pairing block — the one part of this tab that only exists in a live
@@ -12121,7 +12135,7 @@ mod tests {
     }
 
     /// A scratch store carrying `count` GitHub accounts, each pointing at its
-    /// own credential item exactly as `settings::validated_account` mints them.
+    /// own credential item exactly as `store::source_save` mints them.
     fn store_with_accounts(count: usize) -> (tempfile::TempDir, Store) {
         let (dir, mut store) = scratch_store();
         for n in 0..count {
@@ -13369,10 +13383,18 @@ mod tests {
     /// the tab covered by nothing.
     #[test]
     fn the_settings_fixture_covers_both_states_of_an_account_row() {
-        let rows = dump_settings()["accounts"]["rows"]
+        let view = dump_settings();
+        let rows = view["accounts"]["rows"]
             .as_array()
             .expect("account rows")
             .clone();
+        let steps: Vec<Value> = view["connections"]["rows"]
+            .as_array()
+            .expect("source rows")
+            .iter()
+            .filter(|row| row["kind"] == "account")
+            .map(|row| row["walk"].clone())
+            .collect();
         assert_eq!(rows.len(), 2);
         assert!(
             rows.iter().any(|row| row["stored"] == true),
@@ -13383,11 +13405,11 @@ mod tests {
             "no account without a token in the fixture"
         );
         assert!(
-            rows.iter().any(|row| row["removePrompt"].is_string()),
+            steps.iter().any(|walk| walk["removeHelp"].is_string()),
             "no account whose removal would orphan a repo"
         );
         assert!(
-            rows.iter().any(|row| row["removePrompt"].is_null()),
+            steps.iter().any(|walk| walk["removeHelp"].is_null()),
             "no account whose removal costs nothing"
         );
     }
@@ -13425,10 +13447,32 @@ mod tests {
         );
         assert!(stored.accounts.contains(&migrated.id));
         assert!(stored.accounts.contains(&own.id));
+        assert_eq!(stored.account_key(own.id), settings::StoredKey::Stored);
         assert!(
             !stored.accounts.contains(&stranger.id),
             "an item name this build cannot resolve must not read as a stored token"
         );
+    }
+
+    /// A failed read is `Unread` on the account's steps, not "no token": the
+    /// badge set stays the weaker claim, and an item name this build cannot
+    /// resolve is `Absent`, so the repair path still asks for a token.
+    #[test]
+    fn an_unreadable_credential_store_reads_as_unread_for_the_account_steps() {
+        let own = VendorAccount {
+            secret_account: SecretKey::VendorToken(Uuid::from_u128(9)).account(),
+            id: Uuid::from_u128(9),
+            ..VendorAccount::new(VendorKind::GitHub, "own", "")
+        };
+        let stray = VendorAccount::new(VendorKind::GitHub, "stray", "vendor-somebody-else");
+        let stored = stored_secrets(
+            &UnreadableCredentialStore,
+            &[],
+            &[own.clone(), stray.clone()],
+        );
+        assert_eq!(stored.account_key(own.id), settings::StoredKey::Unread);
+        assert!(!stored.accounts.contains(&own.id));
+        assert_eq!(stored.account_key(stray.id), settings::StoredKey::Absent);
     }
 
     #[test]

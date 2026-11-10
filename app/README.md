@@ -681,7 +681,8 @@ account that does not exist yet, which is created at Finish under a freshly
 minted id), the part's key is `KeyAt::Row`, resolved from the row, and an input
 may write into the row (`Apply::Row`, GitHub's name and organizations) rather
 than the settings. A save with no parts and a row is that account removed, with
-its token. An input
+its token; a row takes all of its parts or none, and anything between is refused
+before the first write (unticking the token would delete it). An input
 may be **required**: it carries the sentence refusing a ticked part that sends
 it empty or not at all (Azure's export location and budget), checked with every
 other refusal and so before the first write. An unticked part is never refused
@@ -2621,11 +2622,16 @@ removing an account deletes only the item the account actually named
 deleting the wrong credential is not undoable and an orphaned item is the better
 failure.
 
-**An account with no token is a real state, not a broken one.** The row badges
-it **No token** and nothing else changes; the operator adds one when they have
-it. Reporting "No token" over a token that is sitting right there would be the
-worse error, so the badge tracks the credential store rather than a cached
-guess.
+**An account with no token is still a state the app can be in, though a new
+account cannot be created without one.** The steps require a token to continue
+until one is stored, so the **No token** badge appears for an account whose item
+was deleted outside the app, or whose stored item name this build cannot
+resolve (the steps then ask for a token, which repairs it). Reporting "No token"
+over a token that is sitting right there would be the worse error, so the badge
+tracks the credential store rather than a cached guess. A store that **does not
+answer** is neither: the row reads **Not read**, and the steps say the credential
+store didn't answer and let the name and organizations finish without a typed
+token, leaving the stored one alone.
 
 **Removing an account does not re-home its repos.** They stay tracked and become
 *unattributed* — the same state a repo lands in when the store holds two or more
@@ -3309,7 +3315,7 @@ and that immediacy is itself the check on the corresponding wake:
 | Touched | Do | Expect |
 |---|---|---|
 | `github_wake` / Repos / Runners | Settings → Sources → Add source → GitHub: name it, paste a fine-grained PAT, **Next**, **Next**, **Finish** (`settings_save_source` with `kind: account`). Then open the account's row, **Back**/**Cancel** out of a changed name or token, and reopen it | both panels fill within seconds of Finish. Back and Cancel changed nothing: the reopened steps show the saved name, and the token field is empty with "A token is stored". A second account added the same way starts from empty fields, and its Finish leaves the first account's token and organizations alone. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos`. |
-| `settings_save_source` (`kind: account`) / Remove source | open an account's row, **Remove source**, read the last step, **Finish** | removes only that account and its token; the last step named the repos that become unattributed, and the status line repeats them. The other account is untouched | `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| `settings_save_source` (`kind: account`) / Remove source | open an account's row, **Remove source**, read the last step, **Finish** | removes only that account and its token; the last step named the repos that become unattributed, and the status line repeats them. The other account is untouched |
 | `settings_save_source` org input / `settings_set_account_org` / Runners | on an account's second step, type an org into **Organizations** and **Finish**; then edit it out and **Finish** again. On the card, **Watch** an offered org | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Sources → GitHub". Watching the same org from a second account is refused at Finish with the owner named, and nothing is saved |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. For a repo that is `Waiting`, click its **dashboard** row too: it opens `.../actions/runs/{id}` (or the Actions page when several runs wait). Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Sources → GitHub (type its name into **Add a repo** on its account's card and tick it, or type its full `owner/name` and choose **Add … by name**) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |

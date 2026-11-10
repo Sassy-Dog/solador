@@ -52,8 +52,9 @@ granted, and polls the organizations it watches.
 To swap a token, rename the account or change its organizations later, click the
 account's row under **Settings → Sources** and walk the same steps; leaving the
 token empty keeps the one stored. **Remove source** on its first step deletes
-only that account, with its token — deleting it also drops the repos and orgs
-you configured under it, and the last step lists them before you confirm.
+only that account, with its token. Its repos stay tracked but become
+unattributed, and it stops watching its organizations; the last step lists both
+before you confirm.
 Finish lands on the account's card, where the repos are tracked (step 3).
 
 ## 3. Choose which repos to watch

@@ -1795,8 +1795,10 @@ async function finishWalk(entry, control) {
   apply(result);
 }
 
-/** The steps of a source that has any. Rows carry no `walk`, so a row and Add
- *  source reach the same catalog entry and open the same steps. */
+/** The steps of a source that has any. A source with one configuration has
+ *  its steps on the catalog entry, which its row and Add source both open; a
+ *  source with rows (GitHub) carries its own `walk` on each row, filled from
+ *  that row, and Add source opens the catalog's blank one. */
 function walkEditor(entry) {
   const labels = S.view.connections.walkLabels;
   const { parts, tile } = entry.walk;
