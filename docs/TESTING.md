@@ -256,7 +256,7 @@ costs one read, not a run of them: the early return on `pending`, `busy` or
 `settingsOpen` (`app/ui/dashboard.js` ~798); the drops after a read completes,
 `busy || version !== acknowledgementVersion` (~807, ~833), the shape check
 (~808) and the older `layout.revision` check (~810); and the interval's own
-gate (~2849: `mode === "overview" || fullTile`, `!settingsOpen`). Three of
+gate (~2880: `mode === "overview" || fullTile`, `!settingsOpen`). Three of
 these waits (the Detail focus test, the open-chip focus test, the runner
 height-reservation test) each failed once or twice locally with no cause found
 and never in CI; 36 runs of the three under eight CPU burners and ten workers
@@ -266,7 +266,7 @@ open-chip focus tests in `dashboard.spec.js`; the other swaps in that file are
 left as they were, because the waits #722 saw fail are the routed ones.
 `swapReport` on failure appends how many reads the stub saw begun and answered
 since the swap. None begun: a stalled renderer, a `refresh()` skip (~798,
-~2849) or a `pending` flag stuck by a read that never answered. Begun but not
+~2880) or a `pending` flag stuck by a read that never answered. Begun but not
 answered: a held or slow IPC read. Begun and answered: an app bug or a dropped
 read (~807, ~810, ~833). Do not raise the timeout either way. The config keeps a failing
 test's trace (`trace: "retain-on-failure"`) in `tests/frontend/test-results/`;

@@ -1149,21 +1149,29 @@
   // when its own data changes, so saving one machine never discards another's
   // half-typed limits. A render that changes neither the set nor the order of
   // blocks moves no node, so a poll cannot clear what is being typed or take
-  // focus from it (#747). When blocks or a volume list do change, the focused
-  // control is focused again (`keepFocus`). Busy only disables the buttons;
+  // focus from it (#747). When blocks or a volume list do change, a focused
+  // limit field, volume checkbox, shared-defaults checkbox, Apply or Reset is
+  // focused again, in the block with the same `data-machine` key (`keepFocus`). Busy only disables the buttons;
   // it never rebuilds an input.
   function keepFocus(scope, change) {
     const had = scope.contains(document.activeElement) ? document.activeElement : null;
-    const host = had?.dataset?.id;
+    const key = had?.closest("[data-machine]")?.dataset.machine;
     change();
     if (!had || document.activeElement === had) return;
-    const again = had.isConnected ? had
-      : had.id ? scope.querySelector(`#${CSS.escape(had.id)}`)
-      : had.dataset.mount !== undefined
-        ? [...scope.querySelectorAll("input[data-mount]")]
-            .find((i) => i.dataset.mount === had.dataset.mount && i.dataset.id === host)
-        : null;
-    again?.focus({ preventScroll: true });
+    if (had.isConnected) return had.focus({ preventScroll: true });
+    // A rebuilt block: find the same control again inside the block with the
+    // same `data-machine` key, by the id of a limit field, the mount of a
+    // volume checkbox, or the marker of the shared-defaults checkbox, Apply
+    // or Reset.
+    const block = scope.dataset?.machine === key ? scope
+      : scope.querySelector(`[data-machine="${CSS.escape(key)}"]`);
+    const selector = had.id ? `#${CSS.escape(had.id)}`
+      : had.dataset.mount !== undefined ? `input[data-mount="${CSS.escape(had.dataset.mount)}"]`
+      : had.matches(".db-machine-inherit input") ? ".db-machine-inherit input"
+      : had.dataset.machineApply !== undefined ? "[data-machine-apply]"
+      : had.dataset.machineReset !== undefined ? "[data-machine-reset]"
+      : null;
+    if (selector) block?.querySelector(selector)?.focus({ preventScroll: true });
   }
   function fillMachineAlerts(box, s) {
     const g = s?.machineAlerts;

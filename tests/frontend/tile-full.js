@@ -162,7 +162,7 @@ export async function swapReport(page, what, wait) {
     await wait();
   } catch (error) {
     const [nowBegun, nowAnswered] = await count().catch(() => [NaN, NaN]);
-    error.message += `\n\nswapReport: while waiting for ${what}, dashboard_view reads begun ${nowBegun - begun}, answered ${nowAnswered - answered} (one a second expected; none begun: a stalled renderer, a refresh() skip (dashboard.js ~798, ~2849) or a pending flag stuck by a read that never answered; begun but not answered: a held or slow IPC read; begun and answered: an app bug or a dropped read (dashboard.js ~807, ~810, ~833))`;
+    error.message += `\n\nswapReport: while waiting for ${what}, dashboard_view reads begun ${nowBegun - begun}, answered ${nowAnswered - answered} (one a second expected; none begun: a stalled renderer, a refresh() skip (dashboard.js ~798, ~2880) or a pending flag stuck by a read that never answered; begun but not answered: a held or slow IPC read; begun and answered: an app bug or a dropped read (dashboard.js ~807, ~810, ~833))`;
     throw error;
   }
 }
