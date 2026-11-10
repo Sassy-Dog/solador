@@ -1402,7 +1402,16 @@ test("a focused machine limit keeps focus across dashboard reads, and slow typin
   const field = limit(machine(section, "defaults"), "RAM critical (%)");
   await field.focus();
   await expect(field).toBeFocused();
+  // No render that changes nothing may move a block: a removal, even one that
+  // re-inserts the node, is what hands focus to <body> (#747).
+  await page.evaluate(() => {
+    window.__BLOCK_REMOVALS__ = 0;
+    new MutationObserver((records) => {
+      for (const r of records) window.__BLOCK_REMOVALS__ += r.removedNodes.length;
+    }).observe(document.querySelector(".db-machine-blocks"), { childList: true });
+  });
   await afterRepaints(page);
+  expect(await page.evaluate(() => window.__BLOCK_REMOVALS__)).toBe(0);
   await expect(field).toBeFocused();
   // One key per read: each key lands on the field, not on <body>.
   await field.fill("");
@@ -1417,7 +1426,7 @@ test("a focused machine limit keeps focus across dashboard reads, and slow typin
   await expect(field).toBeFocused();
 });
 
-test("a focused machine limit keeps focus and its typed value when another machine block is added or removed, or its own block is rebuilt (#747)", async ({ page, baseURL }) => {
+test("a focused machine limit keeps focus and its typed value when another machine block is added or removed, and a focused shared-defaults checkbox keeps focus when its own block is rebuilt (#747)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
   const hosts = model.sources.find(s => s.id === "hosts");
   const [first, second] = hosts.rows;
@@ -1438,14 +1447,38 @@ test("a focused machine limit keeps focus and its typed value when another machi
   await expect(field).toBeFocused();
   await expect(field).toHaveValue("42");
   // A changed label changes the block's signature: the block itself is rebuilt
-  // (from its saved state, so it follows the defaults again and its limits are
-  // disabled) and the focused shared-defaults checkbox is found again in it.
+  // (from its saved state, so it follows the defaults again) and the focused
+  // shared-defaults checkbox is found again in it.
   const toggle = () => machine(section, first.id).getByLabel("Use shared defaults", { exact: true });
   await toggle().focus();
   const renamed = hosts.rows.map(r => r.id === first.id ? { ...r, label: `${r.label} renamed` } : r);
   await page.evaluate(next => window.__SET_SOURCE_ROWS__("hosts", next), renamed);
   await expect(machine(section, first.id).locator("h4")).toContainText("renamed");
   await expect(toggle()).toBeFocused();
+});
+
+test("a focused limit field of a machine with a saved override keeps focus when its own block is rebuilt (#747)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const hosts = model.sources.find(s => s.id === "hosts");
+  const [first] = hosts.rows;
+  const section = await configureMachines(page);
+  const block = machine(section, first.id);
+  await block.getByLabel("Use shared defaults", { exact: true }).uncheck();
+  await limit(block, "RAM warning (%)").fill("50");
+  await limit(block, "RAM critical (%)").fill("60");
+  await block.getByRole("button", { name: "Apply thresholds", exact: true }).click();
+  await expect.poll(() => commandArgs(page, "machine_save_alerts")).toHaveLength(1);
+  const field = () => limit(machine(section, first.id), "RAM warning (%)");
+  await expect(field()).toBeEnabled();
+  await field().focus();
+  const before = await field().evaluate(el => (window.__OLD__ = el, el.id));
+  const renamed = hosts.rows.map(r => r.id === first.id ? { ...r, label: `${r.label} renamed` } : r);
+  await page.evaluate(next => window.__SET_SOURCE_ROWS__("hosts", next), renamed);
+  await expect(machine(section, first.id).locator("h4")).toContainText("renamed");
+  // The block was rebuilt, not kept: the old node is gone.
+  expect(await page.evaluate(() => window.__OLD__.isConnected)).toBe(false);
+  await expect(field()).toHaveAttribute("id", before);
+  await expect(field()).toBeFocused();
 });
 
 test("a focused volume checkbox keeps focus when a poll adds or removes a mount (#747)", async ({ page, baseURL }) => {
