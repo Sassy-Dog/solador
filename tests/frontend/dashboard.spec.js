@@ -1396,6 +1396,46 @@ const afterRepaints = async (page) => {
   await expect.poll(count, { timeout: 8000 }).toBeGreaterThanOrEqual(start + 2);
 };
 
+test("a focused machine limit keeps focus across dashboard reads, and slow typing keeps every key (#747)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureMachines(page);
+  const field = limit(machine(section, "defaults"), "RAM critical (%)");
+  await field.focus();
+  await expect(field).toBeFocused();
+  await afterRepaints(page);
+  await expect(field).toBeFocused();
+  // One key per read: each key lands on the field, not on <body>.
+  await field.fill("");
+  const reads = () => page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_view").length);
+  for (const key of ["9", "5"]) {
+    const before = await reads();
+    await page.keyboard.press(key);
+    await expect.poll(reads, { timeout: 8000 }).toBeGreaterThan(before);
+  }
+  await expect(field).toHaveValue("95");
+  await expect(field).toBeFocused();
+});
+
+test("a focused volume checkbox keeps focus when a poll adds or removes a mount (#747)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const hosts = model.sources.find(s => s.id === "hosts");
+  const row = hosts.rows.find(r => (r.volumes || []).length);
+  const mount = row.volumes[0].mount;
+  const section = await configureMachines(page);
+  const box = machine(section, row.id).locator(`input[data-mount="${mount}"]`);
+  await box.focus();
+  await expect(box).toBeFocused();
+  const withUsb = hosts.rows.map(r => r.id === row.id
+    ? { ...r, volumes: [...r.volumes, { ...r.volumes[0], mount: "/Volumes/USB" }] }
+    : r);
+  await page.evaluate(next => window.__SET_SOURCE_ROWS__("hosts", next), withUsb);
+  await expect(machine(section, row.id).locator('input[data-mount="/Volumes/USB"]')).toHaveCount(1);
+  await expect(box).toBeFocused();
+  await page.evaluate(next => window.__SET_SOURCE_ROWS__("hosts", next), hosts.rows);
+  await expect(machine(section, row.id).locator('input[data-mount="/Volumes/USB"]')).toHaveCount(0);
+  await expect(box).toBeFocused();
+});
+
 test("a saved override equal to a default keeps its stored value when the defaults move under an unsaved tick (#623)", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
   const [first] = model.sources.find(s => s.id === "hosts").rows;
