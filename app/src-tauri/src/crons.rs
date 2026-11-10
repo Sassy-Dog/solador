@@ -553,6 +553,9 @@ fn fixture_monitors(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use usage::sentry::CronSuppression;
+
     /// Ticking the part again drops the part-off line for the loading one, and
     /// a configured token is not reset by later passes.
     #[test]
@@ -568,9 +571,6 @@ mod tests {
         present.resume_part();
         assert!(present.token.is_present());
     }
-
-    use super::*;
-    use usage::sentry::CronSuppression;
 
     const NOW: u64 = 1_700_000_000;
 

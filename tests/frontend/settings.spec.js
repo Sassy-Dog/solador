@@ -1134,6 +1134,24 @@ test("Add Host waits for a name and an address, and keeps the token out of the D
   expect(leaked, "the agent token stayed in the DOM after the save").toBe(false);
 });
 
+test("an unread credential shows Not read, keeps Clear live and claims no token", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, (s) => {
+    s.openclaw.secret.stored = false;
+    s.openclaw.secret.unread = true;
+  });
+  await tab(page, "openclaw").click();
+  const box = page.locator('.group[data-secret="openclaw"]');
+  await expect(box.locator(".badge-dim")).toHaveText(settings.openclaw.secret.notReadLabel);
+  await expect(box.locator(".badge-ok")).toHaveCount(0);
+  await expect(box.locator(".replace-secret")).toHaveText(settings.connections.replaceLabel);
+  await box.locator(".replace-secret").click();
+  await expect(box.locator(".clear")).toBeEnabled();
+  await box.locator(".clear").click();
+  expect(await calls(page, "settings_clear_secret")).toEqual([
+    { command: "settings_clear_secret", args: { key: "openclaw" } },
+  ]);
+});
+
 test("a credential saves, clears, and never comes back", async ({ page, baseURL }) => {
   // OpenClaw's bearer token: the one credential left with a form of its own
   // (every source with steps writes its key at Finish instead), so it is the

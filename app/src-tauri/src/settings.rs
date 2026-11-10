@@ -73,6 +73,10 @@ fn label_for(version: Option<&str>) -> String {
 /// opened, and the Settings view renders it as its own title.
 pub const OPEN_LABEL: &str = "Settings";
 
+/// What a row, card or credential field says for a key the store would not
+/// answer about.
+const NOT_READ_LABEL: &str = "Not read";
+
 /// What the credential store said about a source's key.
 ///
 /// Three answers rather than a bool, because this one decides whether a source
@@ -1091,7 +1095,7 @@ fn row_status(text: &str, attention: bool) -> Value {
 /// key. Not "Setup incomplete" or "Token needed", which name a piece known to be
 /// missing: a store that won't answer says nothing about that.
 fn row_status_not_read() -> Value {
-    row_status("Not read", true)
+    row_status(NOT_READ_LABEL, true)
 }
 
 /// The Sources page's one-line count.
@@ -1980,15 +1984,25 @@ fn plan_usage_section(settings: &Settings) -> Value {
 }
 
 /// The shared shape of every credential section: one field, Save, Clear, and a
-/// badge that says whether something is stored — never what.
-fn secret_section(field: SecretField, label: &str, stored: bool, badge: &str, help: &str) -> Value {
+/// badge that says whether something is stored — never what. A store that would
+/// not answer ([`StoredKey::Unread`]) is a third state: `stored` is false, `unread`
+/// is true, and the section claims neither a token nor the lack of one.
+fn secret_section(
+    field: SecretField,
+    label: &str,
+    state: StoredKey,
+    badge: &str,
+    help: &str,
+) -> Value {
     json!({
         "key": field.id(),
         "fieldLabel": label,
         "saveLabel": "Save",
         "clearLabel": "Clear",
         "storedLabel": badge,
-        "stored": stored,
+        "stored": state == StoredKey::Stored,
+        "unread": state == StoredKey::Unread,
+        "notReadLabel": NOT_READ_LABEL,
         "help": help,
     })
 }
@@ -2256,7 +2270,7 @@ fn accounts_tab(
         "editLabel": "Token and organizations…",
         "tokenStoredLabel": "Token stored",
         "noTokenLabel": "No token",
-        "notReadLabel": "Not read",
+        "notReadLabel": NOT_READ_LABEL,
         "deleteLabel": "Delete",
         "cancelLabel": "Cancel",
         "reposHeading": "Watched repos",
@@ -2655,7 +2669,7 @@ fn openclaw_tab(
         "secret": secret_section(
             SecretField::OpenClaw,
             "Bearer token (optional)",
-            stored.openclaw == StoredKey::Stored,
+            stored.openclaw,
             "Token stored",
             "Solador monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
         ),
@@ -3730,6 +3744,32 @@ mod tests {
     /// With no gateway URL saved, the bearer token alone keeps OpenClaw's row;
     /// a store that won't answer must not read as "no token".
     #[test]
+    fn openclaws_token_field_claims_neither_a_token_nor_its_absence_when_unread() {
+        let (settings, _, _, _) = sample();
+        let section = |key: StoredKey| {
+            let stored = StoredSecrets {
+                openclaw: key,
+                ..StoredSecrets::default()
+            };
+            openclaw_tab(&settings, &stored, &facts())["secret"].clone()
+        };
+        let unread = section(StoredKey::Unread);
+        assert_eq!(unread["stored"], json!(false));
+        assert_eq!(unread["unread"], json!(true));
+        assert_eq!(unread["notReadLabel"], json!("Not read"));
+        let stored = section(StoredKey::Stored);
+        assert_eq!(
+            (stored["stored"].clone(), stored["unread"].clone()),
+            (json!(true), json!(false))
+        );
+        let absent = section(StoredKey::Absent);
+        assert_eq!(
+            (absent["stored"].clone(), absent["unread"].clone()),
+            (json!(false), json!(false))
+        );
+    }
+
+    #[test]
     fn openclaw_with_an_unreadable_keychain_and_no_url_reads_not_read() {
         let (mut settings, hosts, repos, mut stored) = sample();
         settings.openclaw_gateway_url.clear();
@@ -4622,9 +4662,11 @@ mod tests {
                 "fieldLabel",
                 "help",
                 "key",
+                "notReadLabel",
                 "saveLabel",
                 "stored",
-                "storedLabel"
+                "storedLabel",
+                "unread"
             ]
         );
         assert!(secret["stored"].is_boolean());

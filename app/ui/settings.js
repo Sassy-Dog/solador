@@ -296,8 +296,10 @@ function secretControls(box, secret) {
   const labels = S.view.connections;
   const summary = node("div", "credential-summary row");
   summary.append(node("span", "lbl", secret.fieldLabel), node("span", "grow"));
-  if (secret.stored) summary.appendChild(node("span", "badge-ok", secret.storedLabel));
-  const replace = button(secret.stored ? labels.replaceLabel : labels.addCredentialLabel, "replace-secret");
+  // Three answers: a store that would not answer is neither of the others.
+  if (secret.unread) summary.appendChild(node("span", "badge-dim", secret.notReadLabel));
+  else if (secret.stored) summary.appendChild(node("span", "badge-ok", secret.storedLabel));
+  const replace = button(secret.stored || secret.unread ? labels.replaceLabel : labels.addCredentialLabel, "replace-secret");
   const edit = node("div", "credential-editor stack");
   edit.hidden = true;
   const input = textInput("", "password");
@@ -313,7 +315,8 @@ function secretControls(box, secret) {
   const save = button(secret.saveLabel, "save");
   const clear = button(secret.clearLabel, "clear");
   save.disabled = true;
-  clear.disabled = !secret.stored;
+  // Clear stays live when unread: a token may be there.
+  clear.disabled = !secret.stored && !secret.unread;
   input.addEventListener("input", () => {
     save.disabled = input.value.length === 0;
   });

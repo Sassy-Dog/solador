@@ -2765,12 +2765,6 @@ fn stored_secrets(
             .filter(|host| present(SecretKey::HostToken(host.id)))
             .map(|host| host.id)
             .collect(),
-        // Through `account_secret_key`, so the badge reads the item the account
-        // actually names -- the migrated account still points at the v1
-        // `github_access_token` item, and probing `vendor-<uuid>` for it would
-        // report "No token" over a token that is right there. An account whose
-        // stored item name this build cannot resolve reads as not-stored; the
-        // Repos panel is where that distinct finding is reported.
         // Through `account_secret_key`, so the read follows the item the
         // account actually names -- the migrated account still points at the v1
         // `github_access_token` item. Three states: the account's steps must
@@ -8254,6 +8248,31 @@ mod tests {
         let message = crons_unscoped(&app)["message"]["text"].clone();
         assert_ne!(message, json!(crons::PART_OFF_MESSAGE));
         assert_ne!(message, json!(crons::UNCONFIGURED_MESSAGE));
+        assert_eq!(message, json!(crons::LOADING_MESSAGE));
+    }
+
+    /// A pass over an unreadable store keeps what an earlier read landed: the
+    /// part being on is not the off-to-on transition.
+    #[test]
+    fn a_later_crons_pass_keeps_the_summary_and_the_present_token() {
+        let (_dir, rt, app) = test_app_over(Silent);
+        app.store
+            .lock()
+            .unwrap()
+            .settings_mut()
+            .sentry_crons_enabled = true;
+        *app.crons.lock().unwrap() = crons::fixture_state(
+            crons::Fixture::Alerting,
+            panel::now_unix(),
+            chrono::Utc::now(),
+        );
+        let app = Arc::new(app);
+        let before = crons_unscoped(&app);
+        assert!(!before["rows"].as_array().unwrap().is_empty());
+        rt.block_on(poll_crons(&app));
+        let after = crons_unscoped(&app);
+        assert_eq!(after["rows"], before["rows"]);
+        assert!(after.get("message").is_none() || after["message"].is_null());
     }
 
     /// With no token at all (and the part on), the Crons tile still asks for one.
@@ -8273,11 +8292,14 @@ mod tests {
         );
     }
 
-    /// The Sentry token is read three ways, and only the badge-only credentials
-    /// read a failure as "not stored".
+    /// Every key that decides whether a source exists keeps a failed read as
+    /// `Unread`; the host token is a badge only and reads a failure as "not
+    /// stored".
     #[test]
     fn a_credential_store_that_will_not_answer_leaves_sentry_unread_not_absent() {
-        let stored = stored_secrets(&Silent, &[], &[]);
+        let host = Host::new("a host", "127.0.0.1");
+        let stored = stored_secrets(&Silent, std::slice::from_ref(&host), &[]);
+        assert!(stored.hosts.is_empty(), "a badge-only read fails to none");
         for key in [
             stored.neon,
             stored.sentry,
@@ -13486,9 +13508,9 @@ mod tests {
         );
         assert_eq!(stored.account_key(migrated.id), settings::StoredKey::Stored);
         assert_eq!(stored.account_key(own.id), settings::StoredKey::Stored);
-        assert_ne!(
+        assert_eq!(
             stored.account_key(stranger.id),
-            settings::StoredKey::Stored,
+            settings::StoredKey::Absent,
             "an item name this build cannot resolve must not read as a stored token"
         );
     }
