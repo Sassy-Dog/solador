@@ -2722,8 +2722,10 @@ fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) 
 /// which is a hint, and an unreadable keychain must not take the Settings window
 /// down with it. A key that decides whether a source exists keeps the failure as
 /// [`settings::StoredKey::Unread`]: the Neon, Sentry, Vercel, Anthropic Admin and
-/// OpenAI Admin keys. The OpenClaw bearer token and the host and account tokens
-/// are badges only, and read a failure as "not stored".
+/// OpenAI Admin keys, and each account's token (`account_keys`, which the
+/// account's steps, its row and its card read; the `accounts` set stays the
+/// weaker badge claim). The OpenClaw bearer token and the host tokens are badges
+/// only, and read a failure as "not stored".
 fn stored_secrets(
     credentials: &dyn CredentialStore,
     hosts: &[Host],
