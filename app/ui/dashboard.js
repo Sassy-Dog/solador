@@ -1147,8 +1147,36 @@
   // named, so formTile() never reads it into the draft, and each edit saves on
   // its own click through Rust. Each editor is its own block, repainted only
   // when its own data changes, so saving one machine never discards another's
-  // half-typed limits and a poll cannot clear what is being typed. Busy only
-  // disables the buttons; it never rebuilds an input.
+  // half-typed limits. A render that changes neither the set nor the order of
+  // blocks moves no node, so a poll cannot clear what is being typed or take
+  // focus from it (#747). When blocks or a volume list do change, a focused
+  // limit field, volume checkbox, shared-defaults checkbox, Apply or Reset is
+  // focused again in the block with the same `data-machine` key (`keepFocus`),
+  // but only if it still exists and is enabled after the change: a removed
+  // mount or machine, or a control the rebuild disables, is not. A rebuilt
+  // block keeps focus, not unsaved typed text (`machineBlock` rebuilds from
+  // the saved value). Busy only disables controls (the buttons, the volume
+  // checkboxes and the limit fields); it never rebuilds an input.
+  function keepFocus(scope, change) {
+    const had = scope.contains(document.activeElement) ? document.activeElement : null;
+    const key = had?.closest("[data-machine]")?.dataset.machine;
+    change();
+    if (!had || document.activeElement === had) return;
+    if (had.isConnected) return had.focus({ preventScroll: true });
+    // A rebuilt block: find the same control again inside the block with the
+    // same `data-machine` key, by the id of a limit field, the mount of a
+    // volume checkbox, or the marker of the shared-defaults checkbox, Apply
+    // or Reset.
+    const block = scope.dataset?.machine === key ? scope
+      : scope.querySelector(`[data-machine="${CSS.escape(key)}"]`);
+    const selector = had.id ? `#${CSS.escape(had.id)}`
+      : had.dataset.mount !== undefined ? `input[data-mount="${CSS.escape(had.dataset.mount)}"]`
+      : had.matches(".db-machine-inherit input") ? ".db-machine-inherit input"
+      : had.dataset.machineApply !== undefined ? "[data-machine-apply]"
+      : had.dataset.machineReset !== undefined ? "[data-machine-reset]"
+      : null;
+    if (selector) block?.querySelector(selector)?.focus({ preventScroll: true });
+  }
   function fillMachineAlerts(box, s) {
     const g = s?.machineAlerts;
     if (!box || !g) return;
@@ -1167,7 +1195,7 @@
     ];
     const blocks = box.querySelector(".db-machine-blocks");
     const existing = new Map([...blocks.children].map((el) => [el.dataset.machine, el]));
-    blocks.replaceChildren(...wanted.map((entry) => {
+    const next = wanted.map((entry) => {
       // A block's signature covers only what it renders on its own: the
       // shared defaults ride on every machine's editor, but a machine's
       // limits change only when it saves, or while it follows the defaults
@@ -1182,7 +1210,8 @@
       if (block?.signature === signature) {
         block.refreshDefaults(a);
         if (entry.volumes && block.volumeSignature !== volumeSignature) {
-          block.querySelector(".db-machine-volumes").replaceWith(machineVolumes(entry.volumes));
+          keepFocus(block, () => block.querySelector(".db-machine-volumes")
+            .replaceWith(machineVolumes(entry.volumes)));
           block.volumeSignature = volumeSignature;
         }
         return block;
@@ -1191,7 +1220,13 @@
       block.signature = signature;
       block.volumeSignature = volumeSignature;
       return block;
-    }));
+    });
+    // replaceChildren removes and re-inserts a kept block too, and a removed
+    // node that held focus hands it to <body>: only call it when the set or
+    // the order changed.
+    const current = [...blocks.children];
+    if (next.length !== current.length || next.some((b, i) => b !== current[i]))
+      keepFocus(blocks, () => blocks.replaceChildren(...next));
     for (const control of box.querySelectorAll("button, .db-machine-volume input"))
       control.disabled = disabled;
     for (const input of box.querySelectorAll(".db-machine-fields input"))
