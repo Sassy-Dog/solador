@@ -401,12 +401,21 @@ jobs:
           IS_DRAFT: ${{ steps.release.outputs.is_draft }}
         run: |
           if [[ "$IS_DRAFT" == "true" ]]; then
-            newest="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 \
-              --json tagName --jq '.[].tagName' | grep -E '^v[0-9]' | sort -V | tail -n1 || true)"
+            # The list is captured on its own line so that a failed `gh` (a 5xx,
+            # a rate limit, a token error) fails this step: it must never read
+            # as "no release yet" and publish an older tag as the latest. Only
+            # grep's "no match" (exit 1) means there is no published `v*`
+            # release.
+            published="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 \
+              --json tagName --jq '.[].tagName')"
+            newest=""
+            if v_tags="$(grep -E '^v[0-9]' <<< "$published")"; then
+              newest="$(sort -V <<< "$v_tags" | tail -n1)"
+            fi
             top="$(printf '%s\n%s\n' "$newest" "$TAG" | grep -E '^v[0-9]' | sort -V | tail -n1)"
             if [[ "$top" == "$TAG" ]]; then
               latest_flag="--latest"
-              echo "Publishing $TAG with --latest: it sorts at or above the newest published release (${newest:-none})."
+              echo "Publishing $TAG with --latest: it sorts at or above the newest published release (${newest:-none published yet})."
             else
               latest_flag="--latest=false"
               echo "Publishing $TAG with --latest=false: $newest is a newer published release and keeps releases/latest."
@@ -491,3 +500,14 @@ jobs:
           # the one that fails every Windows install's check on every launch.
           jq -e '.platforms["darwin-aarch64"].signature and .platforms["darwin-x86_64"].url and .platforms["windows-x86_64"].signature and .platforms["windows-x86_64"].url' served.json >/dev/null
           echo "The configured endpoint currently offers $served."
+
+      # The one failure that leaves users worse off than a red draft: the release
+      # was published and a LATER step (the rebuild, the upload, the endpoint
+      # check) failed, so the release is public with no served `latest.json`.
+      # It is the last step because `failure()` is only true for steps that run
+      # after the failing one. Prints the state and the way out; changes nothing.
+      - name: Say what a failure after publishing means
+        if: failure() && steps.publish.outcome == 'success'
+        run: |
+          echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed, so every installed cockpit's update check fails until it is"
+          echo "Use 'Re-run failed jobs' on this run: the publish step skips (the release is no longer a draft), then the manifest is rebuilt and uploaded." >&2

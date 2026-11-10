@@ -259,7 +259,7 @@ expect refuse "a secret in publish-feed.yml's feed job"
 # workflow's own token.
 fresh_copy "$work/wf"
 insert_after "$work/wf/publish-feed.yml" '^          IS_DRAFT: ' "          LEAK: $SECRET"
-expect refuse "a secret in publish-feed.yml's publish step"
+expect refuse "a secret in publish-feed.yml's publish step (the check is file-wide: the file has one job and no allowance)"
 
 fresh_copy "$work/wf"
 printf '\n  agent-feed:\n    runs-on: ubuntu-latest\n    environment: prd\n    steps:\n      - run: echo %s\n' "$SECRET" >> "$work/wf/publish-feed.yml"

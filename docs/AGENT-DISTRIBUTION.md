@@ -877,20 +877,27 @@ pushing a NEW release tag admin-only, and that push is the release approval. It
 does NOT decide who may enter `prd`. Three other doors reach `prd` for ANY
 account with write access, with no approval, since `prd` has no reviewer:
 
-- a `workflow_dispatch` of `publish-agent-feed.yml` (or `publish-feed.yml`) run
-  from an existing tag, including `force=true`, which waives the freeze guard and
-  could sign and serve an older agent feed so that hosts stop updating;
-- re-running a tag-push run;
+- a `workflow_dispatch` of `publish-agent-feed.yml` run from an existing tag,
+  including `force=true`, which waives the freeze guard and could sign and serve
+  an older agent feed so that hosts stop updating;
+- re-running a tag-push run of `release-agent.yml`;
 - publishing a held-back draft by hand, which fires `release: published`.
+
+(A dispatch of `publish-feed.yml` is not a door: it declares no environment and
+holds no secret, and `publish` is an input of the call only, so it can only
+regenerate `latest.json`.)
 
 A dispatch or re-run at an existing tag runs THAT TAG's own copy of the
 workflow, so no check added to the workflows now can close these doors for tags
 that already exist. This is accepted because the repository admin is the only
 collaborator. **Before anyone is granted write access, restore a required
-reviewer on `prd` (or otherwise close these doors).** What still holds either
-way: `release-agent.yml`'s `publish` job re-verifies every signature before
-anything becomes public, and the freeze and latest guards run unless `force`
-waives the first. It should be a known acceptance rather than a later discovery.
+reviewer on `prd` (or otherwise close these doors).** What still holds differs
+by door. Only the re-run door runs `release-agent.yml`'s `publish`, which
+re-verifies every signature against `agent/release-signing-key.pub`. On the
+dispatch and hand-publish doors what holds is `publish-agent-feed.yml`'s own
+check of the binaries against that key, plus the freeze and latest guards (the
+freeze guard unless `force` waives it). It should be a known acceptance rather
+than a later discovery.
 
 ### 6. Installing — SHIPPED (#392)
 

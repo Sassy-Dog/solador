@@ -372,10 +372,18 @@ are not publicly downloadable, so a build-time manifest would point every client
 at a 404. `release.yml`'s last job (`publish`, after both legs) **calls** it with
 `publish: true`, and its `feed` job runs in this order: download the draft's
 payload, build and verify `latest.json` (refused unless both signatures verify),
-**then** `gh release edit --draft=false --latest`, read `published_at` back,
-rebuild the manifest with `--pub-date`, upload it and confirm the endpoint. So a
-mis-signed build **stays a draft** with a red run that says why, and "a draft can
-never serve updates" is a property of the order rather than a rule. `publish` is
+**then** `gh release edit --draft=false`, with `--latest` only when the tag sorts
+(`sort -V`) at or above the newest published non-prerelease `v*` release and
+`--latest=false` otherwise (a failed `gh release list` fails the step rather than
+reading as "none yet"), read `published_at` back, rebuild the manifest with
+`--pub-date`, upload it and confirm the endpoint. So a mis-signed build **stays a
+draft** with a red run that says why, and "a draft can never serve updates" is a
+property of the order rather than a rule. The converse failure is worse: if a
+step AFTER publishing fails (the rebuild, the upload, the endpoint check), the
+release is public with no served `latest.json`, and every installed cockpit's
+update check fails until it is fixed. The job's last step says so in an
+`::error::`; use **Re-run failed jobs**, which skips the publish (the release is
+no longer a draft), then rebuilds and uploads. `publish` is
 an input of the call only, never of `workflow_dispatch`, so the manual door can
 regenerate a feed but never publish a release. The release notes and
 `published_at` are read from the release itself on every path (`gh release view`,

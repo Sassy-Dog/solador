@@ -297,7 +297,9 @@ jobs:
     # `agent-v*` beside `v*` (a repository setting, #492 step 6; until then this
     # job is refused the environment) — and the "release tags" ruleset stops
     # anyone but the admin role from creating, moving or deleting one. The tag
-    # push is the approval. `ci.yml`'s `secrets-guard` requires this line to be
+    # push is the approval — but the dispatch, re-run and hand-publish doors reach
+    # this job WITHOUT a tag push (docs/AGENT-DISTRIBUTION.md §5). `ci.yml`'s
+    # `secrets-guard` requires this line to be
     # here: a secret reference in a job without it fails CI.
     environment: prd
 

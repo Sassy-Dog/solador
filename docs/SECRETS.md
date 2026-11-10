@@ -324,8 +324,8 @@ Signing and releasing belong in workflows that do not run on `pull_request`.
 Exactly three workflows hold a credential, and every job that does declares
 `environment: prd`. **`prd` has no required reviewer (#749): pushing the tag is
 the approval.** Two repository settings (not files) stand in its place. The
-deployment policy is tag-only (`v*` for the cockpit's train and, once #492 step
-6 adds it, `agent-v*` for the agent's), so nothing on `main` or on a fork can
+deployment policy is tag-only (`v*` for the cockpit's train and `agent-v*` for
+the agent's, which the live policy lists since #492 step 6), so nothing on `main` or on a fork can
 reach one. And a tag ruleset named "release tags" (id 26979876, active) covers
 `refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
 deleting them to the repository admin role, so pushing a new release tag (the

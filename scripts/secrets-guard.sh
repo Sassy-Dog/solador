@@ -174,7 +174,7 @@ for wf in "$WORKFLOWS_DIR"/*.yml "$WORKFLOWS_DIR"/*.yaml; do
             if [[ -n "$job_secrets" ]] \
                 && ! awk -F '\t' -v job="$job" '$1 == "environment" && $3 == job { found = 1 } END { exit !found }' <<< "$findings"; then
                 echo "::error file=$rel::$name's $job job references secrets but does not carry the job-level line 'environment: prd' (exactly that spelling)"
-                echo "The environment is what scopes the credential to a reviewed, tag-only run." >&2
+                echo "The environment is what scopes the credential to a tag-only run." >&2
                 fail=1
             fi
         done
