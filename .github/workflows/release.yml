@@ -18,9 +18,21 @@ name: Release
 # rather than a detail. Solador is a PUBLIC repo, so the org's `APPLE_*`
 # secrets — which are `private` visibility — are unreachable here and would
 # resolve to the empty string. Environment secrets are repo-scoped, so
-# `private` visibility never applies to them; `prd` also carries a required
-# reviewer and a tag-only deployment policy, which is what stops a push to
-# `main` from quietly minting a signed build.
+# `private` visibility never applies to them. `prd` has NO required reviewer
+# (#749): it carries a tag-only deployment policy (`v*` and `agent-v*`), which is
+# what stops a push to `main` or a fork from quietly minting a signed build, and
+# a tag ruleset named "release tags" restricts creating, updating and deleting
+# those tags to the repository admin role. PUSHING THE TAG IS THE APPROVAL, and
+# nothing in this train waits for a person after it: the last job publishes the
+# release and its update feed. (`./dev publish` pushes as the admin.) Those are
+# repository settings, not files.
+#
+# The last job, `publish`, calls publish-feed.yml with `publish: true`. It
+# declares no environment and reads no secret; the feed is verified there (both
+# updater signatures, against the app's public key) BEFORE the draft is made
+# public, so a mis-signed build stays a draft and the run is red. It is a call
+# rather than a `release: published` trigger because a release published with the
+# workflow's own `GITHUB_TOKEN` raises no such event.
 #
 # `ci.yml` declares no environment and references zero secrets, asserted by
 # this repo's `secrets-guard` job rather than assumed — the same job that
@@ -36,8 +48,9 @@ on:
   push:
     tags: ['v*']
 
-# Needed to create the draft release and upload the artifacts to it. Every
-# other workflow in this repo stays `contents: read`.
+# Needed to create the draft release and upload the artifacts to it, and (for
+# the last job) to publish it. Every other workflow in this repo stays
+# `contents: read`, except where a job restates its own `contents: write`.
 permissions:
   contents: write
 
@@ -274,16 +287,18 @@ jobs:
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
           echo "Validated $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) + .sig; both artifacts carry $want"
 
-      # DRAFT deliberately. The reviewer gate approved exposing credentials, not
-      # publishing to users — a draft is deletable, a public release has to be
-      # retracted.
+      # DRAFT deliberately, and not published by either leg. A public release
+      # has to be retracted, a draft is deletable, and the feed has to be
+      # verified before anyone is offered the release: this job and the Windows
+      # leg only attach their artifacts, and the final `publish` job publishes
+      # once BOTH legs have uploaded and the update feed has verified.
       #
       # It is also what the update feed hangs off: a draft's assets are not
       # publicly downloadable and the draft is not attached to its tag, so a
       # manifest pointing into one would 404 for every client. `publish-feed.yml`
-      # therefore runs on `release: published`, which makes "a draft can never
-      # serve updates" a property of the trigger rather than a rule to remember
-      # (#308).
+      # therefore publishes the draft itself, after verifying, and only then
+      # uploads `latest.json`, which makes "a draft can never serve updates" a
+      # property of the order rather than a rule to remember (#308, #749).
       - name: Attach the .dmg and the updater payload to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -298,8 +313,8 @@ jobs:
             echo "Uploaded to the existing $GITHUB_REF_NAME release."
           elif gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
               --title "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig"; then
-            echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
-            echo "Publishing is what generates and uploads latest.json (publish-feed.yml)."
+            echo "Created draft release $GITHUB_REF_NAME; the publish job publishes it"
+            echo "once both legs have attached their artifacts and the feed has verified."
           else
             gh release upload "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig" --clobber
             echo "Lost the create race to another leg — uploaded to its release."
@@ -660,7 +675,7 @@ jobs:
             echo "Uploaded to the existing $GITHUB_REF_NAME release."
           elif gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
               --title "$GITHUB_REF_NAME" "$EXE" "$EXE.sig"; then
-            echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
+            echo "Created draft release $GITHUB_REF_NAME; the publish job publishes it."
           else
             gh release upload "$GITHUB_REF_NAME" "$EXE" "$EXE.sig" --clobber
             echo "Lost the create race to the macOS job — uploaded to its release."
@@ -678,3 +693,25 @@ jobs:
           if [[ "$body" != *"Authenticode-signed"* ]]; then
             gh release edit "$GITHUB_REF_NAME" --notes "$note"$'\n\n'"$body"
           fi
+
+  # Pushing the tag was the approval (#749). This is the one job that acts on it:
+  # it runs only when BOTH legs have attached their artifacts, and it publishes
+  # the draft and its update feed through publish-feed.yml, which verifies both
+  # updater signatures first (a failure leaves the release a draft and the run
+  # red, saying why).
+  #
+  # A CALL, not a step: a release published with the workflow's own
+  # `GITHUB_TOKEN` raises no `release: published` event, so that workflow's own
+  # trigger would never fire. It declares no environment and reads no secret —
+  # neither may be set on a caller job, and publish-feed.yml holds none (the
+  # secrets guard asserts it). `contents: write` is what publishing and the
+  # `latest.json` upload take; a called workflow cannot hold more than this.
+  publish:
+    name: Publish the release and its update feed
+    needs: [release, release-windows]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-feed.yml
+    with:
+      tag: ${{ github.ref_name }}
+      publish: true

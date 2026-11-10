@@ -252,8 +252,14 @@ done
 
 # --- publish-feed.yml: the cockpit's feed holds no allowance any more -------
 fresh_copy "$work/wf"
-insert_after "$work/wf/publish-feed.yml" '^          NOTES: ' "          LEAK: $SECRET"
+insert_after "$work/wf/publish-feed.yml" '^          INPUT_TAG: ' "          LEAK: $SECRET"
 expect refuse "a secret in publish-feed.yml's feed job"
+
+# The publish step #749 added to that job reads no secret either: it uses the
+# workflow's own token.
+fresh_copy "$work/wf"
+insert_after "$work/wf/publish-feed.yml" '^      - name: Publish the draft release$' "        env:<NL>          LEAK: $SECRET"
+expect refuse "a secret in publish-feed.yml's publish step"
 
 fresh_copy "$work/wf"
 printf '\n  agent-feed:\n    runs-on: ubuntu-latest\n    environment: prd\n    steps:\n      - run: echo %s\n' "$SECRET" >> "$work/wf/publish-feed.yml"
@@ -317,6 +323,22 @@ for pair in "${PAIRS[@]}"; do
     rm "$work/wf/$file"
 done
 expect refuse "a workflows directory without any scoped file"
+
+# --- release-agent.yml's publishing jobs (#749) hold no credential -----------
+# `publish-release` and `feed` sit beside the scoped `publish` job. Neither is
+# the allowed name, so a secret in either is refused, even with the protected
+# environment added to it.
+for job in publish-release feed; do
+    grep -qxF "  $job:" "$SRC/release-agent.yml" \
+        || { echo "release-agent.yml has no job '$job' — the cases below no longer test what they claim" >&2; exit 1; }
+    fresh_copy "$work/wf"
+    insert_after "$work/wf/release-agent.yml" "^  $job:\$" "    env:<NL>      LEAK: $SECRET"
+    expect refuse "release-agent.yml: a secret in the '$job' job"
+
+    fresh_copy "$work/wf"
+    insert_after "$work/wf/release-agent.yml" "^  $job:\$" "    environment: prd<NL>    env:<NL>      LEAK: $SECRET"
+    expect refuse "release-agent.yml: a secret in the '$job' job, even under environment: prd"
+done
 
 # --- release.yml stays allowed wholesale ------------------------------------
 fresh_copy "$work/wf"

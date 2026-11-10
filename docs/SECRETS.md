@@ -322,10 +322,14 @@ secret you have given away. `ci.yml` builds and tests — neither needs one.
 Signing and releasing belong in workflows that do not run on `pull_request`.
 
 Exactly three workflows hold a credential, and every job that does declares
-`environment: prd` — a required reviewer plus a tag-only deployment policy
-(`v*` for the cockpit's train and, once #492 step 6 adds it — a repository
-setting, not a file — `agent-v*` for the agent's), so nothing on `main` or on a
-fork can reach one:
+`environment: prd`. **`prd` has no required reviewer (#749): pushing the tag is
+the approval.** Two repository settings (not files) stand in its place. The
+deployment policy is tag-only (`v*` for the cockpit's train and, once #492 step
+6 adds it, `agent-v*` for the agent's), so nothing on `main` or on a fork can
+reach one. And a tag ruleset named "release tags" (id 26979876, active) covers
+`refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
+deleting them to the repository admin role, so only an admin can start a signing
+run, a release tag cannot be moved, and an `agent-v*` tag cannot be deleted:
 
 - `release.yml`, on a `v*` tag push (the cockpit's train): the Apple and Tauri
   updater secrets for the macOS leg, `SENTRY_DSN` for both cockpit legs, and
@@ -335,15 +339,22 @@ fork can reach one:
 - `release-agent.yml`, on an `agent-v*` tag push (the agent's train): its
   `publish` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` to sign the agent's
   four binaries. Its `build` and `verify` jobs hold nothing.
-- `publish-agent-feed.yml`, on `release: published` of an `agent-v*` release:
-  its `agent-feed` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same
+- `publish-agent-feed.yml`, called by `release-agent.yml`'s `feed` job once the
+  release is public (and on `release: published` / `workflow_dispatch` for a
+  release published by hand or a replay): its `agent-feed` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same
   key, no new scope — to sign `agent-latest.json`, which cannot be signed at
   build time because it is assembled from a public release's download URLs
   (#391, moved here by #491). Its `agent-eligibility` job reads nothing. A
   manual replay has to run *from* the tag, not from `main` with a tag typed in.
 
 `publish-feed.yml` (the cockpit's `latest.json`) holds no credential and has no
-allowance in the guard.
+allowance in the guard. The same goes for the jobs #749 added so that a tag push
+publishes its own release: `release.yml`'s last job (a call to `publish-feed.yml`
+with `publish: true`), and `release-agent.yml`'s `publish-release` (`gh release
+edit` with the workflow token) and `feed` (a call to `publish-agent-feed.yml`)
+jobs declare no environment and read no secret. The guard refuses a secret in
+the latter two (`secrets-guard-test.sh` proves it); for `release.yml`, which it
+allows by file, that rests on review.
 
 `ci.yml`'s `secrets-guard` job (`scripts/secrets-guard.sh`) asserts this rather
 than trusting it: any secret reference outside `release.yml`, or outside the two

@@ -129,12 +129,12 @@ public distribution exists to solve. The agent's data sources are `/proc` reads
 and subprocess calls, so static linking is viable.
 
 Artifacts attach to a draft **release of the agent's own tag**, `agent-v<version>`
-(#472) — a release train of its own, apart from the app's `v*` releases, so an
+(#472), which the same workflow then publishes (#749) — a release train of its own, apart from the app's `v*` releases, so an
 app-only release produces no agent binary and an agent release no app. (This
 section first said "the same GitHub Release the app already publishes to — one
 tag, one release, both products"; the cost of that is §3's. The workflow that
-builds and attaches them is `release-agent.yml` (#491), triggered by an
-`agent-v*` tag push; `release.yml` has no agent leg.)
+builds, attaches and publishes them is `release-agent.yml` (#491), triggered by
+an `agent-v*` tag push; `release.yml` has no agent leg.)
 
 **Raw binaries, not archives**, named `solador-agent-<version>-<triple>` with a
 detached `<artifact>.minisig` beside each. That is a consequence of §2's content
@@ -282,16 +282,27 @@ the `agent-latest` release (created once, as a **prerelease** so it can never be
 that is not a published prerelease is refused). It then **reads the served bytes
 back** from the fixed URL a host reads, requires them to equal the upload and to
 name this tag's version, and verifies that pair with both implementations. The
-workflow runs when the release is **published**, never at build time: a draft's
-assets are not public, and the feed is assembled from the public URLs. It runs
-for `agent-v*` releases only; the app's `v*` releases are `publish-feed.yml`'s,
-which is desktop-only and holds no credential. A `release` event runs the
-workflow file **at the tagged commit**, so a fix to it reaches a release only
-through a new agent tag, and the manual replay must be dispatched *from* the tag
-for the same reason.
+workflow runs once the release is **public**, never at build time: a draft's
+assets are not public, and the feed is assembled from the public URLs. Since
+#749 the tag push is the whole approval: `release-agent.yml`'s credential-free
+`publish-release` job publishes the draft (`gh release edit --draft=false
+--latest=false`, a no-op when it is already public) after `publish` has signed
+and re-verified every binary, and its `feed` job then **calls** this workflow
+with the tag. It is a call and not a reliance on `release: published` because a
+release published with the workflow's own `GITHUB_TOKEN` raises no such event.
+`release: published` and `workflow_dispatch` stay, for a draft someone holds
+back and publishes by hand and for replays. In the called path
+`github.event_name` is the caller's (`push`) and `github.ref` / `github.sha` are
+the caller's tag and its commit, so `agent-eligibility` still requires the run
+to be AT `refs/tags/<tag>`, the release public with all eight assets, and both
+guards to pass. It runs for `agent-v*` releases only; the app's `v*` releases are
+`publish-feed.yml`'s, which is desktop-only and holds no credential. A `release`
+event, and a call, run the workflow file **at the tagged commit**, so a fix to it
+reaches a release only through a new agent tag, and the manual replay must be
+dispatched *from* the tag for the same reason.
 
-Two guards sit in the credential-free `agent-eligibility` job, ahead of `prd`'s
-reviewer, and their logic is `scripts/agent-feed-guard.sh` so `./dev test` runs
+Two guards sit in the credential-free `agent-eligibility` job, ahead of the
+protected job, and their logic is `scripts/agent-feed-guard.sh` so `./dev test` runs
 it against a stub `gh` (a release workflow cannot be exercised by a PR):
 
 - **Freeze guard.** The candidate must be the **newest published,
@@ -307,10 +318,11 @@ it against a stub `gh` (a release workflow cannot be exercised by a PR):
   publish at the *current* tag after a failed upload passes, and a bad release
   can be pulled (turned back into a draft, or its release deleted with its tag
   kept) and the previous one re-served with no `force`. It is run again inside
-  `agent-feed` once `prd`'s approval has been given, because that wait can be
-  hours and another release may have been fed in the meantime.
+  `agent-feed` just before the upload, because the build and signing since
+  eligibility take minutes and another release may have been fed in the
+  meantime.
 - **Latest guard.** `releases/latest` must name a `v*` tag. The draft is
-  created with `--latest=false`, but a release published from the UI with "Set as
+  created, and published, with `--latest=false`, but a release published from the UI with "Set as
   the latest release" ticked would take the slot from the cockpit's updater; the
   guard fails naming `gh release edit <tag> --latest=false`. `force` does not
   waive it.
@@ -743,17 +755,19 @@ Three properties of the release path, each chosen so a failure is loud:
 
 Signing is its own release job — `publish` in `release-agent.yml` — and the
 **only** job of that workflow holding a credential, so the key reaches one
-runner rather than six, and build/verify start without waiting on `prd`'s
-reviewer.
+runner rather than six. (`prd` has no required reviewer since #749: pushing the
+tag is the approval, the environment's tag-only deployment policy keeps `main`
+and forks out, and the "release tags" ruleset lets only the admin role create,
+move or delete an `agent-v*` tag.)
 
 **The feed is signed at publish time, by the same key (#391).** The binaries
 can be signed during the build because they exist then; `agent-latest.json`
 cannot, because it is assembled from the public download URLs of a release that
-is still a draft. So `publish-agent-feed.yml` (#391 put this job in
+is a draft until the run publishes it. So `publish-agent-feed.yml` (#391 put this job in
 `publish-feed.yml`; #491 moved it out with the rest of the agent's train) has
 one protected job, `agent-feed`, declaring `environment: prd` and reading exactly
-that one secret, behind the same reviewer and the same tag-only deployment
-policy — which must name `agent-v*` beside `v*`, a repository setting rather than
+that one secret, behind the same tag-only deployment policy and the same tag
+ruleset — the policy must name `agent-v*` beside `v*`, a repository setting rather than
 a file (#492 step 6), so until it does neither agent job can enter `prd`. A
 credential-free `agent-eligibility` job in front of it refuses a draft, a
 prerelease, a release without the eight agent assets, a candidate that is not
@@ -763,7 +777,9 @@ tag typed into an input can never hand a `main`-ref job the key. `ci.yml`'s
 `secrets-guard` allows exactly two jobs besides `release.yml`, as `file:job`
 pairs — `release-agent.yml:publish` and `publish-agent-feed.yml:agent-feed` —
 requires each one's environment line and fails closed per pair; every sibling
-job stays credential-free, and `publish-feed.yml` has no allowance at all.
+job stays credential-free (including the `publish-release` and `feed` jobs
+#749 added to `release-agent.yml`), and `publish-feed.yml` has no allowance at
+all.
 `scripts/agent-signing.sh` is the one signer for binaries and feed alike, so the
 two cannot be signed differently.
 
@@ -852,10 +868,16 @@ anti-replay mechanism: every release's signatures stay valid forever, and it
 is §4's *newer-than* rule, not the key count, that stops an older validly
 signed feed being replayed onto a host.
 
-**Accepted risk, stated explicitly:** a tag push publishes a release, and
-GitHub branch rulesets do not cover tag refs. The release trigger is the least
-protected link in this chain. Acceptable for a solo maintainer; it should be a
-known acceptance rather than a later discovery.
+**Accepted risk, stated explicitly:** a tag push publishes a release, with no
+person between the push and the public release (#749). What stands in that gap is
+two repository settings, not code: `prd`'s tag-only deployment policy, and a tag
+ruleset named "release tags" (id 26979876) that restricts creating, updating and
+deleting `v*` and `agent-v*` tags to the repository admin role. The release
+trigger is therefore only as protected as the admin role and that ruleset;
+`release-agent.yml`'s `publish` job re-verifies every signature before anything
+becomes public, and `publish-agent-feed.yml`'s freeze and latest guards still
+hold. Acceptable for a solo maintainer; it should be a known acceptance rather
+than a later discovery.
 
 ### 6. Installing — SHIPPED (#392)
 
@@ -911,7 +933,7 @@ published release (§4 tells it so), a move that would otherwise be refused
 whenever the release it wants is the base it was built from. Such a host is as
 exposed to a replayed older feed as a fresh install is, and for the same
 reason; the pin is its protection. The fresh-install window is recorded here
-beside §5's tag-ruleset acceptance rather than solved. Pulling a bad agent release from
+beside §5's accepted risk rather than solved. Pulling a bad agent release from
 updating hosts means replacing `agent-latest`'s feed, not marking the release
 (#472's workflows own that procedure) — and an installer reads that same feed,
 so it follows.

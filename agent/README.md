@@ -623,9 +623,9 @@ chmod +x solador-agent-<version>-<triple>
 reads the id out of its bytes, and it is the id encoded in the base64 line,
 which is what `minisign -V` reports; the `untrusted comment:` line merely
 repeats it). Take the key from a checkout of **`main`** — the branch the
-ruleset protects — rather than from a tag or an archive of one: a tag is the
-least-protected ref in this repository (docs/AGENT-DISTRIBUTION.md §5 records
-that acceptance), and a key that arrived with the release it is meant to
+ruleset protects — rather than from a tag or an archive of one: a tag is not
+reviewed the way a merge to `main` is, and a push of one is the release
+approval (docs/AGENT-DISTRIBUTION.md §5 records that acceptance), and a key that arrived with the release it is meant to
 verify proves nothing.
 
 It is a **different keypair from the desktop app's** updater key, on purpose:

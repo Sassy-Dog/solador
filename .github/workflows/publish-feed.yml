@@ -2,16 +2,22 @@ name: Publish update feed
 
 # `latest.json` — the manifest `tauri-plugin-updater` reads (#308).
 #
-# **The trigger is the design.** `release.yml` attaches its artifacts to a
-# DRAFT, and a draft is not servable: it is not attached to its tag and its
-# assets are not publicly downloadable, so a manifest generated at build time
-# would point every client into a 404. Generating on `release: published`
-# instead gives a property, not a convention — **a draft can never serve
-# updates**, because the feed does not exist until a human publishes the
-# release.
+# **Publishing is inside the verified job (#749).** `release.yml` attaches its
+# artifacts to a DRAFT, and a draft is not servable: it is not attached to its
+# tag and its assets are not publicly downloadable, so a manifest generated at
+# build time would point every client into a 404. Pushing the `v*` tag is the
+# approval, so `release.yml`'s last job CALLS this workflow with `publish: true`
+# and the `feed` job below publishes the draft ITSELF, but only AFTER
+# `solador-update-feed` has verified both updater signatures: a mis-signed build
+# stays a draft, with a red run that says why. The feed therefore still does not
+# exist until the release is public, so **a draft can never serve updates**.
 #
-# It also means the human checkpoint `release.yml` deliberately kept is the same
-# checkpoint that opens the update path. There is one decision, not two.
+# Why a call and not `release: published`: a release published with the
+# workflow's own `GITHUB_TOKEN` does NOT fire `release: published` (GitHub
+# suppresses events raised by that token), so a release workflow that simply
+# published its draft would never have started this file. `release: published`
+# and `workflow_dispatch` stay as the door for a draft someone publishes by hand
+# and for replays; `publish` is deliberately NOT a dispatch input.
 #
 # This workflow holds NO credential: both `.sig` files were produced during the
 # release builds (`build.sh`'s `make_updater_archive` for the macOS tarball, and
@@ -44,7 +50,9 @@ name: Publish update feed
 #
 # The guard is NOT a bare `startsWith`. On a `workflow_dispatch` the release
 # payload is empty, `startsWith('', 'v')` is false, and the desktop replay door
-# below would be shut. Each event's clause carries its own event name.
+# below would be shut. Each event's clause carries its own event name. In a
+# CALLED workflow `github.event_name` is the CALLER's event: `push`, with
+# `github.ref` the tag and `github.event.release` empty.
 #
 # WHICH COPY OF THIS FILE RUNS. A `release` event runs the workflow file AT
 # THE TAGGED COMMIT — `GITHUB_SHA` is the last commit in the tagged release
@@ -57,17 +65,33 @@ name: Publish update feed
 # `solador-update-feed` is built from the tag's tree (which needs
 # `crates/updatefeed`), while the tag assertion (#404) is read from the
 # DISPATCHING ref through a second checkout into `.tooling`, so a tag older
-# than that script still replays.
+# than that script still replays. A CALL from `release.yml` runs this file at the
+# tagged commit too: the caller's `github.sha` is the tag's commit.
 
 on:
   release:
     types: [published]
+  # The call from `release.yml`'s last job (#749). `publish: true` is what makes
+  # the `feed` job publish the draft once the feed has verified; it is an input
+  # of the call only, never of the manual door below, so a dispatch can
+  # regenerate a feed but never publish a release.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to build the feed for (e.g. v2026.8.114)'
+        required: true
+        type: string
+      publish:
+        description: 'Publish the draft release once latest.json has verified'
+        required: false
+        default: false
+        type: boolean
   # The manual door, for a release published before this file existed, or one
   # whose feed run failed for a reason outside this file (a GitHub outage, an
   # asset uploaded late). A fix to this file itself needs a new tag — see
   # above. It holds no secret, so a `main`-ref replay is fine: it regenerates
   # `latest.json` for any `v*` tag. A dispatch carries no release payload, so
-  # the job re-uploads `latest.json` WITHOUT notes or pub_date.
+  # the notes and `published_at` are read from the release itself, below.
   workflow_dispatch:
     inputs:
       tag:
@@ -75,10 +99,13 @@ on:
         required: true
         type: string
 
-# Uploading latest.json to the release. Everything else in this repo stays
-# `contents: read`, except what grants itself `contents: write` to create a
-# draft release or upload a feed: release.yml, release-agent.yml's `publish` job
-# and publish-agent-feed.yml's `agent-feed` job.
+# Uploading latest.json to the release, and publishing the draft. Everything else
+# in this repo stays `contents: read`, except what grants itself `contents:
+# write` to create or publish a release or upload a feed: release.yml,
+# release-agent.yml's `publish`, `publish-release` and `feed` jobs and
+# publish-agent-feed.yml's `agent-feed` job. When this file is CALLED, the
+# caller's job grants the same `contents: write` (a called workflow cannot hold
+# more than its caller gives it).
 permissions:
   contents: write
 
@@ -105,11 +132,18 @@ jobs:
     # where there is no release payload at all; and a bare `startsWith` on the
     # release tag is false there, which would shut the replay door. A dispatch
     # is checked by the tag-shape step below instead.
+    #
+    # The CALLED path (#749) is `push`: a called workflow carries its caller's
+    # event, and `release.yml` runs on a tag push. It is keyed on the caller's
+    # ref being a `v*` tag, which `startsWith(…, 'refs/tags/v')` is and
+    # `refs/tags/agent-v…` is not. The tag-shape step still decides the rest.
     if: >-
       (github.event_name == 'release'
         && startsWith(github.event.release.tag_name, 'v')
         && !github.event.release.prerelease)
       || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push'
+        && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
 
     steps:
@@ -118,7 +152,8 @@ jobs:
         env:
           # Through the environment, never interpolated into the script: these
           # are event fields, and `${{ }}` inside `run:` is substitution before
-          # the shell ever sees it.
+          # the shell ever sees it. `inputs.tag` is the dispatch's and the
+          # call's; `EVENT_TAG` is empty on both.
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
@@ -151,7 +186,7 @@ jobs:
       # publish.sh's ladder read-only, pinned to the tag's own month, and
       # requires `reuse` of exactly this tag. The bare comparison this replaced
       # was month-bound — a draft tagged on the 30th and published on the 1st
-      # failed here after the reviewer had approved it, and `releases/latest`
+      # failed here after a person had published it, and `releases/latest`
       # then served a release with no `latest.json` for every installed cockpit
       # to 404 on, with no replay that could pass. This job builds nothing
       # versioned (the manifest's `version` is `${tag#v}` above), so there is
@@ -186,6 +221,9 @@ jobs:
         with:
           workspaces: .
 
+      # `gh release download` finds a DRAFT as well as a published release,
+      # which the publish path needs: the payload is verified BEFORE the draft
+      # is published.
       - name: Download the release's updater payload
         id: assets
         env:
@@ -248,14 +286,38 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Downloaded $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) and $(basename "$installer") ($(du -h "$installer" | cut -f1)), each with its .sig"
 
-      # The release body, verbatim, through a file. Never interpolated into a
-      # shell command: it is maintainer- and contributor-authored text (GitHub's
+      # The release body and `published_at`, read from the RELEASE rather than
+      # the event payload, so every path (published, dispatched, called) gets the
+      # same answer about the release as it is now. `gh release view` sees a
+      # draft; `GET /releases/tags/<tag>` does not, and on the publish path the
+      # release is still a draft here.
+      #
+      # The body goes through a file, verbatim. Never interpolated into a shell
+      # command: it is maintainer- and contributor-authored text (GitHub's
       # generated notes quote PR titles), and it reaches the app as textContent,
       # never as markup.
-      - name: Capture the release notes
+      #
+      # A draft has no meaningful `publishedAt`, so it is read only from a
+      # release that is public; otherwise the value stays empty and the manifest
+      # omits `pub_date` rather than carry a plausible timestamp.
+      - name: Read the release's notes and publication date
+        id: release
         env:
-          NOTES: ${{ github.event.release.body }}
-        run: printf '%s' "$NOTES" > feed/notes.md
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          release="$(gh release view "$TAG" --json isDraft,body,publishedAt)"
+          jq -j '.body // ""' <<< "$release" > feed/notes.md
+          is_draft="$(jq -r '.isDraft' <<< "$release")"
+          published_at=""
+          if [[ "$is_draft" == "false" ]]; then
+            published_at="$(jq -r '.publishedAt // ""' <<< "$release")"
+          fi
+          {
+            echo "is_draft=$is_draft"
+            echo "published_at=$published_at"
+          } >> "$GITHUB_OUTPUT"
+          echo "$TAG: isDraft=$is_draft"
 
       # Verify, then write. `solador-update-feed` refuses to emit a manifest
       # unless BOTH signatures cover their artifacts, under the public key the
@@ -269,13 +331,16 @@ jobs:
           ASSET: ${{ steps.assets.outputs.asset }}
           INSTALLER: ${{ steps.assets.outputs.installer }}
           INSTALLER_ASSET: ${{ steps.assets.outputs.installer_asset }}
-          PUBLISHED_AT: ${{ github.event.release.published_at }}
+          PUBLISHED_AT: ${{ steps.release.outputs.published_at }}
           DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
         run: |
-          # `published_at` is RFC 3339 already; absent on a workflow_dispatch
-          # re-run, where "now" would be a lie about when the release happened,
-          # so the key is simply omitted rather than filled with a plausible
-          # timestamp.
+          # This is the gate on the publish path: a manifest is refused unless
+          # both signatures verify, and the draft is published only after it.
+          #
+          # `published_at` is RFC 3339 already; empty while the release is
+          # still a draft, where "now" would be a lie about when the release
+          # happened, so the key is simply omitted rather than filled with a
+          # plausible timestamp. (The publish path rebuilds with the real one.)
           #
           # An `if`, not `[[ … ]] && …`: GitHub runs `run:` blocks under `bash
           # -e`, where a compound whose test fails is a failed command and takes
@@ -296,6 +361,69 @@ jobs:
             --tauri-config app/src-tauri/tauri.conf.json \
             --notes-file feed/notes.md \
             "${date_arg[@]}" \
+            --out feed/latest.json
+
+          echo "--- latest.json ---"
+          cat feed/latest.json
+
+      # Pushing the tag was the approval, and this is the only step that acts on
+      # it — after the build above has verified both updater signatures against
+      # the app's public key, so a mis-signed build is a red run on a draft and
+      # never a public release with a feed nobody can verify. `--latest`
+      # because this is a cockpit release: `releases/latest` is the endpoint the
+      # app polls.
+      #
+      # A release that is already public (a re-run of a run that got this far)
+      # is left alone: publishing is a no-op the second time, so a re-run
+      # passes. `published_at` is read BACK, after the edit, because it is
+      # GitHub's own timestamp of the moment the release became public.
+      - name: Publish the draft release
+        id: publish
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          IS_DRAFT: ${{ steps.release.outputs.is_draft }}
+        run: |
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            gh release edit "$TAG" --draft=false --latest
+            echo "Published $TAG."
+          else
+            echo "$TAG is already public; nothing to publish."
+          fi
+          published_at="$(gh release view "$TAG" --json publishedAt --jq '.publishedAt // ""')"
+          if [[ -z "$published_at" ]]; then
+            echo "::error::$TAG reports no publishedAt after publishing"
+            exit 1
+          fi
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+
+      # The same manifest again, now that the release has a publication date.
+      # Built by the same binary, which verifies both signatures again, so what
+      # is uploaded is what `solador-update-feed` emitted after checking them.
+      - name: Rebuild latest.json with the publication date
+        if: inputs.publish
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARBALL: ${{ steps.assets.outputs.tarball }}
+          ASSET: ${{ steps.assets.outputs.asset }}
+          INSTALLER: ${{ steps.assets.outputs.installer }}
+          INSTALLER_ASSET: ${{ steps.assets.outputs.installer_asset }}
+          PUBLISHED_AT: ${{ steps.publish.outputs.published_at }}
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          cargo run --locked -p solador-updatefeed --bin solador-update-feed -- \
+            --version "$VERSION" \
+            --tarball "$TARBALL" \
+            --signature "$TARBALL.sig" \
+            --url "$DOWNLOAD_BASE/$TAG/$ASSET" \
+            --windows-installer "$INSTALLER" \
+            --windows-signature "$INSTALLER.sig" \
+            --windows-url "$DOWNLOAD_BASE/$TAG/$INSTALLER_ASSET" \
+            --tauri-config app/src-tauri/tauri.conf.json \
+            --notes-file feed/notes.md \
+            --pub-date "$PUBLISHED_AT" \
             --out feed/latest.json
 
           echo "--- latest.json ---"

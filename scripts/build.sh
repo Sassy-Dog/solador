@@ -1032,7 +1032,7 @@ attach_dmg_readonly() {
 # on GitHub Actions: the artifact is fine, but locally (a release machine) the
 # devices pile up until attaches fail (#629), and the check runs before
 # signing, so a re-run is cheap. A hosted runner is thrown away, and failing
-# there would cost a `prd` approval and a full rebuild for a correct artifact,
+# there would cost a full release rebuild for a correct artifact,
 # so it warns instead. Either way the message names the device and the command
 # that removes it. Devices that stood on this image before the attach (an
 # earlier build still mounted) are never swept or detached.

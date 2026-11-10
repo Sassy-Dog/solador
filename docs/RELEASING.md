@@ -5,21 +5,26 @@
 ### Releasing
 
 There are **two release trains, and neither triggers the other** (#472, #491).
-**The cockpit's:** pushing a `v*` tag runs `release.yml` (#307), which builds
-the signed, notarized, stapled artifacts (#306) on the `prd` environment and
-attaches them to a **draft** GitHub release; publishing it runs
-`publish-feed.yml`. #15 tracked the whole path and is closed. **The agent's:**
-pushing an `agent-v*` tag (minted by `./dev publish --agent`) runs
-`release-agent.yml`, which drafts an `agent-v*` release; publishing that runs
-`publish-agent-feed.yml`. See **The agent's release train** below. GitHub's tag
-filter keeps them apart (`v*` does not match `agent-v…`, nor the converse), so a
-`v*` tag produces no agent asset and an `agent-v*` tag no cockpit one: #390's
-"one tag, one release, both products" no longer holds. **Neither train can be
-exercised by a PR** — they trigger on a tag and on a publication — so what can
-be tested lives in scripts a PR does run (`secrets-guard.sh`,
-`agent-feed-guard.sh`), and a change to a release workflow reaches a release
-only through a new tag (a `push` or `release` event runs the workflow file at
-the tagged commit).
+**Pushing the tag is the approval, and nothing waits for a person after it**
+(#749): `prd` has no required reviewer, and each train ends by publishing its
+own release and its own feed. **The cockpit's:** pushing a `v*` tag runs
+`release.yml` (#307), which builds the signed, notarized, stapled artifacts
+(#306) on the `prd` environment and attaches them to a **draft** GitHub release;
+its last job then calls `publish-feed.yml`, which verifies both updater
+signatures, publishes the draft and uploads `latest.json`. #15 tracked the whole
+path and is closed. **The agent's:** pushing an `agent-v*` tag (minted by
+`./dev publish --agent`) runs `release-agent.yml`, which signs and drafts an
+`agent-v*` release, publishes it, and calls `publish-agent-feed.yml`. See **The
+agent's release train** below. GitHub's tag filter keeps them apart (`v*` does
+not match `agent-v…`, nor the converse), so a `v*` tag produces no agent asset
+and an `agent-v*` tag no cockpit one: #390's "one tag, one release, both
+products" no longer holds. **Neither train can be exercised by a PR** — they
+trigger on a tag — so what can be tested lives in scripts a PR does run
+(`secrets-guard.sh`, `agent-feed-guard.sh`), and a change to a release workflow
+reaches a release only through a new tag (a `push` event runs the workflow file
+at the tagged commit, and so does a `release` event or a call from the workflow
+the push started). **The first tag cut after a change to either train is its
+live test.**
 
 `./dev build --release` produces
 `target/universal-apple-darwin/release/bundle/macos/Solador.app`
@@ -53,19 +58,23 @@ its blanket refusal is gone.
 credential declares `environment: prd`** — that is the security design, not a
 detail. Solador is public, so the org's `APPLE_*` secrets (visibility `private`)
 resolve to the empty string here; environment secrets are repo-scoped, so that
-visibility never applies to them. `prd` also carries a required reviewer and a
-tag-only deployment policy, which is what stops a push to `main` minting a
-signed build: `v*` for the cockpit's train, plus `agent-v*` for the agent's — a
-repository setting, not a file, added by hand (#492 step 6), so until it is
-there neither agent credential job can enter `prd`. Three workflows declare it:
+visibility never applies to them. **`prd` has no required reviewer (#749); two
+repository settings stand where one stood.** Its deployment policy admits only
+tags — `v*` for the cockpit's train, plus `agent-v*` for the agent's, added by
+hand (#492 step 6), so until it is there neither agent credential job can enter
+`prd` — which is what stops a push to `main`, or a fork, minting a signed build.
+And a tag ruleset named **"release tags"** (id 26979876, active) covers
+`refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
+deleting them to the repository admin role (`./dev publish` pushes as the
+admin). That is what now decides who may start a signing run, and it is also what
+enforces "never delete an `agent-v*` tag" and stops a release tag being moved.
+Both are settings, not files. Three workflows declare the environment:
 the two credential-holding jobs in `release.yml`; `release-agent.yml`'s
-`publish` (its `build` and `verify` deliberately do not); and
+`publish` (its other jobs deliberately do not); and
 `publish-agent-feed.yml`'s `agent-feed`, which signs `agent-latest.json` at
 publish time (#391, see **The agent feed** below) with the same agent key
-`release-agent.yml` signs the binaries with. **Publishing an agent release
-therefore prompts `prd`'s reviewer once more**, after the prompt the tag push
-already made for `publish`; a publish that looks stalled is waiting on it.
-`ci.yml` declares no environment and references zero secrets, and the
+`release-agent.yml` signs the binaries with. **Nothing prompts anyone**: a tag
+push runs all of it. `ci.yml` declares no environment and references zero secrets, and the
 `secrets-guard` job (`scripts/secrets-guard.sh`) asserts all of that rather
 than trusting it: it allows `release.yml` by file and exactly two other jobs by
 **`file:job` pair** — `release-agent.yml:publish` and
@@ -77,8 +86,22 @@ scoped file deleted all fail CI, and `publish-feed.yml` has no allowance at
 all — `scripts/secrets-guard-test.sh` runs those mutations against each pair on
 every PR, because a guard that has only ever seen the valid tree is
 indistinguishable from one that passes everything. A release is attached as a
-**draft**, which is what makes the `release: published` triggers of
-`publish-feed.yml` and `publish-agent-feed.yml` meaningful.
+**draft** and published by the train itself, after the feed workflow has had its
+say (below): the cockpit's by `publish-feed.yml`, only once both updater
+signatures verify, and the agent's by `release-agent.yml`'s `publish-release` job.
+**Both call the feed workflow rather than rely on `release: published`**, because
+a release published with the workflow's own `GITHUB_TOKEN` raises no such event
+(GitHub suppresses events raised by that token). Both feed workflows therefore
+carry `workflow_call` beside `release: published` and `workflow_dispatch`, which
+remain as the door for a draft someone holds back and publishes by hand and for
+replays. In a called workflow `github.event_name` is the caller's (`push`) and
+`github.ref` / `github.sha` are the caller's tag and its commit, which is what
+the feed workflows' guards read. The caller jobs (`release.yml`'s `publish`,
+`release-agent.yml`'s `publish-release` and `feed`) declare no environment and
+read no secret; a called job that declares `environment: prd` reads its secret
+directly. `release.yml` is allowed wholesale by the secrets guard, so for its
+`publish` job that is a property of the file, reviewed, rather than a refusal the
+guard would make.
 
 **Windows (#341, #342).** `release-windows` is the second leg of `release.yml`, on the
 same `prd` environment behind the same `v*` gate, and it produces an
@@ -211,7 +234,10 @@ third leg).** `release-agent.yml` runs on an `agent-v*` tag push, and its
 `build`, `verify` and `publish` jobs produce four **raw binaries** —
 `x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin` — each
 with a detached minisign `.minisig`, attached to a **draft** `agent-v*` release
-created with `make_latest: false` (`--latest=false`). One tag per product, one
+created with `make_latest: false` (`--latest=false`), which the credential-free
+`publish-release` job then publishes with `--latest=false` (a no-op if it is
+already public, so a re-run passes) before a `feed` job calls
+`publish-agent-feed.yml`. One tag per product, one
 release per tag: the agent no longer rides the cockpit's `v*` release (see
 `docs/VERSIONING.md` for its number and mint). `build` first runs
 `scripts/assert-release-tag.sh --agent <tag>` (the agent mint re-run read-only;
@@ -241,14 +267,14 @@ Docker on the runner, faster per target, and musl is its strength. Both Linux
 targets go through it, so the ARM artifact is not built by a different path than
 the one the x86 runner exercised.
 
-**Three jobs, not one, and the split is the acceptance criterion.** Build →
-verify → publish. `--version` is executed for **every** target on a runner
+**The split is the acceptance criterion.** Build → verify → publish → publish
+the release → the feed. `--version` is executed for **every** target on a runner
 matching it (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`,
 `macos-15-intel`) against the files the build uploaded, because an artifact that
 does not start is worse than no artifact and a cross-compiled binary links
 perfectly well on a machine that cannot run one instruction of it. Only the
 publish job declares `environment: prd`, so the signing key touches one runner
-rather than six and the other two start without waiting on the reviewer.
+rather than six and the others hold no credential.
 
 **The agent keypair is separate from the app's**, and that is the security
 argument, not tidiness: the app updates on a laptop, the agent runs unattended as
@@ -305,8 +331,8 @@ exit 4, which the timer counts as success — and the **latest guard** —
 The freeze guard reads the list, never the served feed (which is briefly wrong
 mid-`--clobber`), so re-running at the *current* tag after a failed upload
 passes and a pulled bad release lets the previous one be re-served with no
-`force`; it runs again inside `agent-feed` after `prd`'s approval, because that
-wait can be hours. The feed goes onto the permanent **`agent-latest`
+`force`; it runs again inside `agent-feed` just before the upload, because the
+build and signing since eligibility can take minutes. The feed goes onto the permanent **`agent-latest`
 prerelease** — created once, its tag at a commit that never moves, only the two
 feed assets, a prerelease so it can never be `releases/latest` — and the job
 then **reads the served bytes back** from the URL hosts read and requires them
@@ -336,15 +362,26 @@ the one in the `.dmg`. `build.sh`'s `make_updater_archive` builds it last
 instead and reads the version back out of the archive to prove the ordering —
 the identical argument that keeps `hdiutil` rather than `--bundles dmg`.
 
-The feed (`latest.json`) is generated by **`.github/workflows/publish-feed.yml`
-on `release: published`** of a `v*` release, never at build time: `release.yml`
-attaches to a *draft*, and a draft's assets are not publicly downloadable, so a
-build-time manifest would point every client at a 404. The trigger is what makes
-"a draft can never serve updates" a property rather than a rule. The workflow is
+The feed (`latest.json`) is generated by **`.github/workflows/publish-feed.yml`**,
+never at build time: `release.yml` attaches to a *draft*, and a draft's assets
+are not publicly downloadable, so a build-time manifest would point every client
+at a 404. `release.yml`'s last job (`publish`, after both legs) **calls** it with
+`publish: true`, and its `feed` job runs in this order: download the draft's
+payload, build and verify `latest.json` (refused unless both signatures verify),
+**then** `gh release edit --draft=false --latest`, read `published_at` back,
+rebuild the manifest with `--pub-date`, upload it and confirm the endpoint. So a
+mis-signed build **stays a draft** with a red run that says why, and "a draft can
+never serve updates" is a property of the order rather than a rule. `publish` is
+an input of the call only, never of `workflow_dispatch`, so the manual door can
+regenerate a feed but never publish a release. The release notes and
+`published_at` are read from the release itself on every path (`gh release view`,
+which sees drafts; `GET /releases/tags/<tag>` does not), not from the event
+payload, so a dispatch now carries them too. The workflow is
 desktop-only since #491: its `feed` job does not run for an `agent-v*` release,
 whose feed is the agent's own — and the condition is not a bare `startsWith` on
 the tag, which is false on a `workflow_dispatch` (no release payload) and would
-have shut the replay door, so each event's clause carries its own event name.
+have shut the replay door, so each event's clause carries its own event name,
+the called path's being `push` on a `refs/tags/v*` ref.
 `crates/updatefeed` builds and **verifies** that manifest — it refuses to write
 one unless both the macOS and the Windows signature cover their artifacts under the
 public key in `tauri.conf.json`.

@@ -77,11 +77,16 @@ would resolve `app/src-tauri` and need webkit2gtk.
 
 ### Releasing (summary; detail in `docs/RELEASING.md`)
 
-Two release trains, neither triggers the other: a `v*` tag runs `release.yml`
-(signed, notarized, universal macOS bundle plus a signed NSIS Windows installer,
-attached to a **draft**; publishing runs `publish-feed.yml`), and an `agent-v*`
-tag runs `release-agent.yml` (four agent binaries, the Linux musl ones static,
-with minisign signatures; publishing runs `publish-agent-feed.yml`). Every job
+Two release trains, neither triggers the other, and **pushing the tag is the
+approval** (#749): `prd` has no reviewer (its deployment policy admits only `v*`
+and `agent-v*` tags, and the "release tags" ruleset lets only the admin role
+create, move or delete them), and nothing waits for a person afterwards. A `v*`
+tag runs `release.yml` (signed, notarized, universal macOS bundle plus a signed
+NSIS Windows installer, attached to a **draft**; its last job calls
+`publish-feed.yml`, which publishes the draft only after both updater signatures
+verify), and an `agent-v*` tag runs `release-agent.yml` (four agent binaries, the
+Linux musl ones static, with minisign signatures; it publishes the release, then
+calls `publish-agent-feed.yml`). Every job
 that holds a credential declares `environment: prd`; `ci.yml` references zero
 secrets and `scripts/secrets-guard.sh` asserts it. Neither train can be
 exercised by a PR. Signing runs last, after the version stamp; the build asserts

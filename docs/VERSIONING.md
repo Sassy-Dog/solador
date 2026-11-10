@@ -227,8 +227,8 @@ The cockpit's:
    is what makes the month's first real commit ladder-bump.
 7. **The workflows assert the tag by asking the mint, not by re-deriving**
    ([#404](https://github.com/Sassy-Dog/solador/issues/404)). Every leg of
-   `release.yml` and `publish-feed.yml`'s `feed` job (on both
-   `release: published` and its `workflow_dispatch` door) run
+   `release.yml` and `publish-feed.yml`'s `feed` job (on `release.yml`'s
+   call, on `release: published` and on its `workflow_dispatch` door) run
    `scripts/assert-release-tag.sh <tag>` at the tag — and `release-agent.yml`'s
    `build` job runs its `--agent` form (below; the agent's pin is
    `AGENT_MARKETING_VERSION`, not the cockpit's) — it re-runs `--tag`
@@ -266,11 +266,12 @@ The cockpit's:
    to reach the build is a red run rather than a mislabelled release.
    `publish-feed.yml` builds nothing versioned (the manifest's `version` is
    the tag's) and sets no pin; `publish-agent-feed.yml`'s `agent-feed` job
-   asserts the approved *commit* rather than the tag (#391, moved there by
-   #491), as before. What is still true of a
-   **draft**: its assets are not public until it is published, and publishing
-   is what triggers the feed — but the month no longer matters to either
-   workflow. **Only tags cut after #404 merged get this assertion**: both
+   asserts the run's *commit* (the one the tag named when the run started)
+   rather than the tag (#391, moved there by #491), as before. What is still
+   true of a **draft**: its assets are not public until it is published, and a
+   feed is written only for a public release (since #749 the train publishes the
+   release itself and calls the feed workflow) — but the month no longer matters
+   to either workflow. **Only tags cut after #404 merged get this assertion**: both
    workflows run the copy of themselves at the tagged commit
    (`publish-feed.yml`'s header records the measurement), so a re-run or a
    publish of a tag cut *before* still runs that tag's bare comparison, and
@@ -338,7 +339,9 @@ one that ended before HEAD's committer date, a shallow clone, no `origin`) and
 says what it bound: that the NAME is a well-formed agent version for a month the
 mint's clock could have produced at this commit and that the tag is on the
 remote at this commit. It does not establish where the commit came from — that
-is `prd`'s required reviewer's, as for the cockpit.
+is the tag-pusher's, as for the cockpit: `prd` has no required reviewer (#749),
+and the "release tags" ruleset limits who may push an `agent-v*` tag to the
+repository admin role.
 
 ## Tags (§5)
 
