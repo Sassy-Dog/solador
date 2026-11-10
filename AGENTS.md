@@ -151,6 +151,8 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   is on, which is derived, never stored. A part not set up says nothing.
   `settings_save_source` applies a source's steps at Finish through
   `store::source_save`, and whatever can refuse runs before its first write.
+  GitHub's steps are keyed by the account's row as well as by kind (`row`);
+  a new account has no row until Finish.
 - **Where a setting lives**: tile-specific in its Configure, source credentials
   in Settings → Sources, app-wide in Settings (`app/README.md`).
 - **The Tauri IPC boundary is deliberately not automated** (#123 closed on it:

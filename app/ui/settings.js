@@ -984,8 +984,11 @@ function discoveredOrgs(t, account) {
   return box;
 }
 
-/** One vendor account as a card: identity and badge on top, every form
- *  behind a button, the repos it fetches and the orgs it watches below. */
+/** One vendor account as a card: identity and badge on top, the repos it
+ *  fetches and the organizations it watches below. Its token, name and
+ *  organizations are edited in the account's steps (Rust's `walk`), reached from
+ *  the button here, and saved together at Finish; what stays on the card is what
+ *  is per repo and repeatable. */
 function accountCard(t, account) {
   const card = group(account.label);
   card.dataset.account = account.id;
@@ -1003,69 +1006,12 @@ function accountCard(t, account) {
     mutate("settings_set_account_enabled", { id: account.id, enabled: enabled.checked })
   );
 
-  // Rename…: the name field and its Save, revealed on demand. The save sends
-  // an empty token, which leaves the stored credential alone — Rust's rule.
-  const name = textInput(account.label);
-  const renameBox = node("div", "stack");
-  renameBox.dataset.disclosure = "rename";
-  renameBox.hidden = true;
-  const renameSave = button(t.saveLabel, "rename-save");
-  renameSave.addEventListener("click", () =>
-    mutate("settings_save_account", {
-      id: account.id, vendor: account.vendor, label: name.value, token: "",
-    })
-  );
-  renameBox.append(field(`account-name-${account.id}`, t.nameLabel, name), actionRow(renameSave));
-  const rename = button(t.renameLabel, "rename");
-  rename.addEventListener("click", () => {
-    renameBox.hidden = !renameBox.hidden;
+  const edit = button(t.editLabel, "edit-account");
+  edit.addEventListener("click", () => {
+    const row = S.view.connections.rows.find(item => item.entityId === account.id);
+    if (row) openConnection({ ...row });
   });
-
-  // Replace token…: same shape. Dropped before the round-trip, like the Add
-  // Host form: the token has no reason to outlive the call, and a rejected
-  // save must not leave it in the DOM.
-  const token = textInput("", "password");
-  const tokenBox = node("div", "stack");
-  tokenBox.dataset.disclosure = "replace-token";
-  tokenBox.hidden = true;
-  const tokenSave = button(t.saveLabel, "token-save");
-  tokenSave.addEventListener("click", () => {
-    const args = { id: account.id, vendor: account.vendor, label: account.label, token: token.value };
-    token.value = "";
-    mutate("settings_save_account", args);
-  });
-  tokenBox.append(field(`account-token-${account.id}`, t.tokenLabel, token), actionRow(tokenSave));
-  const replace = button(t.replaceTokenLabel, "replace-token");
-  replace.addEventListener("click", () => {
-    tokenBox.hidden = !tokenBox.hidden;
-  });
-
-  // Delete is two-step exactly when Rust sent a `removePrompt` — the prompt
-  // is Rust's sentence, shown verbatim; this file decides only *when* it
-  // appears, never what it says.
-  const confirm = node("div", "stack");
-  confirm.dataset.confirm = "remove";
-  confirm.hidden = true;
-  const remove = button(t.deleteLabel, "delete");
-  const removeNow = () => mutate("settings_remove_account", { id: account.id });
-  remove.addEventListener("click", () => {
-    if (!account.removePrompt) {
-      removeNow();
-      return;
-    }
-    remove.disabled = true;
-    confirm.hidden = false;
-  });
-  const proceed = button(t.deleteLabel, "delete");
-  proceed.addEventListener("click", removeNow);
-  const cancel = button(t.cancelLabel, "cancel");
-  cancel.addEventListener("click", () => {
-    confirm.hidden = true;
-    remove.disabled = false;
-  });
-  confirm.append(node("p", "confirm", account.removePrompt || ""), actionRow(proceed, cancel));
-
-  head.append(rename, replace, remove);
+  head.append(edit);
   const monitor = node("label", "connection-toggle");
   monitor.append(enabled, node("span", null, S.view.connections.monitorLabel));
 
@@ -1091,11 +1037,11 @@ function accountCard(t, account) {
     discoverRepos(account.id);
   }
   repos.appendChild(repoSearch(t, account));
+  repos.appendChild(help(t.reposHelp));
 
-  // Runner organizations: the stored selection, each removable; orgs the
-  // discovery derived that this account doesn't watch yet, offered; plus the
-  // manual Watch field. Checkbox semantics — every click round-trips through
-  // `settings_set_account_org` and the re-render paints what was persisted.
+  // Runner organizations: the stored selection, read-only (it is edited in the
+  // steps), and the organizations the discovery derived that this account
+  // doesn't watch yet, offered with a Watch.
   const orgs = node("div", "stack");
   orgs.dataset.orgs = account.id;
   orgs.appendChild(node("span", "lbl", t.orgsHeading));
@@ -1105,52 +1051,25 @@ function accountCard(t, account) {
   for (const org of account.orgs) {
     const orgRow = node("div", "row");
     orgRow.dataset.org = org;
-    const stop = button(t.orgRemoveLabel, "org-remove");
-    stop.addEventListener("click", () =>
-      mutate("settings_set_account_org", { id: account.id, org, selected: false })
-    );
-    orgRow.append(node("span", "result", org), node("span", "grow"), stop);
+    orgRow.appendChild(node("span", "result", org));
     orgs.appendChild(orgRow);
   }
   orgs.appendChild(discoveredOrgs(t, account));
-  const orgInput = textInput("");
-  const watch = button(t.orgAddButtonLabel, "org-add");
-  // A hint, not the validation: Rust trims, refuses blanks, and refuses an
-  // org another account already watches, in its own words.
-  const syncOrg = () => {
-    watch.disabled = orgInput.value.trim() === "";
-  };
-  orgInput.addEventListener("input", syncOrg);
-  syncOrg();
-  const submitOrg = () => {
-    const org = orgInput.value;
-    orgInput.value = "";
-    mutate("settings_set_account_org", { id: account.id, org, selected: true });
-  };
-  watch.addEventListener("click", submitOrg);
-  orgInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !watch.disabled) submitOrg();
-  });
-  orgs.append(field(`account-org-${account.id}`, t.orgAddLabel, orgInput), actionRow(watch));
 
-  card.append(head, confirm, renameBox, tokenBox, monitor, repos, orgs);
+  card.append(head, monitor, repos, orgs);
   return card;
 }
 
 /**
- * The Accounts tab — the whole GitHub surface: one card per account, the
- * unattributed repos no card can claim, and the add form behind a button.
- * Nothing here re-homes an orphaned repo onto a surviving account — that
- * would be this file inventing an owner, and Rust refuses to do it for the
- * same reason.
+ * The GitHub accounts' cards: one per account, and the unattributed repos no
+ * card can claim. Creating, changing and removing an account are the steps'
+ * (Add source, or the account's row), so nothing here writes a token, a name or
+ * an organization list. Nothing here re-homes an orphaned repo onto a surviving
+ * account — that would be this file inventing an owner, and Rust refuses to do
+ * it for the same reason.
  */
-function accountsTab(t, options = {}) {
+function accountsTab(t) {
   const out = [];
-  if (t.rows.length === 0 && !options.addOnly) {
-    const empty = group(t.heading);
-    empty.appendChild(help(t.empty));
-    out.push(empty);
-  }
   for (const account of t.rows) out.push(accountCard(t, account));
 
   if (t.unattributed.length > 0) {
@@ -1159,46 +1078,6 @@ function accountsTab(t, options = {}) {
     orphans.appendChild(help(t.unattributedHelp));
     out.push(orphans);
   }
-
-  if (options.edit) return out;
-  // The catalog has already selected GitHub, so its create form opens directly.
-  const add = node("section", "group");
-  const addBox = node("div", "stack");
-  addBox.dataset.disclosure = "add-account";
-  addBox.hidden = !options.addOnly;
-  const vendor = select(t.add.vendorOptions, t.add.vendorOptions[0].value);
-  const name = textInput("");
-  const token = textInput("", "password");
-  addBox.append(
-    field("account-vendor", t.add.vendorLabel, vendor),
-    field("account-name", t.add.nameLabel, name),
-    field("account-token", t.add.tokenLabel, token)
-  );
-  const submit = button(t.add.buttonLabel, "add");
-  // A hint, not the validation: Rust re-checks the name and the vendor and
-  // refuses the save in its own words.
-  const syncAdd = () => {
-    submit.disabled = name.value.trim() === "";
-  };
-  name.addEventListener("input", syncAdd);
-  syncAdd();
-  submit.addEventListener("click", () => {
-    // `id: null` is what makes this a create. An update carries the card's id
-    // (see `accountCard`), and the two paths are one command so an update can
-    // never land as a second row on the same credential.
-    const args = { id: null, vendor: vendor.value, label: name.value, token: token.value };
-    token.value = "";
-    name.value = "";
-    mutate("settings_save_account", args);
-  });
-  addBox.append(actionRow(submit), help(t.add.help));
-  const open = button(t.addAccountLabel, "add-account");
-  open.addEventListener("click", () => {
-    addBox.hidden = !addBox.hidden;
-  });
-  if (!options.addOnly) add.appendChild(actionRow(open));
-  add.append(addBox, help(t.reposHelp), help(t.help), help(t.orgsHelp));
-  out.push(add);
   return out;
 }
 
@@ -1721,9 +1600,17 @@ function startWalk(entry) {
   const inputs = Object.fromEntries(
     parts.flatMap(part => (part.inputs || []).map(input => [input.id, input.value])),
   );
+  // A source whose parts are all set up together (GitHub's token and
+  // organizations) has nothing to pick: the alternative to Finish is Remove.
+  const fixed = entry.walk.pick === false;
   return {
     kind: entry.kind,
-    picked: new Set(parts.filter(part => part.on || parts.length === 1).map(part => part.id)),
+    // The row these steps are for, so a draft is never carried onto another
+    // account's steps: `null` for a source with one configuration and for an
+    // account that has no row until Finish.
+    entity: entry.entityId ?? null,
+    pick: !fixed,
+    picked: new Set(parts.filter(part => fixed || part.on || parts.length === 1).map(part => part.id)),
     // Rust says so when a source can exist with every part off (Sentry's token
     // alone); otherwise a source is added when one of its parts is on.
     added: entry.walk.added ?? parts.some(part => part.on),
@@ -1754,7 +1641,7 @@ function walkCovered(part, earlier) {
 function walkSteps(parts, walk) {
   const picked = pickedParts(parts, walk);
   return [
-    ...(parts.length > 1 ? ["pick"] : []),
+    ...(parts.length > 1 && walk.pick ? ["pick"] : []),
     ...picked.filter((part, index) => !walkCovered(part, picked.slice(0, index))).map(part => part.id),
     "ready",
   ];
@@ -1836,8 +1723,8 @@ function walkTileOffers(parts, tile, walk) {
   return offers;
 }
 
-function walkReadyStep(parts, tile, walk, labels) {
-  if (!walk.picked.size) return [help(labels.removeHelp)];
+function walkReadyStep(parts, tile, walk, labels, removeHelp) {
+  if (!walk.picked.size) return [help(removeHelp || labels.removeHelp)];
   const summary = node("ul", "walk-summary");
   for (const part of parts) {
     const on = walk.picked.has(part.id);
@@ -1868,6 +1755,7 @@ async function finishWalk(entry, control) {
   control.disabled = true;
   let result;
   const picked = pickedParts(parts, walk);
+  const previous = new Set(S.view.connections.rows.map(row => row.id));
   // Only a picked part's inputs are sent; an unpicked part's are forgotten.
   const inputs = Object.fromEntries(
     picked.flatMap(part => (part.inputs || []).map(input => [input.id, walk.inputs[input.id]])),
@@ -1875,6 +1763,9 @@ async function finishWalk(entry, control) {
   try {
     result = await callRust("settings_save_source", {
       kind: walk.kind,
+      // The account these steps are for; absent from a source with one
+      // configuration, and null for an account Finish creates.
+      ...("row" in entry.walk ? { row: entry.walk.row } : {}),
       parts: picked.map(part => part.id),
       secret: picked.some(part => part.secret) && walk.secret ? walk.secret : null,
       // Left out for a source with none, so its call is the one it always was.
@@ -1891,6 +1782,15 @@ async function finishWalk(entry, control) {
     S.walk = null;
     S.editor = null;
     S.catalog = false;
+    // An account that is still there lands on its card, where its repos are
+    // tracked; a removal lands on the list.
+    if (picked.length && "row" in entry.walk) {
+      const rows = result.settings.connections.rows;
+      const saved = walk.entity
+        ? rows.find(row => row.entityId === walk.entity)
+        : rows.find(row => row.kind === walk.kind && !previous.has(row.id));
+      if (saved) S.editor = { ...saved, walk: undefined, card: true };
+    }
   }
   apply(result);
 }
@@ -1900,6 +1800,8 @@ async function finishWalk(entry, control) {
 function walkEditor(entry) {
   const labels = S.view.connections.walkLabels;
   const { parts, tile } = entry.walk;
+  // One draft per row: steps opened on another account start from that one.
+  if (S.walk && S.walk.entity !== (entry.entityId ?? null)) S.walk = null;
   S.walk ||= startWalk(entry);
   const walk = S.walk;
   const steps = walkSteps(parts, walk);
@@ -1941,7 +1843,7 @@ function walkEditor(entry) {
     : walk.picked.size ? labels.readyHeading : labels.removeHeading;
   const content = step === "pick"
     ? walkPickStep(parts, walk, () => { paintProgress(); allowForward(); })
-    : step === "ready" ? walkReadyStep(parts, tile, walk, labels)
+    : step === "ready" ? walkReadyStep(parts, tile, walk, labels, entry.walk.removeHelp)
     : walkPartStep(part, walk, labels, advance);
 
   const cancel = button(labels.cancelLabel, "walk-cancel");
@@ -1959,6 +1861,12 @@ function walkEditor(entry) {
       render();
     });
     actions.appendChild(remove);
+  }
+  // An existing account's repos are tracked on its card, not in these steps.
+  if (entry.walk.cardLabel && walk.index === 0 && step !== "ready") {
+    const card = button(entry.walk.cardLabel, "walk-card");
+    card.addEventListener("click", () => openConnection({ ...entry, walk: undefined, card: true }));
+    actions.appendChild(card);
   }
   actions.appendChild(node("span", "grow"));
   if (walk.index > 0) {
@@ -1992,7 +1900,13 @@ function connectionEditor() {
   const current = entry.id ? t.rows.find(row => row.id === entry.id) : null;
   // A removal returns a new persisted list; it cannot strand a stale editor.
   if (entry.entityId && !current) { S.editor = null; return connectionsTab(t); }
-  const stepped = t.catalog.find(item => item.kind === entry.kind && item.walk);
+  // An account's card is where its repos are tracked; every other editor of a
+  // source with steps is the steps. A row that carries its own steps (an
+  // account's) opens those, and a source with one configuration opens the
+  // catalog's.
+  const stepped = entry.card ? null
+    : current?.walk ? current
+    : t.catalog.find(item => item.kind === entry.kind && item.walk);
   if (stepped) return walkEditor(stepped);
   const back = button(t.backLabel, "connection-back");
   back.addEventListener("click", () => navigate(showConnections));
@@ -2009,8 +1923,7 @@ function connectionEditor() {
   let content = [];
   if (entry.kind === "account") {
     const accounts = S.view.accounts;
-    content = accountsTab({ ...accounts, rows: accounts.rows.filter(a => a.id === entry.entityId), unattributed: [] },
-      { edit: !!entry.entityId, addOnly: !entry.entityId });
+    content = accountsTab({ ...accounts, rows: accounts.rows.filter(a => a.id === entry.entityId), unattributed: [] });
   } else if (entry.kind === "host") {
     const hosts = S.view.hosts;
     content = hostsTab({ ...hosts, rows: hosts.rows.filter(h => h.id === entry.entityId) },
@@ -2079,7 +1992,7 @@ async function openSettings(tab) {
     if (target) {
       const entry = [...S.view.connections.rows, ...S.view.connections.catalog]
         .find(item => item.kind === target.kind && (!target.entityId || item.entityId === target.entityId));
-      if (entry) S.editor = { ...entry };
+      if (entry) S.editor = { ...entry, ...(target.kind === "account" ? { walk: undefined, card: true } : {}) };
       if (target.kind === "unattributed") S.editor = { kind: target.kind, title: S.view.connections.unattributedLabel };
     }
     S.status = "";

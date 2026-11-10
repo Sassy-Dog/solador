@@ -1117,7 +1117,7 @@ fn connections_section(
     };
     let mut rows = Vec::new();
     for account in store.accounts {
-        rows.push(row(
+        let mut entry = row(
             format!("account:{}", account.id),
             "account",
             Some(account.id.to_string()),
@@ -1131,7 +1131,20 @@ fn connections_section(
             } else {
                 status("Token needed", true)
             },
-        ));
+        );
+        // The one source whose steps differ by row: each account opens its own.
+        let orphaned = account_removal_impact(store.repos, account.id);
+        entry["walk"] = account_walk(
+            Some(account),
+            stored.accounts.contains(&account.id),
+            account_removal_prompt(
+                &account.label,
+                &orphaned,
+                &account.orgs.clone().unwrap_or_default(),
+            ),
+            store.tile_sources,
+        );
+        rows.push(entry);
     }
     for host in store.hosts {
         rows.push(row(
@@ -1354,7 +1367,8 @@ fn connections_section(
         "catalogHeading": ADD_SOURCE_LABEL,
         "catalogHelp": "One source can feed several tiles.",
         "catalog": [
-            {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners"},
+            {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners",
+                "walk": account_walk(None, false, None, store.tile_sources)},
             {"kind":"host", "title":"Remote host", "feeds":"Machines, containers and virtual machines"},
             local_entry(s, store.tile_sources),
             anthropic_entry(s, stored, store.tile_sources),
@@ -1537,6 +1551,76 @@ fn rate_text(rate: f64) -> String {
     } else {
         rate.to_string()
     }
+}
+
+const GITHUB_TOKEN_PART_TITLE: &str = "Token";
+const GITHUB_ORGS_PART_TITLE: &str = "Organizations";
+
+/// A GitHub account's steps: its token and name, then the organizations it
+/// watches, then Ready. Both are always set up (`pick: false`); the alternative
+/// is Remove source, which is what `removeHelp` words for an account that has
+/// repos or organizations depending on it.
+///
+/// `account` is `None` for the steps Add source opens, which have no row until
+/// Finish; the save then creates one. For a row, `row` names it so the save
+/// touches that account and no other. Watched repos stay on the account's card
+/// (`cardLabel` is the way there), since tracking is per repo and repeatable.
+fn account_walk(
+    account: Option<&VendorAccount>,
+    stored: bool,
+    removal_prompt: Option<String>,
+    tile_sources: &[String],
+) -> Value {
+    let label = account.map(|a| a.label.as_str()).unwrap_or_default();
+    let orgs = account
+        .and_then(|a| a.orgs.as_ref())
+        .map(|orgs| orgs.join(", "))
+        .unwrap_or_default();
+    let mut token = with_secret(
+        walk_part(
+            "token",
+            GITHUB_TOKEN_PART_TITLE,
+            "A fine-grained token and the account\u{2019}s name",
+            true,
+            "Repositories",
+            "The token is stored in your OS credential store under this account\u{2019}s own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY column. The name labels this account\u{2019}s lines on the Repos panel.",
+        ),
+        if stored {
+            StoredKey::Stored
+        } else {
+            StoredKey::Absent
+        },
+        "Fine-grained PAT",
+        "github_pat_\u{2026}",
+        "token",
+    );
+    token["inputs"] = json!([walk_input("name", "Name (e.g. work)", label, false, false)]);
+    token["tile"] = tile_offer("ghWorkflows", tile_sources);
+    let mut watched = walk_part(
+        "orgs",
+        GITHUB_ORGS_PART_TITLE,
+        "Organizations whose self-hosted runners are watched",
+        true,
+        "Runner organizations",
+        "The GitHub Runners panel lists each watched organization\u{2019}s self-hosted runners, polled with this account\u{2019}s token \u{2014} grant it organization read access to Self-hosted runners. Separate names with commas; leave it empty to watch none. An organization can be watched by one account.",
+    );
+    watched["inputs"] = json!([walk_input(
+        "orgs",
+        "Organizations (e.g. acme, globex)",
+        &orgs,
+        false,
+        false
+    )]);
+    watched["tile"] = tile_offer("ghRunners", tile_sources);
+    json!({
+        "parts": [token, watched],
+        "tile": tile_offer("ghWorkflows", tile_sources),
+        "pick": false,
+        "added": account.is_some(),
+        "row": account.map(|a| a.id.to_string()),
+        "removeHelp": removal_prompt,
+        "cardLabel": account.map(|_| "Watched repos\u{2026}"),
+    })
 }
 
 fn neon_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
@@ -1903,13 +1987,6 @@ const UNATTRIBUTED_LABEL: &str = "Unattributed";
 
 // MARK: - vendor accounts
 
-/// Every vendor an account can be created for in this build.
-///
-/// One today. The list exists rather than a bare literal because the picker,
-/// the parser and the payload all read from it, so adding the next vendor is
-/// one line and cannot leave one of the three behind.
-const VENDOR_KINDS: [VendorKind; 1] = [VendorKind::GitHub];
-
 /// The vendor an account authenticates against, as the payload spells it.
 ///
 /// Deliberately the same spelling [`VendorKind`] serialises to, and asserted
@@ -1928,18 +2005,6 @@ pub const fn vendor_label(kind: VendorKind) -> &'static str {
     match kind {
         VendorKind::GitHub => "GitHub",
     }
-}
-
-/// Parses the vendor the frontend sent.
-///
-/// Unknown is refused rather than defaulted, for [`VendorKind`]'s own reason:
-/// reading an unrecognised vendor as GitHub would point a credential at an API
-/// it does not belong to.
-#[must_use]
-pub fn parse_vendor(raw: &str) -> Option<VendorKind> {
-    VENDOR_KINDS
-        .into_iter()
-        .find(|kind| vendor_id(*kind) == raw)
 }
 
 /// The repos that removing this account would leave unattributed, by slug.
@@ -2049,62 +2114,13 @@ pub fn validated_org(
     if org.is_empty() {
         return Err("Skipped — an organization name is required.".to_owned());
     }
-    let owner = accounts.iter().find(|account| {
-        account.id != account_id
-            && account.vendor == VendorKind::GitHub
-            && account
-                .orgs
-                .iter()
-                .flatten()
-                .any(|watched| watched.eq_ignore_ascii_case(org))
-    });
-    if let Some(owner) = owner {
+    if let Some(owner) = store::accounts::org_watched_elsewhere(accounts, account_id, org) {
         return Err(format!(
             "Skipped — {org} is already watched by {}.",
             owner.label
         ));
     }
     Ok(org.to_owned())
-}
-
-/// The add form's two fields as an account, or the status line saying what is
-/// wrong.
-///
-/// Shaped like [`validated_vendor`], and refusing a duplicate label for the
-/// reason [`validated_slug`] refuses a duplicate slug: the label is what every
-/// per-account line on the Repos panel names, and two rows sharing one make
-/// those lines say nothing.
-///
-/// The account is minted pointing at **its own** `vendor-<uuid>` credential
-/// item — never another account's, and never the v1 `github_access_token` item.
-/// The account `store::migrate_v1_to_v2` creates is the only one that may name
-/// that, because it was already the token its repos were being fetched with.
-///
-/// # Errors
-/// The status line to show, already worded as one.
-pub fn validated_account(
-    vendor: &str,
-    label: &str,
-    existing: &[VendorAccount],
-) -> Result<VendorAccount, String> {
-    let label = label.trim();
-    if label.is_empty() {
-        return Err("Skipped — a name is required.".to_owned());
-    }
-    let Some(vendor) = parse_vendor(vendor) else {
-        return Err("Skipped — unknown vendor.".to_owned());
-    };
-    if existing
-        .iter()
-        .any(|account| account.label.eq_ignore_ascii_case(label))
-    {
-        return Err("Skipped — an account with that name already exists.".to_owned());
-    }
-    let account = VendorAccount::new(vendor, label, "");
-    Ok(VendorAccount {
-        secret_account: SecretKey::VendorToken(account.id).account(),
-        ..account
-    })
 }
 
 /// One repo as an account card (or the unattributed section) renders it.
@@ -2221,38 +2237,19 @@ fn accounts_tab(
             })
         })
         .collect();
-    let add = json!({
-        "heading": "Add Account",
-        "vendorLabel": "Vendor",
-        "vendorOptions": VENDOR_KINDS
-            .iter()
-            .map(|kind| json!({ "value": vendor_id(*kind), "label": vendor_label(*kind) }))
-            .collect::<Vec<_>>(),
-        "nameLabel": "Name (e.g. work)",
-        "tokenLabel": "Fine-grained PAT",
-        "buttonLabel": "Add Account",
-        "help": "The token is stored in your OS credential store under this account's own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY column. You can add the account now and its token later.",
-    });
     // Two literals merged into one object: a single `json!` this size trips
     // the macro's recursion limit, and the split is invisible on the wire.
     let mut tab = json!({
         "heading": "Vendor Accounts",
-        // Said out loud, like the Services tab's: an operator who cannot see
-        // the consequence stated reads the empty list as broken.
-        "empty": "No vendor accounts yet. Add one — its token fetches the repos it owns and polls its watched organizations' runners.",
+        "editLabel": "Token and organizations…",
         "tokenStoredLabel": "Token stored",
         "noTokenLabel": "No token",
-        "nameLabel": "Name",
-        "tokenLabel": "Replace token",
         "saveLabel": "Save",
         "deleteLabel": "Delete",
         "cancelLabel": "Cancel",
         // The disclosure buttons. Every form sits behind one — an always-open
         // form is what made three tabs read as sprawl — and each gets its own
         // modifier class in the frontend (the `cadence-apply` lesson).
-        "renameLabel": "Rename…",
-        "replaceTokenLabel": "Replace token…",
-        "addAccountLabel": "Add account…",
         "reposHeading": "Watched repos",
         // The search that replaced the picker: type part of a name, tick to
         // watch. `untrackLabel` is the untrack confirm's proceed button.
@@ -2276,10 +2273,7 @@ fn accounts_tab(
     let rest = json!({
         "orgsHeading": "Runner organizations",
         "noOrgsLabel": "No organizations watched",
-        "orgAddLabel": "Organization (e.g. acme)",
         "orgAddButtonLabel": "Watch",
-        "orgRemoveLabel": "Stop watching",
-        "orgsHelp": "The GitHub Runners panel lists each watched organization's self-hosted runners, polled with this account's token — grant it organization read access to Self-hosted runners. An organization can be watched by one account.",
         "accountLabel": "Fetched by",
         "accountOptions": options,
         "missingAccountLabel": "Account removed — pick one",
@@ -2287,8 +2281,6 @@ fn accounts_tab(
         "unattributedHelp": "Tracked, but no account fetches them — their rows sit blank on the Repos panel until one is picked.",
         "unattributed": unattributed,
         "rows": rows,
-        "help": "Each tracked repo is fetched by the account it belongs to. Removing an account leaves its repos tracked but unattributed — nothing re-homes them onto another account, because an invented owner is worse than none.",
-        "add": add,
     });
     let (Some(map), Some(more)) = (tab.as_object_mut(), rest.as_object()) else {
         unreachable!("both literals are objects");
@@ -5068,8 +5060,7 @@ mod tests {
     // MARK: - the Accounts tab
 
     /// One GitHub account pointing at its own credential item — what
-    /// [`validated_account`] mints, spelled out here so the fixture does not
-    /// depend on the function under test.
+    /// `store::source_save` mints for a created account.
     fn account(label: &str) -> VendorAccount {
         let account = VendorAccount::new(VendorKind::GitHub, label, "");
         VendorAccount {
@@ -5684,60 +5675,63 @@ mod tests {
         assert!(line.contains("unattributed"), "{line}");
     }
 
-    /// A store with no accounts says so rather than rendering a heading over
-    /// nothing.
+    /// A store with no accounts has no row, and the steps Add source opens have
+    /// none either: the account is created at Finish, so they name no row.
     #[test]
-    fn a_store_with_no_accounts_says_so_rather_than_showing_nothing() {
+    fn a_store_with_no_accounts_offers_steps_that_name_no_row() {
         let vm = accounts_view(&[], &[], &StoredSecrets::default());
         assert!(account_rows(&vm).is_empty());
-        assert!(vm["accounts"]["empty"]
-            .as_str()
-            .expect("an empty line")
-            .contains("No vendor accounts"));
+        let walk = &catalog_entry(&vm, "account")["walk"];
+        assert!(walk["row"].is_null());
+        assert_eq!(walk["added"], false);
+        assert_eq!(walk["pick"], false);
+        assert!(walk["cardLabel"].is_null(), "a new account has no card yet");
+        assert_eq!(walk["parts"][0]["secret"]["stored"], false);
+        assert_eq!(walk["parts"][0]["inputs"][0]["value"], "");
+        assert_eq!(walk["parts"][1]["inputs"][0]["value"], "");
+    }
+
+    /// Each account's row carries its own steps, filled from that account, so
+    /// opening one cannot show or edit another's.
+    #[test]
+    fn each_account_row_carries_steps_keyed_by_that_account() {
+        let (mut work, repos) = one_account_and_two_repos();
+        work.orgs = Some(vec!["acme".to_owned(), "globex".to_owned()]);
+        let personal = account("personal");
+        let stored = StoredSecrets {
+            accounts: [work.id].into_iter().collect(),
+            ..StoredSecrets::default()
+        };
+        let vm = accounts_view(&[work.clone(), personal.clone()], &repos, &stored);
+        let rows = vm["connections"]["rows"].as_array().unwrap();
+        let walk_of = |id: Uuid| {
+            rows.iter()
+                .find(|row| row["entityId"] == id.to_string())
+                .unwrap()["walk"]
+                .clone()
+        };
+        let (a, b) = (walk_of(work.id), walk_of(personal.id));
+        assert_eq!(a["row"], work.id.to_string());
+        assert_eq!(b["row"], personal.id.to_string());
+        assert_eq!(a["added"], true);
+        assert_eq!(a["parts"][0]["inputs"][0]["value"], "work");
+        assert_eq!(a["parts"][1]["inputs"][0]["value"], "acme, globex");
+        assert_eq!(a["parts"][0]["secret"]["stored"], true);
+        assert_eq!(b["parts"][0]["inputs"][0]["value"], "personal");
+        assert_eq!(b["parts"][1]["inputs"][0]["value"], "");
+        assert_eq!(b["parts"][0]["secret"]["stored"], false);
+        // The removal that costs something says so on the Remove step.
+        assert!(a["removeHelp"].as_str().unwrap().contains("acme/widget"));
+        assert!(b["removeHelp"].is_null());
     }
 
     /// The vendor id on the wire is the store's own spelling. Two copies of it
-    /// is how the picker starts offering a value `VendorKind` refuses.
+    /// is how the payload starts naming a vendor `VendorKind` refuses.
     #[test]
     fn the_vendor_id_is_the_one_the_store_serialises() {
         assert_eq!(
             serde_json::to_value(VendorKind::GitHub).expect("serialize"),
             json!(vendor_id(VendorKind::GitHub))
         );
-        assert_eq!(parse_vendor("github"), Some(VendorKind::GitHub));
-        assert_eq!(
-            parse_vendor("gitlab"),
-            None,
-            "a vendor this build does not know must be refused, not read as GitHub"
-        );
-    }
-
-    /// The add form's rules, in the shape [`validated_vendor`] set: the
-    /// sentence to show, or the account to store.
-    #[test]
-    fn an_account_needs_a_name_and_a_vendor_this_build_knows() {
-        let existing = [];
-        let account = validated_account("github", "  work  ", &existing).expect("a valid account");
-        assert_eq!(account.label, "work");
-        assert_eq!(account.vendor, VendorKind::GitHub);
-        assert_eq!(
-            account.secret_account,
-            SecretKey::VendorToken(account.id).account(),
-            "a new account gets its own credential item, never another's"
-        );
-
-        assert!(validated_account("github", "   ", &existing).is_err());
-        assert!(validated_account("gitlab", "work", &existing).is_err());
-    }
-
-    /// Duplicate labels are refused for the reason duplicate slugs are: the
-    /// label is what every per-account failure line names, and two rows sharing
-    /// one make those lines say nothing.
-    #[test]
-    fn a_duplicate_account_label_is_rejected_whatever_its_case() {
-        let existing = [account("work")];
-        assert!(validated_account("github", "work", &existing).is_err());
-        assert!(validated_account("github", "WORK", &existing).is_err());
-        assert!(validated_account("github", "personal", &existing).is_ok());
     }
 }

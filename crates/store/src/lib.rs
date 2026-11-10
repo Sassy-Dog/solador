@@ -873,6 +873,14 @@ impl Store {
         }
     }
 
+    /// Puts back the account list a failed save changed.
+    ///
+    /// For a caller that took `accounts().to_vec()` before it edited the list
+    /// and must undo the edit as a whole, order included.
+    pub fn replace_accounts(&mut self, accounts: Vec<VendorAccount>) {
+        self.data.accounts = accounts;
+    }
+
     /// Removes an account, returning it.
     ///
     /// Does **not** touch the credential store, and does **not** rewrite the
