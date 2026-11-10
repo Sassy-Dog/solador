@@ -702,7 +702,7 @@ leaves any key alone, and unticking it is refused. Neon, Sentry and Vercel read 
 way: with the store silent they stay a row (reading `Not read`, as Anthropic's and OpenAI's do; one definition, `row_status_not_read`), their
 step says the credential store didn’t answer, and Finish goes through
 without a typed key and keeps whatever key is there. OpenClaw's row, which a stored bearer token alone
-keeps when no gateway URL is saved, reads `Not read` the same way rather than as "no token", and so does Settings → Sources → OpenClaw's token field (a `Not read` badge, **Replace…** rather than **Add credential…**, and **Clear** enabled once **Replace…** opens the editor; it claims neither a token nor none). The other sources keep their
+keeps when no gateway URL is saved, reads `Not read` the same way rather than as "no token", and so does Settings → Sources → OpenClaw's token field (a `Not read` badge, **Replace…** rather than **Add credential…**, and **Clear**, in the editor **Replace…** opens, stays enabled; it claims neither a token nor none). The other sources keep their
 own forms. GitHub accounts are on the steps: the **token** and the account's name, then the
 **organizations** it watches (a comma-separated list), then Ready. Each account's row
 opens its own steps, filled from that account, and Add source opens a blank draft; nothing is

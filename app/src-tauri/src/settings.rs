@@ -3713,8 +3713,6 @@ mod tests {
         }
     }
 
-    /// A keychain that won't answer is not "no key": the source stays added,
-    /// the step says it didn't answer, and Finish needs no typed key.
     /// The status every row shows for a store that would not answer, from one
     /// definition.
     #[test]
@@ -3888,6 +3886,8 @@ mod tests {
         assert!(catalog_entry(&vm, "vercel")["walk"]["added"].is_null());
     }
 
+    /// A keychain that won't answer is not "no key": the source stays added,
+    /// the step says it didn't answer, and Finish needs no typed key.
     #[test]
     fn neon_and_vercel_with_an_unreadable_keychain_keep_the_source_and_its_key() {
         let stored = StoredSecrets {
