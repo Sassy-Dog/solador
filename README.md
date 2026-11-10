@@ -121,7 +121,7 @@ Add these in **Settings**, in any order, whenever you feel like it.
 
 | To see | Give it |
 |---|---|
-| **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY backlog column. It finds your repos itself, and derives the organizations whose runners it watches — [step-by-step walkthrough](docs/github-setup.md) |
+| **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY backlog column. Added in steps (the token and a name, then the organizations whose runners it watches) and saved only at Finish; you can add several accounts. It finds your repos itself — [step-by-step walkthrough](docs/github-setup.md) |
 | **Other machines** | the [agent](agent/) running on that host, plus its address and bearer token |
 | **Usage** | a Neon org key and its org ID, a Sentry `org:read` token and org slug, a Vercel token and its team ID — each optional and independent. Neon, Sentry and Vercel are added in steps and saved only at Finish |
 | **Claude and Codex plan limits** | nothing to paste: Settings → Sources → Add source → **Anthropic** or **OpenAI**, pick **Subscription**, and Solador reads that tool's own saved sign-in (on a Mac, Claude Code's keychain item, which macOS may ask you to allow; otherwise `~/.claude/.credentials.json` or `~/.codex/auth.json`), and, for Claude, the plan's name from `~/.claude.json`, keeping that one field and nothing else from the file. It only reads: the sign-in is never copied, stored, refreshed or changed. Both plan endpoints are undocumented and may change. Off until you pick it and press Finish |

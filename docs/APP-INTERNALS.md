@@ -465,6 +465,18 @@
   disagree on one name: its endpoint example and cookbook say a bucket's list is
   `results`, which the reader uses, and its published `UsageTimeBucket` schema
   says `result`.
+- **Repos / GitHub Runners → accounts**: one token **per account**, each its own
+  credential-store item (`SecretKey::VendorToken`, keyed by the account's id). A
+  GitHub account is added, changed and removed through the same save table as
+  every other source (`store::source_save`, kind `account`), which takes the row
+  as an argument: `settings_save_source`'s `row` is the account's id, or absent
+  for one that does not exist yet and is created, under an id minted at Finish.
+  Its key is `KeyAt::Row`, resolved from the row (`VendorAccount::secret_key`);
+  its name and organizations are inputs written into the row, not the settings;
+  no parts is that row removed, with its token, and a partial list is refused
+  before the first write. Back and Cancel write nothing,
+  and a token minted for a row whose save then failed is deleted again. Repos
+  stay tracked on the account's card (`settings_set_repo_tracked`), after Finish.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
   normal preference, not a credential-store item. Neon and Vercel (a token and
   a team id) are added through the source steps, so the key and the id are

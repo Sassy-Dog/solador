@@ -873,6 +873,14 @@ impl Store {
         }
     }
 
+    /// Puts back the account list a failed save changed.
+    ///
+    /// For a caller that took `accounts().to_vec()` before it edited the list
+    /// and must undo the edit as a whole, order included.
+    pub fn replace_accounts(&mut self, accounts: Vec<VendorAccount>) {
+        self.data.accounts = accounts;
+    }
+
     /// Removes an account, returning it.
     ///
     /// Does **not** touch the credential store, and does **not** rewrite the
@@ -1742,7 +1750,7 @@ mod tests {
     /// Consciously reverses v2's
     /// `a_v2_store_with_no_accounts_is_left_exactly_as_the_operator_left_it`.
     /// That test guarded against resurrecting a *removed* account — but
-    /// `settings_remove_account` deletes the credential item along with the
+    /// the account's steps delete the credential item along with the
     /// row, so a genuinely removed account leaves no token to find and the
     /// no-token branch below still refuses to mint. The store minted for here
     /// is the other zero-account population: the v2 legacy mode, where the

@@ -39,20 +39,28 @@ granted, and polls the organizations it watches.
 
 ## 2. Add the account to Solador
 
-1. Open **Settings → Sources → Add source → GitHub**.
-2. Under **Add Account**, choose the vendor (**GitHub**), give it a name — `work`
-   or `personal`, whatever you'll recognise — and paste the token into
-   **Fine-grained PAT**.
-3. Click **Add Account**. The card shows **Token stored** once it's saved.
+1. Open **Settings → Sources → Add source → GitHub**. The steps are the token,
+   then the organizations to watch, then Ready.
+2. On the first step, give the account a name — `work` or `personal`, whatever
+   you'll recognise — and paste the token into **Fine-grained PAT**. A token is
+   needed to continue.
+3. On the second step, list the organizations whose runners you want watched,
+   separated by commas (see section 4 below), or leave it empty to watch none.
+4. **Finish** saves the account, its token and its organizations together.
+   **Back** and **Cancel** save nothing: no account exists until Finish.
 
-You can add the account first and its token later; the card will say **No
-token** until you do. To swap a token later, use **Replace token** on the card
-rather than deleting the account — deleting it also drops the repos and orgs
-you configured under it.
+To swap a token, rename the account or change its organizations later, click the
+account's row under **Settings → Sources** and walk the same steps; leaving the
+token empty keeps the one stored. **Remove source** on its first step deletes
+only that account, with its token. Its repos stay tracked but become
+unattributed, and it stops watching its organizations; the last step lists both
+before you confirm.
+Finish lands on the account's card, where the repos are tracked (section 3 below).
 
 ## 3. Choose which repos to watch
 
-On the account's card, **Add a repo** searches everything the token was
+On the account's card (it opens after Finish, or from **Watched repos…** on the
+account's steps), **Add a repo** searches everything the token was
 granted: opening the account reads the list once (the box says so while it
 does, then how many repos the token can read), and typing any part of a
 repo's `owner/name` lists the matches as you type. Tick one to watch it; the
@@ -73,9 +81,11 @@ case-insensitively.
 
 ## 4. Watch an organization for runners
 
-Also on the account's card, type the org into **Organization** and click
-**Watch** — **Stop watching** removes it. Watched orgs are polled with that
-account's token, which is why step 1.6's organization permission matters.
+On the account's steps, type the orgs into **Organizations**, separated by
+commas, and press **Finish**. Taking a name out of the list stops watching it.
+The card also offers the organizations it found from the repos your token can
+read, each with a **Watch** button. Watched orgs are polled with that account's
+token, which is why step 1.6's organization permission matters.
 
 An organization can be watched by exactly one account — if you add it to a
 second, Solador refuses and tells you which account already has it, rather than
@@ -89,7 +99,7 @@ polling the same org twice.
   `—` in those columns specifically, and a missing organization **Projects**
   permission shows `—` under READY with a footer naming it, without breaking
   the rest of the panel — which is the intended behaviour, not a failure.
-- Replace the token from the account card.
+- Replace the token from the account's steps (Settings → Sources → the account).
 
 ### Runners panel is empty but Repos works
 Almost always the missing **Organization permissions → Self-hosted runners**
@@ -98,7 +108,8 @@ organization. Both are fixed by generating a new token, not by reconfiguring
 Solador.
 
 ### An organization won't add
-It is already watched by another account. The message names which one.
+It is already watched by another account. The message names which one, and
+nothing is saved until you take it out of the list.
 
 ### Rate limiting
 Authenticated requests get **5,000/hour per token**. The Repos panel spends

@@ -13,6 +13,15 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::SecretKey;
+
+/// What a save says when it is asked to name an account that has no row.
+pub const UNKNOWN_ACCOUNT: &str = "Skipped — unknown account.";
+/// What a save says of an account sent with no name.
+pub const NAME_REQUIRED: &str = "Skipped — a name is required.";
+/// What a save says of a name another account already has.
+pub const NAME_TAKEN: &str = "Skipped — an account with that name already exists.";
+
 /// Which vendor an account authenticates against.
 ///
 /// **Strict on the way in, deliberately.** Unlike
@@ -85,6 +94,49 @@ impl VendorAccount {
             orgs: None,
         }
     }
+}
+
+impl VendorAccount {
+    /// The credential-store item this account's token lives in, or `None` when
+    /// its stored item name is one nothing here recognises.
+    ///
+    /// Two names are: the account's own `vendor-<id>` item, and the pre-existing
+    /// `github_access_token` item the v1 → v2 migration left pointing where it
+    /// was. Anything else is left alone, never guessed at: deleting the wrong
+    /// item is not undoable.
+    #[must_use]
+    pub fn secret_key(&self) -> Option<SecretKey> {
+        let own = SecretKey::VendorToken(self.id);
+        if self.secret_account == own.account() {
+            return Some(own);
+        }
+        if self.secret_account == SecretKey::GitHubAccessToken.account() {
+            return Some(SecretKey::GitHubAccessToken);
+        }
+        None
+    }
+}
+
+/// The GitHub account, other than `account_id`, that already watches `org`.
+///
+/// An organization is watched by one account: the runners panel keys its rows
+/// and clocks by org, so two accounts polling one would be two writers to one
+/// entry. Names compare case-insensitively.
+#[must_use]
+pub fn org_watched_elsewhere<'a>(
+    accounts: &'a [VendorAccount],
+    account_id: Uuid,
+    org: &str,
+) -> Option<&'a VendorAccount> {
+    accounts.iter().find(|account| {
+        account.id != account_id
+            && account.vendor == VendorKind::GitHub
+            && account
+                .orgs
+                .iter()
+                .flatten()
+                .any(|watched| watched.eq_ignore_ascii_case(org))
+    })
 }
 
 const fn enabled_by_default() -> bool {

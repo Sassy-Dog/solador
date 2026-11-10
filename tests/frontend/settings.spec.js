@@ -168,6 +168,12 @@ async function openConnection(page, id) {
   await page.locator(`[data-connection="${id}"]`).click();
 }
 
+/** An account's card: its row opens the steps, and the steps lead to the card. */
+async function openAccountCard(page, id) {
+  await openConnection(page, `account:${id}`);
+  await page.locator(".walk-card").click();
+}
+
 async function addConnection(page, kind) {
   await page.locator('.tab[data-tab="connections"]').click();
   await page.locator('.connection-add').click();
@@ -184,8 +190,11 @@ const tab = (page, id) => ({ click: async () => {
   const kind = { accounts: "account", hosts: "host", usage: "sentry" }[id] || id;
   await page.locator('.tab[data-tab="connections"]').click();
   const row = page.locator(`.connection-row[data-kind="${kind}"]`).first();
-  if (await row.count()) await row.click();
-  else await addConnection(page, kind);
+  if (await row.count()) {
+    await row.click();
+    // An account's row opens its steps; its card is one button away.
+    if (kind === "account") await page.locator(".walk-card").click();
+  } else await addConnection(page, kind);
 } });
 
 test("Sources is the landing page and each saved source has one editor", async ({ page, baseURL }) => {
@@ -1166,7 +1175,7 @@ test("a credential saves, clears, and never comes back", async ({ page, baseURL 
   await expect(page.locator("body")).not.toContainText("sntryu_supersecret");
 });
 
-test("the retired GitHub tab is gone and org watching lives on the account", async ({ page, baseURL }) => {
+test("the retired GitHub tab is gone and the account's organizations are edited in its steps", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await expect(page.locator('.tab[data-tab="github"]')).toHaveCount(0);
   await tab(page, "accounts").click();
@@ -1174,37 +1183,14 @@ test("the retired GitHub tab is gone and org watching lives on the account", asy
   // The fixture's first account watches one org; the second watches none.
   const rows = settings.accounts.rows;
   const watching = rows.find((r) => r.orgs.length > 0);
-  const fresh = rows.find((r) => r.orgs.length === 0);
   const watchingRow = page.locator(`.group[data-account="${watching.id}"]`);
-  const freshRow = page.locator(`.group[data-account="${fresh.id}"]`);
-
   await expect(watchingRow.locator(`[data-org="${watching.orgs[0]}"]`)).toBeVisible();
 
-
-  // Stop watching sends the row's own org, unchecked.
-  await watchingRow.locator(`[data-org="${watching.orgs[0]}"] .org-remove`).click();
-  expect(await calls(page, "settings_set_account_org")).toEqual([
-    {
-      command: "settings_set_account_org",
-      args: { id: watching.id, org: watching.orgs[0], selected: false },
-    },
-  ]);
-
-  // Watch sends the typed org, checked, and clears the field before the
-  // round trip. Disabled until something is typed — a hint; Rust validates.
-  await openConnection(page, `account:${fresh.id}`);
-  await expect(freshRow.locator(".result", { hasText: settings.accounts.noOrgsLabel }).first()).toBeVisible();
-  const orgInput = page.locator(`#account-org-${fresh.id}`);
-  const watch = freshRow.locator(".org-add");
-  await expect(watch).toBeDisabled();
-  await orgInput.fill("beta");
-  await expect(watch).toBeEnabled();
-  await watch.click();
-  expect((await calls(page, "settings_set_account_org")).at(-1)).toEqual({
-    command: "settings_set_account_org",
-    args: { id: fresh.id, org: "beta", selected: true },
-  });
-  await expect(orgInput).toHaveValue("");
+  // Typing and removing organizations is the steps' and writes at Finish. The
+  // card keeps only #724's discovery offer (`.org-watch`), which deliberately
+  // saves on its click.
+  await expect(watchingRow.locator(".org-remove, .org-add")).toHaveCount(0);
+  expect(await calls(page, "settings_set_account_org")).toEqual([]);
 });
 
 // The group labels moved to the GitHub Runners tile's Configure: one editor, beside
@@ -1555,7 +1541,7 @@ test("the unattributed section offers the picker, and a card's repo can be re-ho
   // …and back the other way: a card's repo starts on its own account, and the
   // empty option is `null` on the wire — Rust's "unattributed" rather than an
   // id of no characters.
-  await openConnection(page, `account:${owning.id}`);
+  await openAccountCard(page, owning.id);
   const cardPicker = await configOf(attributed.slug);
   await expect(cardPicker).toHaveValue(owning.id);
   await cardPicker.selectOption("");
@@ -1595,105 +1581,227 @@ test("Accounts lists every account with its credential badge and what it fetches
 
   // An account with no token yet says so — `stored: false` is a fact the
   // payload carries, not a key it omits.
-  await openConnection(page, `account:${spare.id}`);
+  await openAccountCard(page, spare.id);
   const second = page.locator(`.group[data-account="${spare.id}"]`);
   await expect(second.locator(".badge-dim")).toHaveText(t.noTokenLabel);
   await expect(second).toContainText(t.noReposLabel);
 });
 
+// MARK: GitHub accounts' steps: a token and a name, then the organizations, keyed by account
+
+const accountRow = (settings, id) => settings.connections.rows.find((row) => row.entityId === id);
+const walkWrites = async (page) =>
+  (await writesOf(page)).filter((command) => command !== "settings_view");
+
 /**
- * The whole point of `account_removal_impact`.
- *
  * Removing an account leaves its repos tracked but unattributed, so the repos
- * are named *before* the removal rather than discovered after it. Nothing is
- * sent until the operator confirms.
+ * are named *before* the removal rather than discovered after it. Remove source
+ * sits on the account's own steps, and its Ready step carries Rust's sentence;
+ * nothing is sent until Finish.
  */
-test("removing an account that repos depend on names them and waits", async ({ page, baseURL }) => {
+test("removing an account that repos depend on names them and waits for Finish", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "accounts").click();
-  const { owning } = accountsOf(settings);
-
-  const row = page.locator(`.group[data-account="${owning.id}"]`);
-  const confirm = row.locator('[data-confirm="remove"]');
-  await expect(confirm).toBeHidden();
-
-  await row.locator(".btn.delete").first().click();
-  await expect(confirm).toBeVisible();
+  const { owning, spare } = accountsOf(settings);
+  await openConnection(page, `account:${owning.id}`);
+  await page.locator(".walk-remove").click();
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.removeHeading);
   // Rust's sentence, verbatim — this file writes none of it.
-  await expect(confirm.locator(".confirm")).toHaveText(owning.removePrompt);
-  expect(
-    await calls(page, "settings_remove_account"),
-    "nothing may be removed before the operator has answered"
-  ).toEqual([]);
-
-  await confirm.locator(".btn.cancel").click();
-  await expect(confirm).toBeHidden();
-  expect(await calls(page, "settings_remove_account")).toEqual([]);
-
-  await row.locator(".btn.delete").first().click();
-  await confirm.locator(".btn.delete").click();
-  expect(await calls(page, "settings_remove_account")).toEqual([
-    { command: "settings_remove_account", args: { id: owning.id } },
-  ]);
-});
-
-/** An account nothing depends on removes in one click, like a host: a
- *  confirmation over no consequence teaches an operator to click through the
- *  one that has a consequence. */
-test("an account nothing depends on removes without a confirmation", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  await tab(page, "accounts").click();
-  const { spare } = accountsOf(settings);
-  await openConnection(page, `account:${spare.id}`);
-
-  const row = page.locator(`.group[data-account="${spare.id}"]`);
-  await row.locator(".btn.delete").first().click();
-  expect(await calls(page, "settings_remove_account")).toEqual([
-    { command: "settings_remove_account", args: { id: spare.id } },
-  ]);
-});
-
-test("an account is added with its vendor, and re-saved without exposing its token", async ({ page, baseURL }) => {
-  const settings = await openSettings(page, baseURL);
-  await addConnection(page, "account");
-  const { owning } = accountsOf(settings);
-
-  // The form sits behind Add account… — every form on this tab does.
-  const addBox = page.locator('[data-disclosure="add-account"]');
-  await expect(addBox).toBeVisible();
-  const add = page.locator(".btn.add");
-  await expect(add, "an account needs a name").toBeDisabled();
-  await page.locator("#account-name").fill("personal-2");
-  await page.locator("#account-token").fill("ghp_secret");
-  await expect(add).toBeEnabled();
-  await add.click();
-  expect(await calls(page, "settings_save_account")).toEqual([
+  await expect(page.locator(".walk")).toContainText(accountRow(settings, owning.id).walk.removeHelp);
+  expect(await walkWrites(page), "nothing may be removed before Finish").toEqual([]);
+  await page.locator(".walk-finish").click();
+  expect(await saves(page)).toEqual([
     {
-      command: "settings_save_account",
-      // `id: null` is what makes this a create rather than a second row on
-      // somebody else's credential.
-      args: { id: null, vendor: "github", label: "personal-2", token: "ghp_secret" },
+      command: "settings_save_source",
+      args: { kind: "account", row: owning.id, parts: [], secret: null, addTile: true },
     },
   ]);
-  // Handed to Rust and dropped, never carried across the re-render.
-  await expect(page.locator("#account-token")).toHaveValue("");
+  // Only that account: the other account's row was never named.
+  expect(JSON.stringify(await saves(page))).not.toContain(spare.id);
+});
 
-  // Replace token… reveals the card's token field; the save carries the
-  // card's own label, so a rename cannot ride a token replacement.
+/** An account nothing depends on says the generic sentence, not a warning. */
+test("an account nothing depends on is removed with the plain sentence", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { spare } = accountsOf(settings);
+  await openConnection(page, `account:${spare.id}`);
+  await page.locator(".walk-remove").click();
+  await expect(page.locator(".walk")).toContainText(settings.connections.walkLabels.removeHelp);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toMatchObject({ kind: "account", row: spare.id, parts: [] });
+});
+
+test("Add source → GitHub creates an account only at Finish, with its token and organizations", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await addConnection(page, "account");
+  const entry = settings.connections.catalog.find((item) => item.kind === "account");
+  await expect(stepLine(page)).toHaveText("GitHub · step 1 of 3");
+  await expect(page.locator(".walk-pick"), "both parts are always set up").toHaveCount(0);
+  await expect(page.locator(".walk-remove"), "a new account has nothing to remove").toHaveCount(0);
+  await expect(page.locator(".walk-card"), "a new account has no card yet").toHaveCount(0);
+  await expect(stepHeading(page)).toHaveText(entry.walk.parts[0].title);
+
+  // A token is required to continue, and nothing is written for typing it.
+  await page.locator("#walk-name").fill("personal-2");
+  await next(page);
+  await expect(page.locator(".walk-problem")).toBeVisible();
+  await page.locator("#walk-secret").fill("ghp_secret");
+  await next(page);
+  await expect(stepHeading(page)).toHaveText(entry.walk.parts[1].title);
+  await page.locator("#walk-orgs").fill("acme, globex");
+  await next(page);
+  await expect(stepHeading(page)).toHaveText(settings.connections.walkLabels.readyHeading);
+  expect(await walkWrites(page), "nothing is applied before Finish").toEqual([]);
+
+  await page.locator(".walk-finish").click();
+  expect(await saves(page)).toEqual([
+    {
+      command: "settings_save_source",
+      args: {
+        kind: "account", row: null, parts: ["token", "orgs"], secret: "ghp_secret",
+        inputs: { name: "personal-2", orgs: "acme, globex" }, addTile: true,
+      },
+    },
+  ]);
+  // The token is written through the one save, never `settings_save_account`
+  // or `settings_save_secret`.
+  expect(await walkWrites(page)).toEqual(["settings_save_source"]);
+});
+
+test("Back and Cancel leave nothing written for a new account or an existing one", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { owning } = accountsOf(settings);
+
+  await addConnection(page, "account");
+  await page.locator("#walk-name").fill("draft");
+  await page.locator("#walk-secret").fill("ghp_draft");
+  await next(page);
+  await page.locator("#walk-orgs").fill("draft-org");
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-name")).toHaveValue("draft");
+  await next(page);
+  await next(page);
+  await page.locator(".walk-back").click();
+  await page.locator(".walk-cancel").click();
+  await expect(page.locator(".walk")).toHaveCount(0);
+
   await openConnection(page, `account:${owning.id}`);
-  const card = page.locator(`.group[data-account="${owning.id}"]`);
-  const tokenBox = card.locator('[data-disclosure="replace-token"]');
-  await expect(tokenBox).toBeHidden();
-  await card.locator(".btn.replace-token").click();
-  await expect(tokenBox).toBeVisible();
-  await card.locator(`#account-token-${owning.id}`).fill("ghp_replacement");
-  await card.locator(".btn.token-save").click();
-  const saves = await calls(page, "settings_save_account");
-  expect(saves[1]).toEqual({
-    command: "settings_save_account",
-    args: { id: owning.id, vendor: owning.vendor, label: owning.label, token: "ghp_replacement" },
+  await page.locator("#walk-name").fill("renamed");
+  await next(page);
+  await page.locator("#walk-orgs").fill("someone-elses");
+  await page.locator(".walk-back").click();
+  await page.locator(".walk-cancel").click();
+
+  expect(await walkWrites(page), "no account, token or organization change").toEqual([]);
+  expect(await calls(page, "settings_set_account_org")).toEqual([]);
+});
+
+test("an existing account's row opens its own steps, filled from that account only", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { owning, spare } = accountsOf(settings);
+
+  await openConnection(page, `account:${owning.id}`);
+  await expect(page.locator("#walk-name")).toHaveValue(owning.label);
+  await expect(page.locator(".walk-stored")).toBeVisible();
+  await expect(page.locator(".walk-remove")).toBeVisible();
+  await next(page);
+  await expect(page.locator("#walk-orgs")).toHaveValue(owning.orgs.join(", "));
+  await page.locator("#walk-orgs").fill(`${owning.orgs.join(", ")}, zeta`);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  const [first] = await saves(page);
+  expect(first.args).toEqual({
+    kind: "account", row: owning.id, parts: ["token", "orgs"], secret: null,
+    inputs: { name: owning.label, orgs: `${owning.orgs.join(", ")}, zeta` }, addTile: true,
   });
-  await expect(card.locator(`#account-token-${owning.id}`)).toHaveValue("");
+
+  // The card Finish lands on is this account's; opening the other account's row
+  // afterwards starts from that account, not from the draft just finished.
+  await expect(page.locator(`.group[data-account="${owning.id}"]`)).toBeVisible();
+  await page.locator(".connection-back").click();
+  await openConnection(page, `account:${spare.id}`);
+  await expect(page.locator("#walk-name")).toHaveValue(spare.label);
+  await expect(page.locator(".walk-stored"), "this account has no token").toHaveCount(0);
+  await page.locator("#walk-secret").fill("ghp_spare");
+  await next(page);
+  await expect(page.locator("#walk-orgs")).toHaveValue(spare.orgs.join(", "));
+  await next(page);
+  await page.locator(".walk-finish").click();
+  const second = (await saves(page))[1];
+  expect(second.args.row).toBe(spare.id);
+  expect(second.args.secret).toBe("ghp_spare");
+  expect(second.args.inputs.orgs).toBe(spare.orgs.join(", "));
+});
+
+test("two accounts are set up one after the other without either's steps touching the other", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  for (const [name, token, orgs] of [["first", "ghp_one", "acme"], ["second", "ghp_two", ""]]) {
+    await addConnection(page, "account");
+    await expect(page.locator("#walk-name"), "a new account starts empty").toHaveValue("");
+    await page.locator("#walk-name").fill(name);
+    await page.locator("#walk-secret").fill(token);
+    await next(page);
+    await expect(page.locator("#walk-orgs")).toHaveValue("");
+    await page.locator("#walk-orgs").fill(orgs);
+    await next(page);
+    await page.locator(".walk-finish").click();
+    await expect(page.locator(".walk")).toHaveCount(0);
+    await page.locator('.tab[data-tab="connections"]').click();
+  }
+  const [one, two] = await saves(page);
+  expect(one.args).toMatchObject({ row: null, secret: "ghp_one", inputs: { name: "first", orgs: "acme" } });
+  expect(two.args).toMatchObject({ row: null, secret: "ghp_two", inputs: { name: "second", orgs: "" } });
+});
+
+test("a refusal at Finish keeps the account's steps open with what was typed", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await page.evaluate((view) => {
+    window.__SAVE_SOURCE__ = { status: "Skipped — an account with that name already exists.", settings: view, saved: false };
+  }, settings);
+  await addConnection(page, "account");
+  await page.locator("#walk-name").fill("taken");
+  await page.locator("#walk-secret").fill("ghp_x");
+  await next(page);
+  await page.locator("#walk-orgs").fill("acme");
+  await next(page);
+  await page.locator(".walk-finish").click();
+  await expect(page.locator("#settingsStatus")).toHaveText("Skipped — an account with that name already exists.");
+  await expect(page.locator(".walk-finish")).toBeEnabled();
+  // Back shows what was typed, and the token is still held for the next Finish.
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-orgs")).toHaveValue("acme");
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-name")).toHaveValue("taken");
+  await expect(page.locator("#walk-secret")).toHaveValue("ghp_x");
+});
+
+test("the card's token badge says Not read when the credential store did not answer", async ({ page, baseURL }) => {
+  const edit = (view) => {
+    const row = view.accounts.rows[0];
+    row.stored = false;
+    row.unread = true;
+  };
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, edit);
+  const id = settings.accounts.rows[0].id;
+  await openAccountCard(page, id);
+  const card = page.locator(`.group[data-account="${id}"]`);
+  await expect(card.locator(".badge-dim")).toHaveText(settings.accounts.notReadLabel);
+  await expect(card.locator(".badge-ok")).toHaveCount(0);
+  await expect(card).not.toContainText(settings.accounts.noTokenLabel);
+});
+
+test("the card keeps repo tracking and reaches the steps and back", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const { owning } = accountsOf(settings);
+  await openConnection(page, `account:${owning.id}`);
+  await page.locator(".walk-card").click();
+  const card = page.locator(`.group[data-account="${owning.id}"]`);
+  await expect(card).toBeVisible();
+  // What the steps own is not editable here.
+  await expect(card.locator(".org-add, .org-remove, .rename, .replace-token, .btn.delete")).toHaveCount(0);
+  await expect(card.locator(`#account-org-${owning.id}`)).toHaveCount(0);
+  await card.locator(".edit-account").click();
+  await expect(page.locator("#walk-name")).toHaveValue(owning.label);
 });
 
 // MARK: Azure Cost's steps: two parts, no key, and inputs a ticked part must have

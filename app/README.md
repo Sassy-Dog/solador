@@ -675,7 +675,14 @@ refusal, then written under the same lock, in the same save, as the flags and
 the tile; a failed save puts them back. What a later source still adds is a new
 wake, spend or plan variant (an arm in the shell's `match`), and anything a
 part cannot say: the typed key goes to the source's first key, so a source with
-a different credential per account (GitHub) needs a keyed argument. An input
+a different credential per account (GitHub) is keyed by a **row** as well as by
+kind: `settings_save_source` takes the account's id as `row` (absent for an
+account that does not exist yet, which is created at Finish under a freshly
+minted id), the part's key is `KeyAt::Row`, resolved from the row, and an input
+may write into the row (`Apply::Row`, GitHub's name and organizations) rather
+than the settings. A save with no parts and a row is that account removed, with
+its token; a row takes all of its parts or none, and anything between is refused
+before the first write (unticking the token would delete it). An input
 may be **required**: it carries the sentence refusing a ticked part that sends
 it empty or not at all (Azure's export location and budget), checked with every
 other refusal and so before the first write. An unticked part is never refused
@@ -695,7 +702,12 @@ leaves any key alone, and unticking it is refused. Neon, Sentry and Vercel read 
 way: with the store silent they stay a row (reading `Not read`, as Anthropic's and OpenAI's do; one definition, `row_status_not_read`), their
 step says the credential store didn’t answer, and Finish goes through
 without a typed key and keeps whatever key is there. The other sources keep their
-own forms. GitHub accounts wait for their own steps. Three stay forms by design: **OpenClaw**, because pairing is a
+own forms. GitHub accounts are on the steps: the **token** and the account's name, then the
+**organizations** it watches (a comma-separated list), then Ready. Each account's row
+opens its own steps, filled from that account, and Add source opens a blank draft; nothing is
+written before Finish, which lands on the account's card, and Back and Cancel write
+nothing. **Watched repos…** on the first step goes to the card, which keeps repo tracking.
+Three stay forms by design: **OpenClaw**, because pairing is a
 live exchange with the gateway and its token saves at once; **Remote host**,
 because trusting the agent's certificate is a confirmation the steps should not
 hide; and **Status page**, because it is one repeatable entry with nothing to
@@ -2361,16 +2373,14 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `machine_save_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID), from the Machines tile's Configure. Null `thresholds` resets shared defaults or removes that machine's override. Validation (`store::machine_alerts`) and save failures preserve the previous effective values and reject with the sentence; success answers with the re-rendered dashboard |
 | `panel_interval_save` | one panel's poll cadence, by its `panel_intervals` key, from that source's tile Configure. **Refused, not clamped**: a value under the panel's floor writes nothing and rejects with `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose. A value over the largest storable cadence (`u32::MAX` seconds) is refused the same way, through `IntervalRejection::AboveCeiling`; `secs` is a `u64` for that reason, since a narrower type would fail in the IPC decoder in serde's words before Rust ran ([#649](https://github.com/Sassy-Dog/solador/issues/649)). Saves on the click; success wakes that panel's loop and answers with the re-rendered dashboard |
 | `panel_interval_clear` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
-| `settings_save_source` | everything a source's steps chose, in one call at Finish (a thin command over `store::source_save::save_source_with`, which owns the source table, the refusals and their order, the writes and the rollback; the shell hands it the plan opt-in, the dashboard rules and the wakes): `kind`, the `parts` still ticked (an empty list is Remove source), the key if one was typed, `inputs` (the non-secret values typed on the parts, by input id, such as Neon's `orgId`; omitted for a source with none), and `addTile`. Answers `{status, settings, saved}`. `saved: false` keeps the steps open: every refusal comes before the first write and changes nothing, and only an I/O failure can follow a write, when the flags, the inputs and the tile go back, a key or plan already written stays, and Finish is safe to repeat. The key goes to the credential store, and the argument is never logged |
+| `settings_save_source` | everything a source's steps chose, in one call at Finish (a thin command over `store::source_save::save_source_with`, which owns the source table, the refusals and their order, the writes and the rollback; the shell hands it the plan opt-in, the dashboard rules and the wakes): `kind`, the `row` (a GitHub account's id, absent for an account Finish creates and for every source with one configuration), the `parts` still ticked (an empty list is Remove source), the key if one was typed, `inputs` (the non-secret values typed on the parts, by input id, such as Neon's `orgId`; omitted for a source with none), and `addTile`. Answers `{status, settings, saved}`. `saved: false` keeps the steps open: every refusal comes before the first write and changes nothing, and only an I/O failure can follow a write, when the flags, the inputs and the tile go back, a key or plan already written stays, and Finish is safe to repeat. The key goes to the credential store, and the argument is never logged |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
-| `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop on a save (check or uncheck); a refusal changes nothing and wakes nothing — the selection is what the runners half of the pass polls |
+| `settings_set_account_org` | one org offered on the account's card (discovered from the repos its token can read) and watched with a click. Saved on the spot, like the crash toggle; typing and removing organizations is the account's steps' (`row` + the `orgs` input, at Finish). An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop on a save (check or uncheck); a refusal changes nothing and wakes nothing — the selection is what the runners half of the pass polls |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it. Add takes an optional `tlsFingerprint` — the one the operator **trusted** — validated through `crates/certpin` and stored as `Host.tls_fingerprint` (absent ⇒ plain HTTP) |
 | `settings_probe_host_certificate` | pairing step one (#448): the certificate an address presents, fetched **without trusting it** → `{status: "tls" \| "no-tls" \| "failed", fingerprint, message}`. One unauthenticated request; nothing stored, no token sent |
 | `settings_save_host` | edit a host's name / address / port and, on request, replace its token. An optional `tlsFingerprint` **replaces the pin** (Re-pair); absent leaves it exactly as it is, so a rename can never touch it |
 | `settings_test_host` | one `/v1/health` probe → the original result line, through the pinned client for a paired host. The answer also carries `certificateChanged`, which is what offers **Re-pair** the moment Test finds it |
-| `settings_save_account` | create or edit a [vendor account](#the-accounts-tab) — `id: null` adds, an id edits. The token is minted as **its own** credential-store item (`SecretKey::VendorToken`), never shared with another account. An empty token is a legitimate save, not a failure: the row reads **No token** and the operator fills it in later. Wakes the GitHub loop, because accounts *are* that pass's identities |
 | `settings_set_account_enabled` | one account in or out of the GitHub pass, without deleting it or its token |
-| `settings_remove_account` | delete the account and the one credential item it named. **Its repos are not re-homed** — they stay tracked and become unattributed, because moving them onto whichever account survived would invent an owner. Returns a receipt naming the same repos the confirmation prompt did |
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio. Add takes an optional `accountId` — the per-account "add by name" path, where the attribution is the operator's own answer. Without one it **attributes the repo to an account only when the store holds exactly one** (`settings::new_repo`) — with two or more there is no correct default, so it lands unattributed and the row's picker asks |
 | `settings_discover_repos` | the discovery probe: everything one account's token can see (`GET /user/repos`, Link-paged to a 5,000-repo backstop whose cut is **reported**, never silent), kept in `App::discovered` for the search and summarised as `{id, total, totalLabel, truncatedNote, orgs, reason}` — the orgs **derived** from that result. Derived, not fetched: `GET /user/orgs` answers a fine-grained PAT with `200` and an empty list, and fine-grained PATs are the only kind this app asks for. Ephemeral like the Services probe: nothing persists; a failure returns the worded finding as `reason` |
 | `settings_search_repos` | the repos screen's search over the list the walk cached for one account (`id`, `query`): every repo whose `owner/name` contains the query, ignoring case (`github::discovery::search`), plus this account's tracked repos the grant does not cover, this account's first and then by name, at most 50 → `{id, query, results, countLabel, moreLabel, addByName}`. Each result carries `tracked`, `trackedBy`, `granted`, `archived`, `untrackPrompt` and the match's char offsets. Before the walk has cached a list (or after it failed) the answer is `pending: true` with no results, though a full `owner/name` is still offered by name |
@@ -2380,7 +2390,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
 | `settings_probe_status_vendor` | step one of [adding a status page](#the-services-tab): one GET of `{base}/api/v2/summary.json` → its components, **or** the finding that stopped it. Deliberately not a `Result` — a failed probe found something, and the finding is the product |
 | `settings_save_status_vendor` / `settings_set_status_vendor_enabled` / `settings_remove_status_vendor` | step two, and the list it lands in |
-| `settings_save_secret` / `settings_clear_secret` | one credential, by key: `openclaw` only (`settings::SecretField`). Neon's, Sentry's and Vercel's keys are written and deleted only at Finish, beside the flags and IDs they go with, so these commands refuse them as an unknown credential. The `github` key retired with its tab — a GitHub token is an account's now, written through `settings_save_account` |
+| `settings_save_secret` / `settings_clear_secret` | one credential, by key: `openclaw` only (`settings::SecretField`). Neon's, Sentry's and Vercel's keys are written and deleted only at Finish, beside the flags and IDs they go with, so these commands refuse them as an unknown credential. The `github` key retired with its tab — a GitHub token is an account's now, written at Finish by `settings_save_source` (kind `account`, keyed by the account's `row`) |
 
 **Every mutation wakes exactly the loop its data feeds, and no other.** A wake
 spends a whole poll pass, so nudging the GitHub loop after a Neon save would burn
@@ -2568,11 +2578,16 @@ Two things worth knowing about this surface:
 
 One vendor credential per **account** — a label, a token, an enabled flag,
 the repos it fetches and the runner organizations it watches — the whole
-GitHub surface on one tab, one card per account. The GitHub and Portfolio
+GitHub surface, one card per account. The GitHub and Portfolio
 tabs both retired into it: a token is an account's, and a repo row sits on
-the card of the account whose token reads it. Every form is behind a button
-(Rename…, Replace token…, Add account…, Configure… per repo) — built
-up-front and toggled, the delete-confirm precedent applied to forms.
+the card of the account whose token reads it.
+
+**Creating, renaming, replacing a token, changing organizations and removing
+are the account's steps** (Settings → Sources → Add source → GitHub, or the
+account's row), saved together at Finish by `settings_save_source` (see [Settings and sources](#settings-and-sources)). The card keeps what is per repo and repeatable:
+the repos it fetches, the Monitor toggle, the organizations it found offered to
+Watch, and **Token and organizations…**, which goes back to the steps. Finish
+lands on the card.
 
 **Watched repos** are listed under one heading per owner (`repoGroups`, the
 Repos tile's grouping, `owner · count`), each row with its Configure…. Below
@@ -2602,16 +2617,21 @@ picker.
 Each account's token is **its own item** in the OS credential store
 (`SecretKey::VendorToken`, keyed by the account's id) and is never shared with
 another account. That is what makes removal safe to reason about, and it is why
-`settings_remove_account` deletes only the item the account actually named — an
-id it cannot resolve is **left in place** rather than guessed at, because
+removing an account deletes only the item the account actually named
+(`VendorAccount::secret_key`) — an id it cannot resolve is **left in place** rather than guessed at, because
 deleting the wrong credential is not undoable and an orphaned item is the better
 failure.
 
-**An account with no token is a real state, not a broken one.** The row badges
-it **No token** and nothing else changes; the operator adds one when they have
-it. Reporting "No token" over a token that is sitting right there would be the
-worse error, so the badge tracks the credential store rather than a cached
-guess.
+**An account with no token is still a state the app can be in, though a new
+account cannot be created without one.** The steps require a token to continue
+until one is stored, so the **No token** badge appears for an account whose item
+was deleted outside the app, or whose stored item name this build cannot
+resolve (the steps then ask for a token, which repairs it). Reporting "No token"
+over a token that is sitting right there would be the worse error, so the badge
+tracks the credential store rather than a cached guess. A store that **does not
+answer** is neither: the row and the card's token badge read **Not read**, and
+the steps say the credential store didn't answer and let the name and
+organizations finish without a typed token, leaving the stored one alone.
 
 **Removing an account does not re-home its repos.** They stay tracked and become
 *unattributed* — the same state a repo lands in when the store holds two or more
@@ -2620,27 +2640,25 @@ Rewriting them onto whichever account happened to survive would invent an owner.
 What the removal costs is read **before** it happens and shown twice, worded
 from one place so the two cannot disagree:
 
-- the Delete button becomes a prompt — *"Remove `<label>`? 2 tracked repos become
+- the account's Remove source step shows the prompt — *"Remove `<label>`? 2 tracked repos become
   unattributed: `owner/a`, `owner/b`."*
 - the status line afterwards is the receipt — *"Removed `<label>`. 2 tracked repos
   are now unattributed: `owner/a`, `owner/b`."*
 
-An account **no repo names and no org rides** skips the prompt and deletes in
-one click. That asymmetry is deliberate: a confirmation step over no
+An account **no repo names and no org rides** shows the plain Remove source sentence instead. That asymmetry is deliberate: a confirmation step over no
 consequence is what teaches an operator to click through the one that has a
 consequence.
 
 **Runner organizations live on the account, not in a global field.** Each
 watched org is polled with its owning account's token — the per-account
 cardinality the old single `github_org` never had, which made the runners
-fetch ride whatever account happened to be first. The selection is checkbox
-semantics through `settings_set_account_org`, an org another account already
-watches is refused at the gate with the owner named, and removing the account
+fetch ride whatever account happened to be first. The selection is a comma-separated list on the account's steps (a list equal to what is watched changes nothing, so a never-configured account stays unknown; the empty list is a deliberate "watch nothing"), an org another account already
+watches is refused before anything is written, with the owner named, and removing the account
 stops its orgs' watching — the prompt and the receipt both say so. (An org
 selection has no independent existence to become "unattributed": unlike a
 repo, there is nothing left to render.)
 
-Saving, toggling, or removing an account — or checking an org — wakes the
+Saving, toggling, or removing an account — or watching an offered org — wakes the
 GitHub poll (and the Services pass, which derives its watched set from them)
 immediately rather than waiting out the GitHub cadence — accounts
 are the identities that pass fetches with, so a change that does not reach the
@@ -3296,8 +3314,9 @@ and that immediacy is itself the check on the corresponding wake:
 
 | Touched | Do | Expect |
 |---|---|---|
-| `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Sources → GitHub (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
-| `settings_set_account_org` / Runners | under Settings → Sources → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Sources → GitHub". Watching the same org from a second account is refused with the owner named |
+| `github_wake` / Repos / Runners | Settings → Sources → Add source → GitHub: name it, paste a fine-grained PAT, **Next**, **Next**, **Finish** (`settings_save_source` with `kind: account`). Then open the account's row, **Back**/**Cancel** out of a changed name or token, and reopen it | both panels fill within seconds of Finish. Back and Cancel changed nothing: the reopened steps show the saved name, and the token field is empty with "A token is stored". A second account added the same way starts from empty fields, and its Finish leaves the first account's token and organizations alone. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos`. |
+| `settings_save_source` (`kind: account`) / Remove source | open an account's row, **Remove source**, read the last step, **Finish** | removes only that account and its token; the last step named the repos that become unattributed, and the status line repeats them. The other account is untouched |
+| `settings_save_source` org input / `settings_set_account_org` / Runners | on an account's second step, type an org into **Organizations** and **Finish**; then edit it out and **Finish** again. On the card, **Watch** an offered org | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Sources → GitHub". Watching the same org from a second account is refused at Finish with the owner named, and nothing is saved |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. For a repo that is `Waiting`, click its **dashboard** row too: it opens `.../actions/runs/{id}` (or the Actions page when several runs wait). Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Sources → GitHub (type its name into **Add a repo** on its account's card and tick it, or type its full `owner/name` and choose **Add … by name**) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_discover_repos` / `settings_search_repos` | open a GitHub account under Settings → Sources, wait for the line under **Add a repo** to change from *Reading what this token can access…*, then type part of a repo name, press **ArrowDown** and **Enter**, then **Escape** | the line says how many repos the token can read; matches appear as you type with the match in bold and "N of M match" under them; Enter ticks the highlighted repo, which joins **Watched repos** under its owner's heading while the box keeps its text; Escape empties the box. Typing a full `owner/name` the token can't list offers **Add … by name** |
@@ -3432,12 +3451,13 @@ and that immediacy is itself the check on the corresponding wake:
    a non-zero repo count proves the loop read the seeded portfolio out of the
    real store rather than a default, exactly as step 5's counts do.
 
-   To exercise the populated path, save a fine-grained PAT under Settings →
-   GitHub (Actions, Contents, Issues and Pull requests, all read-only, plus org
+   To exercise the populated path, add an account under Settings → Sources →
+   Add source → GitHub with a fine-grained PAT (Actions, Contents, Issues and Pull requests, all read-only, plus org
    self-hosted runners read for the Runners panel). It applies without a
-   relaunch — `settings_save_secret` wakes the loop — so the panels should fill
+   relaunch — Finish (`settings_save_source`) wakes the loop — so the panels should fill
    within a few seconds rather than on the next GitHub poll, and that
-   immediacy is itself the check on `github_wake`. Then **Clear** it and watch
+   immediacy is itself the check on `github_wake`. Then remove the account (its row,
+   **Remove source**, **Finish**) and watch
    both panels drop back to the connect line just as fast.
 
    The Repos table is where the "—"-vs-`0` rule is visible: a repo not checked
