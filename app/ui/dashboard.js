@@ -1155,8 +1155,8 @@
   // but only if it still exists and is enabled after the change: a removed
   // mount or machine, or a control the rebuild disables, is not. A rebuilt
   // block keeps focus, not unsaved typed text (`machineBlock` rebuilds from
-  // the saved value). Busy only disables the buttons; it never rebuilds an
-  // input.
+  // the saved value). Busy only disables controls (the buttons, the volume
+  // checkboxes and the limit fields); it never rebuilds an input.
   function keepFocus(scope, change) {
     const had = scope.contains(document.activeElement) ? document.activeElement : null;
     const key = had?.closest("[data-machine]")?.dataset.machine;
