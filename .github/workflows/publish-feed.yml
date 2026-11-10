@@ -415,12 +415,18 @@ jobs:
             top="$(printf '%s\n%s\n' "$newest" "$TAG" | grep -E '^v[0-9]' | sort -V | tail -n1)"
             if [[ "$top" == "$TAG" ]]; then
               latest_flag="--latest"
+              took_latest=true
               echo "Publishing $TAG with --latest: it sorts at or above the newest published release (${newest:-none published yet})."
             else
               latest_flag="--latest=false"
+              took_latest=false
               echo "Publishing $TAG with --latest=false: $newest is a newer published release and keeps releases/latest."
             fi
             gh release edit "$TAG" --draft=false "$latest_flag"
+            # Recorded for the failure hint's wording: whether THIS release took
+            # `releases/latest` decides whether a missing feed hurts anyone. Not
+            # written on the already-public path, where it is not known here.
+            echo "latest=$took_latest" >> "$GITHUB_OUTPUT"
             echo "Published $TAG."
           else
             echo "$TAG is already public; nothing to publish."
@@ -464,6 +470,7 @@ jobs:
           cat feed/latest.json
 
       - name: Upload latest.json to the release
+        id: upload
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -476,6 +483,7 @@ jobs:
       # between "we uploaded an asset" and "the endpoint the app polls serves a
       # manifest" — which are two claims, and only the second one matters.
       - name: Confirm the configured endpoint serves a manifest
+        id: endpoint
         env:
           ENDPOINT: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/latest.json
         run: |
@@ -502,12 +510,52 @@ jobs:
           echo "The configured endpoint currently offers $served."
 
       # The one failure that leaves users worse off than a red draft: the release
-      # was published and a LATER step (the rebuild, the upload, the endpoint
-      # check) failed, so the release is public with no served `latest.json`.
-      # It is the last step because `failure()` is only true for steps that run
-      # after the failing one. Prints the state and the way out; changes nothing.
+      # went public and a LATER step failed, so it is public with no served
+      # `latest.json`. That includes the publish step itself, whose read-back of
+      # `publishedAt` follows the edit: the step can fail with the release
+      # already public. So this keys on the run's failure and the release's own
+      # state (`isDraft`, `isLatest`, read through GraphQL: `gh release view` has
+      # no `isLatest` field), not on the publish step's outcome. It is the last step
+      # because `failure()` is only true for steps that run after the failing
+      # one. Prints the state and the way out; changes nothing, and never states
+      # a release state it could not read.
       - name: Say what a failure after publishing means
-        if: failure() && steps.publish.outcome == 'success'
+        if: failure() && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          UPLOAD: ${{ steps.upload.outcome }}
         run: |
-          echo "::error::the release is now PUBLIC but latest.json was not uploaded and confirmed, so every installed cockpit's update check fails until it is"
-          echo "Use 'Re-run failed jobs' on this run: the publish step skips (the release is no longer a draft), then the manifest is rebuilt and uploaded." >&2
+          unknown() {
+            echo "::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft; check with: gh api graphql -f query='query(\$o:String!,\$r:String!,\$t:String!){repository(owner:\$o,name:\$r){release(tagName:\$t){isDraft isLatest}}}' -f o=${GITHUB_REPOSITORY%/*} -f r=${GITHUB_REPOSITORY#*/} -f t=${TAG:-<tag>}  (then re-run)"
+            exit 0
+          }
+          [[ -n "$TAG" ]] || unknown
+          # A missing tag reads as an empty line with exit 0, so only the exact
+          # strings `true` and `false` count as a read. The `$o` `$r` `$t` in the
+          # query are GraphQL variables, not shell ones.
+          # shellcheck disable=SC2016
+          state="$(gh api graphql \
+            -f query='query($o:String!,$r:String!,$t:String!){repository(owner:$o,name:$r){release(tagName:$t){isDraft isLatest}}}' \
+            -f o="${GITHUB_REPOSITORY%/*}" -f r="${GITHUB_REPOSITORY#*/}" -f t="$TAG" \
+            --jq '.data.repository.release | [.isDraft, .isLatest] | @tsv')" || unknown
+          IFS=$'\t' read -r is_draft is_latest <<< "$state"
+          case "$is_draft" in
+            true) exit 0 ;;
+            false) ;;
+            *) unknown ;;
+          esac
+          if [[ "$UPLOAD" == "success" ]]; then
+            feed="latest.json was uploaded but the endpoint check did not confirm it"
+          else
+            feed="latest.json was not uploaded"
+          fi
+          case "$is_latest" in
+            true)
+              echo "::error::the release is now PUBLIC and holds releases/latest, and $feed, so installed cockpits' update checks fail until the feed is uploaded and served" ;;
+            false)
+              echo "::error::the release is now PUBLIC; $feed; releases/latest was not moved to this release; this step did not check what it serves" ;;
+            *)
+              echo "::error::the release is now PUBLIC; $feed; whether it holds releases/latest is unknown (its isLatest could not be read)" ;;
+          esac
+          echo "Use 'Re-run failed jobs' on this run: the publish step finds the release already public and does nothing, then the manifest is rebuilt and uploaded." >&2

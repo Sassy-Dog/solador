@@ -60,9 +60,10 @@ detail. Solador is public, so the org's `APPLE_*` secrets (visibility `private`)
 resolve to the empty string here; environment secrets are repo-scoped, so that
 visibility never applies to them. **`prd` has no required reviewer (#749); two
 repository settings stand where one stood.** Its deployment policy admits only
-tags — `v*` for the cockpit's train, plus `agent-v*` for the agent's, added by
-hand (#492 step 6), so until it is there neither agent credential job can enter
-`prd` — which is what stops a push to `main`, or a fork, minting a signed build.
+tags (`v*` for the cockpit's train, `agent-v*` for the agent's) — which is what
+stops a push to `main`, or a fork, minting a signed build. The policy names
+`agent-v*` beside `v*` (#492 step 6); remove it and neither agent credential job
+can enter `prd`.
 And a tag ruleset named **"release tags"** (id 26979876, active) covers
 `refs/tags/v*` and `refs/tags/agent-v*` and restricts creating, updating and
 deleting them to the repository admin role (`./dev publish` pushes as the
@@ -379,11 +380,24 @@ reading as "none yet"), read `published_at` back, rebuild the manifest with
 `--pub-date`, upload it and confirm the endpoint. So a mis-signed build **stays a
 draft** with a red run that says why, and "a draft can never serve updates" is a
 property of the order rather than a rule. The converse failure is worse: if a
-step AFTER publishing fails (the rebuild, the upload, the endpoint check), the
-release is public with no served `latest.json`, and every installed cockpit's
-update check fails until it is fixed. The job's last step says so in an
-`::error::`; use **Re-run failed jobs**, which skips the publish (the release is
-no longer a draft), then rebuilds and uploads. `publish` is
+step AFTER publishing fails (the publish step's own `publishedAt` read-back, the
+rebuild, the upload, the endpoint check), the release is public with no served
+`latest.json` confirmed. If it holds `releases/latest`, installed cockpits'
+update checks fail until the feed is uploaded and served. If `releases/latest`
+was not moved to it (an older draft re-published after a newer release shipped),
+the hint says so and does not check what `releases/latest` serves. It also says
+whether `latest.json` was uploaded or only unconfirmed by the endpoint check.
+The job's last step reads the release's `isDraft` and `isLatest` (through
+GraphQL: `gh release view` has no `isLatest`) and says this in an `::error::`.
+It says the state is unknown, never a guess, if that read fails or returns
+anything but `true` or `false`, and an unreadable `isLatest` is reported as
+unknown too. Use **Re-run failed jobs**, where the publish step finds the
+release already public and does nothing, then rebuilds and uploads. That remedy is for failures after
+publishing only: a mis-signed build, or a missing payload or `.sig`, fails
+identically on a re-run of the failed jobs, which re-downloads the same draft
+assets. Fix the cause (the signing secret, or the missing payload/`.sig`) and
+re-run ALL jobs (the legs re-attach with `--clobber`), or cut a new tag if the
+cause is in the tree. `publish` is
 an input of the call only, never of `workflow_dispatch`, so the manual door can
 regenerate a feed but never publish a release. The release notes and
 `published_at` are read from the release itself on every path (`gh release view`,
