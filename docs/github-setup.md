@@ -45,7 +45,7 @@ granted, and polls the organizations it watches.
    you'll recognise — and paste the token into **Fine-grained PAT**. A token is
    needed to continue.
 3. On the second step, list the organizations whose runners you want watched,
-   separated by commas (see step 4), or leave it empty to watch none.
+   separated by commas (see section 4 below), or leave it empty to watch none.
 4. **Finish** saves the account, its token and its organizations together.
    **Back** and **Cancel** save nothing: no account exists until Finish.
 
@@ -55,7 +55,7 @@ token empty keeps the one stored. **Remove source** on its first step deletes
 only that account, with its token. Its repos stay tracked but become
 unattributed, and it stops watching its organizations; the last step lists both
 before you confirm.
-Finish lands on the account's card, where the repos are tracked (step 3).
+Finish lands on the account's card, where the repos are tracked (section 3 below).
 
 ## 3. Choose which repos to watch
 

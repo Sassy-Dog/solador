@@ -997,8 +997,11 @@ function accountCard(t, account) {
   head.append(
     node("span", "dim", account.vendorLabel),
     node("span", "grow"),
-    node("span", account.stored ? "badge-ok" : "badge-dim",
-      account.stored ? t.tokenStoredLabel : t.noTokenLabel)
+    // Three answers: a store that would not answer is neither of the others.
+    account.unread
+      ? node("span", "badge-dim", t.notReadLabel)
+      : node("span", account.stored ? "badge-ok" : "badge-dim",
+        account.stored ? t.tokenStoredLabel : t.noTokenLabel)
   );
   const enabled = checkbox(account.enabled);
   enabled.setAttribute("aria-label", S.view.connections.monitorLabel);

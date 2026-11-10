@@ -1052,6 +1052,12 @@ pub fn save_source_with(
         let mut said: Option<String> = None;
         let row_written = applied.and_then(|()| match (&row, draft_row) {
             (Some(row), _) if removing => {
+                if row.adopts {
+                    // The item name only, never a token.
+                    eprintln!(
+                        "left an unrecognised credential item in place: nothing here can name it"
+                    );
+                }
                 let removed = store.remove_account(row.draft.id);
                 said = removed.map(|removed| {
                     env.row_removed(&store, &removed)
@@ -2558,5 +2564,38 @@ mod tests {
             Some(vec!["acme".to_owned(), "initech".to_owned()])
         );
         assert_eq!(token_of(&env, work.id).as_deref(), Some("tok-work"));
+    }
+
+    #[test]
+    fn removing_an_account_while_the_store_will_not_answer_changes_nothing() {
+        let env = Fake::new();
+        add_account(&env, "work", "tok-work", "acme").unwrap();
+        add_account(&env, "personal", "tok-personal", "").unwrap();
+        let work = account_named(&env, "work");
+        let personal = account_named(&env, "personal");
+        env.woken.borrow_mut().clear();
+        env.credentials.fail_read.set(true);
+        // Unticked means delete, and a store that won't answer can't say whether
+        // there is anything to delete.
+        let refusal = save_source_with(
+            &env,
+            "account",
+            Some(&work.id.to_string()),
+            &parts(&[]),
+            None,
+            &[],
+            false,
+        );
+        assert_eq!(
+            refusal.unwrap_err(),
+            "Couldn't read the credential store, so a stored token can't be removed. \
+             Nothing changed."
+        );
+        env.credentials.fail_read.set(false);
+        assert_eq!(account_named(&env, "work"), work);
+        assert_eq!(account_named(&env, "personal"), personal);
+        assert_eq!(token_of(&env, work.id).as_deref(), Some("tok-work"));
+        assert_eq!(token_of(&env, personal.id).as_deref(), Some("tok-personal"));
+        assert!(env.woken.borrow().is_empty(), "a refusal wakes nothing");
     }
 }

@@ -2629,7 +2629,7 @@ was deleted outside the app, or whose stored item name this build cannot
 resolve (the steps then ask for a token, which repairs it). Reporting "No token"
 over a token that is sitting right there would be the worse error, so the badge
 tracks the credential store rather than a cached guess. A store that **does not
-answer** is neither: the row reads **Not read**, and the steps say the credential
+answer** is neither: the row and the card's token badge read **Not read**, and the steps say the credential
 store didn't answer and let the name and organizations finish without a typed
 token, leaving the stored one alone.
 

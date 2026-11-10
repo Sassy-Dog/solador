@@ -124,8 +124,9 @@ pub struct StoredSecrets {
     /// set, so its badge reads "No token". That is the weaker of the two claims
     /// and deliberately so — the *distinct* fact ("unrecognised credential
     /// item") is already reported where it costs something, on the Repos
-    /// panel's per-account footer, and re-saving the account's token from this
-    /// tab is what repairs it.
+    /// panel's per-account footer, and the account's steps are what repair it:
+    /// a token typed on the Token step moves the account onto its own
+    /// `vendor-<id>` item.
     pub accounts: HashSet<Uuid>,
     /// The same item in three states, for the account's steps: a store that
     /// would not answer is [`StoredKey::Unread`], not "no token". An id absent
@@ -2230,6 +2231,8 @@ fn accounts_tab(
                 "label": account.label,
                 "enabled": account.enabled,
                 "stored": stored.accounts.contains(&account.id),
+                // A store that would not answer is neither stored nor missing.
+                "unread": stored.account_key(account.id) == StoredKey::Unread,
                 // Full rows, not just slugs: the card is where a repo is
                 // enabled, configured and untracked now that the Portfolio
                 // tab is gone.
@@ -2258,12 +2261,9 @@ fn accounts_tab(
         "editLabel": "Token and organizations…",
         "tokenStoredLabel": "Token stored",
         "noTokenLabel": "No token",
-        "saveLabel": "Save",
+        "notReadLabel": "Not read",
         "deleteLabel": "Delete",
         "cancelLabel": "Cancel",
-        // The disclosure buttons. Every form sits behind one — an always-open
-        // form is what made three tabs read as sprawl — and each gets its own
-        // modifier class in the frontend (the `cadence-apply` lesson).
         "reposHeading": "Watched repos",
         // The search that replaced the picker: type part of a name, tick to
         // watch. `untrackLabel` is the untrack confirm's proceed button.
@@ -5733,6 +5733,10 @@ mod tests {
             .unwrap()
             .contains("didn\u{2019}t answer"));
         assert_eq!(row["status"], row_status_not_read());
+        // ...and the card's token badge, which is neither "stored" nor "none".
+        let card = &account_rows(&vm)[0];
+        assert_eq!(card["unread"], true);
+        assert_eq!(card["stored"], false);
 
         // An account whose item name nothing recognises is a distinct finding:
         // it stays absent, so the repair path still asks for a token.
@@ -5748,6 +5752,7 @@ mod tests {
             .find(|row| row["entityId"] == work.id.to_string())
             .unwrap()["walk"];
         assert_eq!(walk["parts"][0]["secret"]["stored"], false);
+        assert_eq!(account_rows(&vm)[0]["unread"], false);
     }
 
     /// A store with no accounts has no row, and the steps Add source opens have

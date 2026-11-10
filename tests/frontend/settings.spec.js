@@ -1762,10 +1762,32 @@ test("a refusal at Finish keeps the account's steps open with what was typed", a
   await page.locator("#walk-name").fill("taken");
   await page.locator("#walk-secret").fill("ghp_x");
   await next(page);
+  await page.locator("#walk-orgs").fill("acme");
   await next(page);
   await page.locator(".walk-finish").click();
   await expect(page.locator("#settingsStatus")).toHaveText("Skipped — an account with that name already exists.");
   await expect(page.locator(".walk-finish")).toBeEnabled();
+  // Back shows what was typed, and the token is still held for the next Finish.
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-orgs")).toHaveValue("acme");
+  await page.locator(".walk-back").click();
+  await expect(page.locator("#walk-name")).toHaveValue("taken");
+  await expect(page.locator("#walk-secret")).toHaveValue("ghp_x");
+});
+
+test("the card's token badge says Not read when the credential store did not answer", async ({ page, baseURL }) => {
+  const edit = (view) => {
+    const row = view.accounts.rows[0];
+    row.stored = false;
+    row.unread = true;
+  };
+  const settings = await openSettings(page, baseURL, undefined, undefined, undefined, edit);
+  const id = settings.accounts.rows[0].id;
+  await openAccountCard(page, id);
+  const card = page.locator(`.group[data-account="${id}"]`);
+  await expect(card.locator(".badge-dim")).toHaveText(settings.accounts.notReadLabel);
+  await expect(card.locator(".badge-ok")).toHaveCount(0);
+  await expect(card).not.toContainText(settings.accounts.noTokenLabel);
 });
 
 test("the card keeps repo tracking and reaches the steps and back", async ({ page, baseURL }) => {
