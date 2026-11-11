@@ -1969,22 +1969,25 @@ test("removing a visible tile keeps source alerts, persists, and Undo restores i
   await expect(page.locator(".db-removal")).toContainText("keeps its source and monitoring");
   await action(page, "remove").click();
   // The stub writes localStorage synchronously inside the click, so these
-  // waits do not fix a late write. They turn a save that never landed into a
-  // named failure and tell the candidates for #751 apart: the dashboard_save
-  // count poll fails if a save was never sent (dropped by busy or a missing
-  // tile), the savedLayout polls fail if it was sent but rejected, and the
-  // post-reload count fails if the reloaded page did not see the write.
+  // waits do not fix a late write. After each of the three saves they turn a
+  // save that never landed into a named failure, and tell the candidates for
+  // #751 apart: a dashboard_save count poll fails if no save reached the stub
+  // (a busy or missing-tile drop, or a click that never reached the handler;
+  // only a trace tells those apart), a savedLayout poll fails if the save was
+  // sent but rejected, and the post-reload count fails if the reloaded page
+  // did not see the write.
+  await expect.poll(() => commandArgs(page, "dashboard_save")).toHaveLength(1);
   await expect.poll(async () => (await savedLayout(page))?.tiles).toEqual(original.layout.tiles.filter(t => t.source !== "ghWorkflows"));
   await expect(tile(page, "ghWorkflows")).toHaveCount(0);
   await expect(action(page, "undo")).toBeFocused();
   await expect(action(page, "undo")).toBeInViewport({ ratio: 1 });
   await expect(page.locator(".db-attention-items button")).toHaveText(original.attention.map(a => a.label));
   await action(page, "undo").click();
+  await expect.poll(() => commandArgs(page, "dashboard_save")).toHaveLength(2);
   await expect.poll(async () => (await savedLayout(page))?.tiles).toEqual(original.layout.tiles);
   await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
   await action(page, "remove").click();
-  // Saves in this test: first remove, Undo, second remove.
-  await expect.poll(() => commandArgs(page, "dashboard_save").then(a => a.length)).toBe(3);
+  await expect.poll(() => commandArgs(page, "dashboard_save")).toHaveLength(3);
   await expect.poll(async () => (await savedLayout(page))?.tiles.some(t => t.source === "ghWorkflows")).toBe(false);
   await page.reload();
   await expect(tile(page, "ghWorkflows")).toHaveCount(0);
