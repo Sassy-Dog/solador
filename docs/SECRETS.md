@@ -357,7 +357,7 @@ anyone else is granted write access:
 allowance in the guard. The same goes for the jobs #749 added so that a tag push
 publishes its own release: `release.yml`'s last job (a call to `publish-feed.yml`
 with `publish: true`), and `release-agent.yml`'s `publish-release` (`gh release
-edit` with the workflow token) and `feed` (`actions: write`, dispatching and watching
+edit` with the workflow token) and `feed` (`actions: write` and `contents: read`, dispatching and watching
 `publish-agent-feed.yml`) jobs declare no environment and read no secret. The guard refuses a secret in
 the latter two (`secrets-guard-test.sh` proves it); for `release.yml`, which it
 allows by file, that rests on review.

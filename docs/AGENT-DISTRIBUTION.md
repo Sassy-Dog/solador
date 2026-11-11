@@ -294,7 +294,8 @@ published` because a release published with the workflow's own `GITHUB_TOKEN`
 raises no such event, and not a `uses:` call because a called job that declares
 `environment: prd` is not given the environment's secret: agent-v2026.11.3's
 call reached `agent-feed` with the signing key empty. The `feed` job holds no
-environment and no secret, only `actions: write`. `release: published` and a
+environment and no secret, only `actions: write` and `contents: read` (to check
+out the tagged script). `release: published` and a
 manual `workflow_dispatch` stay, for a draft someone holds back and publishes by
 hand and for replays. The dispatched run is an ordinary top-level run at the
 tag, so `agent-eligibility` requires it to be AT `refs/tags/<tag>`, the release

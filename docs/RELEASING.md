@@ -252,7 +252,7 @@ already public, so a re-run passes) before a `feed` job dispatches
 `publish-agent-feed.yml` from the tag and watches the run it started (#757: a
 `uses:` call does not hand a called job `prd`'s secret, so the signing key
 resolved empty). The `feed` job holds no environment and no secret, only
-`actions: write`; it fails when the dispatched run fails, and prints that run's
+`actions: write` and `contents: read` (to check out the tagged script); it fails when the dispatched run fails, and prints that run's
 URL either way. **When the agent feed fails, the failed thing is that dispatched
 `publish-agent-feed.yml` run**: re-run its failed jobs, or dispatch it again
 from the tag (`gh workflow run publish-agent-feed.yml --ref <tag> -f tag=<tag>`).

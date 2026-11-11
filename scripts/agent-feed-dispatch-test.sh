@@ -34,6 +34,7 @@ export GITHUB_SERVER_URL="https://example.test"
 export SOLADOR_FEED_DISPATCH_SLEEP=0
 export SOLADOR_FEED_DISPATCH_ATTEMPTS=3
 BASE="https://example.test/Acme/solador/actions/runs"
+WFURL="https://example.test/Acme/solador/actions/workflows/publish-agent-feed.yml"
 
 mkdir -p "$work/ghshim"
 cat > "$work/ghshim/gh" <<'SHIM'
@@ -47,7 +48,7 @@ case "$*" in
     "run list --workflow publish-agent-feed.yml --event workflow_dispatch --branch $GH_SHIM_TAG --limit 20 --json databaseId,createdAt")
         printf '%s\n' "${GH_SHIM_LIST:-[]}"
         ;;
-    "run watch "*" --exit-status")
+    "run watch "*" --interval 15 --exit-status")
         echo "(watching)"
         exit "${GH_SHIM_WATCH_RC:-0}"
         ;;
@@ -121,11 +122,12 @@ fresh
 run_sut
 expect "the printed URL's id is taken, and a passing watch passes" 0 "The agent feed run passed: $URL"
 expect_calls "  the runs are not listed when the URL was printed" '^run list' 0
-expect_calls "  the watch is on that id" '^run watch 4242 --exit-status$' 1
+expect_calls "  the watch is on that id" '^run watch 4242 --interval 15 --exit-status$' 1
 
 fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":77,$NEW}]"
 run_sut
 expect "no URL, exactly one run since the dispatch" 0 "The agent feed run passed: $BASE/77"
+expect_calls "  the watch is on the run that was found, not another" '^run watch 77 --interval 15 --exit-status$' 1
 
 fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":5,$OLD},{\"databaseId\":78,$NEW}]"
 run_sut
@@ -133,18 +135,20 @@ expect "no URL, a run from before the dispatch is not counted" 0 "The agent feed
 
 fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":5,$OLD}]"
 run_sut
-expect "no URL, no run since the dispatch" 1 "::error::dispatched publish-agent-feed.yml at $TAG but found no run for it"
+expect "no URL, no run since the dispatch" 1 "::error::dispatched publish-agent-feed.yml at $TAG but found no run for it; look at $WFURL"
 expect_calls "  after exactly the configured attempts" '^run list' 3
 expect_calls "  and nothing is watched" '^run watch' 0
 
 fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":81,$NEW},{\"databaseId\":82,$NEW}]"
 run_sut
-expect "no URL, two runs since the dispatch" 1 "::error::more than one publish-agent-feed.yml dispatch run at $TAG since the dispatch; refusing to guess which is this job's"
+expect "no URL, two runs since the dispatch" 1 "::error::more than one publish-agent-feed.yml dispatch run at $TAG since the dispatch; refusing to guess which is this job's; look at $WFURL"
+expect "  and each candidate is a full run URL" 1 "$BASE/81"
+expect "  (the second too)" 1 "$BASE/82"
 expect_calls "  and nothing is watched" '^run watch' 0
 
 fresh; export GH_SHIM_DISPATCH_FAIL="HTTP 403: Resource not accessible by integration"
 run_sut
-expect "the dispatch fails" 1 "::error::could not dispatch publish-agent-feed.yml at $TAG"
+expect "the dispatch fails" 1 "::error::could not dispatch publish-agent-feed.yml at $TAG; look at $WFURL"
 expect "  and says why" 1 "HTTP 403: Resource not accessible by integration"
 expect_calls "  and nothing is watched" '^run watch' 0
 
@@ -165,6 +169,27 @@ else
     echo "ok   a cancelled run does not get the failed-jobs advice"
     pass=$((pass + 1))
 fi
+
+fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":"skipped"}'
+run_sut
+expect "the watch fails, the run concluded skipped" 1 "::error::the agent feed run concluded skipped: $URL"
+
+fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":"timed_out"}'
+run_sut
+expect "the watch fails, the run concluded timed_out" 1 "::error::the agent feed run concluded timed_out: $URL"
+
+fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":null}'
+run_sut
+expect "the watch fails, completed with a null conclusion" 1 "::error::the agent feed run concluded with no conclusion: $URL"
+
+fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":""}'
+run_sut
+expect "the watch fails, completed with an empty conclusion" 1 "::error::the agent feed run concluded with no conclusion: $URL"
+
+fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":79,$NEW}]" GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":"failure"}'
+run_sut
+expect "no URL, the watch fails, the failure names the found run" 1 "::error::the agent feed run concluded failure: $BASE/79"
+expect_calls "  and the view is on that run" '^run view 79 --json status,conclusion$' 1
 
 fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"in_progress","conclusion":null}'
 run_sut

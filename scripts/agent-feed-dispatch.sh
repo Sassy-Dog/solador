@@ -14,7 +14,8 @@ set -euo pipefail
 # `actions: write` and nothing else.
 #
 # Usage: scripts/agent-feed-dispatch.sh <agent-vYYYY.M.N tag>
-# Needs: GITHUB_REPOSITORY, GH_TOKEN (and GH_REPO or a checkout for `gh`), `jq`.
+# Needs: GITHUB_REPOSITORY, GH_TOKEN, GH_REPO (the job sets both, so `gh` never
+# depends on the checkout's remote), `jq`.
 #   GITHUB_SERVER_URL                         default https://github.com
 #   SOLADOR_FEED_DISPATCH_ATTEMPTS / _SLEEP   the fallback's polling, default 12
 #                                             tries 5 seconds apart (the test sets
@@ -44,11 +45,12 @@ fi
 attempts="${SOLADOR_FEED_DISPATCH_ATTEMPTS:-12}"
 nap="${SOLADOR_FEED_DISPATCH_SLEEP:-5}"
 workflow="publish-agent-feed.yml"
+workflows_url="${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/actions/workflows/$workflow"
 
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! out="$(gh workflow run "$workflow" --ref "$tag" -f tag="$tag" 2>&1)"; then
     echo "$out" >&2
-    echo "::error::could not dispatch $workflow at $tag"
+    echo "::error::could not dispatch $workflow at $tag; look at $workflows_url"
     exit 1
 fi
 echo "$out"
@@ -68,12 +70,14 @@ if [[ -z "$run_id" ]]; then
         [[ $attempt -le $attempts ]] && sleep "$nap"
     done
     if [[ -z "$matches" ]]; then
-        echo "::error::dispatched $workflow at $tag but found no run for it"
+        echo "::error::dispatched $workflow at $tag but found no run for it; look at $workflows_url"
         exit 1
     fi
     if [[ "$(printf '%s\n' "$matches" | grep -c .)" != "1" ]]; then
-        echo "::error::more than one $workflow dispatch run at $tag since the dispatch; refusing to guess which is this job's"
-        printf '%s\n' "$matches"
+        echo "::error::more than one $workflow dispatch run at $tag since the dispatch; refusing to guess which is this job's; look at $workflows_url"
+        while IFS= read -r candidate; do
+            echo "${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/actions/runs/$candidate"
+        done <<< "$matches"
         exit 1
     fi
     run_id="$matches"
@@ -85,7 +89,9 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "### Agent feed run: $url" >> "$GITHUB_STEP_SUMMARY"
 fi
 
-if gh run watch "$run_id" --exit-status; then
+# `--interval 15`: gh polls every 3 s by default, about 40 calls a minute against
+# GITHUB_TOKEN's 1,000 an hour per repository, inside a 30 minute job.
+if gh run watch "$run_id" --interval 15 --exit-status; then
     echo "The agent feed run passed: $url"
     exit 0
 fi
