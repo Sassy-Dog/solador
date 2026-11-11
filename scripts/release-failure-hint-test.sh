@@ -25,7 +25,8 @@ set -euo pipefail
 # unreadable isLatest; and for each public case the feed clause with the upload
 # succeeding and the endpoint check succeeding / failing / skipped, and with
 # the upload failing. The copyable command in the unknown message ends the
-# line, with nothing after it.
+# line, with nothing after it. The command the workflow's inline fallback
+# prints matches the script's, escapes included.
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 HINT="$SCRIPT_DIR/release-failure-hint.sh"
@@ -201,14 +202,17 @@ esac
 WORKFLOW="${PUBLISH_FEED_WORKFLOW:-$SCRIPT_DIR/../.github/workflows/publish-feed.yml}"
 wf_line="$(grep -F 'the failure hint could not run' "$WORKFLOW" || true)"
 sc_line="$(grep -F "the release's state could not be read" "$HINT" || true)"
-# The workflow's echo is double-quoted, so its `$` are written `\$`.
-wf_query="$(printf '%s\n' "$wf_line" | sed -n "s/.*query='\\(.*\\)' -f o=.*/\\1/p" | sed 's/\\\$/$/g')"
+# The workflow's echo is double-quoted, so its `$` are written `\$`. The raw
+# extract is compared with the pinned query re-escaped, never un-escaped: a
+# dropped backslash would print broken GraphQL and must fail here.
+wf_query="$(printf '%s\n' "$wf_line" | sed -n "s/.*query='\\(.*\\)' -f o=.*/\\1/p")"
+want_query="$(printf '%s\n' "$QUERY" | sed 's/\$/\\$/g')"
 wf_tail="$(printf '%s\n' "$wf_line" | sed -n "s/.*query='.*' \\(-f o=.*\\)\"\$/\\1/p")"
 sc_tail="$(printf '%s\n' "$sc_line" | sed -n "s/.*query='.*' \\(-f o=.*\\)\"\$/\\1/p")"
 if [ -z "$wf_tail" ] || [ -z "$sc_tail" ]; then
     bad "the workflow fallback's copyable command could be read" "wf: $wf_line"
-elif [ "$wf_query" != "$QUERY" ]; then
-    bad "the workflow fallback's query matches the pinned one" "workflow: $wf_query  pinned: $QUERY"
+elif [ "$wf_query" != "$want_query" ]; then
+    bad "the workflow fallback's query matches the pinned one, escapes included" "workflow: $wf_query  want: $want_query"
 elif [ "$wf_tail" != "$sc_tail" ]; then
     bad "the workflow fallback's -f o= -f r= -f t= tail matches the script's" "workflow: $wf_tail  script: $sc_tail"
 else
