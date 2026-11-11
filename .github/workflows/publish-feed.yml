@@ -205,7 +205,8 @@ jobs:
       # asserting code is current. Depth 1 is enough here: the script checks
       # shallowness of the repo it runs IN (the tag checkout above), not of
       # the directory it is read from.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .tooling
@@ -520,11 +521,15 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           UPLOAD: ${{ steps.upload.outcome }}
           ENDPOINT_OUTCOME: ${{ steps.endpoint.outcome }}
-        # The script comes from the `.tooling` checkout. Before that checkout
-        # nothing was published, so there is nothing to explain.
+          TOOLING: ${{ steps.tooling.outcome }}
+        # The script comes from the `.tooling` checkout. Without it (the
+        # checkout did not succeed, or the script is not there) this step makes
+        # no claim about the release: an earlier attempt of this run may already
+        # have published it, so it only points at the command that reads its
+        # state, which needs no checkout.
         run: |
-          if [[ ! -f .tooling/scripts/release-failure-hint.sh ]]; then
-            echo "The job failed before its tooling checkout, so nothing was published."
+          if [[ "$TOOLING" != "success" || ! -f .tooling/scripts/release-failure-hint.sh ]]; then
+            echo "::error::this job failed and the failure hint could not run, so the release's state was not read; an earlier attempt may already have published it; check it, and re-run if it is public: gh api graphql -f query='query(\$o:String!,\$r:String!,\$t:String!){repository(owner:\$o,name:\$r){release(tagName:\$t){isDraft isLatest}}}' -f o=${GITHUB_REPOSITORY%/*} -f r=${GITHUB_REPOSITORY#*/} -f t=${TAG:-<tag>}"
             exit 0
           fi
           bash .tooling/scripts/release-failure-hint.sh

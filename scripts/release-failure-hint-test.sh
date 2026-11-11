@@ -14,8 +14,10 @@ set -euo pipefail
 #   scripts/release-failure-hint-test.sh
 #
 # THE STUB IS ARGUMENT-SENSITIVE: it answers only `gh api graphql` carrying the
-# query and the owner, name and tag variables for the repo and tag under test,
-# and rejects anything else. Every call's argv lands in $GH_SHIM_CALLS.
+# exact query string, the exact `--jq` filter and the owner, name and tag
+# variables for the repo and tag under test, and exits 2 on any other argument,
+# field or filter. Every call's argv lands in $GH_SHIM_CALLS. The unknown
+# message's copyable query is asserted verbatim too.
 #
 # What it holds: no tag (unknown, never calls gh); an unreadable state (gh
 # fails, an empty reply, a garbled draft field: each unknown); a draft (prints
@@ -33,6 +35,12 @@ trap 'rm -rf "$work"' EXIT
 
 REPO="Acme/solador"
 TAG="v2026.11.99"
+# The exact GraphQL query and `--jq` filter the script must send. They are
+# written out here, not read from the script, so a changed query or filter
+# fails the stub rather than being matched by it.
+# shellcheck disable=SC2016
+QUERY='query($o:String!,$r:String!,$t:String!){repository(owner:$o,name:$r){release(tagName:$t){isDraft isLatest}}}'
+JQ='.data.repository.release | [.isDraft, .isLatest] | @tsv'
 
 # --- The stub `gh` ----------------------------------------------------------
 #   GH_SHIM_REPO   owner/name the script must ask about
@@ -48,23 +56,26 @@ if [ "${1:-}" != api ] || [ "${2:-}" != graphql ]; then
     exit 2
 fi
 shift 2
-saw_query=0 saw_o=0 saw_r=0 saw_t=0
+saw_query=0 saw_o=0 saw_r=0 saw_t=0 saw_jq=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -f)
             case "$2" in
-                query=*"isDraft isLatest"*) saw_query=1 ;;
+                "query=$GH_SHIM_QUERY") saw_query=1 ;;
                 o="${GH_SHIM_REPO%/*}") saw_o=1 ;;
                 r="${GH_SHIM_REPO#*/}") saw_r=1 ;;
                 t="$GH_SHIM_TAG") saw_t=1 ;;
                 *) echo "gh shim: unexpected field: $2" >&2; exit 2 ;;
             esac
             shift 2 ;;
-        --jq) shift 2 ;;
+        --jq)
+            [ "$2" = "$GH_SHIM_JQ" ] || { echo "gh shim: unexpected --jq filter: $2" >&2; exit 2; }
+            saw_jq=1
+            shift 2 ;;
         *) echo "gh shim: unexpected argument: $1" >&2; exit 2 ;;
     esac
 done
-if [ "$saw_query$saw_o$saw_r$saw_t" != 1111 ]; then
+if [ "$saw_query$saw_o$saw_r$saw_t$saw_jq" != 11111 ]; then
     echo "gh shim: the query or one of its variables is missing" >&2
     exit 2
 fi
@@ -84,7 +95,7 @@ run_hint() {
     status=0
     env -i PATH="$work/ghshim:$PATH" HOME="$work" \
         GH_SHIM_REPO="$REPO" GH_SHIM_TAG="$TAG" GH_SHIM_REPLY="$reply" GH_SHIM_FAIL="$failtext" \
-        GH_SHIM_CALLS="$work/calls" \
+        GH_SHIM_CALLS="$work/calls" GH_SHIM_QUERY="$QUERY" GH_SHIM_JQ="$JQ" \
         GH_TOKEN=x GITHUB_REPOSITORY="$REPO" TAG="$tag" UPLOAD="$upload" ENDPOINT_OUTCOME="$endpoint" \
         "$BASH" "$HINT" > "$work/out" 2> "$work/err" || status=$?
 }
@@ -107,33 +118,28 @@ expect_no_gh_call() {
 
 REMEDY="Use 'Re-run failed jobs' on this run: the publish step finds the release already public and does nothing, then the manifest is rebuilt and uploaded."
 
-UNKNOWN_HEAD="::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft (then re-run); check with: gh api graphql -f query="
-UNKNOWN_TAIL="-f o=Acme -f r=solador -f t=$TAG"
+UNKNOWN_HEAD="::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft; check it, and re-run if it is public: gh api graphql -f query='$QUERY' -f o=Acme -f r=solador -f t="
 
-# unknown NAME — the unknown message, ending in the copyable command.
+# expect_unknown NAME [TAG] — exactly the unknown message, ending in the
+# copyable command (query verbatim), and exit status 0.
 expect_unknown() {
     local got
     got="$(cat "$work/out")"
-    case "$got" in
-        "$UNKNOWN_HEAD"*"$UNKNOWN_TAIL") ok "$1" ;;
-        *) bad "$1" "status=$status, stdout: $got" ;;
-    esac
+    if [ "$status" = 0 ] && [ "$got" = "$UNKNOWN_HEAD${2:-$TAG}" ]; then ok "$1"; else bad "$1" "status=$status, stdout: $got"; fi
 }
 
 # --- No tag -----------------------------------------------------------------
 run_hint "" failure skipped "false	true"
 expect_no_gh_call "no tag: gh is not asked"
-got="$(cat "$work/out")"
-case "$got" in
-    "$UNKNOWN_HEAD"*"-f t=<tag>") ok "no tag: unknown, the command names a <tag> placeholder, last on the line" ;;
-    *) bad "no tag: placeholder" "$got" ;;
-esac
+expect_unknown "no tag: unknown, the command names a <tag> placeholder, last on the line" "<tag>"
 
 # --- An unreadable state ------------------------------------------------------
 run_hint "$TAG" success failure "" "HTTP 502"
 expect_unknown "gh fails: unknown"
 run_hint "$TAG" success failure ""
-expect_unknown "empty reply (a missing release): unknown"
+expect_unknown "empty reply: unknown"
+run_hint "$TAG" success failure "	"
+expect_unknown "a lone TAB (a missing release: [null,null] | @tsv): unknown"
 run_hint "$TAG" success failure "maybe	true"
 expect_unknown "a garbled isDraft: unknown"
 run_hint "$TAG" success failure "null	null"

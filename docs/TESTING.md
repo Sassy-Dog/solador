@@ -22,7 +22,9 @@
   publish-time guards (`scripts/agent-feed-guard-test.sh`, #491 — the freeze and
   latest guards against a stub `gh`), the cockpit release train's failure hint
   (`scripts/release-failure-hint-test.sh`, #756 — every branch of
-  `publish-feed.yml`'s last step against a stub `gh`), the local run/signing helper
+  `scripts/release-failure-hint.sh` against a stub `gh` that checks the exact
+  query and `--jq` filter; the step's inline fallback for a missing tooling
+  checkout and its env wiring are not covered), the local run/signing helper
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the

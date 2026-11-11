@@ -19,7 +19,7 @@ set -euo pipefail
 # Exit status is always 0: the job is already red, and this step only explains.
 
 unknown() {
-    echo "::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft (then re-run); check with: gh api graphql -f query='query(\$o:String!,\$r:String!,\$t:String!){repository(owner:\$o,name:\$r){release(tagName:\$t){isDraft isLatest}}}' -f o=${GITHUB_REPOSITORY%/*} -f r=${GITHUB_REPOSITORY#*/} -f t=${TAG:-<tag>}"
+    echo "::error::this job failed and the release's state could not be read, so it is unknown whether it is still a draft; check it, and re-run if it is public: gh api graphql -f query='query(\$o:String!,\$r:String!,\$t:String!){repository(owner:\$o,name:\$r){release(tagName:\$t){isDraft isLatest}}}' -f o=${GITHUB_REPOSITORY%/*} -f r=${GITHUB_REPOSITORY#*/} -f t=${TAG:-<tag>}"
     exit 0
 }
 
