@@ -10,8 +10,9 @@ set -euo pipefail
 # WHY A DISPATCH. A called workflow's job that declares `environment: prd` is not
 # given the environment's secret, so the feed's signing key resolved empty. A
 # dispatched run is a top-level run at the tag, where it resolves. This script
-# holds no secret and no environment: `gh` takes GH_TOKEN from the job, which has
-# `actions: write` and nothing else.
+# holds no secret and no environment: `gh` takes GH_TOKEN from the job, whose
+# token has `actions: write` (the dispatch and the watch) and `contents: read`
+# (the checkout of the tagged script), and nothing else.
 #
 # Usage: scripts/agent-feed-dispatch.sh <agent-vYYYY.M.N tag>
 # Needs: GITHUB_REPOSITORY, GH_TOKEN, GH_REPO (the job sets both, so `gh` never
