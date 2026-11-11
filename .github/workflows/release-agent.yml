@@ -17,26 +17,33 @@ name: Release agent
 #   publish         → sign the exact files that were verified, then upload them
 #                     to a draft
 #   publish-release → make the draft a public, NOT-latest release
-#   feed            → call publish-agent-feed.yml, which signs and serves the
-#                     feed hosts update from
+#   feed            → dispatch publish-agent-feed.yml from the tag and wait for
+#                     it; that run signs and serves the feed hosts update from
 #
 # The split is the acceptance criterion. Only `publish` declares `environment:
 # prd`, because only it needs a secret. Build and verify hold no credential —
 # and, more to the point, the signing key touches one runner instead of six.
 # `publish-release` and `feed` hold no credential either: the first runs `gh
-# release edit` with the workflow's own token, and the second is a call to
-# publish-agent-feed.yml, whose protected job (`agent-feed`) reads the feed key
-# under its OWN `environment: prd`. `ci.yml`'s `secrets-guard` asserts that by
+# release edit` with the workflow's own token, and the second dispatches
+# publish-agent-feed.yml with the workflow's own token (`actions: write`), whose
+# protected job (`agent-feed`) reads the feed key under its OWN `environment:
+# prd`, as a top-level run. `ci.yml`'s `secrets-guard` asserts that by
 # job name AND by the presence of the environment line, not by allow-listing this
 # file: a secret reference in any job but `publish`, or in `publish` with its
 # environment removed, fails CI.
 #
-# WHY A CALL AND NOT `release: published`. A release published with the
-# workflow's own `GITHUB_TOKEN` does NOT fire `release: published` (GitHub
-# suppresses events raised by that token), so publish-agent-feed.yml would never
-# start from `publish-release`'s edit. Hence the `feed` job calls it directly.
-# Its `release: published` and `workflow_dispatch` triggers stay, as the door for
-# a draft someone holds back and publishes by hand, and for replays.
+# WHY A DISPATCH, NOT `release: published` AND NOT A CALL. A release published
+# with the workflow's own `GITHUB_TOKEN` does NOT fire `release: published`
+# (GitHub suppresses events raised by that token, except `workflow_dispatch` and
+# `repository_dispatch`), so publish-agent-feed.yml would never start from
+# `publish-release`'s edit. Hence the `feed` job dispatches it from the tag. It
+# is not a `uses:` call (#757): a called job that declares `environment: prd`
+# does NOT receive the environment's secret (agent-v2026.11.3's feed job saw
+# the signing key EMPTY), and the secrets guard refuses the blanket pass-down.
+# A dispatched run is a top-level run at the tag, which `prd`'s deployment policy
+# admits and where the environment secret resolves. Its `release: published` and
+# `workflow_dispatch` triggers also stay, as the door for a draft someone holds
+# back and publishes by hand, and for replays.
 #
 # THE GATE. `prd` has no required reviewer. Its deployment policy admits only
 # `v*` and `agent-v*` tags, so `main` and forks cannot reach it, and a tag ruleset
@@ -454,18 +461,70 @@ jobs:
             echo "$GITHUB_REF_NAME is already public; nothing to publish."
           fi
 
-  # The signed feed hosts update from, written by publish-agent-feed.yml. A CALL,
-  # because the edit above raises no `release: published` event (see the header).
-  # That workflow's `agent-eligibility` job still requires the run to be AT this
-  # tag, the release to be public with all eight assets, and both guards to pass;
-  # its `agent-feed` job reads the feed key under its own `environment: prd`.
-  # Nothing is passed down but the tag: the call hands over no secret at all.
-  # `contents: write` is the most the called workflow's upload job may use.
+  # The signed feed hosts update from, written by publish-agent-feed.yml. A
+  # DISPATCH from the tag (#757), because the edit above raises no `release:
+  # published` event (see the header) and a `uses:` call would not hand the called
+  # job `prd`'s secret. This job holds no environment and no secret: it takes
+  # `github.token` for `gh`, with `actions: write` (to dispatch and to watch) and
+  # nothing else. The dispatched run's `agent-eligibility` job still requires the
+  # run to be AT this tag, the release to be public with all eight assets, and
+  # both guards to pass; its `agent-feed` job reads the feed key under its own
+  # `environment: prd`. The job waits for that run and fails when it fails, so a
+  # red feed is a red tag-push run. To retry, re-run the failed jobs of the
+  # dispatched run (the URL is printed below), or dispatch it again from the tag.
   feed:
     name: Publish the agent feed
     needs: publish-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: write
-    uses: ./.github/workflows/publish-agent-feed.yml
-    with:
-      tag: ${{ github.ref_name }}
+      actions: write
+    env:
+      # No checkout in this job, so `gh` has no repository to infer.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch publish-agent-feed.yml at the tag and wait for it
+        run: |
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          out="$(gh workflow run publish-agent-feed.yml --ref "$GITHUB_REF_NAME" -f tag="$GITHUB_REF_NAME" 2>&1)" || {
+            echo "$out" >&2
+            echo "::error::could not dispatch publish-agent-feed.yml at $GITHUB_REF_NAME"
+            exit 1
+          }
+          echo "$out"
+          # Current `gh` prints the new run's URL; take its id from there.
+          run_id="$(grep -Eo '/actions/runs/[0-9]+' <<< "$out" | head -n1 | grep -Eo '[0-9]+' || true)"
+          if [[ -z "$run_id" ]]; then
+            # This `gh` printed none: find the one workflow_dispatch run at this
+            # tag created since just before the dispatch, and refuse to guess
+            # unless there is exactly one.
+            matches=""
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              matches="$(gh run list --workflow publish-agent-feed.yml --event workflow_dispatch \
+                --branch "$GITHUB_REF_NAME" --limit 20 --json databaseId,createdAt \
+                --jq "[.[] | select(.createdAt >= \"$started\") | .databaseId] | .[]")"
+              [[ -n "$matches" ]] && break
+              echo "attempt $attempt: the dispatched run is not listed yet, waiting…"
+              sleep 5
+            done
+            if [[ -z "$matches" ]]; then
+              echo "::error::dispatched publish-agent-feed.yml at $GITHUB_REF_NAME but found no run for it"
+              exit 1
+            fi
+            if [[ "$(wc -l <<< "$matches" | tr -d ' ')" != "1" ]]; then
+              echo "::error::more than one publish-agent-feed.yml dispatch run at $GITHUB_REF_NAME since $started; refusing to guess which is this job's:"
+              echo "$matches" >&2
+              exit 1
+            fi
+            run_id="$matches"
+          fi
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
+          echo "Dispatched run: $url"
+          echo "### Agent feed run: $url" >> "$GITHUB_STEP_SUMMARY"
+          if ! gh run watch "$run_id" --exit-status; then
+            echo "::error::the agent feed run failed: $url"
+            echo "Re-run its failed jobs, or dispatch publish-agent-feed.yml again from $GITHUB_REF_NAME." >&2
+            exit 1
+          fi
+          echo "The agent feed run passed: $url"

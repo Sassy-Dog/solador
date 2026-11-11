@@ -86,7 +86,7 @@ NSIS Windows installer, attached to a **draft**; its last job calls
 `publish-feed.yml`, which publishes the draft only after both updater signatures
 verify), and an `agent-v*` tag runs `release-agent.yml` (four agent binaries, the
 Linux musl ones static, with minisign signatures; it publishes the release, then
-calls `publish-agent-feed.yml`). Every job
+dispatches `publish-agent-feed.yml` from the tag and waits for it). Every job
 that holds a credential declares `environment: prd`; `ci.yml` references zero
 secrets and `scripts/secrets-guard.sh` asserts it. Neither train can be
 exercised by a PR. Signing runs last, after the version stamp; the build asserts

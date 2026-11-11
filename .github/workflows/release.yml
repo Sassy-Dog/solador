@@ -6,7 +6,7 @@ name: Release
 #
 # The metrics agent is NOT built here. It has its own release train (#472,
 # #491): `agent-v*` tags run release-agent.yml, which publishes its own release and
-# calls publish-agent-feed.yml. #390's "one tag, one release, both products" is
+# dispatches publish-agent-feed.yml from the tag. #390's "one tag, one release, both products" is
 # reversed: a `v*` tag produces no agent asset, and an `agent-v*` tag produces no
 # cockpit one. GitHub's tag filter keeps them apart (`v*` does not match
 # `agent-v…`, and the converse), so neither train triggers the other.

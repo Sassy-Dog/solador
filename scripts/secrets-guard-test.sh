@@ -326,9 +326,11 @@ expect refuse "a workflows directory without any scoped file"
 
 # --- release-agent.yml's publishing jobs (#749) hold no credential -----------
 # `publish-release` and `feed` sit beside the scoped `publish` job. Neither is
-# the allowed name. `publish-release` is refused a secret in its job-level env:
-# block, even with the protected environment added; `feed` is a `uses:` job that
-# cannot carry env:, so it is refused `secrets: inherit` instead.
+# the allowed name. Each is refused a secret, even with the protected
+# environment added: `publish-release` in its job-level env: block, `feed` in its
+# step's env:. `feed` was a `uses:` call until #757 (a called job does not
+# receive `prd`'s secrets), so it is an ordinary job that dispatches the feed
+# workflow and holds nothing.
 for job in publish-release feed; do
     grep -qxF "  $job:" "$SRC/release-agent.yml" \
         || { echo "release-agent.yml has no job '$job' — the cases below no longer test what they claim" >&2; exit 1; }
@@ -343,8 +345,13 @@ insert_after "$work/wf/release-agent.yml" '^  publish-release:$' "    environmen
 expect refuse "release-agent.yml: a secret in the 'publish-release' job, even under environment: prd"
 
 fresh_copy "$work/wf"
-insert_after "$work/wf/release-agent.yml" '^  feed:$' "    secrets: inherit"
-expect refuse "release-agent.yml: secrets: inherit on the 'feed' call"
+insert_after "$work/wf/release-agent.yml" '^      - name: Dispatch publish-agent-feed.yml ' "        env:<NL>          LEAK: $SECRET"
+expect refuse "release-agent.yml: a secret in the 'feed' job's step env"
+
+fresh_copy "$work/wf"
+insert_after "$work/wf/release-agent.yml" '^      - name: Dispatch publish-agent-feed.yml ' "        env:<NL>          LEAK: $SECRET"
+insert_after "$work/wf/release-agent.yml" '^  feed:$' "    environment: prd"
+expect refuse "release-agent.yml: a secret in the 'feed' job's step env, even under environment: prd"
 
 # --- release.yml stays allowed wholesale ------------------------------------
 fresh_copy "$work/wf"

@@ -14,7 +14,8 @@ its last job then calls `publish-feed.yml`, which verifies both updater
 signatures, publishes the draft and uploads `latest.json`. #15 tracked the whole
 path and is closed. **The agent's:** pushing an `agent-v*` tag (minted by
 `./dev publish --agent`) runs `release-agent.yml`, which signs and drafts an
-`agent-v*` release, publishes it, and calls `publish-agent-feed.yml`. See **The
+`agent-v*` release, publishes it, and dispatches `publish-agent-feed.yml` from
+the tag and waits for that run (#757). See **The
 agent's release train** below. GitHub's tag filter keeps them apart (`v*` does
 not match `agent-v…`, nor the converse), so a `v*` tag produces no agent asset
 and an `agent-v*` tag no cockpit one: #390's "one tag, one release, both
@@ -22,8 +23,8 @@ products" no longer holds. **Neither train can be exercised by a PR** — they
 trigger on a tag — so what can be tested lives in scripts a PR does run
 (`secrets-guard.sh`, `agent-feed-guard.sh`), and a change to a release workflow
 reaches a release only through a new tag (a `push` event runs the workflow file
-at the tagged commit, and so does a `release` event or a call from the workflow
-the push started). **The first tag cut after a change to either train is its
+at the tagged commit, and so does a `release` event, a call from the workflow
+the push started, or the agent feed's dispatch from the tag). **The first tag cut after a change to either train is its
 live test.**
 
 `./dev build --release` produces
@@ -94,17 +95,23 @@ indistinguishable from one that passes everything. A release is attached as a
 **draft** and published by the train itself, after the feed workflow has had its
 say (below): the cockpit's by `publish-feed.yml`, only once both updater
 signatures verify, and the agent's by `release-agent.yml`'s `publish-release` job.
-**Both call the feed workflow rather than rely on `release: published`**, because
-a release published with the workflow's own `GITHUB_TOKEN` raises no such event
-(GitHub suppresses events raised by that token). Both feed workflows therefore
-carry `workflow_call` beside `release: published` and `workflow_dispatch`, which
-remain as the door for a draft someone holds back and publishes by hand and for
-replays. In a called workflow `github.event_name` is the caller's (`push`) and
-`github.ref` / `github.sha` are the caller's tag and its commit, which is what
-the feed workflows' guards read. The caller jobs (`release.yml`'s `publish`,
-`release-agent.yml`'s `publish-release` and `feed`) declare no environment and
-read no secret; a called job that declares `environment: prd` reads its secret
-directly. `release.yml` is allowed wholesale by the secrets guard, so for its
+**Neither relies on `release: published`**, because a release published with the
+workflow's own `GITHUB_TOKEN` raises no such event (GitHub suppresses events
+raised by that token, except `workflow_dispatch` and `repository_dispatch`). The
+cockpit's feed is a **call**: `publish-feed.yml` carries `workflow_call` beside
+`release: published` and `workflow_dispatch`, and in a called workflow
+`github.event_name` is the caller's (`push`) and `github.ref` / `github.sha` are
+the caller's tag and its commit, which is what its guards read. It reads no
+secret, so a call suffices. The agent's feed is a **dispatch** (#757):
+`publish-agent-feed.yml` has no `workflow_call`, because a called job that
+declares `environment: prd` is NOT given the environment's secret (the first
+agent cut on a call saw the signing key empty); `release-agent.yml`'s `feed` job
+dispatches it from the tag, so it runs top-level, where `agent-feed` reads its
+secret under its own `environment: prd`. Its `release: published` and
+`workflow_dispatch` triggers remain as the door for a draft someone holds back
+and publishes by hand and for replays. The jobs that start the feeds
+(`release.yml`'s `publish`, `release-agent.yml`'s `publish-release` and `feed`)
+declare no environment and read no secret. `release.yml` is allowed wholesale by the secrets guard, so for its
 `publish` job that is a property of the file, reviewed, rather than a refusal the
 guard would make.
 
@@ -241,8 +248,15 @@ third leg).** `release-agent.yml` runs on an `agent-v*` tag push, and its
 with a detached minisign `.minisig`, attached to a **draft** `agent-v*` release
 created with `make_latest: false` (`--latest=false`), which the credential-free
 `publish-release` job then publishes with `--latest=false` (a no-op if it is
-already public, so a re-run passes) before a `feed` job calls
-`publish-agent-feed.yml`. One tag per product, one
+already public, so a re-run passes) before a `feed` job dispatches
+`publish-agent-feed.yml` from the tag and watches the run it started (#757: a
+`uses:` call does not hand a called job `prd`'s secret, so the signing key
+resolved empty). The `feed` job holds no environment and no secret, only
+`actions: write`; it fails when the dispatched run fails, and prints that run's
+URL either way. **When the agent feed fails, the failed thing is that dispatched
+`publish-agent-feed.yml` run**: re-run its failed jobs, or dispatch it again
+from the tag (`gh workflow run publish-agent-feed.yml --ref <tag> -f tag=<tag>`).
+Re-running the tag-push run's `feed` job dispatches a second feed run. One tag per product, one
 release per tag: the agent no longer rides the cockpit's `v*` release (see
 `docs/VERSIONING.md` for its number and mint). `build` first runs
 `scripts/assert-release-tag.sh --agent <tag>` (the agent mint re-run read-only;
