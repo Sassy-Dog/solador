@@ -193,6 +193,28 @@ case "$calls" in
     *) bad "asks GraphQL for the repo and tag under test" "$calls" ;;
 esac
 
+# --- The workflow's inline fallback prints the same copyable command ----------
+# publish-feed.yml hand-writes it (it runs without the script, which comes from
+# a checkout that may have failed), so it is compared here against the pinned
+# query and against the script's own tail. PUBLISH_FEED_WORKFLOW points the
+# check at another copy of the workflow (the negative control).
+WORKFLOW="${PUBLISH_FEED_WORKFLOW:-$SCRIPT_DIR/../.github/workflows/publish-feed.yml}"
+wf_line="$(grep -F 'the failure hint could not run' "$WORKFLOW" || true)"
+sc_line="$(grep -F "the release's state could not be read" "$HINT" || true)"
+# The workflow's echo is double-quoted, so its `$` are written `\$`.
+wf_query="$(printf '%s\n' "$wf_line" | sed -n "s/.*query='\\(.*\\)' -f o=.*/\\1/p" | sed 's/\\\$/$/g')"
+wf_tail="$(printf '%s\n' "$wf_line" | sed -n "s/.*query='.*' \\(-f o=.*\\)\"\$/\\1/p")"
+sc_tail="$(printf '%s\n' "$sc_line" | sed -n "s/.*query='.*' \\(-f o=.*\\)\"\$/\\1/p")"
+if [ -z "$wf_tail" ] || [ -z "$sc_tail" ]; then
+    bad "the workflow fallback's copyable command could be read" "wf: $wf_line"
+elif [ "$wf_query" != "$QUERY" ]; then
+    bad "the workflow fallback's query matches the pinned one" "workflow: $wf_query  pinned: $QUERY"
+elif [ "$wf_tail" != "$sc_tail" ]; then
+    bad "the workflow fallback's -f o= -f r= -f t= tail matches the script's" "workflow: $wf_tail  script: $sc_tail"
+else
+    ok "the workflow fallback's copyable command matches the pinned query and the script's tail"
+fi
+
 echo
 echo "release-failure-hint-test: $pass passed, $fail failed"
 [ "$fail" = 0 ]
