@@ -30,7 +30,12 @@
   failure; #708, the device an attach reports is the one `hdiutil info` lists,
   whichever order `hdiutil attach` names its entities in), the
   notarization outcome test (`scripts/notarize-outcome-test.sh`, #551 — a stub
-  `xcrun`: a timed-out wait is "still in progress", never "rejected"), the e2e server's bind test
+  `xcrun`: a timed-out wait is "still in progress", never "rejected"), the cockpit release train's failure hint
+  (`scripts/release-failure-hint-test.sh`, #756 — every branch of
+  `scripts/release-failure-hint.sh` against a stub `gh` that checks the exact
+  query and `--jq` filter, and compares the query (escapes included) and the
+  `-f` tail of the step's inline fallback in `publish-feed.yml` with the script's; the
+  fallback's branch condition and the env wiring are not covered), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
   e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
@@ -210,7 +215,15 @@ re-running the release job, never "do NOT resubmit" (both cases are tested; the
 suite pins `GITHUB_ACTIONS` itself); a rejection prints Apple's log, a submit with no id says it never
 happened, and only Accepted staples; lifted out of `build.sh` and run against a
 stub `xcrun`, so nothing is submitted; `NOTARIZE_SOURCE` points it at another
-copy of `build.sh` for the negative control), `tests/frontend/csp_server_test.py`,
+copy of `build.sh` for the negative control), `scripts/release-failure-hint-test.sh`
+(#756: the cockpit release train's failure hint, `scripts/release-failure-hint.sh`
+— no tag, an unreadable state, a draft, public and latest / not latest /
+`isLatest` unreadable, each with the upload succeeding and failing and the
+endpoint check failing; a `gh` stub that rejects any other call; the query
+(escapes included) and the `-f` tail of the workflow's inline fallback,
+compared with the script's, with `PUBLISH_FEED_WORKFLOW` pointing the check at another copy of
+`publish-feed.yml` for the negative control; bash 5 and
+macOS `/bin/bash` 3.2 in CI), `tests/frontend/csp_server_test.py`,
 and the `tests/frontend` Playwright suite. Agent tests run via `cargo test` in
 `agent/`.
 

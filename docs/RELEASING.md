@@ -386,13 +386,20 @@ rebuild, the upload, the endpoint check), the release is public with no served
 update checks fail until the feed is uploaded and served. If `releases/latest`
 was not moved to it (an older draft re-published after a newer release shipped),
 the hint says so and does not check what `releases/latest` serves. It also says
-whether `latest.json` was uploaded or only unconfirmed by the endpoint check.
-The job's last step reads the release's `isDraft` and `isLatest` (through
-GraphQL: `gh release view` has no `isLatest`) and says this in an `::error::`.
-It says the state is unknown, never a guess, if that read fails or returns
-anything but `true` or `false`, and an unreadable `isLatest` is reported as
-unknown too. Use **Re-run failed jobs**, where the publish step finds the
-release already public and does nothing, then rebuilds and uploads. That remedy is for failures after
+whether `latest.json` was uploaded, and calls it unconfirmed only when the
+endpoint check itself failed. The job's last step
+(`scripts/release-failure-hint.sh`, tested by
+`scripts/release-failure-hint-test.sh`) reads the release's `isDraft` and
+`isLatest` (through GraphQL: `gh release view` has no `isLatest`) and says this
+in an `::error::`. It says the state is unknown, never a guess, if that read
+fails or returns anything but `true` or `false`, and an unreadable `isLatest`
+is reported as unknown too. The same holds when the hint cannot run at all (the
+`.tooling` checkout that carries the script did not succeed, as on a re-run
+whose checkout fails after an earlier attempt published the release): the step
+then says the release's state was not read, that an earlier attempt may have
+published it, and prints the `gh api graphql` command to read it. Use
+**Re-run failed jobs**, where the publish step finds the release already public
+and does nothing, then rebuilds and uploads. That remedy is for failures after
 publishing only: a mis-signed build, or a missing payload or `.sig`, fails
 identically on a re-run of the failed jobs, which re-downloads the same draft
 assets. Fix the cause (the signing secret, or the missing payload/`.sig`) and
