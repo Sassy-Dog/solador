@@ -25,8 +25,9 @@ set -euo pipefail
 # unreadable isLatest; and for each public case the feed clause with the upload
 # succeeding and the endpoint check succeeding / failing / skipped, and with
 # the upload failing. The copyable command in the unknown message ends the
-# line, with nothing after it. The command the workflow's inline fallback
-# prints matches the script's, escapes included.
+# line, with nothing after it. The query (escapes included) and the `-f o= -f r=
+# -f t=` tail in the workflow's inline fallback match the script's; the rest of
+# that command line is not compared.
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 HINT="$SCRIPT_DIR/release-failure-hint.sh"
