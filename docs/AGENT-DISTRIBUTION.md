@@ -1480,9 +1480,9 @@ Also required:
   matching runner before the release is published: `release-agent.yml`'s `verify`
   job is a four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
   `macos-15-intel`, and it runs the *uploaded* file rather than a rebuild.
-- **The release workflows' guards — SHIPPED (#491).** `release-agent.yml` and
-  `publish-agent-feed.yml` trigger on a tag push and on a publication, so no PR
-  can run them; the first real run is #492's. What a PR can check, it does.
+- **The release workflows' guards — SHIPPED (#491).** `release-agent.yml` triggers on a tag push;
+  `publish-agent-feed.yml` on a publication or a dispatch, which the `feed` job
+  raises — so no PR can run them; the first real run is #492's. What a PR can check, it does.
   `scripts/agent-feed-guard-test.sh` runs the real `agent-feed-guard.sh` against
   a stub `gh` that answers only the exact endpoints the guard must ask about and
   serves one page of the release list unless asked to paginate: the candidate is

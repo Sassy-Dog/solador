@@ -204,6 +204,14 @@ jobs:
           SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
         run: bash scripts/agent-feed-guard-test.sh
 
+      # The agent train's feed step (#757): the dispatch-and-watch script behind
+      # release-agent.yml's `feed` job, against a stub `gh`. REQUIRE_JQ as above.
+      - name: Agent feed dispatch (scripts/agent-feed-dispatch-test.sh)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
+        env:
+          SOLADOR_AGENT_FEED_DISPATCH_TEST_REQUIRE_JQ: "1"
+        run: bash scripts/agent-feed-dispatch-test.sh
+
   rust-workspace:
     needs: changes
     if: ${{ needs.changes.outputs.rust_scope != 'none' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.helpers == 'true' }}
@@ -311,6 +319,12 @@ jobs:
         env:
           SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
         run: /bin/bash scripts/agent-feed-guard-test.sh
+
+      - name: Agent feed dispatch under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
+        env:
+          SOLADOR_AGENT_FEED_DISPATCH_TEST_REQUIRE_JQ: "1"
+        run: /bin/bash scripts/agent-feed-dispatch-test.sh
 
       # `security find-identity` may list a revoked Apple Development
       # certificate ahead of its renewal. The helper suite stubs `security` and

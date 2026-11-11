@@ -73,9 +73,10 @@ on:
   push:
     tags: ['agent-v*']
 
-# Read by default; `publish`, `publish-release` and `feed` restate `contents:
-# write` (the draft, publishing it, and the feed call's upload), because job
-# permissions replace the workflow's block.
+# Read by default; `publish` and `publish-release` restate `contents: write` (the
+# draft, and publishing it) and `feed` declares `actions: write` (the dispatch and
+# the watch) with `contents: read`, because job permissions replace the
+# workflow's block.
 permissions:
   contents: read
 
@@ -465,13 +466,18 @@ jobs:
   # DISPATCH from the tag (#757), because the edit above raises no `release:
   # published` event (see the header) and a `uses:` call would not hand the called
   # job `prd`'s secret. This job holds no environment and no secret: it takes
-  # `github.token` for `gh`, with `actions: write` (to dispatch and to watch) and
+  # `github.token` for `gh`, with `actions: write` (to dispatch and to watch),
+  # `contents: read` (to check out the tag's scripts/agent-feed-dispatch.sh) and
   # nothing else. The dispatched run's `agent-eligibility` job still requires the
   # run to be AT this tag, the release to be public with all eight assets, and
   # both guards to pass; its `agent-feed` job reads the feed key under its own
-  # `environment: prd`. The job waits for that run and fails when it fails, so a
-  # red feed is a red tag-push run. To retry, re-run the failed jobs of the
-  # dispatched run (the URL is printed below), or dispatch it again from the tag.
+  # `environment: prd`. The script waits for that run and is green only when its
+  # conclusion is read as `success`, so a red feed is a red tag-push run. To
+  # retry a failed feed, re-run the failed jobs of the dispatched run (its URL is
+  # printed), or dispatch it again from the tag.
+  #
+  # The checkout comes FIRST so a failure there has no side effect: nothing has
+  # been dispatched yet.
   feed:
     name: Publish the agent feed
     needs: publish-release
@@ -479,52 +485,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       actions: write
+      contents: read
     env:
-      # No checkout in this job, so `gh` has no repository to infer.
-      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Dispatch publish-agent-feed.yml at the tag and wait for it
-        run: |
-          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          out="$(gh workflow run publish-agent-feed.yml --ref "$GITHUB_REF_NAME" -f tag="$GITHUB_REF_NAME" 2>&1)" || {
-            echo "$out" >&2
-            echo "::error::could not dispatch publish-agent-feed.yml at $GITHUB_REF_NAME"
-            exit 1
-          }
-          echo "$out"
-          # Current `gh` prints the new run's URL; take its id from there.
-          run_id="$(grep -Eo '/actions/runs/[0-9]+' <<< "$out" | head -n1 | grep -Eo '[0-9]+' || true)"
-          if [[ -z "$run_id" ]]; then
-            # This `gh` printed none: find the one workflow_dispatch run at this
-            # tag created since just before the dispatch, and refuse to guess
-            # unless there is exactly one.
-            matches=""
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              matches="$(gh run list --workflow publish-agent-feed.yml --event workflow_dispatch \
-                --branch "$GITHUB_REF_NAME" --limit 20 --json databaseId,createdAt \
-                --jq "[.[] | select(.createdAt >= \"$started\") | .databaseId] | .[]")"
-              [[ -n "$matches" ]] && break
-              echo "attempt $attempt: the dispatched run is not listed yet, waiting…"
-              sleep 5
-            done
-            if [[ -z "$matches" ]]; then
-              echo "::error::dispatched publish-agent-feed.yml at $GITHUB_REF_NAME but found no run for it"
-              exit 1
-            fi
-            if [[ "$(wc -l <<< "$matches" | tr -d ' ')" != "1" ]]; then
-              echo "::error::more than one publish-agent-feed.yml dispatch run at $GITHUB_REF_NAME since $started; refusing to guess which is this job's:"
-              echo "$matches" >&2
-              exit 1
-            fi
-            run_id="$matches"
-          fi
-          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
-          echo "Dispatched run: $url"
-          echo "### Agent feed run: $url" >> "$GITHUB_STEP_SUMMARY"
-          if ! gh run watch "$run_id" --exit-status; then
-            echo "::error::the agent feed run failed: $url"
-            echo "Re-run its failed jobs, or dispatch publish-agent-feed.yml again from $GITHUB_REF_NAME." >&2
-            exit 1
-          fi
-          echo "The agent feed run passed: $url"
+        run: scripts/agent-feed-dispatch.sh "$GITHUB_REF_NAME"
