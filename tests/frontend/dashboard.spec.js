@@ -1968,15 +1968,24 @@ test("removing a visible tile keeps source alerts, persists, and Undo restores i
   await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
   await expect(page.locator(".db-removal")).toContainText("keeps its source and monitoring");
   await action(page, "remove").click();
-  expect((await savedLayout(page)).tiles).toEqual(original.layout.tiles.filter(t => t.source !== "ghWorkflows"));
+  // The stub writes localStorage synchronously inside the click, so these
+  // waits do not fix a late write. They turn a save that never landed into a
+  // named failure and tell the candidates for #751 apart: the dashboard_save
+  // count poll fails if a save was never sent (dropped by busy or a missing
+  // tile), the savedLayout polls fail if it was sent but rejected, and the
+  // post-reload count fails if the reloaded page did not see the write.
+  await expect.poll(async () => (await savedLayout(page))?.tiles).toEqual(original.layout.tiles.filter(t => t.source !== "ghWorkflows"));
   await expect(tile(page, "ghWorkflows")).toHaveCount(0);
   await expect(action(page, "undo")).toBeFocused();
   await expect(action(page, "undo")).toBeInViewport({ ratio: 1 });
   await expect(page.locator(".db-attention-items button")).toHaveText(original.attention.map(a => a.label));
   await action(page, "undo").click();
-  expect((await savedLayout(page)).tiles).toEqual(original.layout.tiles);
+  await expect.poll(async () => (await savedLayout(page))?.tiles).toEqual(original.layout.tiles);
   await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
   await action(page, "remove").click();
+  // Saves in this test: first remove, Undo, second remove.
+  await expect.poll(() => commandArgs(page, "dashboard_save").then(a => a.length)).toBe(3);
+  await expect.poll(async () => (await savedLayout(page))?.tiles.some(t => t.source === "ghWorkflows")).toBe(false);
   await page.reload();
   await expect(tile(page, "ghWorkflows")).toHaveCount(0);
   await expect(page.locator(".db-grid .db-tile")).toHaveCount(4);
