@@ -15,9 +15,10 @@ set -euo pipefail
 # — every credential-holding job in release.yml (the cockpit's release, allowed
 # wholesale, by file), and exactly two other jobs, allowed by `file:job` PAIR:
 # `release-agent.yml:publish`, which signs the agent's binaries, and
-# `publish-agent-feed.yml:agent-feed`, which signs `agent-latest.json` — mostly
-# reached through the call from release-agent.yml's `feed` job once its release
-# is public (#749), and also on `release: published` or a dispatch. Nothing else. The jobs beside them stay
+# `publish-agent-feed.yml:agent-feed`, which signs `agent-latest.json` — reached
+# by the dispatch release-agent.yml's `feed` job raises once its release is
+# public (#749, #757; a `uses:` call would not hand it the environment's
+# secret), and also on `release: published` or a manual dispatch. Nothing else. The jobs beside them stay
 # credential-free, publish-feed.yml (the cockpit's feed) has no allowance at all
 # since #491 moved the agent's feed job out of it, and neither does any other
 # workflow.

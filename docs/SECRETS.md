@@ -344,9 +344,10 @@ anyone else is granted write access:
 - `release-agent.yml`, on an `agent-v*` tag push (the agent's train): its
   `publish` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` to sign the agent's
   four binaries. Its `build` and `verify` jobs hold nothing.
-- `publish-agent-feed.yml`, called by `release-agent.yml`'s `feed` job once the
-  release is public (and on `release: published` / `workflow_dispatch` for a
-  release published by hand or a replay): its `agent-feed` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same
+- `publish-agent-feed.yml`, dispatched from the tag by `release-agent.yml`'s
+  `feed` job once the release is public (#757; a `uses:` call does not give a
+  called job `prd`'s secret), and on `release: published` / a manual
+  `workflow_dispatch` for a release published by hand or a replay: its `agent-feed` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same
   key, no new scope — to sign `agent-latest.json`, which cannot be signed at
   build time because it is assembled from a public release's download URLs
   (#391, moved here by #491). Its `agent-eligibility` job reads nothing. A
@@ -356,8 +357,8 @@ anyone else is granted write access:
 allowance in the guard. The same goes for the jobs #749 added so that a tag push
 publishes its own release: `release.yml`'s last job (a call to `publish-feed.yml`
 with `publish: true`), and `release-agent.yml`'s `publish-release` (`gh release
-edit` with the workflow token) and `feed` (a call to `publish-agent-feed.yml`)
-jobs declare no environment and read no secret. The guard refuses a secret in
+edit` with the workflow token) and `feed` (`actions: write` and `contents: read`, dispatching and watching
+`publish-agent-feed.yml`) jobs declare no environment and read no secret. The guard refuses a secret in
 the latter two (`secrets-guard-test.sh` proves it); for `release.yml`, which it
 allows by file, that rests on review.
 

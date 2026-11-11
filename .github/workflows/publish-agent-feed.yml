@@ -20,10 +20,16 @@ name: Publish agent feed
 # because the feed does not exist until the release does. Since #749 the tag
 # push is the approval: release-agent.yml's `publish-release` job publishes the
 # draft (after `publish` has signed and re-verified every binary) and its `feed`
-# job CALLS this workflow with `tag`. A release published with the workflow's own
-# `GITHUB_TOKEN` does NOT fire `release: published`, which is why the call exists.
-# `release: published` and `workflow_dispatch` remain as the door for a draft
-# someone holds back and publishes by hand, and for replays. The tag filter on a
+# job DISPATCHES this workflow from the tag (`workflow_dispatch`, `tag` set to
+# that tag) and waits for the run. A release published with the workflow's own
+# `GITHUB_TOKEN` does NOT fire `release: published`, which is why the dispatch
+# exists; an event raised with that token starts no run except
+# `workflow_dispatch` and `repository_dispatch`. It is a dispatch and not a
+# `workflow_call` (#757): a called job that declares `environment: prd` is NOT
+# given the environment's secrets, so a call reached `agent-feed` with the
+# signing key EMPTY. A dispatched run is a top-level run, where it resolves.
+# `release: published` remains as the door for a draft someone holds back and
+# publishes by hand, and `workflow_dispatch` as the door for replays. The tag filter on a
 # `release` event is `startsWith(tag, 'agent-v')`: the cockpit's `v*` releases are
 # publish-feed.yml's, and this workflow does nothing for them (nor for
 # `agent-latest`'s own creation, which is a prerelease under another prefix).
@@ -37,15 +43,9 @@ name: Publish agent feed
 # binaries with). `ci.yml`'s `secrets-guard` asserts that by job name AND by the
 # presence of the environment, rather than allow-listing this file wholesale.
 # `agent-eligibility` (credential-free) decides whether the protected job may even
-# start, so the protected job is never entered by a run that cannot succeed. A
-# called job that declares `environment: prd` reads its secret directly; the
-# caller passes none.
-#
-# In a CALLED workflow `github.event_name` is the CALLER's event (`push`),
-# `github.event.release` is empty, and `github.ref` and `github.sha` are the
-# caller's: the tag and its commit. `agent-eligibility`'s `if:` admits that path,
-# and every check below then holds unchanged — the run is at `refs/tags/<tag>`,
-# the release is public with all eight assets, and both guards pass.
+# start, so the protected job is never entered by a run that cannot succeed. This
+# workflow is never CALLED (#757): the job reads its secret only as part of a
+# top-level run.
 #
 # TWO GUARDS in `agent-eligibility`, both in scripts/agent-feed-guard.sh (so
 # `./dev test` exercises them; a PR cannot run this workflow):
@@ -76,8 +76,9 @@ name: Publish agent feed
 # WHICH COPY OF THIS FILE RUNS. A `release` event runs the workflow file AT THE
 # TAGGED COMMIT — `GITHUB_SHA` is the last commit in the tagged release and
 # `GITHUB_REF` is the tag — not the copy on `main`. (Measured, not assumed:
-# every `release` run in this repo reports `head_sha` = the tag's commit.) A CALL
-# from release-agent.yml runs the tagged commit's copy as well. So a
+# every `release` run in this repo reports `head_sha` = the tag's commit.) The
+# dispatch from release-agent.yml's `feed` job runs the tagged commit's copy as
+# well, because it names the tag as its ref. So a
 # fix to this file reaches a release only through a NEW agent tag, and the guard
 # script and the producer this run uses are the ones that shipped beside it, by
 # construction. The manual door follows the same rule on purpose: a dispatch must
@@ -87,25 +88,11 @@ name: Publish agent feed
 on:
   release:
     types: [published]
-  # The call from release-agent.yml's `feed` job (#749), once its
-  # `publish-release` job has made the release public. The same two inputs as the
-  # manual door; the caller passes only `tag`. A call runs AT the tag already (the
-  # caller's ref), so the lock in `agent-eligibility` holds for it as it does for
-  # a dispatch.
-  workflow_call:
-    inputs:
-      tag:
-        description: 'Agent release tag to publish the feed for (e.g. agent-v2026.10.15)'
-        required: true
-        type: string
-      force:
-        description: 'Publish although this is not the newest published agent release (a deliberate replay of an older one)'
-        required: false
-        default: false
-        type: boolean
-  # The manual door, for a release whose feed run failed for a reason outside
-  # this file (a GitHub outage, an asset uploaded late) and for the empty-
-  # `agent-latest` recovery above. Run the workflow FROM the tag (the "Use
+  # The door release-agent.yml's `feed` job uses (#749, #757): it dispatches
+  # this workflow from the tag once its `publish-release` job has made the
+  # release public, and it is also the manual door, for a release whose feed run
+  # failed for a reason outside this file (a GitHub outage, an asset uploaded
+  # late) and for the empty-`agent-latest` recovery above. Run the workflow FROM the tag (the "Use
   # workflow from" selector, or
   # `gh workflow run publish-agent-feed.yml --ref <tag> -f tag=<tag>`), not from
   # `main` with the tag typed into the input: `agent-eligibility` refuses a run
@@ -145,16 +132,14 @@ jobs:
     # `agent-v` prefix gate keeps the cockpit's releases (and `agent-latest`'s
     # own creation) out; a dispatch is checked against the API in the steps.
     #
-    # The CALLED path (#749) is `push`, the caller's event, with the caller's
-    # ref an `agent-v*` tag. The steps below still require the release to be
-    # public and the run to be AT the tag it names.
+    # The dispatch release-agent.yml's `feed` job raises (#757) is a
+    # `workflow_dispatch` like any other: the steps below require the release
+    # to be public and the run to be AT the tag it names.
     if: >-
       (github.event_name == 'release'
         && startsWith(github.event.release.tag_name, 'agent-v')
         && !github.event.release.prerelease)
       || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'push'
-        && startsWith(github.ref, 'refs/tags/agent-v'))
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -166,7 +151,7 @@ jobs:
         id: tag
         env:
           # Through the environment, never interpolated into the script.
-          # `inputs.tag` is the dispatch's and the call's.
+          # `inputs.tag` is the dispatch's.
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
           RUN_REF: ${{ github.ref }}
@@ -176,9 +161,8 @@ jobs:
             echo "::error::'$tag' is not an agent-vYYYY.M.N release tag"
             exit 1
           fi
-          # The lock on the manual door. On a `release` event (and in a call
-          # from release-agent.yml, which carries its caller's ref) GitHub sets
-          # the ref to the tag already; on `workflow_dispatch` it is whatever
+          # The lock on the manual door. On a `release` event GitHub sets the
+          # ref to the tag already; on `workflow_dispatch` it is whatever
           # ref the run was started from, and only the tag itself is acceptable.
           # This is what keeps "type a tag into an input" from turning a
           # `main`-ref job into one that may enter `prd` — and `prd`'s tag-only

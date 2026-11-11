@@ -20,6 +20,7 @@ EMPTY = dict(agent_rust=False, rust_scope="none", frontend=False, bundle=False, 
 AGENT_HELPERS = {
     "scripts/agent-signing.sh", "scripts/agent-standby-key.sh",
     "scripts/agent-feed-guard.sh", "scripts/agent-feed-guard-test.sh",
+    "scripts/agent-feed-dispatch.sh", "scripts/agent-feed-dispatch-test.sh",
     "scripts/agent-deps-guard.sh",
 }
 APP_HELPERS = {

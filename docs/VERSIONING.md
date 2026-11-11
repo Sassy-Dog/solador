@@ -270,7 +270,8 @@ The cockpit's:
    rather than the tag (#391, moved there by #491), as before. What is still
    true of a **draft**: its assets are not public until it is published, so a
    draft can never serve updates (since #749 the train publishes the release
-   itself, and only then calls the feed workflow) — but the month no longer
+   itself, and only then starts the feed workflow: the cockpit's by a call, the
+   agent's by a dispatch) — but the month no longer
    matters to either workflow. **Only tags cut after #404 merged get this assertion**: both
    workflows run the copy of themselves at the tagged commit
    (`publish-feed.yml`'s header records the measurement), so a re-run or a

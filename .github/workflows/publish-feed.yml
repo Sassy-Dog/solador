@@ -102,7 +102,7 @@ on:
 # Uploading latest.json to the release, and publishing the draft. Everything else
 # in this repo stays `contents: read`, except what grants itself `contents:
 # write` to create or publish a release or upload a feed: release.yml,
-# release-agent.yml's `publish`, `publish-release` and `feed` jobs and
+# release-agent.yml's `publish` and `publish-release` jobs and
 # publish-agent-feed.yml's `agent-feed` job. When this file is CALLED, the
 # caller's job grants the same `contents: write` (a called workflow cannot hold
 # more than its caller gives it).

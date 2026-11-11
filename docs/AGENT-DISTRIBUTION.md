@@ -287,17 +287,24 @@ assets are not public, and the feed is assembled from the public URLs. Since
 #749 the tag push is the whole approval: `release-agent.yml`'s credential-free
 `publish-release` job publishes the draft (`gh release edit --draft=false
 --latest=false`, a no-op when it is already public) after `publish` has signed
-and re-verified every binary, and its `feed` job then **calls** this workflow
-with the tag. It is a call and not a reliance on `release: published` because a
-release published with the workflow's own `GITHUB_TOKEN` raises no such event.
-`release: published` and `workflow_dispatch` stay, for a draft someone holds
-back and publishes by hand and for replays. In the called path
-`github.event_name` is the caller's (`push`) and `github.ref` / `github.sha` are
-the caller's tag and its commit, so `agent-eligibility` still requires the run
-to be AT `refs/tags/<tag>`, the release public with all eight assets, and both
-guards to pass. It runs for `agent-v*` releases only; the app's `v*` releases are
+and re-verified every binary, and its `feed` job then **dispatches** this workflow
+from the tag (`workflow_dispatch`, `tag` set to that tag) and waits for the run,
+failing when it fails (#757). It is a dispatch and not a reliance on `release:
+published` because a release published with the workflow's own `GITHUB_TOKEN`
+raises no such event, and not a `uses:` call because a called job that declares
+`environment: prd` is not given the environment's secret: agent-v2026.11.3's
+call reached `agent-feed` with the signing key empty. The `feed` job holds no
+environment and no secret, only `actions: write` and `contents: read` (to check
+out the tagged script). `release: published` and a
+manual `workflow_dispatch` stay, for a draft someone holds back and publishes by
+hand and for replays. The dispatched run is an ordinary top-level run at the
+tag, so `agent-eligibility` requires it to be AT `refs/tags/<tag>`, the release
+public with all eight assets, and both guards to pass. **A failed agent feed is
+that dispatched run**: re-run its failed jobs, or dispatch it again from the tag.
+It runs for `agent-v*` releases only; the app's `v*` releases are
 `publish-feed.yml`'s, which is desktop-only and holds no credential. A `release`
-event, and a call, run the workflow file **at the tagged commit**, so a fix to it
+event, and the dispatch (which names the tag as its ref), run the workflow file
+**at the tagged commit**, so a fix to it
 reaches a release only through a new agent tag, and the manual replay must be
 dispatched *from* the tag for the same reason.
 
@@ -877,8 +884,9 @@ pushing a NEW release tag admin-only, and that push is the release approval. It
 does NOT decide who may enter `prd`. Four other doors reach `prd` for ANY
 account with write access, with no approval, since `prd` has no reviewer:
 
-- a `workflow_dispatch` of `publish-agent-feed.yml` run from an existing tag,
-  including `force=true`, which waives the freeze guard and could sign and serve
+- a `workflow_dispatch` of `publish-agent-feed.yml` run from an existing tag
+  (the very door `release-agent.yml`'s `feed` job uses, so re-running that job
+  raises one too), including `force=true`, which waives the freeze guard and could sign and serve
   an older agent feed so that hosts stop updating;
 - re-running ANY existing run of either `release-agent.yml` or
   `publish-agent-feed.yml` (a `workflow_dispatch` run or a `release: published`
@@ -1473,9 +1481,9 @@ Also required:
   matching runner before the release is published: `release-agent.yml`'s `verify`
   job is a four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
   `macos-15-intel`, and it runs the *uploaded* file rather than a rebuild.
-- **The release workflows' guards — SHIPPED (#491).** `release-agent.yml` and
-  `publish-agent-feed.yml` trigger on a tag push and on a publication, so no PR
-  can run them; the first real run is #492's. What a PR can check, it does.
+- **The release workflows' guards — SHIPPED (#491).** `release-agent.yml` triggers on a tag push;
+  `publish-agent-feed.yml` on a publication or a dispatch, which the `feed` job
+  raises — so no PR can run them; the first real run is #492's. What a PR can check, it does.
   `scripts/agent-feed-guard-test.sh` runs the real `agent-feed-guard.sh` against
   a stub `gh` that answers only the exact endpoints the guard must ask about and
   serves one page of the release list unless asked to paginate: the candidate is
