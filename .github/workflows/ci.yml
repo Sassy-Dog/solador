@@ -204,6 +204,11 @@ jobs:
           SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
         run: bash scripts/agent-feed-guard-test.sh
 
+      # The cockpit release train's failure hint (#756), against a stub `gh`.
+      - name: Release failure hint (scripts/release-failure-hint-test.sh)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
+        run: bash scripts/release-failure-hint-test.sh
+
   rust-workspace:
     needs: changes
     if: ${{ needs.changes.outputs.rust_scope != 'none' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.helpers == 'true' }}
@@ -311,6 +316,10 @@ jobs:
         env:
           SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
         run: /bin/bash scripts/agent-feed-guard-test.sh
+
+      - name: Release failure hint under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
+        run: /bin/bash scripts/release-failure-hint-test.sh
 
       # `security find-identity` may list a revoked Apple Development
       # certificate ahead of its renewal. The helper suite stubs `security` and

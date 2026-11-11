@@ -20,7 +20,9 @@
   assertion, plus the agent's derivation, mint, `--agent` assertion and
   `publish --agent` (#490), against temporary bare origins), the agent feed's
   publish-time guards (`scripts/agent-feed-guard-test.sh`, #491 — the freeze and
-  latest guards against a stub `gh`), the local run/signing helper
+  latest guards against a stub `gh`), the cockpit release train's failure hint
+  (`scripts/release-failure-hint-test.sh`, #756 — every branch of
+  `publish-feed.yml`'s last step against a stub `gh`), the local run/signing helper
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
@@ -89,7 +91,12 @@ workflows' tag assertion from #404, and since #490 the agent's derivation, mint,
 the agent feed's freeze guard — only the newest published `agent-v*` release may
 publish a feed, read from the paginated release list — and latest guard, against
 a `gh` stub that serves one page unless asked to paginate; bash 5 and macOS
-`/bin/bash` 3.2 in CI), `scripts/run-test.sh` (`./dev run`'s
+`/bin/bash` 3.2 in CI), `scripts/release-failure-hint-test.sh` (#756: the
+cockpit release train's failure hint, `scripts/release-failure-hint.sh` — no
+tag, an unreadable state, a draft, public and latest / not latest / `isLatest`
+unreadable, each with the upload succeeding and failing and the endpoint check
+failing; a `gh` stub that rejects any other call; bash 5 and macOS `/bin/bash`
+3.2 in CI), `scripts/run-test.sh` (`./dev run`'s
 signing-identity choice: the exact-identity Apple certificate trust gate, and
 the warned ad-hoc run where no Apple Development certificate is installed —
 only an Apple-issued certificate stops the keychain prompts; see app/README.md,

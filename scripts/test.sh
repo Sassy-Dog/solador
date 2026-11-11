@@ -84,6 +84,18 @@ else
     exit 1
 fi
 
+# --- The cockpit release train's failure hint (#753, #756): what a failed
+# publish-feed.yml run says about a release that already went public, run
+# against a stub `gh`. The workflow only runs on a tag push, so this is the
+# only coverage its last step gets before a cut.
+log_info "Running release failure hint tests (scripts/release-failure-hint-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/release-failure-hint-test.sh; then
+    log_success "Release failure hint tests passed"
+else
+    log_error "Release failure hint tests failed"
+    exit 1
+fi
+
 # --- Local macOS run/signing helpers. The suite stubs `security`, so it runs
 # on every host while proving code-signing trust is checked against the exact
 # SHA-1 identity rather than another same-name renewal.

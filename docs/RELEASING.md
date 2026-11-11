@@ -386,8 +386,10 @@ rebuild, the upload, the endpoint check), the release is public with no served
 update checks fail until the feed is uploaded and served. If `releases/latest`
 was not moved to it (an older draft re-published after a newer release shipped),
 the hint says so and does not check what `releases/latest` serves. It also says
-whether `latest.json` was uploaded or only unconfirmed by the endpoint check.
-The job's last step reads the release's `isDraft` and `isLatest` (through
+whether `latest.json` was uploaded, and calls it unconfirmed only when the
+endpoint check itself failed. The job's last step
+(`scripts/release-failure-hint.sh`, tested by
+`scripts/release-failure-hint-test.sh`) reads the release's `isDraft` and `isLatest` (through
 GraphQL: `gh release view` has no `isLatest`) and says this in an `::error::`.
 It says the state is unknown, never a guess, if that read fails or returns
 anything but `true` or `false`, and an unreadable `isLatest` is reported as
