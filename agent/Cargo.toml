@@ -149,7 +149,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 # itself (0.7 did, inside `serve`), so every listener given to it must
 # already be non-blocking: main.rs's comes from tokio's `into_std()`, and the
 # tests set it by hand.
-axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [target.'cfg(unix)'.dependencies]
 # `getuid` for the launchd `gui/<uid>` domain, `getpwuid_r` for the invoking
