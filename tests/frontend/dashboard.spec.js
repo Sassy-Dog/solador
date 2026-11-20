@@ -3257,10 +3257,12 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
   await expect(row.locator(".db-dot")).toHaveClass(/db-dot-blink/);
   const running = rows.find((r) => r.value === "Running");
   await expect(item(running.label).locator(".db-dot")).not.toHaveClass(/db-dot-blink/);
-  expect(await row.locator(".db-dot").evaluate((el) => getComputedStyle(el).animationName)).toBe("gh-blink");
-  expect(await item(running.label).locator(".db-dot").evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+  // Retrying reads: the dashboard re-renders its rows on a 1 s poll, so a one-shot
+  // evaluate can land on a node the poll just replaced (a detached node reads "").
+  await expect(row.locator(".db-dot")).toHaveCSS("animation-name", "gh-blink");
+  await expect(item(running.label).locator(".db-dot")).toHaveCSS("animation-name", "none");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  expect(await row.locator(".db-dot").evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+  await expect(row.locator(".db-dot")).toHaveCSS("animation-name", "none");
 
   // Clicking it hands Rust's string, byte for byte, to the opener, not to Detail.
   await row.click();
