@@ -167,6 +167,8 @@ test("on a window wide enough for two columns the breakdowns sit beside the cost
   expect(cockpit.panelColumns.azureCost, "wide enough for the two-column body").toBe(2);
 
   await gotoWithAzure(page, baseURL);
+  await expect(page.locator("#azureBody .az-main")).toBeVisible();
+  await expect(page.locator("#azureBody .az-columns")).toBeVisible();
   const box = async (selector) => await page.locator(selector).boundingBox();
   const costs = await box("#azureBody .az-main");
   const breakdowns = await box("#azureBody .az-columns");
@@ -188,6 +190,8 @@ test("a narrow card stacks the breakdowns under the costs, divider and all", asy
   const azure = await fixture(baseURL, "sample-azure.json");
   await gotoPanel(page, baseURL, { cockpit: narrow, azure });
 
+  await expect(page.locator("#azureBody .az-main")).toBeVisible();
+  await expect(page.locator("#azureBody .az-columns")).toBeVisible();
   const costs = await page.locator("#azureBody .az-main").boundingBox();
   const breakdowns = await page.locator("#azureBody .az-columns").boundingBox();
   expect(breakdowns.y).toBeGreaterThan(costs.y + costs.height - 1);

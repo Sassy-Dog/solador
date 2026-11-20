@@ -685,6 +685,8 @@ test("the Runners header keeps the stats and the chips on one line", async ({ pa
 
   const header = page.locator("#runnersBody .gh-header");
   await expect(header).toHaveCount(1);
+  await expect(header.locator(".gh-stats")).toBeVisible();
+  await expect(header.locator(".gh-chips")).toBeVisible();
   const stats = await header.locator(".gh-stats").boundingBox();
   const chips = await header.locator(".gh-chips").boundingBox();
 
@@ -911,6 +913,7 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
   const title = page.locator("#runnersTitle");
   // The tile's own name heads its Full view (#640), not the payload's title.
   await expect(title).toHaveText("GitHub Runners");
+  await expect(page.locator("#runnersStale")).toBeVisible();
   const [titled, staled] = await Promise.all([title.boundingBox(), page.locator("#runnersStale").boundingBox()]);
   expect(titled.width, "the panel keeps its name when it degrades").toBeGreaterThan(0);
   expect(

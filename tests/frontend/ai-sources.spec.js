@@ -318,6 +318,8 @@ async function gotoWithColumns(page, baseURL, source, columns, mutate = () => {}
 test("on a full-width card the plan sits beside the rollups", async ({ page, baseURL }) => {
   await gotoWithColumns(page, baseURL, "anthropic", 2);
   await expect(page.locator("#anthropicPanel")).toHaveAttribute("data-cols", "2");
+  await expect(page.locator("#anthropicBody .ai-plans")).toBeVisible();
+  await expect(page.locator("#anthropicBody .ai-rollups")).toBeVisible();
   const plans = await page.locator("#anthropicBody .ai-plans").boundingBox();
   const rollups = await page.locator("#anthropicBody .ai-rollups").boundingBox();
   expect(rollups.x, "the rollups start to the right of the plan").toBeGreaterThan(plans.x + plans.width - 1);
@@ -330,6 +332,8 @@ test("on a full-width card the plan sits beside the rollups", async ({ page, bas
 
 test("a narrow card stacks the rollups under the plan, with a rule between them", async ({ page, baseURL }) => {
   await gotoWithColumns(page, baseURL, "anthropic", 1);
+  await expect(page.locator("#anthropicBody .ai-plans")).toBeVisible();
+  await expect(page.locator("#anthropicBody .ai-rollups")).toBeVisible();
   const plans = await page.locator("#anthropicBody .ai-plans").boundingBox();
   const rollups = await page.locator("#anthropicBody .ai-rollups").boundingBox();
   expect(rollups.y).toBeGreaterThan(plans.y + plans.height - 1);

@@ -415,6 +415,8 @@ test("on a full-width card the provider sections sit side by side", async ({ pag
   await expect(page.locator("#usagePanel")).toHaveAttribute("data-cols", "2");
 
   const [first, second] = usage.providers.map((p) => section(page, p.id));
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
   const left = await first.boundingBox();
   const right = await second.boundingBox();
   expect(right.x, "the second section starts right of the first").toBeGreaterThan(left.x + left.width - 1);
@@ -433,6 +435,7 @@ test("a third section wraps to its own row and keeps its rule", async ({ page, b
   const third = section(page, usage.providers[2].id);
   await expect(third.locator(".pv-divider")).toBeVisible();
 
+  await expect(section(page, usage.providers[0].id)).toBeVisible();
   const top = await section(page, usage.providers[0].id).boundingBox();
   const wrapped = await third.boundingBox();
   expect(wrapped.y, "the third section starts below the first row").toBeGreaterThan(top.y + top.height - 1);
@@ -443,6 +446,8 @@ test("a narrow card stacks the sections, with a rule between them", async ({ pag
   // Same panel, same DOM — only the column count Rust derived differs.
   const usage = await gotoWithColumns(page, baseURL, 1);
   const [first, second] = usage.providers.map((p) => section(page, p.id));
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
   const top = await first.boundingBox();
   const under = await second.boundingBox();
   expect(under.y).toBeGreaterThan(top.y + top.height - 1);
