@@ -18,14 +18,25 @@ set -euo pipefail
 # Needs: GITHUB_REPOSITORY, GH_TOKEN, GH_REPO (the job sets both, so `gh` never
 # depends on the checkout's remote), `jq`.
 #   GITHUB_SERVER_URL                         default https://github.com
-#   SOLADOR_FEED_DISPATCH_ATTEMPTS / _SLEEP   the fallback's polling, default 12
-#                                             tries 5 seconds apart (the test sets
-#                                             a short loop with no sleep)
+#   SOLADOR_FEED_DISPATCH_ATTEMPTS / _SLEEP   the polling of both waits below,
+#                                             default 12 tries 5 seconds apart
+#                                             (the test sets a short loop with no
+#                                             sleep)
 #
 # THE RUN IS IDENTIFIED, NEVER GUESSED. Current `gh` prints the new run's URL and
 # its id is taken from there. If it prints none, the run is the `workflow_dispatch`
 # run of that workflow at the tag created at or after a timestamp taken just
 # before the dispatch, and anything but exactly one is a failure.
+#
+# THE RUN IS READABLE BEFORE IT IS WATCHED (#766). A run GitHub has just created
+# is not readable at once: reading it answers 404 for a moment (read-after-write
+# lag), on the printed-URL path as much as the fallback's. `gh run watch` on such
+# a run fails, and so does the read after it, which read as "state unknown" and
+# turned a release run red after a feed that had published. So once the id is
+# known the script reads the run (`gh run view --json status,conclusion`) until
+# one read succeeds with a non-empty `status`, polling by the same ATTEMPTS /
+# SLEEP pair. A run that never becomes readable inside that bound is its own
+# failure, naming the run's URL; it never passes. Only then is the run watched.
 #
 # THE JOB IS GREEN ONLY WHEN THE RUN'S CONCLUSION IS READ AS `success`. `gh run
 # watch --exit-status` exits non-zero for ANY non-success conclusion and also for
@@ -88,6 +99,24 @@ url="${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/actions/runs/$r
 echo "Dispatched run: $url"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "### Agent feed run: $url" >> "$GITHUB_STEP_SUMMARY"
+fi
+
+# Wait until the run is readable (#766): a run created moments ago answers 404.
+readable=""
+attempt=1
+while [[ $attempt -le $attempts ]]; do
+    if first="$(gh run view "$run_id" --json status,conclusion 2>/dev/null)" \
+        && [[ -n "$(jq -r '.status // ""' <<< "$first" 2>/dev/null || true)" ]]; then
+        readable=1
+        break
+    fi
+    echo "attempt $attempt: the dispatched run is not readable yet, waiting…"
+    attempt=$((attempt + 1))
+    [[ $attempt -le $attempts ]] && sleep "$nap"
+done
+if [[ -z "$readable" ]]; then
+    echo "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $url"
+    exit 1
 fi
 
 # `--interval 15`: gh polls every 3 s by default, about 40 calls a minute against

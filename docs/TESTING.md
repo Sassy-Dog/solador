@@ -22,7 +22,7 @@
   publish-time guards (`scripts/agent-feed-guard-test.sh`, #491 — the freeze and
   latest guards against a stub `gh`), the agent train's feed step
   (`scripts/agent-feed-dispatch-test.sh`, #757 — the dispatch, the run's
-  identification and the watch's outcomes against a stub `gh`), the local run/signing helper
+  identification, the wait for it to be readable (#766) and the watch's outcomes against a stub `gh`), the local run/signing helper
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
@@ -99,7 +99,7 @@ a `gh` stub that serves one page unless asked to paginate; bash 5 and macOS
 `/bin/bash` 3.2 in CI), `scripts/agent-feed-dispatch-test.sh` (#757:
 `release-agent.yml`'s `feed` step, `scripts/agent-feed-dispatch.sh`, against a
 `gh` stub that answers only the exact calls the script makes — the run's id from
-the printed URL or the one-match fallback, and the job green only when the run's
+the printed URL or the one-match fallback, the run read before it is watched (#766), and the job green only when the run's
 conclusion is read as `success`; bash 5 and macOS `/bin/bash` 3.2 in CI), `scripts/run-test.sh` (`./dev run`'s
 signing-identity choice: the exact-identity Apple certificate trust gate, and
 the warned ad-hoc run where no Apple Development certificate is installed —
