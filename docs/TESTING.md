@@ -294,6 +294,16 @@ read it with `npx playwright show-trace <trace.zip>`. CI keeps no artifact
 (`ci.yml` has no upload step), so a CI occurrence leaves only `swapReport`'s
 text.
 
+**CI runs the e2e suite on one worker per logical CPU (#763).**
+`playwright.config.js` sets `workers: "100%"` when `CI` is set and leaves it
+unset otherwise, so local runs keep Playwright's default of half the logical
+CPUs. The default gave one worker on the hosted arm64 macOS runner, so 535
+tests ran serially in 11.5 min on the job that is the CI critical path. There
+are no retries: a test that fails only under several workers has an ordering
+dependency, and the fix is to remove it, not to retry or raise a timeout. Watch
+the three timing-sensitive waits named above first. `csp_server.py` holds no
+request state, so parallel workers share one server.
+
 **Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
 `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
 `tests/frontend/tile-full.js`: it stubs the IPC, boots the overview with one
