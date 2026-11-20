@@ -2485,6 +2485,7 @@ test("clicking or cancelling a move handle leaves the saved layout alone", async
   await handle.click();
   expect(await savedLayout(page)).toBeNull();
   const from = await handle.boundingBox();
+  await expect(tile(page, "hosts")).toBeVisible();
   const to = await tile(page, "hosts").boundingBox();
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
@@ -3921,6 +3922,9 @@ test("Repos tiles show one card per owner, big owners last", async ({ page, base
   await expect(globex.locator(".db-item")).toHaveCount(18);
   // The two small owners share a row, in two columns rather than three with
   // one left empty; the big one spans the next.
+  for (const o of ["acme", "jdoe", "globex"]) {
+    await expect(all.locator(`.db-owner-card[data-owner="${o}"]`)).toBeVisible();
+  }
   const [acme, jdoe, big] = await Promise.all(
     ["acme", "jdoe", "globex"].map((o) => all.locator(`.db-owner-card[data-owner="${o}"]`).boundingBox()),
   );
@@ -3945,6 +3949,8 @@ test("a sole owner's card fills its tile", async ({ page, baseURL }) => {
   const repos = tile(page, "ghWorkflows");
   const card = repos.locator(".db-owner-card");
   await expect(card).toHaveCount(1);
+  await expect(card).toBeVisible();
+  await expect(repos.locator(".db-owner-cards")).toBeVisible();
   const [one, row] = await Promise.all([card.boundingBox(), repos.locator(".db-owner-cards").boundingBox()]);
   expect(Math.round(one.width)).toBe(Math.round(row.width));
 });

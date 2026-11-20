@@ -493,6 +493,9 @@ test("Full view cards: small owners share a row, the big one spans", async ({ pa
   await expect(globex.locator(".gh-col")).toHaveCount(3);
   // The two small owners share a row in two columns, not three with one
   // left empty; the big one spans the next.
+  for (const o of ["acme", "jdoe", "globex"]) {
+    await expect(page.locator(`#reposBody .gh-card[data-owner="${o}"]`)).toBeVisible();
+  }
   const [acme, jdoe, big] = await Promise.all(
     ["acme", "jdoe", "globex"].map((o) => page.locator(`#reposBody .gh-card[data-owner="${o}"]`).boundingBox()),
   );
@@ -685,6 +688,8 @@ test("the Runners header keeps the stats and the chips on one line", async ({ pa
 
   const header = page.locator("#runnersBody .gh-header");
   await expect(header).toHaveCount(1);
+  await expect(header.locator(".gh-stats")).toBeVisible();
+  await expect(header.locator(".gh-chips")).toBeVisible();
   const stats = await header.locator(".gh-stats").boundingBox();
   const chips = await header.locator(".gh-chips").boundingBox();
 
@@ -814,6 +819,7 @@ test("the OS column holds one position across every runner state", async ({ page
   await expect(rows).toHaveCount(runners.rows.length);
   const chips = [];
   for (let i = 0; i < runners.rows.length; i++) {
+    await expect(rows.nth(i).locator(".gh-runner-os")).toBeVisible();
     chips.push(await rows.nth(i).locator(".gh-runner-os").boundingBox());
   }
   // Every OS label is five characters of one monospace font, so a shared left
@@ -911,6 +917,7 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
   const title = page.locator("#runnersTitle");
   // The tile's own name heads its Full view (#640), not the payload's title.
   await expect(title).toHaveText("GitHub Runners");
+  await expect(page.locator("#runnersStale")).toBeVisible();
   const [titled, staled] = await Promise.all([title.boundingBox(), page.locator("#runnersStale").boundingBox()]);
   expect(titled.width, "the panel keeps its name when it degrades").toBeGreaterThan(0);
   expect(
@@ -1070,6 +1077,8 @@ test("both panels paint the verdict beside their own title", async ({ page, base
     if (panel === "runners") await switchPanel(page, "runners");
     await expect(page.locator(chipId)).toHaveText(repos.availability.label);
     await expect(page.locator(chipId)).toHaveCSS("color", rgb(repos.availability.color));
+    await expect(page.locator(chipId)).toBeVisible();
+    await expect(page.locator(titleId)).toBeVisible();
     const [c, t] = await Promise.all([
       page.locator(chipId).boundingBox(),
       page.locator(titleId).boundingBox(),

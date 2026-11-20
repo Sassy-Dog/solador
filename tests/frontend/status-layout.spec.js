@@ -389,6 +389,7 @@ test('resizing releases obsolete height reservations without clipping content', 
     await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
     await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);
   });
+  await expect(body).toBeVisible();
   const tall = await body.boundingBox();
   runners.rows = [];
   await swapReport(page, 'a frame swap', async () => {
@@ -415,6 +416,7 @@ test('changing Detailed to Summary releases the old tile height', async ({page, 
     await expect(page.locator('.db-tile').first()).toHaveAttribute('data-presentation', 'detailed');
     await expect.poll(() => content.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(360);
   });
+  await expect(content).toBeVisible();
   const detailed = (await content.boundingBox()).height;
   next.tiles[0].presentation = 'summary';
   next.layout.revision += 1;

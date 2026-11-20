@@ -73,6 +73,9 @@ test("the OpenClaw panel is headed by its tile's name and paints Rust's trailing
   const withDetail = agents.rows.findIndex((r) => r.detail);
   expect(withDetail, "the fixture must carry a model ref").toBeGreaterThan(-1);
   const agent = rows.nth(withDetail);
+  await expect(agent.locator(".oc-name")).toBeVisible();
+  await expect(agent.locator(".oc-detail")).toBeVisible();
+  await expect(agent.locator(".dot")).toBeVisible();
   const name = await agent.locator(".oc-name").boundingBox();
   const detail = await agent.locator(".oc-detail").boundingBox();
   await expect(agent.locator(".oc-detail")).toHaveText(agents.rows[withDetail].detail);

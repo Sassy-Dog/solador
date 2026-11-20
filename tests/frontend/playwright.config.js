@@ -41,6 +41,12 @@ export default {
   // run clears: copy it out before re-running, then read it with
   // `npx playwright show-trace <trace.zip>` (#722). CI keeps no artifact
   // (ci.yml has no upload step), so a CI failure leaves only the message.
+  // CI runs one worker per logical CPU. Left unset, Playwright uses half the
+  // CPUs, which is one worker on the hosted arm64 macOS runner and made the
+  // 535-test run take 11.5 min (#763). Locally the default stands. No retries
+  // and no raised timeouts: a test that fails only under several workers has
+  // an ordering dependency to fix (docs/TESTING.md).
+  workers: process.env.CI ? "100%" : undefined,
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {
     // `-u`: stdout is a pipe here, not a tty, so Python would otherwise buffer

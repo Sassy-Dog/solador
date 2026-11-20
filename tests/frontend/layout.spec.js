@@ -495,6 +495,9 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
   await gotoApp(page, baseURL);
 
   const card = page.locator(".cockpit .card").first();
+  for (const sel of [".hostName", ".cpuModel", ".thermal", ".cpuValue", ".hdr"]) {
+    await expect(card.locator(sel)).toBeVisible();
+  }
   const box = async (sel) => await card.locator(sel).boundingBox();
   const [name, model, badge, pct, header, cardBox] = await Promise.all([
     box(".hostName"), box(".cpuModel"), box(".thermal"), box(".cpuValue"),
@@ -738,13 +741,19 @@ test("the host tab bar rides the Hosts title line instead of costing a row", asy
 
   const topbar = page.locator("#fullView > .topbar");
   const bar = page.locator("#hostTabs");
+  // boundingBox() does not wait: every element measured below is awaited
+  // itself, not just its parent, or a slower paint reads null (#763).
+  const firstTabLoc = bar.locator(".tab").first();
+  await expect(topbar).toBeVisible();
   await expect(bar).toBeVisible();
+  await expect(page.locator("#hostsTitle")).toBeVisible();
+  await expect(firstTabLoc).toBeVisible();
 
   const [tb, barBox, title, firstTab] = await Promise.all([
     topbar.boundingBox(),
     bar.boundingBox(),
     page.locator("#hostsTitle").boundingBox(),
-    bar.locator(".tab").first().boundingBox(),
+    firstTabLoc.boundingBox(),
   ]);
 
   // Same visual line as the title, and inside the topbar's box.

@@ -1048,6 +1048,7 @@ test("Test probes that one host and paints the line Rust produced", async ({ pag
   const host = settings.hosts.rows[1];
   await openConnection(page, `host:${host.id}`);
   const row = page.locator(`.host-row[data-host="${host.id}"]`);
+  await expect(row).toBeVisible();
   const before = await row.boundingBox();
   await row.locator(".test").click();
 
@@ -1087,6 +1088,7 @@ test("a long Test result wraps across the whole row instead of scrolling, and th
     await openConnection(page, `host:${host.id}`);
     const row = page.locator(`.host-row[data-host="${host.id}"]`);
     const test = row.locator(".test");
+    await expect(test).toBeVisible();
     const before = await test.boundingBox();
     await test.click();
     const result = row.locator(".result");
@@ -1096,6 +1098,7 @@ test("a long Test result wraps across the whole row instead of scrolling, and th
     const fit = await result.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
     expect(fit.scroll, `${width}px`).toBeLessThanOrEqual(fit.client);
     // …the sentence has the row's whole width, not a share split with a spacer…
+    await expect(row.locator(":scope > .row").first()).toBeVisible();
     const head = await row.locator(":scope > .row").first().boundingBox();
     expect((await result.boundingBox()).width, `${width}px`).toBeGreaterThanOrEqual(head.width - 1);
     // …and growing it moves nothing that comes before it.
@@ -2400,7 +2403,9 @@ test("About update actions fit without their own scrollbar", async ({ page, base
       vertical: el.scrollHeight > el.clientHeight,
       horizontal: el.scrollWidth > el.clientWidth,
     }))).toEqual({ vertical: false, horizontal: false });
+    await expect(actions).toBeVisible();
     for (const button of await actions.locator("button").all()) {
+      await expect(button).toBeVisible();
       const bounds = await button.boundingBox();
       const row = await actions.boundingBox();
       expect(bounds.y).toBeGreaterThanOrEqual(row.y);
@@ -2536,6 +2541,7 @@ test("update status, notes and buttons change inside a stable group", async ({ p
   await openSettings(page, baseURL, null, failed);
   await tab(page, "about").click();
   const group = page.locator('.group[data-group="updates"]');
+  await expect(group).toBeVisible();
   const before = await group.boundingBox();
   await group.locator('.check-updates').click();
   await expect(group.locator('.update-status')).toHaveText(failed.status.text);
@@ -2650,7 +2656,10 @@ test("update controls stay above changing messages", async ({ page, baseURL }) =
   await openSettings(page, baseURL, null, base);
   await tab(page, "about").click();
   const group = page.locator('.group[data-group="updates"]');
-  const y = async () => (await group.locator(".update-controls").boundingBox()).y;
+  const y = async () => {
+    await expect(group.locator(".update-controls")).toBeVisible();
+    return (await group.locator(".update-controls").boundingBox()).y;
+  };
   const installed = await y();
   const states = [
     { ...base, notes: null, status: { text: "Checking for updates...", color: "#8b949e" } },
