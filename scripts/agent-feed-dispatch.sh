@@ -103,19 +103,25 @@ fi
 
 # Wait until the run is readable (#766): a run created moments ago answers 404.
 readable=""
+last_err=""
+errfile="$(mktemp)"
+trap 'rm -f "$errfile"' EXIT
 attempt=1
 while [[ $attempt -le $attempts ]]; do
-    if first="$(gh run view "$run_id" --json status,conclusion 2>/dev/null)" \
+    if first="$(gh run view "$run_id" --json status,conclusion 2>"$errfile")" \
         && [[ -n "$(jq -r '.status // ""' <<< "$first" 2>/dev/null || true)" ]]; then
         readable=1
         break
     fi
+    # Keep the last failed read's first stderr line, so a 401/403/429/5xx is
+    # named in the final error instead of reading like lag.
+    last_err="$(head -n 1 "$errfile" | cut -c1-200)"
     echo "attempt $attempt: the dispatched run is not readable yet, waiting…"
     attempt=$((attempt + 1))
     [[ $attempt -le $attempts ]] && sleep "$nap"
 done
 if [[ -z "$readable" ]]; then
-    echo "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $url"
+    echo "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $url${last_err:+ (last read: $last_err)}"
     exit 1
 fi
 

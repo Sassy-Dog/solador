@@ -183,13 +183,19 @@ expect_calls "  and then watched once" '^run watch 77 --interval 15 --exit-statu
 
 fresh; export GH_SHIM_VIEW_404=99
 run_sut
-expect "the run is never readable" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL"
+expect "the run is never readable, and the last read's error is named" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL (last read: HTTP 404: Not Found)"
 expect_calls "  after exactly the configured attempts" '^run view' 3
 expect_calls "  and nothing is watched" '^run watch' 0
 
 fresh; export GH_SHIM_VIEW_FIRST='not json' GH_SHIM_VIEW='not json'
 run_sut
 expect "the reads succeed but never parse to a status" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL"
+expect_calls "  and nothing is watched" '^run watch' 0
+
+fresh; export GH_SHIM_VIEW_FIRST='{}' GH_SHIM_VIEW='{"status":null}' GH_SHIM_VIEW_404=0
+run_sut
+expect "the reads parse but carry no status" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL"
+expect_calls "  after exactly the configured attempts" '^run view' 3
 expect_calls "  and nothing is watched" '^run watch' 0
 
 # --- the watch ---------------------------------------------------------------
