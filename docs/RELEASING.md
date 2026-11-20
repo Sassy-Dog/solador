@@ -249,11 +249,14 @@ with a detached minisign `.minisig`, attached to a **draft** `agent-v*` release
 created with `make_latest: false` (`--latest=false`), which the credential-free
 `publish-release` job then publishes with `--latest=false` (a no-op if it is
 already public, so a re-run passes) before a `feed` job dispatches
-`publish-agent-feed.yml` from the tag and watches the run it started (#757: a
-`uses:` call does not hand a called job `prd`'s secret, so the signing key
-resolved empty). The `feed` job holds no environment and no secret, only
-`actions: write` and `contents: read` (to check out the tagged script); it fails when the dispatched run fails, and prints that run's
-URL either way. **When the agent feed fails, the failed thing is that dispatched
+`publish-agent-feed.yml` from the tag, waits until the run it started is
+readable (#766), and watches it (#757: a `uses:` call does not hand a called
+job `prd`'s secret, so the signing key resolved empty). The `feed` job holds no
+environment and no secret, only `actions: write` and `contents: read` (to check
+out the tagged script); it fails when the dispatched run fails, and prints that
+run's URL either way. If it says the dispatched run never became readable, open
+that URL and check the run's conclusion before re-running or re-dispatching: the
+feed may already have published. **When the agent feed fails, the failed thing is that dispatched
 `publish-agent-feed.yml` run**: re-run its failed jobs, or dispatch it again
 from the tag (`gh workflow run publish-agent-feed.yml --ref <tag> -f tag=<tag>`).
 Re-running the tag-push run's `feed` job dispatches a second feed run. One tag per product, one

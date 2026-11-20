@@ -53,6 +53,17 @@ case "$*" in
         exit "${GH_SHIM_WATCH_RC:-0}"
         ;;
     "run view "*" --json status,conclusion")
+        # Reads are numbered. The first GH_SHIM_VIEW_404 answer 404 (a run not
+        # yet readable); the next returns GH_SHIM_VIEW_FIRST when set (the
+        # readiness read); the rest are GH_SHIM_VIEW_FAIL or GH_SHIM_VIEW.
+        n=$(( $(cat "$GH_SHIM_VIEWS" 2>/dev/null || echo 0) + 1 ))
+        echo "$n" > "$GH_SHIM_VIEWS"
+        if [ "$n" -le "${GH_SHIM_VIEW_404:-0}" ]; then
+            echo "HTTP 404: Not Found" >&2; exit 1
+        fi
+        if [ "$n" -eq "$(( ${GH_SHIM_VIEW_404:-0} + 1 ))" ] && [ -n "${GH_SHIM_VIEW_FIRST:-}" ]; then
+            printf '%s\n' "$GH_SHIM_VIEW_FIRST"; exit 0
+        fi
         if [ -n "${GH_SHIM_VIEW_FAIL:-}" ]; then echo "$GH_SHIM_VIEW_FAIL" >&2; exit 1; fi
         printf '%s\n' "${GH_SHIM_VIEW:-}"
         ;;
@@ -72,8 +83,9 @@ rc=0
 # run_sut — run the script with the stub first on PATH; leaves $out and $rc.
 run_sut() {
     : > "$work/calls"
+    rm -f "$work/views"
     set +e
-    out="$(PATH="$work/ghshim:$PATH" GH_SHIM_CALLS="$work/calls" GH_SHIM_TAG="$TAG" "$BASH" "$SUT" "$TAG" 2>&1)"
+    out="$(PATH="$work/ghshim:$PATH" GH_SHIM_CALLS="$work/calls" GH_SHIM_VIEWS="$work/views" GH_SHIM_TAG="$TAG" "$BASH" "$SUT" "$TAG" 2>&1)"
     rc=$?
     set -e
 }
@@ -107,9 +119,11 @@ expect_calls() {
     fi
 }
 
-# fresh — a dispatch that prints its run's URL, a watch that passes.
+# fresh — a dispatch that prints its run's URL, a run readable at once, a watch
+# that passes.
 fresh() {
-    unset GH_SHIM_DISPATCH_FAIL GH_SHIM_LIST GH_SHIM_WATCH_RC GH_SHIM_VIEW GH_SHIM_VIEW_FAIL
+    unset GH_SHIM_DISPATCH_FAIL GH_SHIM_LIST GH_SHIM_WATCH_RC GH_SHIM_VIEW GH_SHIM_VIEW_FAIL GH_SHIM_VIEW_404
+    export GH_SHIM_VIEW_FIRST='{"status":"queued","conclusion":null}'
     export GH_SHIM_DISPATCH_OUT="$BASE/4242"
 }
 
@@ -123,6 +137,7 @@ run_sut
 expect "the printed URL's id is taken, and a passing watch passes" 0 "The agent feed run passed: $URL"
 expect_calls "  the runs are not listed when the URL was printed" '^run list' 0
 expect_calls "  the watch is on that id" '^run watch 4242 --interval 15 --exit-status$' 1
+expect_calls "  the run is read once for readiness first" '^run view 4242 --json status,conclusion$' 1
 
 fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":77,$NEW}]"
 run_sut
@@ -152,12 +167,43 @@ expect "the dispatch fails" 1 "::error::could not dispatch publish-agent-feed.ym
 expect "  and says why" 1 "HTTP 403: Resource not accessible by integration"
 expect_calls "  and nothing is watched" '^run watch' 0
 
+# --- readable before it is watched (#766) -----------------------------------
+fresh; export GH_SHIM_VIEW_404=1
+run_sut
+expect "the printed URL, the first read 404s, the next succeeds: it passes" 0 "The agent feed run passed: $URL"
+expect "  and the wait said so" 0 "attempt 1: the dispatched run is not readable yet, waiting…"
+expect_calls "  the run was read twice before the watch" '^run view 4242 --json status,conclusion$' 2
+expect_calls "  and then watched once" '^run watch 4242 --interval 15 --exit-status$' 1
+
+fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":77,$NEW}]" GH_SHIM_VIEW_404=1
+run_sut
+expect "no URL, the first read 404s, the next succeeds: it passes" 0 "The agent feed run passed: $BASE/77"
+expect_calls "  the run was read twice before the watch" '^run view 77 --json status,conclusion$' 2
+expect_calls "  and then watched once" '^run watch 77 --interval 15 --exit-status$' 1
+
+fresh; export GH_SHIM_VIEW_404=99
+run_sut
+expect "the run is never readable, and the last read's error is named" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL (last read: HTTP 404: Not Found)"
+expect_calls "  after exactly the configured attempts" '^run view' 3
+expect_calls "  and nothing is watched" '^run watch' 0
+
+fresh; export GH_SHIM_VIEW_FIRST='not json' GH_SHIM_VIEW='not json'
+run_sut
+expect "the reads succeed but never parse to a status" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL"
+expect_calls "  and nothing is watched" '^run watch' 0
+
+fresh; export GH_SHIM_VIEW_FIRST='{}' GH_SHIM_VIEW='{"status":null}' GH_SHIM_VIEW_404=0
+run_sut
+expect "the reads parse but carry no status" 1 "::error::the dispatched agent feed run never became readable, so it was not watched and its state is unknown: $URL"
+expect_calls "  after exactly the configured attempts" '^run view' 3
+expect_calls "  and nothing is watched" '^run watch' 0
+
 # --- the watch ---------------------------------------------------------------
 fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":"failure"}'
 run_sut
 expect "the watch fails, the run concluded failure" 1 "::error::the agent feed run concluded failure: $URL"
 expect "  and the re-run advice is given" 1 "Re-run its failed jobs, or dispatch publish-agent-feed.yml again from $TAG."
-expect_calls "  after reading the run once" '^run view 4242 --json status,conclusion$' 1
+expect_calls "  after reading the run twice (readiness, then the failed watch)" '^run view 4242 --json status,conclusion$' 2
 
 fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":"cancelled"}'
 run_sut
@@ -189,7 +235,7 @@ expect "the watch fails, completed with an empty conclusion" 1 "::error::the age
 fresh; export GH_SHIM_DISPATCH_OUT="" GH_SHIM_LIST="[{\"databaseId\":79,$NEW}]" GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"completed","conclusion":"failure"}'
 run_sut
 expect "no URL, the watch fails, the failure names the found run" 1 "::error::the agent feed run concluded failure: $BASE/79"
-expect_calls "  and the view is on that run" '^run view 79 --json status,conclusion$' 1
+expect_calls "  and the views are on that run (readiness, then post-watch)" '^run view 79 --json status,conclusion$' 2
 
 fresh; export GH_SHIM_WATCH_RC=1 GH_SHIM_VIEW='{"status":"in_progress","conclusion":null}'
 run_sut
