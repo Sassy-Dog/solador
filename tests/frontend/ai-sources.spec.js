@@ -356,6 +356,7 @@ for (const { name, source, block, mutate } of [
     await gotoWithColumns(page, baseURL, source, 2, mutate);
     const body = `#${source}Body`;
     const bodyWidth = await page.locator(body).evaluate((el) => el.clientWidth);
+    await expect(page.locator(`${body} ${block}`)).toBeVisible();
     const box = await page.locator(`${body} ${block}`).boundingBox();
     expect(Math.abs(box.width - bodyWidth), `${name} span both tracks`).toBeLessThan(1);
   });

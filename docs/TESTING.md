@@ -299,8 +299,11 @@ text.
 unset otherwise, so local runs keep Playwright's default of half the logical
 CPUs. The default gave one worker on the hosted arm64 macOS runner, so 535
 tests ran serially in 11.5 min on the job that is the CI critical path. There
-are no retries: a test that fails only under several workers has an ordering
-dependency, and the fix is to remove it, not to retry or raise a timeout. Watch
+are no retries and no raised timeouts. The first failure under more workers was
+a race against paint inside one test: `boundingBox()` does not wait, so a test
+must await every element it measures itself, not just its parent, before
+reading its box. Fix a failure that appears only under several workers at its
+cause, not with a retry or a longer timeout. Watch
 the three timing-sensitive waits named above first. `csp_server.py` holds no
 request state, so parallel workers share one server.
 

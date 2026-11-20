@@ -239,6 +239,8 @@ test("a degraded panel is exactly as tall as a healthy one, however long the war
   const healthy = await gotoWithUsage(page, baseURL);
   expect(healthy.footer, "the healthy fixture warns about nothing").toBeNull();
   expect(healthy.freshness, "and dates nothing").toBeNull();
+  await expect(page.locator("#usagePanel")).toBeVisible();
+  await expect(page.locator("#usagePanel .panel-hdr")).toBeVisible();
   const before = await page.locator("#usagePanel").boundingBox();
   const headerBefore = await page.locator("#usagePanel .panel-hdr").boundingBox();
 

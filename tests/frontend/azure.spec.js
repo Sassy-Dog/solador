@@ -238,6 +238,8 @@ test("a warning costs the card no height, however long it is", async ({ page, ba
   // taller.
   const healthy = await gotoWithAzure(page, baseURL);
   expect(healthy.footer, "the healthy fixture warns about nothing").toBeNull();
+  await expect(page.locator("#azurePanel")).toBeVisible();
+  await expect(page.locator("#azurePanel .panel-hdr")).toBeVisible();
   const before = await page.locator("#azurePanel").boundingBox();
   const headerBefore = await page.locator("#azurePanel .panel-hdr").boundingBox();
 
