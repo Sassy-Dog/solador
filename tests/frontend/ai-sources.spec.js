@@ -234,6 +234,7 @@ test("a stale plan is dated in the header, and costs the card no height", async 
   expect(healthy.freshness, "a current panel dates nothing").toBeNull();
   await expect(page.locator("#anthropicFreshness")).toBeHidden();
   await expect(page.locator("#anthropicStale")).toBeHidden();
+  await expect(page.locator("#anthropicPanel")).toBeVisible();
   const before = await page.locator("#anthropicPanel").boundingBox();
 
   const stale = await fixture(baseURL, "sample-anthropic-stale.json");

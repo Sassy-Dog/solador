@@ -148,6 +148,7 @@ async function expectRemoteHostInCrop(panel) {
   const box = await panel.boundingBox();
   const sections = panel.locator(".cont-section");
   expect(await sections.count()).toBeGreaterThan(1);
+  await expect(sections.last()).toBeVisible();
   const remote = await sections.last().boundingBox();
   const scale = Math.max(SHOT_W / box.width, SHOT_H / box.height);
   const visibleW = SHOT_W / scale;
@@ -170,6 +171,7 @@ async function expectCpuSectionInCrop(panel) {
   const charts = panel.locator(".cpuChart, .cores .core .plot");
   const count = await charts.count();
   expect(await panel.locator(".cores .core .plot").count(), "per-core sparklines the alt names").toBeGreaterThan(0);
+  for (let i = 0; i < count; i++) await expect(charts.nth(i)).toBeVisible();
   for (const [w, h] of SHOT_BOXES) {
     const scale = Math.max(w / box.width, h / box.height);
     const visibleW = w / scale;
@@ -215,6 +217,7 @@ async function expectEveryOwnerInCrop(panel) {
   for (const [w, h] of SHOT_BOXES) {
     const scale = Math.max(w / box.width, h / box.height);
     for (const name of await names.all()) {
+      await expect(name).toBeVisible();
       const at = await name.boundingBox();
       const label = `${await name.textContent()} inside the ${w}x${h} crop`;
       expect(at.x - box.x + at.width, label).toBeLessThanOrEqual(w / scale + 0.5);
@@ -225,7 +228,10 @@ async function expectEveryOwnerInCrop(panel) {
 
 async function expectWholeInCrop(panel, selectors) {
   const box = await panel.boundingBox();
-  for (const selector of selectors) await expect(panel.locator(selector)).toHaveCount(1);
+  for (const selector of selectors) {
+    await expect(panel.locator(selector)).toHaveCount(1);
+    await expect(panel.locator(selector)).toBeVisible();
+  }
   for (const [w, h] of SHOT_BOXES) {
     const scale = Math.max(w / box.width, h / box.height);
     const visibleW = w / scale;
