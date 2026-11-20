@@ -3250,8 +3250,9 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
   // The label fits its column at every width the tile renders.
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 950 });
-    const fits = await row.locator(".db-value").evaluate((el) => el.scrollWidth <= el.clientWidth);
-    expect(fits, `${width}px`).toBe(true);
+    await expect
+      .poll(() => row.locator(".db-value").evaluate((el) => el.isConnected && el.clientWidth > 0 && el.scrollWidth <= el.clientWidth), { message: `${width}px` })
+      .toBe(true);
   }
   // Only the waiting row pulses.
   await expect(row.locator(".db-dot")).toHaveClass(/db-dot-blink/);
