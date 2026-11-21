@@ -1,0 +1,6 @@
+{
+  "usageItems": [
+    {"date": "2026-11-08T00:00:00Z", "product": "packages", "sku": "Packages storage", "unitType": "GigabyteHours", "quantity": 10, "pricePerUnit": 0.0003, "grossAmount": 0.0, "discountAmount": 0.0, "netAmount": 0.0, "organizationName": "example-org", "repositoryName": "alpha"},
+    {"date": "2026-11-09T00:00:00Z", "product": "ghec", "sku": "GHEC", "unitType": "UserMonths", "quantity": 3, "pricePerUnit": 21.0, "grossAmount": 63.0, "discountAmount": 0.0, "netAmount": 63.0, "organizationName": "example-org", "repositoryName": ""}
+  ]
+}

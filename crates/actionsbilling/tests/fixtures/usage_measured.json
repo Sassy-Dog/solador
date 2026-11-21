@@ -1,0 +1,13 @@
+{
+  "usageItems": [
+    {"date": "2026-11-02T00:00:00Z", "product": "actions", "sku": "Actions Linux", "unitType": "Minutes", "quantity": 1000, "pricePerUnit": 0.008, "grossAmount": 8.0, "discountAmount": 8.0, "netAmount": 0.0, "organizationName": "example-org", "repositoryName": "alpha"},
+    {"date": "2026-11-03T00:00:00Z", "product": "actions", "sku": "Actions Linux", "unitType": "Minutes", "quantity": 500, "pricePerUnit": 0.008, "grossAmount": 4.0, "discountAmount": 1.0, "netAmount": 3.0, "organizationName": "example-org", "repositoryName": "alpha"},
+    {"date": "2026-11-04T00:00:00Z", "product": "actions", "sku": "Actions Linux", "unitType": "Minutes", "quantity": 2000, "pricePerUnit": 0.008, "grossAmount": 16.0, "discountAmount": 0.0, "netAmount": 16.0, "organizationName": "example-org", "repositoryName": "beta"},
+    {"date": "2026-11-20T21:14:38Z", "product": "actions", "sku": "Actions macOS 3-core", "unitType": "Minutes", "quantity": 100, "pricePerUnit": 0.08, "grossAmount": 8.0, "discountAmount": 0.0, "netAmount": 8.0, "organizationName": "example-org", "repositoryName": "beta"},
+    {"date": "2026-11-05T00:00:00Z", "product": "actions", "sku": "Actions Windows", "unitType": "Minutes", "quantity": 50, "pricePerUnit": 0.01, "grossAmount": 0.5, "discountAmount": 0.25, "netAmount": 0.25, "organizationName": "example-org", "repositoryName": ""},
+    {"date": "2026-11-06T00:00:00Z", "product": "actions", "sku": "Actions storage", "unitType": "GigabyteHours", "quantity": 24, "pricePerUnit": 0.0003, "grossAmount": 0.5, "discountAmount": 0.5, "netAmount": 0.0, "organizationName": "example-org", "repositoryName": "alpha"},
+    {"date": "2026-11-07T00:00:00Z", "product": "actions", "sku": "Actions storage", "unitType": "GigabyteHours", "quantity": 12, "pricePerUnit": 0.0003, "grossAmount": 0.25, "discountAmount": 0.25, "netAmount": 0.0, "organizationName": "example-org", "repositoryName": "storage-only"},
+    {"date": "2026-11-21T09:00:00Z", "product": "ghas", "sku": "GHAS Active Committer", "unitType": "UserMonths", "quantity": 2, "pricePerUnit": 49.0, "grossAmount": 98.0, "discountAmount": 0.0, "netAmount": 98.0, "organizationName": "example-org", "repositoryName": "alpha"},
+    {"date": "2026-11-08T00:00:00Z", "product": "packages", "sku": "Packages storage", "unitType": "GigabyteHours", "quantity": 10, "pricePerUnit": 0.0003, "grossAmount": 0.0, "discountAmount": 0.0, "netAmount": 0.0, "organizationName": "example-org", "repositoryName": "alpha"}
+  ]
+}
