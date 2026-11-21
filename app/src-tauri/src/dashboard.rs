@@ -972,6 +972,21 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     false,
                 ));
             }
+            // The Billing alerts rules (#770): a tripped rule is a red row, so
+            // it raises the tile and feeds the Needs Attention chips exactly as
+            // the budget bar does. A rule that could not be judged is a muted
+            // row and flags nothing. No `deliver_banners` path is involved.
+            for v in list(p, "alerts") {
+                let mut r = row(
+                    string(v, "id"),
+                    string(v, "label"),
+                    string(v, "value"),
+                    tint(&v["color"]),
+                    red(&v["color"]),
+                );
+                r["detail"] = v["detail"].clone();
+                rows.push(r);
+            }
             rows
         }
         "openclawAgents" => {
@@ -1102,6 +1117,11 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         // The shared limits editor (#612): shared by every Machines tile, so
         // it rides on the source, never on a tile.
         source["machineAlerts"] = payload["machineAlerts"].clone();
+    }
+    if id == "actionsBilling" {
+        // The Billing alerts editor is shared by every Actions billing tile, so
+        // it rides on the source, never on a tile.
+        source["billingAlerts"] = payload["billingAlerts"].clone();
     }
     if id == "ghRunners" {
         // Detail and Full describe the same source-wide group, independent
@@ -2061,6 +2081,7 @@ fn labels() -> Value {
         ("cadenceFailed", "Could not save the poll cadence. Nothing was changed."),
         ("containerRulesFailed", "Could not save the container rules. Nothing was changed."),
         ("machineAlertsFailed", "Could not save the machine alert limits. Nothing was changed."),
+        ("billingAlertsFailed", "Could not save the billing alerts. Nothing was changed."),
         ("hiddenVolumes", "Volumes shown"),
         ("hiddenVolumesHelp", "Unticked volumes are still measured, but they are left off the Machines tile and the Hosts panel, and a full one raises no attention. Hide and Unhide on the Disk strip and in Detail change the same list."),
         ("hiddenVolumesNone", "No volumes reported yet."),
@@ -3831,6 +3852,53 @@ mod tests {
             .map(|r| string(r, "id"))
             .collect();
         assert_eq!(ids, ["mtd", "budget"]);
+    }
+
+    /// The Billing alerts rules (#770): a tripped rule is a red row that raises
+    /// the tile and the Needs Attention chips; a rule that could not be judged
+    /// is a muted row that flags nothing; no rows, nothing flagged.
+    #[test]
+    fn a_tripped_billing_alert_rule_is_a_red_attention_row() {
+        for (fixture, want) in [
+            (crate::actions_billing::Fixture::Spike, 1),
+            (crate::actions_billing::Fixture::MacosOnSelfHosted, 2),
+            (crate::actions_billing::Fixture::Measured, 0),
+        ] {
+            let payload = crate::dump_actions_billing(fixture, false);
+            let source = source_view("actionsBilling", "Actions billing", &payload);
+            let flagged: Vec<&Value> = list(&source, "rows")
+                .iter()
+                .filter(|r| {
+                    string(r, "id").starts_with("spike:") || string(r, "id").starts_with("macos:")
+                })
+                .collect();
+            assert_eq!(flagged.len(), want, "{fixture:?}");
+            assert!(
+                flagged.iter().all(|r| r["attention"] == true),
+                "{fixture:?}"
+            );
+            assert!(list(&source, "warnings").is_empty(), "{fixture:?}");
+            if want > 0 {
+                assert_eq!(source["attentionCount"], want, "{fixture:?}");
+                assert_eq!(source["attentionColor"], color::hex(color::RED));
+            }
+        }
+        // The editor rides on the source, for every tile of it.
+        let payload = crate::dump_actions_billing(crate::actions_billing::Fixture::Measured, false);
+        let source = source_view("actionsBilling", "Actions billing", &payload);
+        assert_eq!(source["billingAlerts"]["heading"], "Billing alerts");
+    }
+
+    #[test]
+    fn an_unjudged_billing_alert_rule_is_listed_but_flags_nothing() {
+        let payload = json!({"alerts":[{"id":"spike-unknown","label":"SPIKE CHECK","value":"\u{2014}",
+            "detail":"baseline unknown","color":color::hex(color::MUTED)}]});
+        let source = source_view("actionsBilling", "Actions billing", &payload);
+        assert_eq!(source["attentionCount"], 0);
+        let rows = list(&source, "rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["detail"], "baseline unknown");
+        assert_eq!(rows[0]["attention"], false);
     }
 
     /// A poller warning is a tile warning; a lagging report alone is not.

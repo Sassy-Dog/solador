@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use crate::hosted::HostedDays;
+
 /// `{ "usageItems": [ … ] }`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct UsageReport {
@@ -93,6 +95,9 @@ pub enum UsageSummary {
         top_repos: Vec<RepoUsage>,
         /// The newest Actions item's `date`: the report's own clock.
         data_through: DateTime<Utc>,
+        /// Hosted minutes by repo and day, for the spike and macOS rules
+        /// ([`crate::hosted`]).
+        hosted: HostedDays,
     },
 }
 

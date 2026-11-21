@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod accounts;
+pub mod actions_billing_alerts;
 pub mod containers;
 pub mod dashboard;
 pub mod hosts;
@@ -1560,6 +1561,7 @@ mod tests {
                 6 * 3600,
             )]),
             machine_alerts: machine_alerts::MachineAlerts::default(),
+            actions_billing_alerts: actions_billing_alerts::ActionsBillingAlerts::default(),
         });
 
         let mut host = Host::new("ubu-01", "100.100.100.100");

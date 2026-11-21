@@ -750,6 +750,7 @@
       if (draft) for (const box of root.querySelectorAll("[data-cadence]"))
         fillCadence(box, source(draft.source)?.cadences?.find((c) => c.id === box.dataset.cadence));
       if (draft) fillMachineAlerts(q("[data-machine-alerts]"), source(draft.source));
+      if (draft) fillBillingAlerts(q("[data-billing-alerts]"), source(draft.source));
     }
     syncChip();
     if (active?.kind === "details") fillDetails();
@@ -1135,6 +1136,56 @@
     box.querySelector('[data-action="cadence-apply"]').disabled = disabled;
     box.querySelector('[data-action="cadence-reset"]').disabled = disabled || !c.configured;
   }
+  // The billing alerts are shared by every Actions billing tile, Detail and Full
+  // view, not this tile (#770): the controls are named nowhere and sit outside
+  // any form, so formTile() never reads them and the tile's Apply neither
+  // validates nor sends them. Each saves on its own `change` through Rust, which
+  // judges every value and refuses in its own words, so nothing here knows a
+  // threshold. The inputs are built once and their text is left alone while the
+  // saved values are unchanged, so a poll's repaint, or a refusal, never clears
+  // what is being typed.
+  function fillBillingAlerts(box, s) {
+    const g = s?.billingAlerts;
+    if (!box || !g) return;
+    const disabled = busy || !window.__TAURI__;
+    if (!box.childElementCount) {
+      // Typing a value is not an edit of the tile, so not a reason to re-ask the preview.
+      box.addEventListener("input", (event) => event.stopPropagation());
+      const fields = node("div", "db-billing-fields");
+      for (const f of g.fields) {
+        const field = node("div", "db-field"), label = node("label"), input = node("input");
+        input.type = f.kind;
+        if (f.step) input.step = f.step;
+        input.id = `dashboard-billing-${f.id}`;
+        input.dataset.field = f.id;
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.setAttribute("form", "dashboard-billing-no-form");
+        label.htmlFor = input.id;
+        input.addEventListener("change", () => {
+          const alerts = {};
+          for (const el of box.querySelectorAll("input"))
+            alerts[el.dataset.field] = el.type === "number" ? el.valueAsNumber : el.value;
+          billingAlertsChange({ alerts }, `#${CSS.escape(input.id)}`);
+        });
+        field.append(label, input);
+        fields.append(field);
+      }
+      box.append(node("legend"), node("p", "db-muted db-billing-shared"), fields,
+        node("p", "db-sub db-billing-help"));
+    }
+    const saved = JSON.stringify(g.fields.map((f) => [f.id, f.value]));
+    for (const f of g.fields) {
+      const input = box.querySelector(`input[data-field="${CSS.escape(f.id)}"]`);
+      text(input.previousElementSibling, f.label);
+      if (box.saved !== saved) input.value = String(f.value);
+      input.disabled = disabled;
+    }
+    box.saved = saved;
+    text(box.querySelector("legend"), g.heading);
+    text(box.querySelector(".db-billing-shared"), g.shared);
+    text(box.querySelector(".db-billing-help"), g.help);
+  }
   // A hint, not the validation: Rust trims, refuses blanks and duplicates, in
   // its own words.
   function syncGroupLabelAdd(box) {
@@ -1466,6 +1517,12 @@
         alerts.dataset.machineAlerts = "";
         fillMachineAlerts(alerts, s);
         fields.append(alerts);
+      }
+      if (t.source === "actionsBilling") {
+        const billing = node("fieldset", "db-billing-alerts");
+        billing.dataset.billingAlerts = "";
+        fillBillingAlerts(billing, s);
+        fields.append(billing);
       }
       if (t.source === "ghRunners") {
         const groupLabels = node("fieldset", "db-group-labels");
@@ -2217,6 +2274,11 @@
   function containerRuleChange(command, args, selector, fallback = null) {
     return sharedListChange(command, args, selector, fallback,
       { scope: "[data-container-rules]", failed: "containerRulesFailed", home: '[data-action="container-rule-add"]' });
+  }
+  // The billing alerts save the same way (#770).
+  function billingAlertsChange(args, selector) {
+    return sharedListChange("actions_billing_save_alerts", args, selector, null,
+      { scope: "[data-billing-alerts]", failed: "billingAlertsFailed", home: selector });
   }
   // The poll cadence saves the same way (#614).
   function cadenceChange(command, args, selector) {

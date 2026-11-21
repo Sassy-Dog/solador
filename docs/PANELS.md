@@ -157,6 +157,32 @@
   (which GitHub does not issue), where nothing is compared and it paints `—`.
   No budget shows `no Actions budget set` and no bar, never a 0% one; a month
   with no Actions usage says so in words, never `$0.00`.
+  **Billing alerts (#770)** are two rules over the report's per-repo, per-day
+  hosted minutes (`actionsbilling::hosted`; `Minutes` items of the `actions`
+  product, every SKU, `Actions storage` never counts; a day with no item for a
+  repo inside the read range is a measured 0). They judge the report's newest
+  day (the `usage through` day, which may still be partial) and the day before
+  it, so a flag clears by itself after about two days. **Spike:** a repo's day
+  trips when its hosted minutes are at least the floor (default **1,000**) AND
+  more than the multiple (default **3×**) of its average over the 7 days before
+  that day; exactly 3× does not trip, and the 7-day window is fixed. **macOS on
+  self-hosted:** a repo on the operator's list (empty by default, which is the
+  rule off and says nothing) with any hosted macOS minutes (a `Minutes` item
+  whose SKU names macOS) on those two days; names match `repositoryName` as the
+  report gives it, case-insensitively after trimming. Each tripped rule is a
+  **red row** (`SPIKE · <repo>`, `MACOS ON SELF-HOSTED · <repo>`) that flags the
+  tile and feeds Needs Attention through `dashboard::source_rows`, as the budget
+  bar does; **no OS banner** is sent (`deliver_banners` is untouched). The rules
+  are judged when the view is built, from the retained fold and the settings of
+  that moment, so a save re-flags the tile without waiting for a poll. When the
+  7-day window reaches into the previous month, that month is read too, as its
+  own result (`PreviousMonth`, never fetched when the window stays inside the
+  current month); if that read fails the affected days' spike verdict is
+  **unknown**: a muted `SPIKE CHECK  —` row says the baseline could not be read,
+  and nothing is evaluated over a shortened window or with the missing days as 0.
+  The unknown row flags nothing (a failed read says so; it is not a spike). The
+  multiple, the floor and the list are Configure → **Billing alerts**, shared by
+  every Actions billing tile (`store::actions_billing_alerts`).
   Setup (no token or organization) is a muted sentence naming Settings →
   Sources; a rejected token is the red `Fault` sentence and names Administration:
   Read and an org admin; a response missing a field the read decides on is

@@ -747,6 +747,10 @@ pub struct Settings {
     pub panel_intervals: BTreeMap<String, u32>,
     /// Shared CPU/RAM limits and explicit per-machine overrides.
     pub machine_alerts: crate::machine_alerts::MachineAlerts,
+    /// What the Actions billing tile flags: the spike rule's multiple and floor,
+    /// and the repos that should never run hosted macOS minutes (#770). A store
+    /// written before this key loads with the defaults.
+    pub actions_billing_alerts: crate::actions_billing_alerts::ActionsBillingAlerts,
 }
 
 impl Settings {
@@ -876,6 +880,7 @@ impl Default for Settings {
             // Empty, not pre-filled with the defaults — see the field's note.
             panel_intervals: BTreeMap::new(),
             machine_alerts: crate::machine_alerts::MachineAlerts::default(),
+            actions_billing_alerts: crate::actions_billing_alerts::ActionsBillingAlerts::default(),
         }
     }
 }
@@ -1079,6 +1084,7 @@ mod tests {
                 ("azure_cost".to_owned(), 6 * 3600),
             ]),
             machine_alerts: crate::machine_alerts::MachineAlerts::default(),
+            actions_billing_alerts: crate::actions_billing_alerts::ActionsBillingAlerts::default(),
         };
         let json = serde_json::to_string(&s).expect("serialize");
         assert_eq!(

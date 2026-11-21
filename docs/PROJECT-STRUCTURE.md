@@ -69,7 +69,9 @@
 │   ├── actionsbilling/     # GitHub org billing reader (#768): month-to-date Actions
 │   │                       #   minutes + spend and the org Actions budget, from a
 │   │                       #   dedicated Administration: read token the caller passes
-│   │                       #   in. Reader only, no tile yet. APP-ONLY — agent/ must
+│   │                       #   in, plus the per-repo daily hosted-minute fold and the
+│   │                       #   spike and macOS-on-self-hosted rules over it (#770).
+│   │                       #   The tile is app/src-tauri's. APP-ONLY — agent/ must
 │   │                       #   never resolve it
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer

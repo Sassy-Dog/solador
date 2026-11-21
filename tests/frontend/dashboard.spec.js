@@ -123,6 +123,17 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               }
               return project();
             }
+            if (command === "actions_billing_save_alerts") {
+              if (window.__FAIL_BILLING_ALERTS__) throw "Could not save the billing alerts.";
+              // The edit only. Validation is Rust's (`store::actions_billing_alerts`);
+              // this double refuses with a STAND-IN sentence, so an assertion on its
+              // text checks the webview's plumbing and says nothing about Rust's words.
+              const a = args.alerts;
+              if (!(a.spikeMultiple > 1)) throw "Enter a spike multiple above 1, such as 3.";
+              const editor = original.sources.find(s => s.id === "actionsBilling").billingAlerts;
+              for (const f of editor.fields) f.value = a[f.id];
+              return project();
+            }
             if (command === "machine_save_alerts") {
               if (window.__FAIL_ALERTS__) throw "Could not save the machine alert limits.";
               // The limits edit only; validation is Rust's (store::machine_alerts).
@@ -3322,6 +3333,77 @@ test("each source's Configure shows its poll cadence with the floor, the reason 
   await page.locator('#dashboardOverview [data-action="edit"]').click();
   await tile(page, "hosts").locator('[data-action="configure"]').click();
   await expect(page.locator("[data-cadence]")).toHaveCount(0);
+});
+
+async function configureBilling(page) {
+  await configureCadence(page, "actionsBilling");
+  return page.locator("[data-billing-alerts]");
+}
+
+test("the Actions billing tile's Configure has Billing alerts with Rust's controls, values and shared note (#770)", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const editor = model.sources.find(s => s.id === "actionsBilling").billingAlerts;
+  expect(editor.fields.map(f => f.id)).toEqual(["spikeMultiple", "spikeFloorMinutes", "selfHostedRepos"]);
+  const section = await configureBilling(page);
+  await expect(section).toHaveCount(1);
+  await expect(section.locator("legend")).toHaveText(editor.heading);
+  await expect(section.locator(".db-billing-shared")).toHaveText(editor.shared);
+  await expect(section.locator(".db-billing-shared")).toContainText("applies to every Actions billing tile");
+  await expect(section.locator(".db-billing-help")).toHaveText(editor.help);
+  for (const f of editor.fields) {
+    const input = section.locator(`input[data-field="${f.id}"]`);
+    await expect(input).toHaveValue(String(f.value));
+    await expect(section.locator(`label[for="dashboard-billing-${f.id}"]`)).toHaveText(f.label);
+  }
+  await page.reload();
+  await page.locator('#dashboardOverview [data-action="edit"]').click();
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  await expect(page.locator("[data-billing-alerts]")).toHaveCount(0);
+});
+
+test("a Billing alerts change saves on the change through actions_billing_save_alerts, never through the tile's Apply (#770)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureBilling(page);
+  const multiple = section.locator('input[data-field="spikeMultiple"]');
+  await multiple.fill("5");
+  await multiple.press("Tab");
+  await expect.poll(() => commandArgs(page, "actions_billing_save_alerts")).toHaveLength(1);
+  const [sent] = await commandArgs(page, "actions_billing_save_alerts");
+  expect(sent).toEqual({
+    alerts: { spikeMultiple: 5, spikeFloorMinutes: expect.any(Number), selfHostedRepos: expect.any(String) },
+    width: expect.any(Number),
+  });
+  const repos = section.locator('input[data-field="selfHostedRepos"]');
+  await repos.fill("alpha, beta");
+  await repos.press("Tab");
+  await expect.poll(async () => (await commandArgs(page, "actions_billing_save_alerts")).at(-1)?.alerts)
+    .toEqual({ spikeMultiple: 5, spikeFloorMinutes: sent.alerts.spikeFloorMinutes, selfHostedRepos: "alpha, beta" });
+  await expect(repos).toHaveValue("alpha, beta");
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("a refused Billing alerts value shows the refusal beside the section and keeps what was typed (#770)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureBilling(page);
+  const multiple = section.locator('input[data-field="spikeMultiple"]');
+  await multiple.fill("1");
+  await multiple.press("Tab");
+  const error = page.locator("[data-billing-alerts] > .db-action-error");
+  await expect(error).toBeVisible();
+  await expect(error).toContainText("spike multiple");
+  await expect(multiple).toHaveValue("1");
+  expect(await commandArgs(page, "dashboard_save")).toEqual([]);
+});
+
+test("a typed Billing alerts value survives the dashboard's repaint (#770)", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const section = await configureBilling(page);
+  const floor = section.locator('input[data-field="spikeFloorMinutes"]');
+  await floor.fill("777");
+  const reads = () => page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_view").length);
+  const before = await reads();
+  await expect.poll(reads, { timeout: 8000 }).toBeGreaterThan(before + 1);
+  await expect(floor).toHaveValue("777");
 });
 
 test("a valid cadence saves through panel_interval_save on the click, never through the tile's Apply (#614)", async ({ page, baseURL }) => {

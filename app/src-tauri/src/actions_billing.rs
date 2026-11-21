@@ -35,6 +35,17 @@
 //! spend was measured against (it lives inside [`BudgetSpend`]), so a retained
 //! bar and a fresher headline can never be printed as one ratio.
 //!
+//! ## Billing alerts (#770)
+//!
+//! Two rules over the usage report's per-repo, per-day hosted minutes, judged in
+//! [`actionsbilling::hosted`] and **evaluated here, when the view is built**,
+//! from the retained fold and the settings of that moment, so a save re-flags
+//! the tile without waiting for a poll. A tripped rule is a red row in
+//! `alerts`; a rule that could not be judged (the previous month's read failed,
+//! so the 7-day baseline is unknown) is a muted row that says so and flags
+//! nothing. The retained previous-month result lives and dies with the usage it
+//! was read beside.
+//!
 //! ## States that must not be conflated
 //!
 //! **No token or no org** is a muted setup sentence: nothing is wrong. **A failed
@@ -47,9 +58,13 @@
 //! raises Needs Attention; measured zero spend paints `$0.00 / $0.00` with no
 //! bar; an unmeasured spend paints the em dash. No ratio is ever formed.
 
-use actionsbilling::{BudgetSpend, BudgetStatus, MonthRead, Totals, UsageSummary};
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use actionsbilling::{
+    BudgetSpend, BudgetStatus, HostedDays, MonthRead, PreviousMonth, SpikeThresholds, Totals,
+    UsageSummary,
+};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use serde_json::{json, Value};
+use store::actions_billing_alerts::ActionsBillingAlerts;
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 use viewmodel::freshness::Freshness;
@@ -159,6 +174,11 @@ pub struct ActionsBillingState {
     /// after a month rollover keeps last month's figures, and the caption must
     /// say whose they are.
     period: Option<(i32, u32)>,
+    /// What the previous month's read came to on the pass that produced the
+    /// retained usage, for the spike rule's 7-day window. Replaced and dropped
+    /// with that usage, so a baseline is never paired with a different month's
+    /// figures.
+    previous: PreviousMonth,
     /// Whether the last pass failed in a way a retry can fix: the request never
     /// completed, or GitHub itself failed. Never a rejected token, a wrong org
     /// or a rate limit, which a fast retry would only repeat.
@@ -184,6 +204,7 @@ impl ActionsBillingState {
         self.usage.unconfigure();
         self.budget.unconfigure();
         self.period = None;
+        self.previous = PreviousMonth::NotNeeded;
         self.transient_failure = false;
         self.org = None;
     }
@@ -200,6 +221,7 @@ impl ActionsBillingState {
             self.usage.clear_figures();
             self.budget.clear_figures();
             self.period = None;
+            self.previous = PreviousMonth::NotNeeded;
             self.transient_failure = false;
             self.org = None;
         }
@@ -228,6 +250,7 @@ impl ActionsBillingState {
             Ok(summary) => {
                 self.usage.succeeded(summary, at, None);
                 self.period = Some(read.period);
+                self.previous = read.previous;
             }
             Err(error) => self.usage.failed(error.user_message()),
         }
@@ -326,6 +349,155 @@ fn budget_block(reading: &BudgetReading) -> Option<Value> {
     Some(block)
 }
 
+// MARK: - Billing alerts (#770)
+
+/// `11-21`: the day a rule row is about, in UTC like the report's own dates.
+fn short_day(day: NaiveDate) -> String {
+    format!("{:02}-{:02}", day.month(), day.day())
+}
+
+/// `4.3×`.
+fn multiple_text(multiple: f64) -> String {
+    format!("{multiple:.1}\u{d7}")
+}
+
+fn alert_row(id: String, label: String, value: String, detail: String, tint: u32) -> Value {
+    json!({
+        "id": id,
+        "label": label,
+        "value": value,
+        "detail": detail,
+        "color": color::hex(tint),
+    })
+}
+
+/// The rows the two rules produce for a usage report through `through`.
+///
+/// Evaluated here, at view time, from the retained fold and the settings handed
+/// in, so a save re-flags the tile without waiting for a poll. A tripped rule is
+/// a red row; a rule that could not be judged is a muted row that says so
+/// (never a missing row, which would read as "no spike").
+fn alert_rows(
+    hosted: &HostedDays,
+    previous: &PreviousMonth,
+    through: DateTime<Utc>,
+    alerts: &ActionsBillingAlerts,
+) -> Vec<Value> {
+    let through = through.date_naive();
+    let reason = match previous {
+        PreviousMonth::Failed(error) => error.user_message(),
+        PreviousMonth::NotNeeded | PreviousMonth::Read(_) => String::new(),
+    };
+    let unknown_days = |days: &[NaiveDate]| {
+        days.iter()
+            .map(|d| short_day(*d))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut rows = Vec::new();
+
+    let spikes = actionsbilling::spike_flags(
+        hosted,
+        previous,
+        through,
+        SpikeThresholds {
+            multiple: alerts.spike_multiple,
+            floor_minutes: f64::from(alerts.spike_floor_minutes),
+        },
+    );
+    for flag in &spikes.flags {
+        let ratio = flag.multiple.map_or_else(
+            || "no minutes in the 7 days before".to_owned(),
+            |m| format!("{} 7-day avg", multiple_text(m)),
+        );
+        rows.push(alert_row(
+            format!("spike:{}:{}", flag.repository, flag.day),
+            format!("SPIKE \u{b7} {}", flag.repository),
+            format!("{} \u{b7} {ratio}", minutes(flag.minutes)),
+            format!(
+                "on {} against a 7-day average of {}",
+                short_day(flag.day),
+                minutes(flag.baseline_avg)
+            ),
+            color::RED,
+        ));
+    }
+    if !spikes.unknown_days.is_empty() {
+        rows.push(alert_row(
+            "spike-unknown".to_owned(),
+            "SPIKE CHECK".to_owned(),
+            UNKNOWN.to_owned(),
+            format!(
+                "7-day baseline unknown for {}: the previous month's usage could not be read. {reason}",
+                unknown_days(&spikes.unknown_days)
+            ),
+            color::MUTED,
+        ));
+    }
+
+    let macos = actionsbilling::macos_flags(hosted, previous, through, &alerts.self_hosted_repos);
+    for flag in &macos.flags {
+        rows.push(alert_row(
+            format!("macos:{}:{}", flag.repository, flag.day),
+            format!("MACOS ON SELF-HOSTED \u{b7} {}", flag.repository),
+            format!("{} on {}", minutes(flag.minutes), short_day(flag.day)),
+            "hosted macOS minutes on a repo listed as self-hosted only".to_owned(),
+            color::RED,
+        ));
+    }
+    if !macos.unknown_days.is_empty() {
+        rows.push(alert_row(
+            "macos-unknown".to_owned(),
+            "MACOS CHECK".to_owned(),
+            UNKNOWN.to_owned(),
+            format!(
+                "macOS minutes unknown for {}: the previous month's usage could not be read. {reason}",
+                unknown_days(&macos.unknown_days)
+            ),
+            color::MUTED,
+        ));
+    }
+    rows
+}
+
+/// Configure's **Billing alerts** section. Shared by every Actions billing tile,
+/// so it says so and every change saves on its own, never with the tile's Apply.
+/// Every string is made here; the frontend only paints.
+#[must_use]
+pub fn alerts_section(alerts: &ActionsBillingAlerts) -> Value {
+    json!({
+        "heading": "Billing alerts",
+        "shared": "Shared \u{b7} saved immediately \u{b7} applies to every Actions billing tile, its Detail and its Full view.",
+        "help": "A repo's day is a spike when it has at least the floor in hosted minutes and more than the multiple times its average over the 7 days before that day. The newest day in the usage report (which may still be partial) and the day before it are checked, so a flag clears by itself after about two days. A repo on the self-hosted list is flagged when it has any hosted macOS minutes on those two days; an empty list turns that rule off. Each tripped rule is a red row and raises Needs Attention; no desktop notification is sent. A change saves when you leave the field.",
+        "fields": [
+            {"id": "spikeMultiple", "kind": "number", "step": "any",
+             "label": "Spike multiple (times the 7-day average)",
+             "value": alerts.spike_multiple},
+            {"id": "spikeFloorMinutes", "kind": "number", "step": "1",
+             "label": "Spike floor (hosted minutes in a day)",
+             "value": alerts.spike_floor_minutes},
+            {"id": "selfHostedRepos", "kind": "text", "step": null,
+             "label": "Self-hosted repos (flag hosted macOS minutes)",
+             "value": alerts.self_hosted_text()},
+        ],
+    })
+}
+
+/// Saves the Billing alerts from Configure. Refuses in one sentence per case and
+/// writes nothing; a failed write restores what was there.
+///
+/// # Errors
+/// The refusal's sentence, or the store's error.
+pub fn save_alerts(store: &mut store::Store, input: &Value) -> Result<(), String> {
+    let parsed = ActionsBillingAlerts::parse(input).map_err(str::to_owned)?;
+    let previous = std::mem::replace(&mut store.settings_mut().actions_billing_alerts, parsed);
+    if let Err(error) = store.save() {
+        store.settings_mut().actions_billing_alerts = previous;
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 /// The panel payload.
 ///
 /// `cadence_secs` is the operator's cadence for this panel, read at render time
@@ -333,7 +505,12 @@ fn budget_block(reading: &BudgetReading) -> Option<Value> {
 /// staleness judgements are measured against it: [`Freshness`] at one cycle, and
 /// the footer at one and a half ([`stale_after_for_slow_cadence`]).
 #[must_use]
-pub fn view(state: &ActionsBillingState, cadence_secs: u64, now: u64) -> Value {
+pub fn view(
+    state: &ActionsBillingState,
+    alerts: &ActionsBillingAlerts,
+    cadence_secs: u64,
+    now: u64,
+) -> Value {
     let kind = PanelKind::ActionsBilling;
     let freshness = |half_updated: Option<u64>, id: &str| {
         attributed_freshness_payload(
@@ -355,6 +532,8 @@ pub fn view(state: &ActionsBillingState, cadence_secs: u64, now: u64) -> Value {
         "budget": Value::Null,
         "budgetNote": Value::Null,
         "dataThrough": Value::Null,
+        "alerts": Value::Array(vec![]),
+        "billingAlerts": alerts_section(alerts),
         "breakdowns": Value::Array(vec![]),
         "footer": Value::Null,
         "freshness": Value::Null,
@@ -447,6 +626,7 @@ pub fn view(state: &ActionsBillingState, cadence_secs: u64, now: u64) -> Value {
             by_sku,
             top_repos,
             data_through,
+            hosted,
             ..
         } => {
             let period = state.period.map_or_else(String::new, month_year);
@@ -496,6 +676,7 @@ pub fn view(state: &ActionsBillingState, cadence_secs: u64, now: u64) -> Value {
                 }));
             }
             payload["breakdowns"] = json!(breakdowns);
+            payload["alerts"] = json!(alert_rows(hosted, &state.previous, *data_through, alerts));
         }
     }
     payload
@@ -522,12 +703,79 @@ pub enum Fixture {
     /// Net spend over a budget whose amount is 0 (no paid usage) that stops
     /// jobs: the full red bar over `$0.00`.
     ZeroBudgetOver,
+    /// One repo's newest day far above its 7-day average: a red `SPIKE` row.
+    Spike,
+    /// A repo on the self-hosted list with hosted macOS minutes: a red
+    /// `MACOS ON SELF-HOSTED` row.
+    MacosOnSelfHosted,
 }
 
 /// The fixture's month and the instant it was read, fixed so the file is
 /// byte-stable across regenerations. The newest item is a few hours before the
 /// read, which is what a lagging report looks like.
 pub const FIXTURE_PERIOD: (i32, u32) = (2023, 11);
+
+/// The Billing alerts a fixture is rendered with: the defaults, plus the
+/// self-hosted list the macOS fixture needs. Typed in another case than the
+/// report spells it, which the rule matches case-insensitively.
+#[must_use]
+pub fn fixture_alerts(kind: Fixture) -> ActionsBillingAlerts {
+    ActionsBillingAlerts {
+        self_hosted_repos: if kind == Fixture::MacosOnSelfHosted {
+            vec!["Widget-Web".to_owned()]
+        } else {
+            Vec::new()
+        },
+        ..ActionsBillingAlerts::default()
+    }
+}
+
+/// The usage items behind the `Spike` and `MacosOnSelfHosted` fixtures: three
+/// repos with a steady 7 days before the report's newest day (Nov 14, 19:00
+/// UTC), and on that day either `gadget-api` runs far above its own baseline or
+/// `widget-web` runs hosted macOS minutes. Every figure is invented.
+fn fixture_items(kind: Fixture) -> Vec<actionsbilling::UsageItem> {
+    let item = |date: &str, sku: &str, quantity: f64, repo: &str| actionsbilling::UsageItem {
+        date: DateTime::parse_from_rfc3339(date)
+            .expect("a valid instant")
+            .into(),
+        product: "actions".to_owned(),
+        sku: sku.to_owned(),
+        unit_type: "Minutes".to_owned(),
+        quantity,
+        gross_amount: quantity * 0.008,
+        discount_amount: quantity * 0.002,
+        net_amount: quantity * 0.006,
+        repository_name: repo.to_owned(),
+    };
+    let mut items = Vec::new();
+    for day in 1..=13 {
+        let date = format!("2023-11-{day:02}T00:00:00Z");
+        items.push(item(&date, "Actions Linux", 300.0, "gadget-api"));
+        items.push(item(&date, "Actions Linux", 200.0, "pipe-fitting"));
+        items.push(item(&date, "Actions Linux", 90.0, "widget-web"));
+    }
+    let newest = "2023-11-14T19:00:00Z";
+    items.push(item(newest, "Actions Linux", 220.0, "pipe-fitting"));
+    match kind {
+        Fixture::Spike => {
+            items.push(item(newest, "Actions Linux", 1_500.0, "gadget-api"));
+            items.push(item(newest, "Actions Linux", 80.0, "widget-web"));
+        }
+        _ => {
+            items.push(item(newest, "Actions Linux", 320.0, "gadget-api"));
+            items.push(item(newest, "Actions Linux", 80.0, "widget-web"));
+            items.push(item(newest, "Actions macOS 3-core", 12.0, "widget-web"));
+            items.push(item(
+                "2023-11-13T00:00:00Z",
+                "Actions macOS 3-core",
+                4.0,
+                "widget-web",
+            ));
+        }
+    }
+    items
+}
 
 /// A hand-made state for the offline fixtures. Every figure is invented.
 #[must_use]
@@ -566,6 +814,7 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
         top_repos,
         // 2023-11-14T19:00:00Z, three hours before the fixture's read.
         data_through: DateTime::from_timestamp(1_699_988_400, 0).expect("a valid instant"),
+        hosted: HostedDays::default(),
     };
     // 40.60 of a 45.00 budget is 90.2%: the amber step, not a flat green bar.
     let budget = BudgetStatus::Present {
@@ -579,6 +828,7 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
     let ok = |usage: UsageSummary, budget: BudgetStatus| MonthRead {
         period: FIXTURE_PERIOD,
         usage: Ok(usage),
+        previous: PreviousMonth::NotNeeded,
         budget: Ok(budget),
     };
     match kind {
@@ -610,12 +860,20 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
             ),
             at,
         ),
+        Fixture::Spike | Fixture::MacosOnSelfHosted => state.record(
+            ok(
+                actionsbilling::summarize_usage(&fixture_items(kind)),
+                BudgetStatus::Absent,
+            ),
+            at,
+        ),
         Fixture::Empty => state.record(ok(UsageSummary::NoUsage, BudgetStatus::Absent), at),
         Fixture::Failed => {
             state.begin("acme");
             state.record(
                 MonthRead {
                     period: FIXTURE_PERIOD,
+                    previous: PreviousMonth::NotNeeded,
                     usage: Err(actionsbilling::ActionsBillingError::Forbidden),
                     budget: Err(actionsbilling::ActionsBillingError::Forbidden),
                 },

@@ -783,3 +783,30 @@ fn a_file_with_no_settings_section_keeps_what_used_to_be_built_in() {
     assert!(data.settings.service_health_enabled);
     assert!(!StoreData::default().settings.local_monitoring_enabled);
 }
+
+/// A store written before the Billing alerts settings (#770) has no such key:
+/// it opens with the defaults and the rest of its settings are untouched.
+#[test]
+fn a_store_written_before_the_billing_alerts_key_opens_with_the_defaults() {
+    let (dir, mut opened) = open(&old_store(json!({"github_org": "acme"}), None, json!({})));
+    let alerts = &opened.settings().actions_billing_alerts;
+    assert_eq!(alerts.spike_multiple, 3.0);
+    assert_eq!(alerts.spike_floor_minutes, 1000);
+    assert!(alerts.self_hosted_repos.is_empty());
+    assert_eq!(opened.settings().github_org, "acme");
+
+    // Saving writes the key, and it reads back as set.
+    opened
+        .settings_mut()
+        .actions_billing_alerts
+        .spike_floor_minutes = 250;
+    opened.save().expect("save");
+    let reopened = Store::open_in(dir.path(), false).expect("reopen");
+    assert_eq!(
+        reopened
+            .settings()
+            .actions_billing_alerts
+            .spike_floor_minutes,
+        250
+    );
+}

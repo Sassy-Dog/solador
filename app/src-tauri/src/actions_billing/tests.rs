@@ -1,12 +1,22 @@
 use super::*;
 use actionsbilling::{ActionsBillingError, SkuUsage};
+use serde_json::json;
 
 const NOW: u64 = 1_700_000_000;
 /// The store's default cadence for this panel.
 const CADENCE: u64 = 3_600;
 
+fn alerts() -> ActionsBillingAlerts {
+    ActionsBillingAlerts::default()
+}
+
 fn payload(kind: Fixture) -> Value {
-    view(&fixture_state(kind, NOW), CADENCE, NOW)
+    view(
+        &fixture_state(kind, NOW),
+        &fixture_alerts(kind),
+        CADENCE,
+        NOW,
+    )
 }
 
 fn totals(minutes: f64, net: f64) -> Totals {
@@ -22,6 +32,7 @@ fn totals(minutes: f64, net: f64) -> Totals {
 fn read_at(spend: f64, amount: f64) -> MonthRead {
     MonthRead {
         period: FIXTURE_PERIOD,
+        previous: PreviousMonth::NotNeeded,
         usage: Ok(UsageSummary::Measured {
             total: totals(100.0, spend),
             by_sku: vec![SkuUsage {
@@ -31,6 +42,7 @@ fn read_at(spend: f64, amount: f64) -> MonthRead {
             by_repo: vec![],
             top_repos: vec![],
             data_through: DateTime::from_timestamp(1_699_988_400, 0).unwrap(),
+            hosted: HostedDays::default(),
         }),
         budget: Ok(actionsbilling::budget_status(
             &[actionsbilling::Budget {
@@ -50,7 +62,7 @@ fn read_at(spend: f64, amount: f64) -> MonthRead {
 fn bar_color(spend: f64, amount: f64) -> String {
     let mut state = ActionsBillingState::new();
     state.record(read_at(spend, amount), NOW);
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     p["budget"]["bar"]["color"].as_str().unwrap().to_owned()
 }
 
@@ -101,7 +113,7 @@ fn no_budget_says_so_and_draws_no_bar() {
 fn budget_of(read: MonthRead) -> Value {
     let mut state = ActionsBillingState::new();
     state.record(read, NOW);
-    view(&state, CADENCE, NOW)["budget"].clone()
+    view(&state, &alerts(), CADENCE, NOW)["budget"].clone()
 }
 
 #[test]
@@ -192,7 +204,7 @@ fn not_configured_shows_the_setup_sentence_naming_settings_sources() {
 
 #[test]
 fn before_any_pass_has_read_the_store_the_panel_is_loading_not_unconfigured() {
-    let p = view(&ActionsBillingState::new(), CADENCE, NOW);
+    let p = view(&ActionsBillingState::new(), &alerts(), CADENCE, NOW);
     assert_eq!(p["message"]["text"], LOADING_MESSAGE);
     assert_eq!(p["loading"], true);
 }
@@ -223,12 +235,13 @@ fn each_classified_failure_renders_its_own_sentence() {
         state.record(
             MonthRead {
                 period: FIXTURE_PERIOD,
+                previous: PreviousMonth::NotNeeded,
                 usage: Err(error.clone()),
                 budget: Err(error.clone()),
             },
             NOW,
         );
-        let p = view(&state, CADENCE, NOW);
+        let p = view(&state, &alerts(), CADENCE, NOW);
         assert_eq!(p["message"]["text"], error.user_message(), "{error:?}");
         assert_eq!(p["message"]["color"], json!(color::hex(color::RED)));
     }
@@ -241,7 +254,7 @@ fn a_failed_budget_read_keeps_the_usage_and_names_itself_in_the_footer() {
     let mut read = read_at(12.0, 100.0);
     read.budget = Err(ActionsBillingError::Forbidden);
     state.record(read, NOW);
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(p["headline"]["value"], "$12.00", "the fresh usage shows");
     assert!(p["message"].is_null());
     let footer = p["footer"]["text"].as_str().unwrap();
@@ -261,7 +274,7 @@ fn a_failed_usage_read_keeps_the_retained_figures_and_names_itself_in_the_footer
     // The crate has no fraction without a spend.
     read.budget = Ok(actionsbilling::budget_status(&[], None));
     state.record(read, NOW);
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(p["headline"]["value"], "$10.00");
     let footer = p["footer"]["text"].as_str().unwrap();
     assert!(footer.starts_with("\u{26a0} usage: "), "{footer}");
@@ -275,12 +288,13 @@ fn one_credential_failing_both_reads_says_it_once() {
     state.record(
         MonthRead {
             period: FIXTURE_PERIOD,
+            previous: PreviousMonth::NotNeeded,
             usage: Err(ActionsBillingError::Forbidden),
             budget: Err(ActionsBillingError::Forbidden),
         },
         NOW,
     );
-    let footer = view(&state, CADENCE, NOW)["footer"]["text"]
+    let footer = view(&state, &alerts(), CADENCE, NOW)["footer"]["text"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -291,7 +305,7 @@ fn one_credential_failing_both_reads_says_it_once() {
 fn a_retained_figure_after_a_month_rollover_names_its_own_month() {
     let mut state = ActionsBillingState::new();
     state.record(read_at(10.0, 100.0), NOW);
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(
         p["headline"]["caption"],
         "net Actions spend \u{b7} November 2023 to date"
@@ -308,6 +322,7 @@ fn the_reports_lag_is_a_plain_line_and_never_in_the_footer_or_freshness() {
     let stale = payload(Fixture::Measured);
     let late = view(
         &fixture_state(Fixture::Measured, NOW - 23 * 3_600),
+        &alerts(),
         CADENCE,
         NOW,
     );
@@ -337,6 +352,7 @@ fn a_stale_read_dims_the_headline_and_dates_it_in_the_header() {
     let fresh = payload(Fixture::Measured);
     let p = view(
         &fixture_state(Fixture::Measured, NOW - 23 * 3_600),
+        &alerts(),
         CADENCE,
         NOW,
     );
@@ -382,7 +398,7 @@ fn an_org_level_item_is_a_row_not_a_dropped_one() {
         });
     }
     state.record(read, NOW);
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(p["breakdowns"][1]["rows"][0]["name"], NO_REPOSITORY);
 }
 
@@ -402,12 +418,13 @@ fn the_token_is_in_no_payload_state_or_debug_output() {
     state.record(
         MonthRead {
             period: FIXTURE_PERIOD,
+            previous: PreviousMonth::NotNeeded,
             usage: Err(ActionsBillingError::Unauthorized),
             budget: Err(ActionsBillingError::Undecodable),
         },
         NOW,
     );
-    let rendered = format!("{:?} {}", state, view(&state, CADENCE, NOW));
+    let rendered = format!("{:?} {}", state, view(&state, &alerts(), CADENCE, NOW));
     assert!(!rendered.contains(TOKEN));
 }
 
@@ -416,7 +433,7 @@ fn an_unreadable_credential_store_keeps_a_live_figure() {
     let mut state = ActionsBillingState::new();
     state.record(read_at(10.0, 100.0), NOW - 60);
     state.unreadable("the credential store would not answer");
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(
         p["headline"]["value"], "$10.00",
         "a locked keychain is not an unconfigure"
@@ -430,6 +447,7 @@ fn only_a_failure_a_retry_can_fix_asks_again_before_the_cadence() {
         state.record(
             MonthRead {
                 period: FIXTURE_PERIOD,
+                previous: PreviousMonth::NotNeeded,
                 usage: Err(error.clone()),
                 budget: Err(error),
             },
@@ -457,6 +475,7 @@ fn only_a_failure_a_retry_can_fix_asks_again_before_the_cadence() {
     state.record(
         MonthRead {
             period: FIXTURE_PERIOD,
+            previous: PreviousMonth::NotNeeded,
             usage: Err(ActionsBillingError::Unreachable),
             budget: Err(ActionsBillingError::Unreachable),
         },
@@ -471,7 +490,7 @@ fn unconfiguring_drops_every_retained_figure() {
     let mut state = ActionsBillingState::new();
     state.record(read_at(10.0, 100.0), NOW);
     state.unconfigure();
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(p["message"]["text"], UNCONFIGURED_MESSAGE);
     assert!(p["headline"].is_null() && p["budget"].is_null());
     assert!(!state.wants_quick_retry());
@@ -489,19 +508,20 @@ fn a_failed_first_read_for_another_org_shows_no_figures_from_the_old_one() {
     let mut state = ActionsBillingState::new();
     state.begin("org-a");
     state.record(read_at(95.0, 100.0), NOW - 600);
-    let before = view(&state, CADENCE, NOW);
+    let before = view(&state, &alerts(), CADENCE, NOW);
     assert!(!before["headline"].is_null() && !before["budget"].is_null());
 
     state.begin("org-b");
     state.record(
         MonthRead {
             period: FIXTURE_PERIOD,
+            previous: PreviousMonth::NotNeeded,
             usage: Err(ActionsBillingError::NotFound),
             budget: Err(ActionsBillingError::NotFound),
         },
         NOW,
     );
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert!(p["headline"].is_null() && p["budget"].is_null());
     assert_eq!(
         p["message"]["text"],
@@ -514,7 +534,7 @@ fn a_failed_first_read_for_another_org_shows_no_figures_from_the_old_one() {
     same.begin("org-a");
     same.record(read_at(10.0, 100.0), NOW - 600);
     same.begin("org-a");
-    assert!(!view(&same, CADENCE, NOW)["headline"].is_null());
+    assert!(!view(&same, &alerts(), CADENCE, NOW)["headline"].is_null());
 }
 
 #[test]
@@ -522,12 +542,12 @@ fn an_org_only_change_drops_the_old_orgs_figures_before_the_credential_read() {
     let mut state = ActionsBillingState::new();
     state.begin("org-a");
     state.record(read_at(95.0, 100.0), NOW - 600);
-    assert!(!view(&state, CADENCE, NOW)["budget"].is_null());
+    assert!(!view(&state, &alerts(), CADENCE, NOW)["budget"].is_null());
 
     // The pass for org B names it, then the credential store will not answer.
     state.note_org("org-b");
     state.unreadable("the credential store would not answer");
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert!(p["headline"].is_null() && p["budget"].is_null());
     assert!(p["breakdowns"].as_array().unwrap().is_empty());
     assert!(!p.to_string().contains("$95.00"));
@@ -547,7 +567,226 @@ fn an_unreadable_store_for_the_same_org_keeps_the_last_good_figures() {
     state.record(read_at(95.0, 100.0), NOW - 600);
     state.note_org("org-a");
     state.unreadable("the credential store would not answer");
-    let p = view(&state, CADENCE, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
     assert_eq!(p["headline"]["value"], "$95.00");
     assert_eq!(p["budget"]["value"], "$95.00 / $100.00");
+}
+
+// MARK: - Billing alerts (#770)
+
+fn rows(p: &Value) -> Vec<&Value> {
+    p["alerts"].as_array().unwrap().iter().collect()
+}
+
+fn labels(p: &Value) -> Vec<&str> {
+    rows(p)
+        .iter()
+        .map(|r| r["label"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_spike_is_one_red_row_with_its_figures() {
+    let p = payload(Fixture::Spike);
+    assert_eq!(labels(&p), ["SPIKE \u{b7} gadget-api"]);
+    let row = rows(&p)[0];
+    assert_eq!(row["value"], "1,500 min \u{b7} 5.0\u{d7} 7-day avg");
+    assert_eq!(row["color"], color::hex(color::RED));
+    assert!(row["detail"].as_str().unwrap().contains("11-14"));
+}
+
+#[test]
+fn macos_on_a_listed_repo_is_a_red_row_matched_case_insensitively() {
+    let p = payload(Fixture::MacosOnSelfHosted);
+    // Listed as `Widget-Web`; the report spells it `widget-web`.
+    assert_eq!(
+        labels(&p),
+        [
+            "MACOS ON SELF-HOSTED \u{b7} widget-web",
+            "MACOS ON SELF-HOSTED \u{b7} widget-web"
+        ]
+    );
+    assert_eq!(rows(&p)[0]["value"], "12 min on 11-14");
+    assert_eq!(rows(&p)[1]["value"], "4 min on 11-13");
+    assert!(rows(&p)
+        .iter()
+        .all(|r| r["color"] == color::hex(color::RED)));
+}
+
+#[test]
+fn the_macos_rule_with_an_empty_list_adds_no_row() {
+    let state = fixture_state(Fixture::MacosOnSelfHosted, NOW);
+    let p = view(&state, &alerts(), CADENCE, NOW);
+    assert!(rows(&p).is_empty());
+}
+
+#[test]
+fn the_other_fixtures_raise_no_rule_rows_and_the_section_is_always_there() {
+    for kind in [
+        Fixture::Measured,
+        Fixture::Empty,
+        Fixture::Failed,
+        Fixture::Unconfigured,
+        Fixture::NoBudget,
+        Fixture::OverBudget,
+        Fixture::ZeroBudgetOver,
+    ] {
+        let p = payload(kind);
+        assert!(rows(&p).is_empty(), "{kind:?}");
+        assert_eq!(p["billingAlerts"]["heading"], "Billing alerts", "{kind:?}");
+    }
+}
+
+#[test]
+fn the_rules_are_judged_at_view_time_from_the_retained_fold() {
+    // The same state, three settings: a save re-flags without a new poll.
+    let state = fixture_state(Fixture::Spike, NOW);
+    let with = |multiple: f64, floor: u32| {
+        let alerts = ActionsBillingAlerts {
+            spike_multiple: multiple,
+            spike_floor_minutes: floor,
+            ..ActionsBillingAlerts::default()
+        };
+        view(&state, &alerts, CADENCE, NOW)
+    };
+    assert_eq!(rows(&with(3.0, 1000)).len(), 1);
+    assert!(rows(&with(6.0, 1000)).is_empty());
+    assert!(rows(&with(3.0, 2000)).is_empty());
+    assert_eq!(rows(&with(1.5, 1500)).len(), 1);
+}
+
+fn early_month_state(previous: PreviousMonth) -> ActionsBillingState {
+    let item = |date: &str, quantity: f64| actionsbilling::UsageItem {
+        date: DateTime::parse_from_rfc3339(date).unwrap().into(),
+        product: "actions".to_owned(),
+        sku: "Actions Linux".to_owned(),
+        unit_type: "Minutes".to_owned(),
+        quantity,
+        gross_amount: 0.0,
+        discount_amount: 0.0,
+        net_amount: 0.0,
+        repository_name: "repo-a".to_owned(),
+    };
+    let mut state = ActionsBillingState::new();
+    state.record(
+        MonthRead {
+            period: FIXTURE_PERIOD,
+            previous,
+            usage: Ok(actionsbilling::summarize_usage(&[
+                item("2023-11-01T00:00:00Z", 5_000.0),
+                item("2023-11-02T00:00:00Z", 5_000.0),
+                item("2023-11-03T05:00:00Z", 6_000.0),
+            ])),
+            budget: Ok(BudgetStatus::Absent),
+        },
+        NOW,
+    );
+    state
+}
+
+#[test]
+fn an_unreadable_baseline_is_a_muted_unknown_row_never_a_spike_and_never_nothing() {
+    let state = early_month_state(PreviousMonth::Failed(ActionsBillingError::Unreachable));
+    let p = view(&state, &alerts(), CADENCE, NOW);
+    assert_eq!(labels(&p), ["SPIKE CHECK"]);
+    let row = rows(&p)[0];
+    assert_eq!(row["value"], "\u{2014}");
+    assert_eq!(row["color"], color::hex(color::MUTED));
+    let detail = row["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("baseline unknown") && detail.contains("11-03"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_readable_previous_month_is_the_baseline() {
+    // October holds nothing for the repo: a measured 0, so the 6,000-minute
+    // newest day against a baseline of its own early days is judged, not unknown.
+    let state = early_month_state(PreviousMonth::Read(HostedDays::default()));
+    let p = view(&state, &alerts(), CADENCE, NOW);
+    assert!(
+        labels(&p).iter().all(|l| l.starts_with("SPIKE \u{b7}")),
+        "{:?}",
+        labels(&p)
+    );
+    assert!(!labels(&p).is_empty());
+}
+
+#[test]
+fn a_retained_fold_is_dropped_with_its_org() {
+    let mut state = early_month_state(PreviousMonth::Failed(ActionsBillingError::Unreachable));
+    state.begin("org-a");
+    state.note_org("org-b");
+    assert!(rows(&view(&state, &alerts(), CADENCE, NOW)).is_empty());
+}
+
+#[test]
+fn the_section_carries_the_three_controls_with_their_saved_values() {
+    let alerts = ActionsBillingAlerts {
+        spike_multiple: 2.5,
+        spike_floor_minutes: 300,
+        self_hosted_repos: vec!["alpha".to_owned(), "beta".to_owned()],
+    };
+    let section = alerts_section(&alerts);
+    assert!(section["shared"]
+        .as_str()
+        .unwrap()
+        .contains("every Actions billing tile"));
+    let fields = section["fields"].as_array().unwrap();
+    let ids: Vec<&str> = fields.iter().map(|f| f["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        ["spikeMultiple", "spikeFloorMinutes", "selfHostedRepos"]
+    );
+    assert_eq!(fields[0]["value"], 2.5);
+    assert_eq!(fields[1]["value"], 300);
+    assert_eq!(fields[2]["value"], "alpha, beta");
+}
+
+fn input(multiple: Value, floor: Value, repos: &str) -> Value {
+    json!({"spikeMultiple": multiple, "spikeFloorMinutes": floor, "selfHostedRepos": repos})
+}
+
+#[test]
+fn a_save_persists_and_survives_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = store::Store::open_in(dir.path(), false).unwrap();
+    save_alerts(&mut store, &input(json!(4), json!(250), "Alpha, beta")).unwrap();
+    let reopened = store::Store::open_in(dir.path(), false).unwrap();
+    let saved = &reopened.settings().actions_billing_alerts;
+    assert_eq!(saved.spike_multiple, 4.0);
+    assert_eq!(saved.spike_floor_minutes, 250);
+    assert_eq!(saved.self_hosted_repos, ["Alpha", "beta"]);
+}
+
+#[test]
+fn a_refused_save_says_why_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = store::Store::open_in(dir.path(), false).unwrap();
+    save_alerts(&mut store, &input(json!(4), json!(250), "alpha")).unwrap();
+    let before = store.settings().actions_billing_alerts.clone();
+    for (bad, sentence) in [
+        (
+            input(json!(1), json!(250), "alpha"),
+            store::actions_billing_alerts::REFUSE_MULTIPLE,
+        ),
+        (
+            input(json!(4), json!(0), "alpha"),
+            store::actions_billing_alerts::REFUSE_FLOOR,
+        ),
+        (
+            input(json!(4), json!(2.5), "alpha"),
+            store::actions_billing_alerts::REFUSE_FLOOR,
+        ),
+        (
+            input(json!(4), json!(250), "a,,b"),
+            store::actions_billing_alerts::REFUSE_EMPTY_REPO,
+        ),
+    ] {
+        assert_eq!(save_alerts(&mut store, &bad).unwrap_err(), sentence);
+        assert_eq!(store.settings().actions_billing_alerts, before);
+    }
+    let reopened = store::Store::open_in(dir.path(), false).unwrap();
+    assert_eq!(reopened.settings().actions_billing_alerts, before);
 }

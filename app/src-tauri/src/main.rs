@@ -4348,11 +4348,37 @@ fn actions_billing(
 /// card in the same response.
 fn actions_billing_unscoped(state: &App) -> Value {
     let cadence_secs = panel_interval(&state.store, PanelInterval::ActionsBilling).as_secs();
+    // The Billing alerts are read here, at view time, and the store lock is
+    // released before the state's is taken: a save re-flags the tile in the same
+    // response, without waiting for a poll, and the two locks are never held
+    // together.
+    let alerts = state
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .actions_billing_alerts
+        .clone();
     let panel = state
         .actions_billing
         .lock()
         .expect("actions billing state poisoned");
-    actions_billing::view(&panel, cadence_secs, panel::now_unix())
+    actions_billing::view(&panel, &alerts, cadence_secs, panel::now_unix())
+}
+
+/// Saves Configure's **Billing alerts** (the spike multiple and floor, and the
+/// self-hosted repo list) and answers with the re-rendered dashboard, so the tile
+/// is re-flagged in the same frame. Saved on the change and outside the
+/// dashboard's undo history: the settings judge every Actions billing tile, not
+/// the one being configured. A refused value says why and saves nothing.
+#[tauri::command]
+fn actions_billing_save_alerts(
+    alerts: Value,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    actions_billing::save_alerts(&mut state.store.lock().expect("store poisoned"), &alerts)?;
+    Ok(dashboard_view(width, state))
 }
 
 // MARK: the OpenClaw panel
@@ -6836,6 +6862,7 @@ fn dump_actions_billing(kind: actions_billing::Fixture, stale: bool) -> Value {
     let read_at = if stale { NOW - 23 * 3_600 } else { NOW };
     actions_billing::view(
         &actions_billing::fixture_state(kind, read_at),
+        &actions_billing::fixture_alerts(kind),
         cadence_secs,
         NOW,
     )
@@ -7494,6 +7521,10 @@ fn run_dump(args: &[String]) -> bool {
             actions_billing::Fixture::OverBudget
         } else if args.iter().any(|arg| arg == "--zero-budget-over") {
             actions_billing::Fixture::ZeroBudgetOver
+        } else if args.iter().any(|arg| arg == "--spike") {
+            actions_billing::Fixture::Spike
+        } else if args.iter().any(|arg| arg == "--macos-on-self-hosted") {
+            actions_billing::Fixture::MacosOnSelfHosted
         } else {
             actions_billing::Fixture::Measured
         };
@@ -7983,6 +8014,7 @@ fn main() {
             update_install,
             settings_view,
             machine_save_alerts,
+            actions_billing_save_alerts,
             machine_acknowledge_warning,
             machine_set_volume_hidden,
             runner_group_label_add,
@@ -8377,7 +8409,43 @@ mod tests {
     /// Org A's figures, then the settings name org B (or none) and the keychain
     /// will not answer: the pass must drop A's figures *before* the credential
     /// read returns, and say the keychain refused, not that nothing is set up.
-    /// Moving or deleting `note_org` in `poll_actions_billing` fails this.
+    /// A save of the Billing alerts re-flags the tile in the very next view,
+    /// with no poll in between: the rules are judged when the view is built,
+    /// from the retained fold and the settings of that moment (#770).
+    #[test]
+    fn a_billing_alerts_save_reflags_the_tile_without_a_poll() {
+        let (_dir, _rt, app) = test_app_over(Silent);
+        *app.actions_billing.lock().unwrap() =
+            actions_billing::fixture_state(actions_billing::Fixture::Spike, panel::now_unix());
+        let flagged = |app: &App| {
+            actions_billing_unscoped(app)["alerts"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        assert_eq!(flagged(&app), 1);
+        let input = |multiple: f64| json!({"spikeMultiple": multiple, "spikeFloorMinutes": 1000, "selfHostedRepos": ""});
+        actions_billing::save_alerts(&mut app.store.lock().unwrap(), &input(9.0)).unwrap();
+        assert_eq!(flagged(&app), 0);
+        actions_billing::save_alerts(&mut app.store.lock().unwrap(), &input(2.0)).unwrap();
+        assert_eq!(flagged(&app), 1);
+        // A refusal leaves the last good value judging.
+        let refused = json!({"spikeMultiple": 1, "spikeFloorMinutes": 1000, "selfHostedRepos": ""});
+        assert!(actions_billing::save_alerts(&mut app.store.lock().unwrap(), &refused).is_err());
+        assert_eq!(flagged(&app), 1);
+        // The dashboard carries the row on the source and raises its attention.
+        let dashboard = dashboard_view_in(1000.0, &app);
+        let source = dashboard["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "actionsBilling")
+            .unwrap();
+        assert_eq!(source["attentionCount"], 1);
+        assert_eq!(source["billingAlerts"]["heading"], "Billing alerts");
+    }
+
+    /// Moving or deleting `note_org` in `poll_actions_billing` fails this."""
     #[test]
     fn an_org_change_with_an_unreadable_keychain_drops_the_old_orgs_figures() {
         for next_org in ["org-b", ""] {

@@ -16,6 +16,10 @@
 // Choosing between them here, from "is there a bar", would put that judgement
 // where no Rust test can see it.
 //
+// The Billing alerts rows (`payload.alerts`, #770) are Rust's verdicts, painted
+// as given: a tripped spike or macOS rule is red, a rule that could not be
+// judged is muted. Which days were checked and every threshold stay in Rust.
+//
 // The report's own lag, `dataThrough` ("usage through Nov 14 19:00 UTC"), is a
 // plain line in the body. It is not the status footer and not the freshness
 // line: those are about the poller, and are both absent while it is healthy.
@@ -83,6 +87,23 @@ function breakdownNode(column) {
   return el;
 }
 
+/** One Billing alerts rule row: a tripped rule is red, one that could not be
+ *  judged is muted and says so. Rust made the label, the figures, the detail
+ *  and the colour; nothing here decides whether a rule tripped. */
+function alertNode(alert) {
+  const el = node("div", "pv-section");
+  el.dataset.section = "alert";
+  el.dataset.alert = alert.id;
+  const header = node("div", "pv-row");
+  header.appendChild(node("span", "lbl", alert.label));
+  const value = node("span", "val", alert.value);
+  value.style.color = alert.color;
+  header.appendChild(value);
+  el.appendChild(header);
+  if (alert.detail) el.appendChild(node("p", "pv-note", alert.detail));
+  return el;
+}
+
 /** A coloured one-line sentence: the budget note and the report's lag. */
 function noteNode(note, section) {
   const el = node("p", "pv-note", note.text);
@@ -139,6 +160,8 @@ function renderActionsBilling(payload) {
   } else if (payload.budgetNote) {
     main.appendChild(noteNode(payload.budgetNote, "budget-note"));
   }
+
+  for (const alert of payload.alerts || []) main.appendChild(alertNode(alert));
 
   if (main.childElementCount) children.push(main);
 
