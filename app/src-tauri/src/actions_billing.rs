@@ -203,9 +203,10 @@ fn trend_view(hosted: &HostedDays, data_through: DateTime<Utc>) -> (Value, Value
     }
 }
 
-/// The payload as one read gets it: the daily trend (#771) stays only for a
-/// tile's Full view. Every other read (the panel's own while the overview is
-/// up) carries neither the line nor its sentence.
+/// The payload as the `actions_billing` command answers it: the daily trend
+/// (#771) stays only for a read that names a tile (the Full view's). A read that
+/// names none, such as the boot read, carries neither the line nor its sentence.
+/// The dashboard does not come through here; no row it builds carries the trend.
 #[must_use]
 pub fn for_read(mut payload: Value, full_view: bool) -> Value {
     if !full_view {

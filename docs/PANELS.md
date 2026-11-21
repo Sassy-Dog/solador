@@ -205,9 +205,10 @@
   per-repo rule. A month whose minutes are all zero (storage only) keeps a flat
   line at the floor with the caption `peak 0 min`: a measured zero is a value,
   not a gap. The y range is `0` to the series maximum. The decision is
-  Rust's: only a read that names a tile (which only the Full view sends) carries
-  the `trend` and `trendNote` keys, `tile_scope` drops them for a tile that
-  picked rows (the trend is not a row), and the JS only paints them.
+  Rust's: the `actions_billing` command keeps `trend` and `trendNote` only in a
+  read that names a tile (which only the Full view sends) and nulls them in any
+  other, `tile_scope` drops them for a tile that picked rows (the trend is not
+  a row), no overview row carries them, and the JS only paints them.
   Setup (no token or organization) is a muted sentence naming Settings →
   Sources; a rejected token is the red `Fault` sentence and names Administration:
   Read and an org admin; a response missing a field the read decides on is

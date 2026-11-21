@@ -549,12 +549,18 @@
   tile owns the settings, the window owns the width.
 - **A read that names a tile is the Full view's read.** The frontend sends
   `{tile}` only from a tile's Full view (`tileArgs` in `app/ui/dashboard.js`),
-  so Full-view-only content is added only on that path, in Rust, and never
-  hidden by the page: the Machines look (`cockpit_for_tile`, `HostLook`) and the
-  Actions billing daily trend (`actions_billing_read`, `actions_billing::for_read`:
-  `trend` and `trendNote` are null in a read that names no tile, #771). The
-  dashboard's rows are built from the unnamed read, so the overview has none of
-  it.
+  so Full-view-only content is decided in Rust, never hidden by the page. The
+  Machines look (`coreRowSpan`, `hostOverflow`, `rowGapPx`) is applied only by
+  `cockpit_for_tile`; a read that names no tile takes `HostLook::default()`. The
+  Actions billing daily trend (#771) works the other way round: `view` builds
+  `trend` and `trendNote` on every path, and `actions_billing::for_read` removes
+  them from the `actions_billing` command's answer when the read names no tile
+  (`actions_billing_read`). The dashboard does not go through that command: it
+  builds its rows from `actions_billing_unscoped`, trend included, and the
+  overview has no chart because **no row carries the trend**
+  (`the_daily_trend_is_in_no_overview_row`, `dashboard.rs`). The overview never
+  calls `actions_billing` (`panelWanted` is false there); a read with no tile is
+  the boot read made before `dashboard.js` loads.
 - **Unknown width (`<= 0` or NaN) stacks**: `host_columns` and `panel_columns`
   both answer 1, because stacking can never be unreadable. Assuming wide is what
   let a dead measurement pass for a deliberate layout.

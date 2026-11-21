@@ -4342,8 +4342,11 @@ fn actions_billing(
 }
 
 /// What the `actions_billing` command answers. Only a tile's Full view names
-/// its tile (`tileArgs` in dashboard.js), so a read with one is the one place
-/// the daily trend is built (#771); `None` is the overview's.
+/// its tile (`tileArgs` in dashboard.js), so a read with one is the one that
+/// keeps the daily trend (#771); `for_read` removes it from a read that names no
+/// tile, such as the boot read made before dashboard.js loads. `None` is not the
+/// overview's read: the overview never calls this command (its rows come from
+/// `actions_billing_unscoped`, and none carries the trend).
 fn actions_billing_read(state: &App, tile: Option<&str>) -> Result<Value, String> {
     let full_view = tile.is_some();
     scope_to_tile(state, "actionsBilling", tile, || {
@@ -8488,9 +8491,10 @@ mod tests {
         }
     }
 
-    /// The daily trend (#771) is built for a tile's Full view alone, and the
-    /// read the command answers is what decides it: no tile (the overview's
-    /// read) carries none of it, a stored tile id (the Full view's) carries it.
+    /// The daily trend (#771) is kept for a tile's Full view alone, and the
+    /// read the command answers is what decides it: a read naming no tile (such
+    /// as the boot read) carries none of it, a stored tile id (the Full view's)
+    /// carries it.
     #[test]
     fn the_daily_trend_is_only_in_a_read_that_names_a_tile() {
         let (_dir, _rt, app) = test_app_over(Silent);

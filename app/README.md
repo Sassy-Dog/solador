@@ -1743,8 +1743,8 @@ behind one never reaches another's warning or chip.
   "trend": {"label": "HOSTED MINUTES PER DAY", "values": [540, 610, …, 0, …, 815],
             "lo": 0, "hi": 820, "first": "Nov 1", "last": "Nov 14",
             "caption": "Nov 1 – Nov 14 · peak 820 min", "color": …, "captionColor": …},
-                     //   the daily trend (#771), the Full view's alone: only a read that names a tile
-                     //   carries it, and `tile_scope` drops it for a tile that picked rows. One value per
+                     //   the daily trend (#771), the Full view's alone: the command keeps it only in a read
+                     //   that names a tile (null otherwise), no overview row carries it, and `tile_scope` drops it for a tile that picked rows. One value per
                      //   day, the 1st through the `usage through` day; a day with no item is a measured 0,
                      //   later days are absent. `spark()` draws it; the JS computes nothing
   "trendNote": null, // {"text": "the daily trend starts on the 2nd", "color"} when the newest day is the 1st
