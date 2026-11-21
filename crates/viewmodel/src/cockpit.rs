@@ -52,11 +52,11 @@ impl PanelKind {
         PanelKind::Usage,
         PanelKind::OpenclawAgents,
         PanelKind::AzureCost,
-        PanelKind::ActionsBilling,
         PanelKind::Services,
         PanelKind::SentryCrons,
         PanelKind::Anthropic,
         PanelKind::OpenAi,
+        PanelKind::ActionsBilling,
     ];
 
     /// Stable identifier — the original `rawValue`, so persisted layout state and

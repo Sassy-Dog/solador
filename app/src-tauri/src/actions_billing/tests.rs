@@ -421,3 +421,38 @@ fn the_payload_and_the_kind_agree_on_id_and_title() {
     assert_eq!(p["id"], "actionsBilling");
     assert_eq!(p["title"], "Actions billing");
 }
+
+#[test]
+fn a_failed_first_read_for_another_org_shows_no_figures_from_the_old_one() {
+    let mut state = ActionsBillingState::new();
+    state.begin("org-a");
+    state.record(read_at(95.0, 100.0), NOW - 600);
+    let before = view(&state, CADENCE, NOW);
+    assert!(!before["headline"].is_null() && !before["budget"].is_null());
+
+    state.begin("org-b");
+    state.record(
+        MonthRead {
+            period: FIXTURE_PERIOD,
+            usage: Err(ActionsBillingError::NotFound),
+            budget: Err(ActionsBillingError::NotFound),
+        },
+        NOW,
+    );
+    let p = view(&state, CADENCE, NOW);
+    assert!(p["headline"].is_null() && p["budget"].is_null());
+    assert_eq!(
+        p["message"]["text"],
+        ActionsBillingError::NotFound.user_message()
+    );
+    assert!(p["breakdowns"].as_array().unwrap().is_empty());
+    // No amber or red bar is left to raise Needs Attention.
+    assert!(p["budget"]["bar"].is_null());
+
+    // The same org keeps its figures through a failure.
+    let mut same = ActionsBillingState::new();
+    same.begin("org-a");
+    same.record(read_at(10.0, 100.0), NOW - 600);
+    same.begin("org-a");
+    assert!(!view(&same, CADENCE, NOW)["headline"].is_null());
+}

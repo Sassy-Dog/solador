@@ -566,9 +566,8 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   border-top:1px solid var(--line); padding-top:10px;
 }
 .pv-message { font-size:11px; color:var(--muted); margin:0; }
-.pv-note { font-size:11px; color:var(--muted); margin:0; }
 .pv-divider { border:0; border-top:1px solid var(--line); margin:0; width:100%; }
-.pv-note { font-size:11px; color:var(--muted); }
+.pv-note { font-size:11px; color:var(--muted); margin:0; }
 .pv-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 /* A named breakdown line (a project, a resource group): dot, name, figure. */
 .pv-item { display:flex; align-items:center; gap:7px; min-width:0; }

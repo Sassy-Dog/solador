@@ -667,7 +667,7 @@ the GitHub account's token, which keeps its permissions unchanged, and it is sto
 under its own credential-store item (`actions_billing_token`); the organization is a
 plain preference (`actions_billing_org`). An empty organization or token is refused at
 **Finish** with its own sentence before anything is written, and removing the source
-forgets both. The row reads `Setup incomplete` with one half saved. Ready offers the
+forgets both. The row reads `Setup incomplete` with only the token saved and `Token needed` with only the organization saved. Ready offers the
 one Actions billing tile. The walk is in [docs/github-setup.md](../docs/github-setup.md).
 
 No key is saved by a button on its step: keys and IDs are written at

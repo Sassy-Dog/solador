@@ -4114,8 +4114,17 @@ async fn poll_actions_billing(app: &Arc<App>) {
     app.actions_billing
         .lock()
         .expect("actions billing state poisoned")
-        .begin();
+        .begin(&org);
     let read = client.month_to_date(&org, github::now_utc()).await;
+    // The crate's errors are a kind and a status code, so this cannot carry the
+    // token, a URL or a body. Before the lock: `eprintln!` panics on a closed
+    // stderr.
+    if let Err(e) = &read.usage {
+        eprintln!("Actions billing usage: {}", e.user_message());
+    }
+    if let Err(e) = &read.budget {
+        eprintln!("Actions billing budget: {}", e.user_message());
+    }
     // Stamped as the read completes, so the footer's `last ok` is the last
     // success and not the moment the pass began.
     app.actions_billing
@@ -9004,10 +9013,6 @@ mod tests {
         }
     }
 
-    /// Azure Cost has no key: finishing its steps writes the export location and
-    /// the budget, wakes the Azure loop (four hours is too long to learn that a
-    /// typo was fixed) and the status pages (a configured export is what makes
-    /// Azure a watched vendor), and writes nothing to the credential store.
     #[test]
     fn actions_billing_saves_its_own_token_wakes_its_loop_and_never_echoes_the_token() {
         const SECRET: &str = "github_pat_billing_secret_x";
@@ -9088,6 +9093,10 @@ mod tests {
         assert_eq!(app.store.lock().unwrap().settings().actions_billing_org, "");
     }
 
+    /// Azure Cost has no key: finishing its steps writes the export location and
+    /// the budget, wakes the Azure loop (four hours is too long to learn that a
+    /// typo was fixed) and the status pages (a configured export is what makes
+    /// Azure a watched vendor), and writes nothing to the credential store.
     #[test]
     fn azure_cost_saves_through_its_steps_and_wakes_its_loop_and_the_status_pages() {
         let (_dir, _rt, app) = test_app();

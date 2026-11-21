@@ -51,7 +51,9 @@ use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 use viewmodel::freshness::Freshness;
 
-use crate::azure::{group_thousands, usd, MONTHS_LONG, MONTHS_SHORT};
+use crate::azure::{
+    group_thousands, usd, BUDGET_AMBER_AT, BUDGET_RED_AT, MONTHS_LONG, MONTHS_SHORT,
+};
 use crate::panel::{
     attributed_freshness_payload, attributed_status_footer, merged_footer, merged_freshness,
     progress_bar, stale_after_for_slow_cadence,
@@ -79,11 +81,6 @@ pub const NO_BUDGET_MESSAGE: &str = "no Actions budget set";
 /// The two halves' names in the header lines, and the sections they date.
 const USAGE_ID: &str = "usage";
 const BUDGET_ID: &str = "budget";
-
-/// Amber at 90% of the budget, red at the budget: the constants Azure Cost's
-/// budget bar uses, because it is the same widget answering the same question.
-const BUDGET_AMBER_AT: f64 = 0.9;
-const BUDGET_RED_AT: f64 = 1.0;
 
 /// How many rows each breakdown shows: `actionsbilling::TOP_N`, restated as the
 /// render cap and asserted equal in the tests below.
@@ -164,6 +161,10 @@ pub struct ActionsBillingState {
     /// completed, or GitHub itself failed. Never a rejected token, a wrong org
     /// or a rate limit, which a fast retry would only repeat.
     transient_failure: bool,
+    /// The organization the retained figures were read for. A pass for another
+    /// organization drops them, so a failed first read for org B never shows
+    /// org A's headline, bar or attention flag.
+    org: Option<String>,
 }
 
 impl ActionsBillingState {
@@ -180,10 +181,17 @@ impl ActionsBillingState {
         self.budget.unconfigure();
         self.period = None;
         self.transient_failure = false;
+        self.org = None;
     }
 
-    /// A token and an org are configured and a read is in flight.
-    pub fn begin(&mut self) {
+    /// A token and `org` are configured and a read is in flight. A different
+    /// organization than the retained figures came from clears both halves
+    /// first, as [`unconfigure`](Self::unconfigure) does.
+    pub fn begin(&mut self, org: &str) {
+        if self.org.as_deref().is_some_and(|kept| kept != org) {
+            self.unconfigure();
+        }
+        self.org = Some(org.to_owned());
         self.usage.begin();
         self.budget.begin();
     }
@@ -583,7 +591,7 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
         ),
         Fixture::Empty => state.record(ok(UsageSummary::NoUsage, BudgetStatus::Absent), at),
         Fixture::Failed => {
-            state.begin();
+            state.begin("acme");
             state.record(
                 MonthRead {
                     period: FIXTURE_PERIOD,

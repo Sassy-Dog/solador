@@ -71,8 +71,8 @@ pub const NO_DATA_MESSAGE: &str = "no cost data";
 
 /// Amber at 90% of budget, red at budget. Same thresholds as the Usage panel's
 /// Sentry quota bar.
-const BUDGET_AMBER_AT: f64 = 0.9;
-const BUDGET_RED_AT: f64 = 1.0;
+pub(crate) const BUDGET_AMBER_AT: f64 = 0.9;
+pub(crate) const BUDGET_RED_AT: f64 = 1.0;
 
 /// How many rows each breakdown column shows — `azurecost::TOP_N`, restated as
 /// the *render* cap so a reader of this file can see it, and asserted equal to

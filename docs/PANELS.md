@@ -131,7 +131,7 @@
   billing token, never the GitHub account's) and the organization's login, both
   re-read from the store on every pass. It is two reads, kept as two halves of
   state (`usage` and `budget`), so a failed budget read never hides the usage
-  and the reverse, and each half retains its last good figure. **Staleness:** the
+  and the reverse, and each half retains its last good figure, unless the organization changed: a pass for a different org drops both halves first, so a failed read never shows the old org's figures. **Staleness:** the
   footer and the freshness line are about the *poller* and keep the meaning
   every panel gives them: the last successful read (per half, attributed
   `usage:` / `budget:`), the footer's window 1.5 cycles of the cadence, and the
