@@ -120,6 +120,8 @@ fn budget_spend(amount: f64, spend: Option<f64>) -> BudgetSpend {
     } else if amount >= 0.0 {
         if spend > 0.0 {
             BudgetSpend::OverZeroBudget { spend }
+        } else if spend < 0.0 {
+            BudgetSpend::CreditAgainstZeroBudget { spend }
         } else {
             BudgetSpend::AtZeroBudget
         }

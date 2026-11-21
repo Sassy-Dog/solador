@@ -214,6 +214,37 @@ fn unmeasured_spend_is_unmeasured_whatever_the_amount() {
 }
 
 #[test]
+fn negative_spend_against_a_zero_amount_is_stated_and_never_over() {
+    let status = with_amount(0.0, Some(-3.5));
+    assert_eq!(
+        spend_of(status.clone()),
+        BudgetSpend::CreditAgainstZeroBudget { spend: -3.5 }
+    );
+    assert_eq!(status.spend(), Some(-3.5));
+}
+
+#[test]
+fn an_amount_too_small_to_divide_into_lands_by_its_spends_sign() {
+    // The quotient would overflow to infinity, so it is a zero budget; zero or
+    // tiny spend still divides to a finite fraction.
+    assert_eq!(
+        spend_of(with_amount(f64::MIN_POSITIVE, Some(27.25))),
+        BudgetSpend::OverZeroBudget { spend: 27.25 }
+    );
+    assert_eq!(
+        spend_of(with_amount(f64::MIN_POSITIVE, Some(-27.25))),
+        BudgetSpend::CreditAgainstZeroBudget { spend: -27.25 }
+    );
+    assert_eq!(
+        spend_of(with_amount(f64::MIN_POSITIVE, Some(0.0))),
+        BudgetSpend::Fraction {
+            spend: 0.0,
+            fraction: 0.0
+        }
+    );
+}
+
+#[test]
 fn a_negative_amount_compares_nothing() {
     let status = with_amount(-5.0, Some(27.25));
     assert_eq!(spend_of(status.clone()), BudgetSpend::Incomparable);

@@ -149,6 +149,13 @@ fn unmeasured_spend_prints_an_em_dash_with_no_bar_for_any_amount() {
 }
 
 #[test]
+fn credit_against_a_zero_budget_prints_the_spend_with_no_bar() {
+    let budget = budget_of(read_at(-3.5, 0.0));
+    assert_eq!(budget["value"], "-$3.50 / $0.00");
+    assert!(budget["bar"].is_null());
+}
+
+#[test]
 fn a_negative_amount_prints_no_spend_and_no_bar() {
     let budget = budget_of(read_at(10.0, -5.0));
     assert_eq!(budget["value"], format!("{UNKNOWN} / {}", usd(-5.0)));
@@ -501,7 +508,6 @@ fn a_failed_first_read_for_another_org_shows_no_figures_from_the_old_one() {
         ActionsBillingError::NotFound.user_message()
     );
     assert!(p["breakdowns"].as_array().unwrap().is_empty());
-    // No amber or red bar is left to raise Needs Attention.
 
     // The same org keeps its figures through a failure.
     let mut same = ActionsBillingState::new();
@@ -525,6 +531,13 @@ fn an_org_only_change_drops_the_old_orgs_figures_before_the_credential_read() {
     assert!(p["headline"].is_null() && p["budget"].is_null(), "{p}");
     assert!(p["breakdowns"].as_array().unwrap().is_empty());
     assert!(!p.to_string().contains("$95.00"), "{p}");
+    // Nothing was observed about the credential, so the keychain's refusal is
+    // what the tile says, never the setup instruction.
+    assert_eq!(
+        p["message"]["text"],
+        "the credential store would not answer"
+    );
+    assert_ne!(p["message"]["text"], UNCONFIGURED_MESSAGE);
 }
 
 #[test]

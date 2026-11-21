@@ -3139,7 +3139,7 @@ cargo run -p solador-app -- --dump-openai sample-openai.json       # the OpenAI 
 cargo run -p solador-app -- --dump-actions-billing sample-actions-billing.json  # the Actions billing panel
 #   …plus `--empty` (a month with no Actions usage), `--error` (red, a rejected
 #   token), `--stale` (the same good read, dated 23h back), `--unconfigured`
-#   (the setup sentence), `--no-budget` (no Actions budget: a note, no bar) and
+#   (the setup sentence), `--no-budget` (no Actions budget: a note, no bar),
 #   `--over-budget` (red bar, a budget that does not stop jobs) and
 #   `--zero-budget-over` (spend over a budget whose amount is 0: a full red bar).
 #   The default is amber at 90% of a budget that stops jobs. Every amount is invented.

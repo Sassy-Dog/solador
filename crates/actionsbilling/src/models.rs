@@ -123,6 +123,9 @@ pub enum BudgetSpend {
     OverZeroBudget { spend: f64 },
     /// An amount of 0 and a measured spend of exactly 0: nothing is over.
     AtZeroBudget,
+    /// An amount of 0 and a measured spend below 0 (credits): stated as
+    /// measured, but nothing is over, so no bar and no flag.
+    CreditAgainstZeroBudget { spend: f64 },
     /// An amount below 0, which GitHub does not issue: nothing is compared, so
     /// no spend is stated against it.
     Incomparable,
@@ -148,7 +151,10 @@ impl BudgetStatus {
     pub fn spend(&self) -> Option<f64> {
         match self {
             BudgetStatus::Present {
-                spend: BudgetSpend::Fraction { spend, .. } | BudgetSpend::OverZeroBudget { spend },
+                spend:
+                    BudgetSpend::Fraction { spend, .. }
+                    | BudgetSpend::OverZeroBudget { spend }
+                    | BudgetSpend::CreditAgainstZeroBudget { spend },
                 ..
             } => Some(*spend),
             BudgetStatus::Present {

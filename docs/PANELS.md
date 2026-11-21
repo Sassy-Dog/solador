@@ -132,27 +132,31 @@
   re-read from the store on every pass. It is two reads, kept as two halves of
   state (`usage` and `budget`), so a failed budget read never hides the usage
   and the reverse, and each half retains its last good figure, unless the
-  organization changed: a pass for a different org drops both halves first
-  (before the credential is read, so an unreadable store never shows the old
-  org's figures either), while the same org's refused keychain read keeps its
-  last good figures. **Staleness:** the
-  footer and the freshness line are about the *poller* and keep the meaning
-  every panel gives them: the last successful read (per half, attributed
-  `usage:` / `budget:`), the footer's window 1.5 cycles of the cadence, and the
-  freshness line at one cycle. **`usage through` is the *report's* lag, which is
-  separate and is fed into neither:** any non-empty footer or freshness is a
-  Needs Attention warning (`dashboard::source_view`), and a report that always
-  lags by hours would light the tile permanently. The bar is amber from 0.9 and
-  red from 1.0 of the budget (Azure Cost's constants) and flags the tile row
-  exactly as Azure's does; its label says whether the budget stops jobs
-  (`prevent_further_usage`; `BUDGET · STOPS JOBS` / `BUDGET · JOBS CONTINUE`).
-  A budget whose amount is 0 is GitHub's "no paid usage" setting, and the
-  crate names its states (`BudgetSpend`), never a ratio: measured net spend
-  above 0 paints `<spend> / $0.00` with a full red bar, which flags the row
-  and raises Needs Attention; measured spend of exactly 0 paints
-  `$0.00 / $0.00` with no bar and no flag; an unmeasured spend paints `—`
-  with no bar. The measured spend is printed whenever it was measured. No budget shows `no Actions budget set` and no bar,
-  never a 0% one; a month with no Actions usage says so in words, never `$0.00`.
+  organization changed: a pass for a different org drops both halves' figures
+  first (before the credential is read, and without recording an absence, so an
+  unreadable store says the keychain refused and never shows the old org's
+  figures), while the same org's refused keychain read keeps its last good
+  figures. **Staleness:** the footer and the freshness line are about the
+  *poller* and keep the meaning every panel gives them: the last successful
+  read (per half, attributed `usage:` / `budget:`), the footer's window 1.5
+  cycles of the cadence, and the freshness line at one cycle. **`usage through`
+  is the *report's* lag, which is separate and is fed into neither:** any
+  non-empty footer or freshness is a Needs Attention warning
+  (`dashboard::source_view`), and a report that always lags by hours would
+  light the tile permanently. The bar is amber from 0.9 and red from 1.0 of the
+  budget (Azure Cost's constants) and flags the tile row exactly as Azure's
+  does; its label says whether the budget stops jobs (`prevent_further_usage`;
+  `BUDGET · STOPS JOBS` / `BUDGET · JOBS CONTINUE`). A budget whose amount is 0
+  is GitHub's "no paid usage" setting, and the crate names its states
+  (`BudgetSpend`), never a ratio: measured net spend above 0 paints
+  `<spend> / $0.00` with a full red bar, which flags the row and raises Needs
+  Attention; measured spend of exactly 0 paints `$0.00 / $0.00` with no bar and
+  no flag, and a measured credit (below 0) paints that spend over `$0.00` with
+  no bar and no flag; an unmeasured spend paints `—` with no bar. The measured
+  spend is printed whenever it was measured, except against a negative amount
+  (which GitHub does not issue), where nothing is compared and it paints `—`.
+  No budget shows `no Actions budget set` and no bar, never a 0% one; a month
+  with no Actions usage says so in words, never `$0.00`.
   Setup (no token or organization) is a muted sentence naming Settings →
   Sources; a rejected token is the red `Fault` sentence and names Administration:
   Read and an org admin; a response missing a field the read decides on is

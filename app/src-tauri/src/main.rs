@@ -4084,12 +4084,10 @@ async fn poll_actions_billing(app: &Arc<App>) {
     // Before the credential is acted on: an org-only edit followed by an
     // unreadable store must not leave the previous org's figures on the tile.
     // The same org keeps its last good ones.
-    if !org.is_empty() {
-        app.actions_billing
-            .lock()
-            .expect("actions billing state poisoned")
-            .note_org(&org);
-    }
+    app.actions_billing
+        .lock()
+        .expect("actions billing state poisoned")
+        .note_org(&org);
     let token = match token {
         // "No token" or "no org" is the setup state; "the keychain would not
         // answer" is not, because that would delete a live figure for an hour.
@@ -8373,6 +8371,39 @@ mod tests {
         }
         fn set_secret_bytes(&self, _: SecretKey, _: &[u8]) -> Result<(), store::SecretError> {
             Ok(())
+        }
+    }
+
+    /// Org A's figures, then the settings name org B (or none) and the keychain
+    /// will not answer: the pass must drop A's figures *before* the credential
+    /// read returns, and say the keychain refused, not that nothing is set up.
+    /// Moving or deleting `note_org` in `poll_actions_billing` fails this.
+    #[test]
+    fn an_org_change_with_an_unreadable_keychain_drops_the_old_orgs_figures() {
+        for next_org in ["org-b", ""] {
+            let (_dir, rt, app) = test_app_over(Silent);
+            app.store.lock().unwrap().settings_mut().actions_billing_org = next_org.to_owned();
+            {
+                let mut state = actions_billing::fixture_state(
+                    actions_billing::Fixture::Measured,
+                    panel::now_unix(),
+                );
+                state.begin("org-a");
+                *app.actions_billing.lock().unwrap() = state;
+            }
+            let app = Arc::new(app);
+            assert!(!actions_billing_unscoped(&app)["headline"].is_null());
+            rt.block_on(poll_actions_billing(&app));
+            let p = actions_billing_unscoped(&app);
+            assert!(
+                p["headline"].is_null() && p["budget"].is_null(),
+                "{next_org:?}: {p}"
+            );
+            assert_eq!(
+                p["message"]["text"],
+                json!(CREDENTIAL_UNREADABLE_MESSAGE),
+                "{next_org:?}"
+            );
         }
     }
 

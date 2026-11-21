@@ -4032,3 +4032,43 @@ test("Detail headings separate owners in both table and list", async ({ page, ba
   await expect(inspector(page)).toHaveAttribute("data-detail-view", "list");
   await expect(headings).toHaveText(["acme", "globex", "jdoe"]);
 });
+
+// The Actions billing budget row's label must fit the overview row at the tile's
+// `min_width` (400): the deciding words (does the budget stop jobs) are the
+// label, and the value beside it already gives the limit. Rust's own labels,
+// from the fixtures it dumped, on a tile pinned to 400px.
+for (const [fixtureName, deciding] of [
+  ["sample-actions-billing.json", /STOPS JOBS/],
+  ["sample-actions-billing-over-budget.json", /JOBS CONTINUE/],
+]) {
+  test(`the Actions billing budget label is not truncated at the tile's min_width (${fixtureName})`, async ({ page, baseURL }) => {
+    const budget = (await (await fetch(`${baseURL}/${fixtureName}`)).json()).budget;
+    expect(budget.label).toMatch(deciding);
+    await openDashboard(page, baseURL, false, (view) => {
+      // The Runners tile stands in for an Actions billing tile: same layout
+      // slot, the source's own rows, the label Rust chose for the budget.
+      for (const t of [view.layout.tiles.find(t => t.source === "ghRunners"), view.tiles.find(t => t.source === "ghRunners")]) {
+        t.source = "actionsBilling";
+        t.title = "Actions billing";
+        delete t.runnerView; // not a grouped Runners tile: its rows are the source's
+      }
+      const source = view.sources.find(s => s.id === "actionsBilling");
+      source.rows.find(r => r.id === "budget").label = budget.label;
+    });
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await expect(tile(page, "ghRunners").locator(".db-item-name", { hasText: budget.label })).toHaveCount(1);
+    // One atomic read per poll: the 1 s poll may replace the tile, so each
+    // attempt pins the live node to 400px (CSSOM, which the CSP allows) and
+    // measures the label in the same evaluation.
+    await expect.poll(
+      () =>
+        page.evaluate((label) => {
+          const t = document.querySelector('[data-tile="overview-ghRunners"]');
+          Object.assign(t.style, { width: "400px", maxWidth: "400px", minWidth: "0", justifySelf: "start" });
+          const name = [...t.querySelectorAll(".db-item-name")].find((n) => n.textContent === label);
+          return { tile: Math.round(t.getBoundingClientRect().width), fits: !!name && name.scrollWidth <= name.clientWidth };
+        }, budget.label),
+      { message: "the label is cut off by an ellipsis at a 400px tile" },
+    ).toEqual({ tile: 400, fits: true });
+  });
+}

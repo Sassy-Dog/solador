@@ -189,13 +189,19 @@ impl ActionsBillingState {
     }
 
     /// The settings name `org` for this pass. A different organization than the
-    /// retained figures came from clears both halves, as
-    /// [`unconfigure`](Self::unconfigure) does. Called before the credential is
-    /// read, so a pass that cannot read it still never shows another org's
-    /// figures; the same organization keeps what it has.
+    /// retained figures came from clears both halves' figures, but, unlike
+    /// [`unconfigure`](Self::unconfigure), records no absence: nothing has been
+    /// observed about the credential yet, so a keychain refusal on this pass is
+    /// still said as one, never as the setup sentence. Called before the
+    /// credential is read, so a pass that cannot read it never shows another
+    /// org's figures; the same organization keeps what it has.
     pub fn note_org(&mut self, org: &str) {
         if self.org.as_deref().is_some_and(|kept| kept != org) {
-            self.unconfigure();
+            self.usage.clear_figures();
+            self.budget.clear_figures();
+            self.period = None;
+            self.transient_failure = false;
+            self.org = None;
         }
     }
 
@@ -312,7 +318,10 @@ fn budget_block(reading: &BudgetReading) -> Option<Value> {
         BudgetSpend::OverZeroBudget { .. } => {
             block["bar"] = progress_bar(BUDGET_RED_AT, BUDGET_AMBER_AT, BUDGET_RED_AT);
         }
-        BudgetSpend::Unmeasured | BudgetSpend::AtZeroBudget | BudgetSpend::Incomparable => {}
+        BudgetSpend::Unmeasured
+        | BudgetSpend::AtZeroBudget
+        | BudgetSpend::CreditAgainstZeroBudget { .. }
+        | BudgetSpend::Incomparable => {}
     }
     Some(block)
 }
