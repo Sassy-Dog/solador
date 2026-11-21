@@ -8459,8 +8459,11 @@ mod tests {
     /// banner paths feed `deliver_banners` from the GitHub approval notices, the
     /// service status notices and the update check; the rule rows are payload
     /// only. Pinned here: the tripped fixtures are red rows with no notice
-    /// anywhere in the payload, and nothing on the Actions billing path
-    /// (`poll_actions_billing`, its view module) reaches a notification.
+    /// anywhere in the payload; the pin covers `main.rs`'s non-test source
+    /// (one `.notification()`, inside `deliver_banners`, and three named
+    /// `deliver_banners(` call sites); and the scan covers the
+    /// `poll_actions_billing` body and the `actions_billing.rs` view module,
+    /// which may name neither `deliver_` nor `notification()`.
     #[test]
     fn the_billing_alert_rules_deliver_no_banner() {
         for kind in [
@@ -8478,17 +8481,95 @@ mod tests {
                 "{kind:?}"
             );
         }
-        let main_src = include_str!("main.rs");
-        let start = main_src.find("async fn poll_actions_billing").unwrap();
-        let end = start + main_src[start..].find("\n}\n").unwrap();
-        let poll = &main_src[start..end];
-        let view = include_str!("actions_billing.rs");
-        for (name, text) in [("poll_actions_billing", poll), ("actions_billing.rs", view)] {
-            assert!(
-                !text.contains("deliver_") && !text.contains("notification()"),
-                "{name} reaches a banner path"
-            );
+        // The banner paths themselves, over the code above this module only.
+        let whole = include_str!("main.rs").replace("\r\n", "\n");
+        let source = whole.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        assert_eq!(banner_path_errors(source), Vec::<String>::new());
+        // Negative controls: a second `.notification()` and a fourth
+        // `deliver_banners(` call each fail the same check.
+        let extra_call = format!("{source}\nfn billing_banner(app: &App) {{ deliver_banners(app, \"billing\", &[]); }}\n");
+        let errors = banner_path_errors(&extra_call);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("deliver_banners( call sites")),
+            "{errors:?}"
+        );
+        let extra_notification =
+            format!("{source}\nfn billing_banner(h: &H) {{ h.notification().builder(); }}\n");
+        let errors = banner_path_errors(&extra_notification);
+        assert!(
+            errors.iter().any(|e| e.contains(".notification() calls")),
+            "{errors:?}"
+        );
+        // The billing path itself reaches no banner, by any name or wrapper.
+        let start = source.find("async fn poll_actions_billing").unwrap();
+        let poll = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let view = include_str!("actions_billing.rs").replace("\r\n", "\n");
+        assert_eq!(billing_path_errors(poll, &view), Vec::<String>::new());
+        // Negative control: a banner call from the view module fails the scan.
+        let doctored =
+            format!("{view}\nfn x(app: &App) {{ crate::deliver_banners(app, \"b\", &[]); }}\n");
+        assert!(!billing_path_errors(poll, &doctored).is_empty());
+    }
+
+    /// The billing path's own banner reach: neither the `poll_actions_billing`
+    /// body nor the view module may contain `deliver_` or `notification()`.
+    fn billing_path_errors(poll: &str, view: &str) -> Vec<String> {
+        [("poll_actions_billing", poll), ("actions_billing.rs", view)]
+            .iter()
+            .filter(|(_, text)| text.contains("deliver_") || text.contains("notification()"))
+            .map(|(name, _)| format!("{name} reaches a banner path"))
+            .collect()
+    }
+
+    /// What is wrong with the banner paths in `source` (main.rs above its test
+    /// module): exactly one `.notification()`, inside `deliver_banners`, and
+    /// exactly the three known `deliver_banners(` call sites. Empty is clean.
+    fn banner_path_errors(source: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        let code_lines = || source.lines().filter(|l| !l.trim_start().starts_with("//"));
+        // Name of the function each code line sits in.
+        let mut in_fn = "";
+        let mut notifications = Vec::new();
+        let mut callers = Vec::new();
+        for line in code_lines() {
+            let decl = line.trim_start();
+            let decl = decl.strip_prefix("pub(crate) ").unwrap_or(decl);
+            let decl = decl.strip_prefix("pub ").unwrap_or(decl);
+            let decl = decl.strip_prefix("async ").unwrap_or(decl);
+            if let Some(rest) = decl.strip_prefix("fn ") {
+                in_fn = &rest[..rest.find(['(', '<']).expect("fn name ends")];
+                if in_fn == "deliver_banners" {
+                    continue;
+                }
+            }
+            if line.contains(".notification()") {
+                notifications.push(in_fn.to_owned());
+            }
+            if line.contains("deliver_banners(") {
+                let at = line.find("deliver_banners(").unwrap();
+                let what = line[at..].split('"').nth(1).unwrap_or("?").to_owned();
+                callers.push(format!("{in_fn}:{what}"));
+            }
         }
+        if notifications != ["deliver_banners"] {
+            errors.push(format!(
+                ".notification() calls: want one in deliver_banners, found in {notifications:?}"
+            ));
+        }
+        callers.sort();
+        let want = [
+            "deliver_approval_notices:needs-approval",
+            "deliver_status_notices:service-status",
+            "run_update_check:update-available",
+        ];
+        if callers != want {
+            errors.push(format!(
+                "deliver_banners( call sites: want {want:?}, found {callers:?}"
+            ));
+        }
+        errors
     }
 
     /// The daily trend (#771) is kept for a tile's Full view alone, and the
@@ -10675,6 +10756,14 @@ mod tests {
                 "the {command} command builds with `{builder}`"
             );
         }
+        // `actions_billing`'s row reads `actions_billing_read`, so the command's
+        // own hand-off is pinned here: a `None` or any other value drops the
+        // tile and every Full view loses its trend (#782).
+        assert!(
+            body_of(source, "actions_billing")
+                .contains("actions_billing_read(&state, tile.as_deref())"),
+            "the actions_billing command hands its own tile to `actions_billing_read`"
+        );
         // `cockpit` reaches `cockpit_for_tile`, the row above, only with its own tile.
         let cockpit = body_of(source, "cockpit");
         assert!(

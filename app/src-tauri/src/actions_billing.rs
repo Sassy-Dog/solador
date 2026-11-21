@@ -872,7 +872,8 @@ fn linux_item(day: u32, hour: u32, quantity: f64, repo: &str) -> actionsbilling:
 }
 
 /// The daily minutes behind the `Measured` fixture's trend, Nov 1 through Nov
-/// 14, split over two repos. Nov 9 has no item at all, so the series holds a
+/// 14, split over two repos, except Nov 5, whose second share is an org-level
+/// item with no repository. Nov 9 has no item at all, so the series holds a
 /// measured zero. The days sum to the fixture's 7,545 minutes, and none nears
 /// the spike floor, so no rule row appears. Every figure is invented.
 fn trend_items() -> Vec<actionsbilling::UsageItem> {
