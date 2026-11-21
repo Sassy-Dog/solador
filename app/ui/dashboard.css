@@ -613,6 +613,11 @@
 #dashboardOverview .db-cadence-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 #dashboardOverview .db-cadence-line input { flex: 0 1 110px; min-width: 0; }
 #dashboardOverview .db-cadence-shared { font-size: 11px; }
+#dashboardOverview .db-billing-alerts { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-billing-alerts legend { font-size: 12px; }
+#dashboardOverview .db-billing-alerts p { margin: 0; }
+#dashboardOverview .db-billing-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 8px; }
+#dashboardOverview .db-billing-shared { font-size: 11px; }
 /* The machine alert limits and volume list: the group labels' frame, one block per machine. */
 #dashboardOverview .db-machine-alerts { grid-column: 1 / -1; min-width: 0; display: grid; gap: 10px; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
 #dashboardOverview .db-machine-alerts legend { font-size: 12px; }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Datelike, Utc};
 
+use crate::hosted::HostedDays;
 use crate::models::{
     ActionsSummary, Budget, BudgetSpend, BudgetStatus, RepoUsage, SkuUsage, Totals, UsageItem,
     UsageSummary,
@@ -82,6 +83,7 @@ pub fn summarize_usage(items: &[UsageItem]) -> UsageSummary {
         by_repo,
         top_repos,
         data_through,
+        hosted: HostedDays::from_items(items),
     }
 }
 

@@ -11,6 +11,7 @@ use chrono::{DateTime, Datelike, Utc};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::error::ActionsBillingError;
+use crate::hosted::{needs_previous_month, previous_period, HostedDays, PreviousMonth};
 use crate::models::{Budget, BudgetStatus, BudgetsPage, UsageItem, UsageReport, UsageSummary};
 use crate::summary::{budget_status, summarize_usage};
 
@@ -36,6 +37,10 @@ const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
 pub struct MonthRead {
     pub period: (i32, u32),
     pub usage: Result<UsageSummary, ActionsBillingError>,
+    /// The previous month's hosted minutes, read only when the spike rule's
+    /// 7-day window crosses the month start. Its own result: a failure here
+    /// leaves `usage` and `budget` as they are and makes the baseline unknown.
+    pub previous: PreviousMonth,
     /// The spend is [`BudgetSpend::Unmeasured`](crate::BudgetSpend::Unmeasured)
     /// whenever the usage read failed or held no Actions item.
     pub budget: Result<BudgetStatus, ActionsBillingError>,
@@ -87,6 +92,7 @@ impl ActionsBillingClient {
             .usage_items(org, now.year(), now.month())
             .await
             .map(|items| summarize_usage(&items));
+        let previous = self.previous_month(org, &usage).await;
         let budget = self.budgets(org).await.map(|budgets| {
             let spend = usage.as_ref().ok().and_then(|u| u.total()).map(|t| t.net);
             budget_status(&budgets, spend)
@@ -94,7 +100,29 @@ impl ActionsBillingClient {
         MonthRead {
             period: (now.year(), now.month()),
             usage,
+            previous,
             budget,
+        }
+    }
+
+    /// The previous month's fold, when the month's newest day is early enough
+    /// that its checked days' 7-day windows reach into it.
+    async fn previous_month(
+        &self,
+        org: &str,
+        usage: &Result<UsageSummary, ActionsBillingError>,
+    ) -> PreviousMonth {
+        let Ok(UsageSummary::Measured { data_through, .. }) = usage else {
+            return PreviousMonth::NotNeeded;
+        };
+        let through = data_through.date_naive();
+        if !needs_previous_month(through) {
+            return PreviousMonth::NotNeeded;
+        }
+        let (year, month) = previous_period(through);
+        match self.usage_items(org, year, month).await {
+            Ok(items) => PreviousMonth::Read(HostedDays::from_items(&items)),
+            Err(error) => PreviousMonth::Failed(error),
         }
     }
 

@@ -239,7 +239,8 @@ fn scope_azure(payload: &mut Value, kept: &BTreeSet<String>) {
 }
 
 /// The rows `source_rows` builds for Actions billing are `mtd`, one `stat-…` per
-/// stat and `budget` (the bar, or the note that there is no budget). The
+/// stat, `budget` (the bar, or the note that there is no budget) and one per
+/// tripped or unjudged Billing alerts rule. The
 /// breakdowns, the report's lag and the message stay: they describe the whole
 /// panel and have no row of their own.
 fn scope_actions_billing(payload: &mut Value, kept: &BTreeSet<String>) {
@@ -252,6 +253,8 @@ fn scope_actions_billing(payload: &mut Value, kept: &BTreeSet<String>) {
         |v| format!("stat-{}", str_of(v, "label")),
         kept,
     );
+    // The rule rows (#770) are each a row of their own, by their payload id.
+    retain_in(payload, "alerts", |v| str_of(v, "id").to_owned(), kept);
     if !kept.contains("budget") {
         clear(payload, "budget");
         clear(payload, "budgetNote");
@@ -706,6 +709,22 @@ mod tests {
         );
         assert_eq!(out["stats"], p["stats"]);
         assert_eq!(out["headline"], Value::Null);
+    }
+
+    #[test]
+    fn actions_billing_scopes_keep_only_the_rule_rows_they_name() {
+        let mut p = actions_billing_payload();
+        p["alerts"] = json!([
+            {"id":"spike:repo-a:2026-11-21","label":"SPIKE"},
+            {"id":"macos:repo-b:2026-11-21","label":"MACOS"},
+        ]);
+        let out = scope_payload(
+            &tile("actionsBilling", "item:macos:repo-b:2026-11-21"),
+            p.clone(),
+        );
+        assert_eq!(out["alerts"], json!([p["alerts"][1].clone()]));
+        let out = scope_payload(&tile("actionsBilling", "item:budget"), p);
+        assert_eq!(out["alerts"], json!([]));
     }
 
     fn openclaw_payload() -> Value {

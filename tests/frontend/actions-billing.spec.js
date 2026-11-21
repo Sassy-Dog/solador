@@ -136,6 +136,52 @@ test("a budget with no measured fraction is a label and figures, not an empty tr
   await expect(page.locator("#actionsBillingBody .pbar")).toHaveCount(0);
 });
 
+const alertRows = (page) => page.locator('#actionsBillingBody [data-section="alert"]');
+
+test("a daily spike is one red row, painted exactly as Rust sent it (#770)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL, "sample-actions-billing-spike.json");
+  expect(p.alerts).toHaveLength(1);
+  const [alert] = p.alerts;
+  expect(alert.label).toMatch(/^SPIKE /);
+  expect(alert.color, "tripped is red").toBe("#e0614f");
+  const row = alertRows(page);
+  await expect(row).toHaveCount(1);
+  await expect(row.locator(".lbl")).toHaveText(alert.label);
+  await expect(row.locator(".val")).toHaveText(alert.value);
+  await expect(row.locator(".val")).toHaveCSS("color", rgb(alert.color));
+  await expect(row.locator(".pv-note")).toHaveText(alert.detail);
+});
+
+test("macOS minutes on a self-hosted repo are red rows, matched on the list Rust held (#770)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL, "sample-actions-billing-macos-on-self-hosted.json");
+  expect(p.alerts.length).toBeGreaterThan(0);
+  expect(p.alerts.every((a) => a.label.startsWith("MACOS ON SELF-HOSTED") && a.color === "#e0614f")).toBe(true);
+  const rows = alertRows(page);
+  await expect(rows).toHaveCount(p.alerts.length);
+  await expect(rows.locator(".lbl")).toHaveText(p.alerts.map((a) => a.label));
+  await expect(rows.locator(".val")).toHaveText(p.alerts.map((a) => a.value));
+});
+
+test("a fixture with no tripped rule paints no alert row, and an unjudged rule is a muted row (#770)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  expect(p.alerts).toEqual([]);
+  await expect(page.locator("#actionsBillingBody .az-headline .value")).toHaveText(p.headline.value);
+  await expect(alertRows(page)).toHaveCount(0);
+  // Rust's muted "unknown" row is painted as given, in the colour it chose.
+  await page.evaluate(
+    (vm) => window.__SOLADOR_ACTIONS_BILLING_TEST__.render({
+      ...vm,
+      alerts: [{ id: "spike-unknown", label: "SPIKE CHECK", value: "—", detail: "7-day baseline unknown", color: "#123456" }],
+    }),
+    p
+  );
+  const row = alertRows(page);
+  await expect(row).toHaveCount(1);
+  await expect(row.locator(".val")).toHaveText("—");
+  await expect(row.locator(".val")).toHaveCSS("color", rgb("#123456"));
+  await expect(row.locator(".pv-note")).toHaveText("7-day baseline unknown");
+});
+
 test("a month with no Actions usage says so in words, not 0 or $0.00", async ({ page, baseURL }) => {
   const p = await gotoPanel(page, baseURL, "sample-actions-billing-empty.json");
   await expect(page.locator("#actionsBillingBody .pv-message")).toHaveText(p.message.text);

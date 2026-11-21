@@ -603,6 +603,22 @@
   Sources, what is app-wide in Settings. A shared setting edited from a tile
   says it is shared. Its inventory names the follow-up (#616) for the
   settings that do not fit yet.
+- The Actions billing tile's Configure → **Billing alerts** (#770), modelled on
+  Machine alerts, has the spike rule's multiple and floor and the list of repos
+  that should run no hosted macOS minutes (`store::actions_billing_alerts`;
+  defaults 3, 1,000 minutes and empty). It is marked shared (every Actions
+  billing tile, its Detail and its Full view) and each control saves on its
+  `change` through `actions_billing_save_alerts`, answering with the re-rendered
+  dashboard, outside the tile's Apply and the undo history; Settings → Sources
+  carries none of it, because these settings change what a tile flags, not how a
+  source is reached. Saving **refuses, never clamps**, one sentence each: a
+  multiple not above 1, a floor that is not a positive whole number of minutes,
+  an empty repo name, and a repo name with an owner (`owner/repo`, which the usage report's bare `repositoryName` could never match); duplicates fold, case-insensitively. A store written
+  before the key loads the defaults. The rules run in `actionsbilling::hosted`
+  and are evaluated at view time (`actions_billing::view` takes the settings),
+  their rows riding the tile's payload (`alerts`) into the `actionsBilling` arm
+  of `dashboard::source_rows` (red when tripped). No banner: `deliver_banners`
+  does not see them.
 - The Machines tile's Configure → **Machine alerts** has the shared CPU/RAM alert
   thresholds and a per-machine override for each machine, including the local
   one, marked shared and saved on the click (`machine_save_alerts`, answering
