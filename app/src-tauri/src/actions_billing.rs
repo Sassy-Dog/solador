@@ -468,7 +468,7 @@ pub fn alerts_section(alerts: &ActionsBillingAlerts) -> Value {
     json!({
         "heading": "Billing alerts",
         "shared": "Shared \u{b7} saved immediately \u{b7} applies to every Actions billing tile, its Detail and its Full view.",
-        "help": "A repo's day is a spike when it has at least the floor in hosted minutes and more than the multiple times its average over the 7 days before that day. The newest day in the usage report (which may still be partial) and the day before it are checked, so a flag clears by itself after about two days. A repo on the self-hosted list is flagged when it has any hosted macOS minutes on those two days; an empty list turns that rule off. Each tripped rule is a red row and raises Needs Attention; no desktop notification is sent. A change saves when you leave the field.",
+        "help": "A repo's day is a spike when it has at least the floor in hosted minutes and more than the multiple times its average over the 7 days before that day. The newest day in the usage report (which may still be partial) and the day before it are checked, so a flag clears by itself after about two days. A repo on the self-hosted list (the bare repo name as the usage report gives it, not owner/repo) is flagged when it has any hosted macOS minutes on those two days; an empty list turns that rule off. Each tripped rule is a red row and raises Needs Attention; no desktop notification is sent. A change saves when you leave the field.",
         "fields": [
             {"id": "spikeMultiple", "kind": "number", "step": "any",
              "label": "Spike multiple (times the 7-day average)",
@@ -477,7 +477,7 @@ pub fn alerts_section(alerts: &ActionsBillingAlerts) -> Value {
              "label": "Spike floor (hosted minutes in a day)",
              "value": alerts.spike_floor_minutes},
             {"id": "selfHostedRepos", "kind": "text", "step": null,
-             "label": "Self-hosted repos (flag hosted macOS minutes)",
+             "label": "Self-hosted repos (bare names such as headroom, no owner; flag hosted macOS minutes)",
              "value": alerts.self_hosted_text()},
         ],
     })

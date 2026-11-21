@@ -8406,9 +8406,6 @@ mod tests {
         }
     }
 
-    /// Org A's figures, then the settings name org B (or none) and the keychain
-    /// will not answer: the pass must drop A's figures *before* the credential
-    /// read returns, and say the keychain refused, not that nothing is set up.
     /// A save of the Billing alerts re-flags the tile in the very next view,
     /// with no poll in between: the rules are judged when the view is built,
     /// from the retained fold and the settings of that moment (#770).
@@ -8445,7 +8442,46 @@ mod tests {
         assert_eq!(source["billingAlerts"]["heading"], "Billing alerts");
     }
 
-    /// Moving or deleting `note_org` in `poll_actions_billing` fails this."""
+    /// Neither Billing alerts rule delivers an OS banner (#770). The three
+    /// banner paths feed `deliver_banners` from the GitHub approval notices, the
+    /// service status notices and the update check; the rule rows are payload
+    /// only. Pinned here: the tripped fixtures are red rows with no notice
+    /// anywhere in the payload, and nothing on the Actions billing path
+    /// (`poll_actions_billing`, its view module) reaches a notification.
+    #[test]
+    fn the_billing_alert_rules_deliver_no_banner() {
+        for kind in [
+            actions_billing::Fixture::Spike,
+            actions_billing::Fixture::MacosOnSelfHosted,
+        ] {
+            let payload = dump_actions_billing(kind, false);
+            assert!(!payload["alerts"].as_array().unwrap().is_empty());
+            let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+            assert!(
+                keys.iter().all(|k| {
+                    let k = k.to_lowercase();
+                    !k.contains("notice") && !k.contains("banner") && !k.contains("notif")
+                }),
+                "{kind:?}"
+            );
+        }
+        let main_src = include_str!("main.rs");
+        let start = main_src.find("async fn poll_actions_billing").unwrap();
+        let end = start + main_src[start..].find("\n}\n").unwrap();
+        let poll = &main_src[start..end];
+        let view = include_str!("actions_billing.rs");
+        for (name, text) in [("poll_actions_billing", poll), ("actions_billing.rs", view)] {
+            assert!(
+                !text.contains("deliver_") && !text.contains("notification()"),
+                "{name} reaches a banner path"
+            );
+        }
+    }
+
+    /// Org A's figures, then the settings name org B (or none) and the keychain
+    /// will not answer: the pass must drop A's figures *before* the credential
+    /// read returns, and say the keychain refused, not that nothing is set up.
+    /// Moving or deleting `note_org` in `poll_actions_billing` fails this.
     #[test]
     fn an_org_change_with_an_unreadable_keychain_drops_the_old_orgs_figures() {
         for next_org in ["org-b", ""] {

@@ -14,6 +14,8 @@ pub const DEFAULT_SPIKE_FLOOR_MINUTES: u32 = 1_000;
 
 pub const REFUSE_MULTIPLE: &str = "Enter a spike multiple above 1, such as 3.";
 pub const REFUSE_FLOOR: &str = "Enter the spike floor as a whole number of minutes, at least 1.";
+pub const REFUSE_OWNER_IN_REPO: &str =
+    "Enter the repository name without its owner (headroom, not Sassy-Dog/headroom).";
 pub const REFUSE_EMPTY_REPO: &str =
     "A self-hosted repo name is empty. Separate names with commas, with none left blank.";
 
@@ -88,6 +90,11 @@ impl ActionsBillingAlerts {
                     return Err(REFUSE_EMPTY_REPO);
                 }
             }
+        }
+        // The usage report's `repositoryName` is the bare repo name, so an
+        // `owner/repo` entry could never match: refused, not stripped.
+        if names.iter().any(|name| name.contains('/')) {
+            return Err(REFUSE_OWNER_IN_REPO);
         }
         Ok(Self {
             spike_multiple,
@@ -221,13 +228,21 @@ mod tests {
         assert_eq!(refuse(json!(3), json!(1000), "a,,b"), REFUSE_EMPTY_REPO);
         assert_eq!(refuse(json!(3), json!(1000), "a, ,b"), REFUSE_EMPTY_REPO);
         assert_eq!(refuse(json!(3), json!(1000), ",a"), REFUSE_EMPTY_REPO);
-        let sentences = [REFUSE_MULTIPLE, REFUSE_FLOOR, REFUSE_EMPTY_REPO];
+        for owned in ["Sassy-Dog/headroom", "a, org/b", "a/"] {
+            assert_eq!(refuse(json!(3), json!(1000), owned), REFUSE_OWNER_IN_REPO);
+        }
+        let sentences = [
+            REFUSE_MULTIPLE,
+            REFUSE_FLOOR,
+            REFUSE_EMPTY_REPO,
+            REFUSE_OWNER_IN_REPO,
+        ];
         assert_eq!(
             sentences
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            3
+            4
         );
         assert!(ActionsBillingAlerts::parse(&json!({})).is_err());
     }

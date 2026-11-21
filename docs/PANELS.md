@@ -130,7 +130,9 @@
   budget, with figures that move over hours), its own credential (a dedicated
   billing token, never the GitHub account's) and the organization's login, both
   re-read from the store on every pass. It is two reads, kept as two halves of
-  state (`usage` and `budget`), so a failed budget read never hides the usage
+  state (`usage` and `budget`; a pass also reads the previous month's usage, as
+  a result of its own, only when the Billing alerts' 7-day window crosses a month
+  start), so a failed budget read never hides the usage
   and the reverse, and each half retains its last good figure, unless the
   organization changed: a pass for a different org drops both halves' figures
   first (before the credential is read, and without recording an absence, so an
@@ -167,7 +169,8 @@
   more than the multiple (default **3×**) of its average over the 7 days before
   that day; exactly 3× does not trip, and the 7-day window is fixed. **macOS on
   self-hosted:** a repo on the operator's list (empty by default, which is the
-  rule off and says nothing) with any hosted macOS minutes (a `Minutes` item
+  rule off and says nothing; enter bare repo names, `headroom` and not
+  `owner/headroom`, which is refused) with any hosted macOS minutes (a `Minutes` item
   whose SKU names macOS) on those two days; names match `repositoryName` as the
   report gives it, case-insensitively after trimming. Each tripped rule is a
   **red row** (`SPIKE · <repo>`, `MACOS ON SELF-HOSTED · <repo>`) that flags the
@@ -180,7 +183,10 @@
   current month); if that read fails the affected days' spike verdict is
   **unknown**: a muted `SPIKE CHECK  —` row says the baseline could not be read,
   and nothing is evaluated over a shortened window or with the missing days as 0.
-  The unknown row flags nothing (a failed read says so; it is not a spike). The
+  The unknown row flags nothing (a failed read says so; it is not a spike). When
+  the self-hosted list is non-empty and the day before the newest day falls in
+  the unreadable month, a second muted row, `MACOS CHECK  —`, says the macOS
+  minutes for that day are unknown; it flags nothing either. The
   multiple, the floor and the list are Configure → **Billing alerts**, shared by
   every Actions billing tile (`store::actions_billing_alerts`).
   Setup (no token or organization) is a muted sentence naming Settings →

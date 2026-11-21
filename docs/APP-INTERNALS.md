@@ -613,7 +613,7 @@
   carries none of it, because these settings change what a tile flags, not how a
   source is reached. Saving **refuses, never clamps**, one sentence each: a
   multiple not above 1, a floor that is not a positive whole number of minutes,
-  and an empty repo name (duplicates fold, case-insensitively). A store written
+  an empty repo name, and a repo name with an owner (`owner/repo`, which the usage report's bare `repositoryName` could never match); duplicates fold, case-insensitively. A store written
   before the key loads the defaults. The rules run in `actionsbilling::hosted`
   and are evaluated at view time (`actions_billing::view` takes the settings),
   their rows riding the tile's payload (`alerts`) into the `actionsBilling` arm

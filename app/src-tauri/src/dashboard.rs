@@ -3901,6 +3901,64 @@ mod tests {
         assert_eq!(rows[0]["attention"], false);
     }
 
+    /// The newest day is the 1st and the previous month is unreadable: with a
+    /// self-hosted list, the macOS check for the day before is unknown. Its row
+    /// is muted and the tile raises no Needs Attention for it (#770).
+    #[test]
+    fn an_unreadable_month_makes_a_muted_macos_check_row_that_flags_nothing() {
+        use crate::actions_billing as ab;
+        let item = actionsbilling::UsageItem {
+            date: chrono::DateTime::parse_from_rfc3339("2023-11-01T05:00:00Z")
+                .unwrap()
+                .into(),
+            product: "actions".to_owned(),
+            sku: "Actions Linux".to_owned(),
+            unit_type: "Minutes".to_owned(),
+            quantity: 5.0,
+            gross_amount: 0.0,
+            discount_amount: 0.0,
+            net_amount: 0.0,
+            repository_name: "repo-m".to_owned(),
+        };
+        let mut state = ab::ActionsBillingState::new();
+        state.record(
+            actionsbilling::MonthRead {
+                period: ab::FIXTURE_PERIOD,
+                previous: actionsbilling::PreviousMonth::Failed(
+                    actionsbilling::ActionsBillingError::Unreachable,
+                ),
+                usage: Ok(actionsbilling::summarize_usage(&[item])),
+                budget: Ok(actionsbilling::BudgetStatus::Absent),
+            },
+            1_700_000_000,
+        );
+        let alerts = |list: &[&str]| store::actions_billing_alerts::ActionsBillingAlerts {
+            self_hosted_repos: list.iter().map(|n| (*n).to_owned()).collect(),
+            ..Default::default()
+        };
+        let ids = |source: &Value| -> Vec<String> {
+            list(source, "rows")
+                .iter()
+                .map(|r| string(r, "id").to_owned())
+                .filter(|id| id.ends_with("-unknown"))
+                .collect()
+        };
+        let p = ab::view(&state, &alerts(&["repo-m"]), 3_600, 1_700_000_000);
+        let source = source_view("actionsBilling", "Actions billing", &p);
+        assert_eq!(ids(&source), ["spike-unknown", "macos-unknown"]);
+        let macos = list(&source, "rows")
+            .iter()
+            .find(|r| string(r, "id") == "macos-unknown")
+            .unwrap();
+        assert_eq!(macos["attention"], false);
+        assert_eq!(macos["color"], color::hex(color::MUTED));
+        assert_eq!(source["attentionCount"], 0);
+        // An empty list is the rule off: no macOS row at all.
+        let p = ab::view(&state, &alerts(&[]), 3_600, 1_700_000_000);
+        let source = source_view("actionsBilling", "Actions billing", &p);
+        assert_eq!(ids(&source), ["spike-unknown"]);
+    }
+
     /// A poller warning is a tile warning; a lagging report alone is not.
     #[test]
     fn a_footer_or_clock_on_actions_billing_is_a_tile_warning() {
