@@ -16,7 +16,8 @@
 //!
 //! **Unknown is representable.** A month with no Actions item is
 //! [`UsageSummary::NoUsage`], not `$0.00`; no budget is
-//! [`BudgetStatus::Absent`], not zero; a zero budget has no fraction. The two
+//! [`BudgetStatus::Absent`], not zero; spend over a
+//! zero budget is [`BudgetSpend::OverZeroBudget`], never an infinite fraction. The two
 //! reads are separate results, so a failed one never hides the other.
 //!
 //! **Errors classify; `crates/fault` owns the words.** See [`error`].
@@ -31,7 +32,8 @@ pub mod summary;
 pub use client::{ActionsBillingClient, MonthRead, API_VERSION, DEFAULT_BASE_URL};
 pub use error::ActionsBillingError;
 pub use models::{
-    ActionsSummary, Budget, BudgetStatus, RepoUsage, SkuUsage, Totals, UsageItem, UsageSummary,
+    ActionsSummary, Budget, BudgetSpend, BudgetStatus, RepoUsage, SkuUsage, Totals, UsageItem,
+    UsageSummary,
 };
 pub use summary::{budget_status, summarize, summarize_usage, TOP_N};
 

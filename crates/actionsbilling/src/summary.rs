@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Datelike, Utc};
 
 use crate::models::{
-    ActionsSummary, Budget, BudgetStatus, RepoUsage, SkuUsage, Totals, UsageItem, UsageSummary,
+    ActionsSummary, Budget, BudgetSpend, BudgetStatus, RepoUsage, SkuUsage, Totals, UsageItem,
+    UsageSummary,
 };
 
 /// How many repos the tile names; the rest fold into the totals.
@@ -96,15 +97,34 @@ pub fn budget_status(budgets: &[Budget], spend: Option<f64>) -> BudgetStatus {
     else {
         return BudgetStatus::Absent;
     };
-    // A zero (or negative) amount has no fraction: dividing would give
-    // infinity, which reads as a measurement and is not one.
-    let fraction = spend
-        .filter(|_| b.budget_amount > 0.0)
-        .map(|s| s / b.budget_amount);
     BudgetStatus::Present {
         amount: b.budget_amount,
         prevent_further_usage: b.prevent_further_usage,
-        fraction,
+        spend: budget_spend(b.budget_amount, spend),
+    }
+}
+
+/// Net spend against one amount. A zero amount is never divided into: spend
+/// above it is its own state, and a non-finite figure is not a measurement.
+fn budget_spend(amount: f64, spend: Option<f64>) -> BudgetSpend {
+    let Some(spend) = spend.filter(|s| s.is_finite()) else {
+        return BudgetSpend::Unmeasured;
+    };
+    // An amount so small the quotient overflows is a zero budget for every
+    // purpose the tile has: no finite ratio exists to state.
+    let fraction = (amount > 0.0)
+        .then(|| spend / amount)
+        .filter(|f| f.is_finite());
+    if let Some(fraction) = fraction {
+        BudgetSpend::Fraction { spend, fraction }
+    } else if amount >= 0.0 {
+        if spend > 0.0 {
+            BudgetSpend::OverZeroBudget { spend }
+        } else {
+            BudgetSpend::AtZeroBudget
+        }
+    } else {
+        BudgetSpend::Incomparable
     }
 }
 

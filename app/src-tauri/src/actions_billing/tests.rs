@@ -82,11 +82,11 @@ fn an_over_budget_bar_pins_full_but_stays_red() {
 fn the_label_says_whether_the_budget_stops_jobs() {
     assert_eq!(
         payload(Fixture::Measured)["budget"]["label"],
-        "BUDGET \u{b7} STOPS JOBS AT LIMIT"
+        "BUDGET \u{b7} STOPS JOBS"
     );
     assert_eq!(
         payload(Fixture::OverBudget)["budget"]["label"],
-        "BUDGET \u{b7} JOBS CONTINUE PAST LIMIT"
+        "BUDGET \u{b7} JOBS CONTINUE"
     );
 }
 
@@ -98,13 +98,68 @@ fn no_budget_says_so_and_draws_no_bar() {
     assert!(!p["headline"].is_null(), "the usage still shows");
 }
 
-#[test]
-fn a_zero_budget_has_a_label_and_figures_but_no_bar() {
+fn budget_of(read: MonthRead) -> Value {
     let mut state = ActionsBillingState::new();
-    state.record(read_at(10.0, 0.0), NOW);
-    let p = view(&state, CADENCE, NOW);
-    assert!(p["budget"]["bar"].is_null());
-    assert_eq!(p["budget"]["value"], format!("{UNKNOWN} / $0.00"));
+    state.record(read, NOW);
+    view(&state, CADENCE, NOW)["budget"].clone()
+}
+
+#[test]
+fn spend_over_a_zero_budget_prints_the_spend_over_zero_with_a_full_red_bar() {
+    let budget = budget_of(read_at(10.0, 0.0));
+    assert_eq!(budget["value"], "$10.00 / $0.00");
+    assert_eq!(budget["bar"]["fraction"], json!(1.0));
+    assert_eq!(budget["bar"]["color"], json!(color::hex(color::RED)));
+    // The same red a bar at 1.0 of a positive amount takes.
+    assert_eq!(budget["bar"]["color"], json!(bar_color(100.0, 100.0)));
+    let fixture = payload(Fixture::ZeroBudgetOver);
+    assert_eq!(fixture["budget"]["value"], "$40.60 / $0.00");
+    assert_eq!(fixture["budget"]["bar"]["color"], budget["bar"]["color"]);
+    assert_eq!(fixture["budget"]["label"], "BUDGET \u{b7} STOPS JOBS");
+}
+
+#[test]
+fn measured_zero_spend_over_a_zero_budget_prints_both_zeros_with_no_bar() {
+    let budget = budget_of(read_at(0.0, 0.0));
+    assert_eq!(budget["value"], "$0.00 / $0.00");
+    assert!(budget["bar"].is_null());
+}
+
+#[test]
+fn unmeasured_spend_prints_an_em_dash_with_no_bar_for_any_amount() {
+    for amount in [45.0, 0.0] {
+        let mut read = read_at(10.0, amount);
+        read.usage = Err(ActionsBillingError::RateLimited);
+        read.budget = Ok(actionsbilling::budget_status(
+            &[actionsbilling::Budget {
+                id: Value::Null,
+                budget_type: String::new(),
+                budget_scope: "organization".to_owned(),
+                budget_entity_name: String::new(),
+                budget_product_sku: "actions".to_owned(),
+                budget_amount: amount,
+                prevent_further_usage: true,
+            }],
+            None,
+        ));
+        let budget = budget_of(read);
+        assert_eq!(budget["value"], format!("{UNKNOWN} / {}", usd(amount)));
+        assert!(budget["bar"].is_null());
+    }
+}
+
+#[test]
+fn a_negative_amount_prints_no_spend_and_no_bar() {
+    let budget = budget_of(read_at(10.0, -5.0));
+    assert_eq!(budget["value"], format!("{UNKNOWN} / {}", usd(-5.0)));
+    assert!(budget["bar"].is_null());
+}
+
+#[test]
+fn a_positive_amount_prints_its_spend_beside_its_bar_as_before() {
+    let budget = budget_of(read_at(27.25, 100.0));
+    assert_eq!(budget["value"], "$27.25 / $100.00");
+    assert_eq!(budget["bar"]["fraction"], json!(0.2725));
 }
 
 #[test]
@@ -447,7 +502,6 @@ fn a_failed_first_read_for_another_org_shows_no_figures_from_the_old_one() {
     );
     assert!(p["breakdowns"].as_array().unwrap().is_empty());
     // No amber or red bar is left to raise Needs Attention.
-    assert!(p["budget"]["bar"].is_null());
 
     // The same org keeps its figures through a failure.
     let mut same = ActionsBillingState::new();
@@ -455,4 +509,32 @@ fn a_failed_first_read_for_another_org_shows_no_figures_from_the_old_one() {
     same.record(read_at(10.0, 100.0), NOW - 600);
     same.begin("org-a");
     assert!(!view(&same, CADENCE, NOW)["headline"].is_null());
+}
+
+#[test]
+fn an_org_only_change_drops_the_old_orgs_figures_before_the_credential_read() {
+    let mut state = ActionsBillingState::new();
+    state.begin("org-a");
+    state.record(read_at(95.0, 100.0), NOW - 600);
+    assert!(!view(&state, CADENCE, NOW)["budget"].is_null());
+
+    // The pass for org B names it, then the credential store will not answer.
+    state.note_org("org-b");
+    state.unreadable("the credential store would not answer");
+    let p = view(&state, CADENCE, NOW);
+    assert!(p["headline"].is_null() && p["budget"].is_null(), "{p}");
+    assert!(p["breakdowns"].as_array().unwrap().is_empty());
+    assert!(!p.to_string().contains("$95.00"), "{p}");
+}
+
+#[test]
+fn an_unreadable_store_for_the_same_org_keeps_the_last_good_figures() {
+    let mut state = ActionsBillingState::new();
+    state.begin("org-a");
+    state.record(read_at(95.0, 100.0), NOW - 600);
+    state.note_org("org-a");
+    state.unreadable("the credential store would not answer");
+    let p = view(&state, CADENCE, NOW);
+    assert_eq!(p["headline"]["value"], "$95.00");
+    assert_eq!(p["budget"]["value"], "$95.00 / $100.00");
 }

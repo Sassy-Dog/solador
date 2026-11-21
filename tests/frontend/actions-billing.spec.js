@@ -104,6 +104,18 @@ test("the budget's label says whether it stops jobs", async ({ page, baseURL }) 
   await expect(page.locator('#actionsBillingBody [data-section="budget"] .lbl')).toHaveText(continues.budget.label);
 });
 
+test("spend over a zero-amount budget is the spend over $0.00 with a full red bar", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL, "sample-actions-billing-zero-budget-over.json");
+  expect(p.budget.value).toMatch(/^\$[\d,.]+ \/ \$0\.00$/);
+  expect(p.budget.bar.color).toBe("#e0614f");
+  expect(p.budget.label).toMatch(/STOPS JOBS/);
+  await expect(page.locator('#actionsBillingBody [data-section="budget"] .val')).toHaveText(p.budget.value);
+  const bar = page.locator('#actionsBillingBody [data-section="budget"] .pbar > span');
+  await expect(bar).toHaveCount(1);
+  await expect(bar).toHaveCSS("background-color", rgb(p.budget.bar.color));
+  expect(await bar.evaluate((el) => el.style.width)).toBe("100%");
+});
+
 test("no budget says so and draws no bar, never a 0% one", async ({ page, baseURL }) => {
   const p = await gotoPanel(page, baseURL, "sample-actions-billing-no-budget.json");
   expect(p.budget).toBeNull();

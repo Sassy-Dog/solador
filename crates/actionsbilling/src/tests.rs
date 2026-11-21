@@ -155,15 +155,16 @@ fn the_org_actions_budget_is_picked_out_and_divided() {
     let BudgetStatus::Present {
         amount,
         prevent_further_usage,
-        fraction,
+        spend: BudgetSpend::Fraction { spend, fraction },
     } = status
     else {
-        panic!("present");
+        panic!("present with a fraction");
     };
     // Not the repository-scoped actions budget, not the org copilot one.
     assert!(close(amount, 100.0));
     assert!(prevent_further_usage);
-    assert!(close(fraction.expect("fraction"), 0.2725));
+    assert!(close(spend, 27.25));
+    assert!(close(fraction, 0.2725));
 }
 
 #[test]
@@ -173,26 +174,67 @@ fn no_org_actions_budget_is_absent() {
     assert_eq!(budget_status(&[], Some(1.0)), BudgetStatus::Absent);
 }
 
-#[test]
-fn a_zero_amount_has_no_fraction_rather_than_infinity() {
+fn with_amount(amount: f64, spend: Option<f64>) -> BudgetStatus {
     let mut list = budgets(BUDGETS);
-    list[2].budget_amount = 0.0;
-    let BudgetStatus::Present {
-        amount, fraction, ..
-    } = budget_status(&list, Some(27.25))
-    else {
+    list[2].budget_amount = amount;
+    budget_status(&list, spend)
+}
+
+fn spend_of(status: BudgetStatus) -> BudgetSpend {
+    let BudgetStatus::Present { spend, .. } = status else {
         panic!("present");
     };
-    assert!(close(amount, 0.0));
-    assert_eq!(fraction, None);
+    spend
 }
 
 #[test]
-fn unmeasured_spend_gives_a_budget_with_no_fraction() {
-    let BudgetStatus::Present { fraction, .. } = budget_status(&budgets(BUDGETS), None) else {
-        panic!("present");
-    };
-    assert_eq!(fraction, None);
+fn spend_over_a_zero_amount_is_a_named_state_not_infinity() {
+    let status = with_amount(0.0, Some(27.25));
+    assert_eq!(
+        spend_of(status.clone()),
+        BudgetSpend::OverZeroBudget { spend: 27.25 }
+    );
+    assert_eq!(status.spend(), Some(27.25));
+}
+
+#[test]
+fn measured_zero_spend_against_a_zero_amount_is_not_over() {
+    let status = with_amount(0.0, Some(0.0));
+    assert_eq!(spend_of(status.clone()), BudgetSpend::AtZeroBudget);
+    assert_eq!(status.spend(), Some(0.0));
+}
+
+#[test]
+fn unmeasured_spend_is_unmeasured_whatever_the_amount() {
+    for amount in [100.0, 0.0, -5.0] {
+        let status = with_amount(amount, None);
+        assert_eq!(spend_of(status.clone()), BudgetSpend::Unmeasured);
+        assert_eq!(status.spend(), None);
+    }
+}
+
+#[test]
+fn a_negative_amount_compares_nothing() {
+    let status = with_amount(-5.0, Some(27.25));
+    assert_eq!(spend_of(status.clone()), BudgetSpend::Incomparable);
+    assert_eq!(status.spend(), None);
+}
+
+#[test]
+fn no_fraction_is_ever_infinite_or_nan() {
+    for amount in [100.0, 0.0, -5.0, f64::MIN_POSITIVE] {
+        for spend in [
+            Some(0.0),
+            Some(27.25),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            None,
+        ] {
+            if let BudgetSpend::Fraction { fraction, .. } = spend_of(with_amount(amount, spend)) {
+                assert!(fraction.is_finite(), "{amount} {spend:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -205,7 +247,10 @@ fn summarize_names_the_month_from_now() {
     assert_eq!(none.usage, UsageSummary::NoUsage);
     assert!(matches!(
         none.budget,
-        BudgetStatus::Present { fraction: None, .. }
+        BudgetStatus::Present {
+            spend: BudgetSpend::Unmeasured,
+            ..
+        }
     ));
 }
 
@@ -280,10 +325,14 @@ async fn month_to_date_reads_both_and_folds() {
     let read = client(&server).month_to_date("example-org", now()).await;
     assert_eq!(read.period, (2026, 11));
     assert!(matches!(read.usage, Ok(UsageSummary::Measured { .. })));
-    let Ok(BudgetStatus::Present { fraction, .. }) = read.budget else {
+    let Ok(BudgetStatus::Present {
+        spend: BudgetSpend::Fraction { fraction, .. },
+        ..
+    }) = read.budget
+    else {
         panic!("budget");
     };
-    assert!(close(fraction.expect("fraction"), 0.2725));
+    assert!(close(fraction, 0.2725));
 }
 
 #[tokio::test]
@@ -303,7 +352,7 @@ async fn a_failed_budget_read_never_hides_the_usage_read() {
 }
 
 #[tokio::test]
-async fn a_failed_usage_read_leaves_the_budget_with_no_fraction() {
+async fn a_failed_usage_read_leaves_the_budget_spend_unmeasured() {
     let server = MockServer::start().await;
     Mock::given(path("/organizations/example-org/settings/billing/usage"))
         .respond_with(ResponseTemplate::new(500))
@@ -320,7 +369,10 @@ async fn a_failed_usage_read_leaves_the_budget_with_no_fraction() {
     );
     assert!(matches!(
         read.budget,
-        Ok(BudgetStatus::Present { fraction: None, .. })
+        Ok(BudgetStatus::Present {
+            spend: BudgetSpend::Unmeasured,
+            ..
+        })
     ));
 }
 

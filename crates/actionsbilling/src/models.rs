@@ -106,6 +106,28 @@ impl UsageSummary {
     }
 }
 
+/// Where the month's net Actions spend stands against a budget's amount.
+///
+/// A named state per case, never a bare ratio: dividing by a zero amount would
+/// give infinity, which reads as a measurement and is not one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BudgetSpend {
+    /// The usage read failed or held no Actions item: there is no spend to
+    /// compare. Not zero.
+    Unmeasured,
+    /// A positive amount and a measured spend: `fraction` is spend over amount,
+    /// finite, and may exceed 1.
+    Fraction { spend: f64, fraction: f64 },
+    /// An amount of 0 (GitHub's "no paid usage" budget, or one too small to
+    /// divide into) and a measured spend above it: the org is over budget, with no ratio to state.
+    OverZeroBudget { spend: f64 },
+    /// An amount of 0 and a measured spend of exactly 0: nothing is over.
+    AtZeroBudget,
+    /// An amount below 0, which GitHub does not issue: nothing is compared, so
+    /// no spend is stated against it.
+    Incomparable,
+}
+
 /// The org's Actions budget, if it has one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BudgetStatus {
@@ -114,10 +136,28 @@ pub enum BudgetStatus {
     Present {
         amount: f64,
         prevent_further_usage: bool,
-        /// Net Actions spend over `amount`. `None` when the amount is not
-        /// positive or the spend is unmeasured.
-        fraction: Option<f64>,
+        /// Net Actions spend against `amount`; see [`BudgetSpend`].
+        spend: BudgetSpend,
     },
+}
+
+impl BudgetStatus {
+    /// The measured net spend this budget was compared against, when there was
+    /// one and it is stated.
+    #[must_use]
+    pub fn spend(&self) -> Option<f64> {
+        match self {
+            BudgetStatus::Present {
+                spend: BudgetSpend::Fraction { spend, .. } | BudgetSpend::OverZeroBudget { spend },
+                ..
+            } => Some(*spend),
+            BudgetStatus::Present {
+                spend: BudgetSpend::AtZeroBudget,
+                ..
+            } => Some(0.0),
+            _ => None,
+        }
+    }
 }
 
 /// Both folds for one month, from already-parsed inputs.

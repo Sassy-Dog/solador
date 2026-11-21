@@ -32,8 +32,8 @@
 //! failed budget read never hides the usage and the reverse. Each half is its
 //! own [`ProviderState`], retains its last good reading through a failure, and
 //! raises its own attributed footer line. The budget keeps the spend its
-//! fraction was measured against, so a retained bar and a fresher headline can
-//! never be printed as one ratio.
+//! spend was measured against (it lives inside [`BudgetSpend`]), so a retained
+//! bar and a fresher headline can never be printed as one ratio.
 //!
 //! ## States that must not be conflated
 //!
@@ -42,9 +42,12 @@
 //! **No Actions usage this month** is a measurement and says so in words, not
 //! `0` or `$0.00`. **No Actions budget** is [`BudgetStatus::Absent`] and says
 //! so, with no bar: it is never a 0% bar and never a bar against a defaulted
-//! zero.
+//! zero. **A budget whose amount is 0** is a real setting (no paid usage):
+//! spend above it paints the spend over `$0.00` with a full red bar, so the tile
+//! raises Needs Attention; measured zero spend paints `$0.00 / $0.00` with no
+//! bar; an unmeasured spend paints the em dash. No ratio is ever formed.
 
-use actionsbilling::{BudgetStatus, MonthRead, Totals, UsageSummary};
+use actionsbilling::{BudgetSpend, BudgetStatus, MonthRead, Totals, UsageSummary};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde_json::{json, Value};
 use viewmodel::cockpit::PanelKind;
@@ -139,13 +142,12 @@ fn is_transient<T>(result: &Result<T, actionsbilling::ActionsBillingError>) -> b
     )
 }
 
-/// What the budget half holds: the status, and the net spend its fraction was
-/// measured against. Kept together so a retained bar is never painted beside a
-/// newer headline as if they were one ratio.
+/// What the budget half holds: the status, whose [`BudgetSpend`] carries the
+/// net spend it was measured against. Kept together so a retained bar is never
+/// painted beside a newer headline as if they were one ratio.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BudgetReading {
     pub status: BudgetStatus,
-    pub spend: Option<f64>,
 }
 
 /// Everything the panel renders from.
@@ -162,8 +164,10 @@ pub struct ActionsBillingState {
     /// or a rate limit, which a fast retry would only repeat.
     transient_failure: bool,
     /// The organization the retained figures were read for. A pass for another
-    /// organization drops them, so a failed first read for org B never shows
-    /// org A's headline, bar or attention flag.
+    /// organization drops them ([`note_org`](Self::note_org), before the
+    /// credential is read, and [`begin`](Self::begin)), so neither a failed
+    /// first read nor an unreadable credential store for org B shows org A's
+    /// headline, bar or attention flag.
     org: Option<String>,
 }
 
@@ -184,13 +188,20 @@ impl ActionsBillingState {
         self.org = None;
     }
 
-    /// A token and `org` are configured and a read is in flight. A different
-    /// organization than the retained figures came from clears both halves
-    /// first, as [`unconfigure`](Self::unconfigure) does.
-    pub fn begin(&mut self, org: &str) {
+    /// The settings name `org` for this pass. A different organization than the
+    /// retained figures came from clears both halves, as
+    /// [`unconfigure`](Self::unconfigure) does. Called before the credential is
+    /// read, so a pass that cannot read it still never shows another org's
+    /// figures; the same organization keeps what it has.
+    pub fn note_org(&mut self, org: &str) {
         if self.org.as_deref().is_some_and(|kept| kept != org) {
             self.unconfigure();
         }
+    }
+
+    /// A token and `org` are configured and a read is in flight.
+    pub fn begin(&mut self, org: &str) {
+        self.note_org(org);
         self.org = Some(org.to_owned());
         self.usage.begin();
         self.budget.begin();
@@ -214,39 +225,10 @@ impl ActionsBillingState {
             }
             Err(error) => self.usage.failed(error.user_message()),
         }
-        // The spend the crate divided by: this pass's usage, when it read.
-        let spend = self.usage_total_if_read_now(&read.budget);
         match read.budget {
-            Ok(status) => self
-                .budget
-                .succeeded(BudgetReading { status, spend }, at, None),
+            Ok(status) => self.budget.succeeded(BudgetReading { status }, at, None),
             Err(error) => self.budget.failed(error.user_message()),
         }
-    }
-
-    /// The net spend the budget's fraction was computed from: present exactly
-    /// when the fraction is, because the crate has no fraction without a spend.
-    fn usage_total_if_read_now(
-        &self,
-        budget: &Result<BudgetStatus, actionsbilling::ActionsBillingError>,
-    ) -> Option<f64> {
-        let has_fraction = matches!(
-            budget,
-            Ok(BudgetStatus::Present {
-                fraction: Some(_),
-                ..
-            })
-        );
-        if !has_fraction {
-            return None;
-        }
-        // The usage half was just written by `record` when it succeeded; a
-        // fraction exists only when it did.
-        self.usage
-            .summary
-            .as_ref()
-            .and_then(UsageSummary::total)
-            .map(|t| t.net)
     }
 
     /// Whether the loop should ask again before the operator's cadence. Only
@@ -293,34 +275,44 @@ fn figures(totals: &Totals) -> String {
 }
 
 /// The budget block: its label (which says whether the budget stops jobs), the
-/// spend over the amount, and the bar when there is a fraction to draw.
+/// spend over the amount, and the bar when there is one to draw.
+///
+/// The measured spend is printed whenever it was measured. A bar exists for a
+/// positive amount (its fraction) and for spend over a zero amount (full and
+/// red, the step a bar at 1.0 takes); nothing else draws one.
 fn budget_block(reading: &BudgetReading) -> Option<Value> {
     let BudgetStatus::Present {
         amount,
         prevent_further_usage,
-        fraction,
+        spend,
     } = &reading.status
     else {
         return None;
     };
     let label = if *prevent_further_usage {
-        "BUDGET \u{b7} STOPS JOBS AT LIMIT"
+        "BUDGET \u{b7} STOPS JOBS"
     } else {
-        "BUDGET \u{b7} JOBS CONTINUE PAST LIMIT"
+        "BUDGET \u{b7} JOBS CONTINUE"
     };
-    // A spend is printed only beside a fraction that was measured from it; with
-    // neither, the numerator is the em dash and there is no bar.
-    let spend = fraction
-        .and(reading.spend)
+    let printed = reading
+        .status
+        .spend()
         .map_or_else(|| UNKNOWN.to_owned(), usd);
     let mut block = json!({
         "label": label,
-        "value": format!("{spend} / {}", usd(*amount)),
+        "value": format!("{printed} / {}", usd(*amount)),
         "valueColor": color::hex(color::MUTED),
         "bar": Value::Null,
     });
-    if let Some(fraction) = fraction {
-        block["bar"] = progress_bar(*fraction, BUDGET_AMBER_AT, BUDGET_RED_AT);
+    match spend {
+        BudgetSpend::Fraction { fraction, .. } => {
+            block["bar"] = progress_bar(*fraction, BUDGET_AMBER_AT, BUDGET_RED_AT);
+        }
+        // Over a budget of nothing: as full and as red as a bar at 1.0.
+        BudgetSpend::OverZeroBudget { .. } => {
+            block["bar"] = progress_bar(BUDGET_RED_AT, BUDGET_AMBER_AT, BUDGET_RED_AT);
+        }
+        BudgetSpend::Unmeasured | BudgetSpend::AtZeroBudget | BudgetSpend::Incomparable => {}
     }
     Some(block)
 }
@@ -518,6 +510,9 @@ pub enum Fixture {
     /// Net spend past the budget: the red step, and a budget that does not stop
     /// jobs, so the label's other wording has a fixture too.
     OverBudget,
+    /// Net spend over a budget whose amount is 0 (no paid usage) that stops
+    /// jobs: the full red bar over `$0.00`.
+    ZeroBudgetOver,
 }
 
 /// The fixture's month and the instant it was read, fixed so the file is
@@ -567,7 +562,10 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
     let budget = BudgetStatus::Present {
         amount: 45.0,
         prevent_further_usage: true,
-        fraction: Some(40.60 / 45.0),
+        spend: BudgetSpend::Fraction {
+            spend: 40.60,
+            fraction: 40.60 / 45.0,
+        },
     };
     let ok = |usage: UsageSummary, budget: BudgetStatus| MonthRead {
         period: FIXTURE_PERIOD,
@@ -584,7 +582,21 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
                 BudgetStatus::Present {
                     amount: 40.0,
                     prevent_further_usage: false,
-                    fraction: Some(40.60 / 40.0),
+                    spend: BudgetSpend::Fraction {
+                        spend: 40.60,
+                        fraction: 40.60 / 40.0,
+                    },
+                },
+            ),
+            at,
+        ),
+        Fixture::ZeroBudgetOver => state.record(
+            ok(
+                measured,
+                BudgetStatus::Present {
+                    amount: 0.0,
+                    prevent_further_usage: true,
+                    spend: BudgetSpend::OverZeroBudget { spend: 40.60 },
                 },
             ),
             at,

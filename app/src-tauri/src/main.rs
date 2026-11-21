@@ -4081,6 +4081,15 @@ async fn poll_actions_billing(app: &Arc<App>) {
         let store = app.store.lock().expect("store poisoned");
         store.settings().actions_billing_org.trim().to_owned()
     };
+    // Before the credential is acted on: an org-only edit followed by an
+    // unreadable store must not leave the previous org's figures on the tile.
+    // The same org keeps its last good ones.
+    if !org.is_empty() {
+        app.actions_billing
+            .lock()
+            .expect("actions billing state poisoned")
+            .note_org(&org);
+    }
     let token = match token {
         // "No token" or "no org" is the setup state; "the keychain would not
         // answer" is not, because that would delete a live figure for an hour.
@@ -7485,6 +7494,8 @@ fn run_dump(args: &[String]) -> bool {
             actions_billing::Fixture::NoBudget
         } else if args.iter().any(|arg| arg == "--over-budget") {
             actions_billing::Fixture::OverBudget
+        } else if args.iter().any(|arg| arg == "--zero-budget-over") {
+            actions_billing::Fixture::ZeroBudgetOver
         } else {
             actions_billing::Fixture::Measured
         };
