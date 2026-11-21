@@ -1,0 +1,31 @@
+[package]
+# Prefixed like `solador-azurecost`/`solador-usage` to stay clear of the generic
+# `actionsbilling` name on crates.io. The lib below keeps the short import name.
+name = "solador-actionsbilling"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "actionsbilling"
+
+[dependencies]
+# The stock message vocabulary (#354). A leaf crate with no dependencies of its
+# own, so this edge costs nothing.
+solador-fault = { path = "../fault" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Same HTTP stack (and TLS backend) as crates/usage and crates/github, so the
+# workspace resolves one reqwest. No `json` feature: bodies are read as text and
+# parsed here, so a body that does not parse is classified, not a transport error.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# RFC 3339 `date` fields and the month window. Deliberately without `clock`:
+# nothing here reads the wall clock — `now` is always an argument.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# Percent-encodes the org before it lands in a path segment (see `client.rs`).
+percent-encoding = "2"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

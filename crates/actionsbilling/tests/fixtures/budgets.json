@@ -1,0 +1,9 @@
+{
+  "budgets": [
+    {"id": "11111111-1111-1111-1111-111111111111", "budget_type": "SkuPricing", "budget_scope": "repository", "budget_entity_name": "example-org/alpha", "budget_product_sku": "actions", "budget_amount": 5, "prevent_further_usage": false, "budget_alerting": {"will_alert": false, "alert_recipients": []}},
+    {"id": "22222222-2222-2222-2222-222222222222", "budget_type": "ProductPricing", "budget_scope": "organization", "budget_entity_name": "example-org", "budget_product_sku": "copilot", "budget_amount": 20, "prevent_further_usage": true, "budget_alerting": {"will_alert": true, "alert_recipients": ["someone"]}},
+    {"id": "33333333-3333-3333-3333-333333333333", "budget_type": "ProductPricing", "budget_scope": "organization", "budget_entity_name": "example-org", "budget_product_sku": "actions", "budget_amount": 100, "prevent_further_usage": true, "budget_alerting": {"will_alert": true, "alert_recipients": ["someone"]}}
+  ],
+  "has_next_page": false,
+  "total_count": 3
+}

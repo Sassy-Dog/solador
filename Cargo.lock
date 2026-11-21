@@ -4292,6 +4292,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "solador-actionsbilling"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "solador-fault",
+ "thiserror 2.0.21",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "solador-agent"
 version = "0.7.0"
 dependencies = [

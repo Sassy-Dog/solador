@@ -66,6 +66,11 @@
 │   │                       #   of ~/.claude.json. APP-ONLY — agent/ must never
 │   │                       #   resolve it
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
+│   ├── actionsbilling/     # GitHub org billing reader (#768): month-to-date Actions
+│   │                       #   minutes + spend and the org Actions budget, from a
+│   │                       #   dedicated Administration: read token the caller passes
+│   │                       #   in. Reader only, no tile yet. APP-ONLY — agent/ must
+│   │                       #   never resolve it
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer
 │   ├── updatefeed/         # the `latest.json` manifest + the minisign check
