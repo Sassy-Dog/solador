@@ -477,10 +477,9 @@ fn alert_rows(
         },
     );
     for flag in &spikes.flags {
-        let ratio = flag.multiple.map_or_else(
-            || "no minutes in the 7 days before".to_owned(),
-            |m| format!("{} 7-day avg", multiple_text(m)),
-        );
+        let ratio = flag
+            .multiple
+            .map_or_else(|| "from 0".to_owned(), multiple_text);
         rows.push(alert_row(
             format!("spike:{}:{}", flag.repository, flag.day),
             format!("SPIKE \u{b7} {}", flag.repository),

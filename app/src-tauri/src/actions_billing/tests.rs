@@ -590,7 +590,7 @@ fn a_spike_is_one_red_row_with_its_figures() {
     let p = payload(Fixture::Spike);
     assert_eq!(labels(&p), ["SPIKE \u{b7} gadget-api"]);
     let row = rows(&p)[0];
-    assert_eq!(row["value"], "1,500 min \u{b7} 5.0\u{d7} 7-day avg");
+    assert_eq!(row["value"], "1,500 min \u{b7} 5.0\u{d7}");
     assert_eq!(row["color"], color::hex(color::RED));
     assert!(row["detail"].as_str().unwrap().contains("11-14"));
 }
@@ -697,6 +697,40 @@ fn an_unreadable_baseline_is_a_muted_unknown_row_never_a_spike_and_never_nothing
         detail.contains("baseline unknown") && detail.contains("11-03"),
         "{detail}"
     );
+}
+
+#[test]
+fn a_spike_with_no_minutes_in_the_7_days_before_says_from_0() {
+    // October holds nothing and the newest day is the only one with minutes, so
+    // there is no baseline to take a multiple of.
+    let item = actionsbilling::UsageItem {
+        date: DateTime::parse_from_rfc3339("2023-11-03T05:00:00Z")
+            .unwrap()
+            .into(),
+        product: "actions".to_owned(),
+        sku: "Actions Linux".to_owned(),
+        unit_type: "Minutes".to_owned(),
+        quantity: 6_000.0,
+        gross_amount: 0.0,
+        discount_amount: 0.0,
+        net_amount: 0.0,
+        repository_name: "repo-a".to_owned(),
+    };
+    let mut state = ActionsBillingState::new();
+    state.record(
+        MonthRead {
+            period: FIXTURE_PERIOD,
+            previous: PreviousMonth::Read(HostedDays::default()),
+            usage: Ok(actionsbilling::summarize_usage(&[item])),
+            budget: Ok(BudgetStatus::Absent),
+        },
+        NOW,
+    );
+    let p = view(&state, &alerts(), CADENCE, NOW);
+    assert_eq!(labels(&p), ["SPIKE \u{b7} repo-a"]);
+    let row = rows(&p)[0];
+    assert_eq!(row["value"], "6,000 min \u{b7} from 0");
+    assert!(row["detail"].as_str().unwrap().contains("11-03"));
 }
 
 #[test]

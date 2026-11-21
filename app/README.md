@@ -1736,7 +1736,7 @@ behind one never reaches another's warning or chip.
   "budgetNote": null, // {"text": "no Actions budget set"} when there is none: no `budget`, no bar
   "dataThrough": {"text": "usage through Nov 14 19:00 UTC", "color": …},
   "alerts": [{"id": "spike:gadget-api:2023-11-14", "label": "SPIKE · gadget-api",
-              "value": "1,500 min · 5.0× 7-day avg", "detail": …, "color": …}],
+              "value": "1,500 min · 5.0×", "detail": …, "color": …}],
                      //   Billing alerts (#770): a tripped spike or macOS-on-self-hosted rule is a red row
                      //   and flags the tile; a rule that could not be judged (the previous month's
                      //   read failed) is a muted `—` row that flags nothing; none tripped, `[]`
