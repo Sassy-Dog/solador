@@ -98,6 +98,7 @@ app/ui/sample-actions-billing-stale.json
 app/ui/sample-actions-billing-unconfigured.json
 app/ui/sample-actions-billing-no-budget.json
 app/ui/sample-actions-billing-over-budget.json
+app/ui/sample-actions-billing-zero-budget-over.json
 app/ui/sample-services.json
 app/ui/sample-services-empty.json
 app/ui/sample-services-stale.json

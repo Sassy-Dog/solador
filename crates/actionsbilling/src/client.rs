@@ -36,8 +36,8 @@ const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
 pub struct MonthRead {
     pub period: (i32, u32),
     pub usage: Result<UsageSummary, ActionsBillingError>,
-    /// The fraction is `None` whenever the usage read failed or held no Actions
-    /// item, because there is then no spend to divide.
+    /// The spend is [`BudgetSpend::Unmeasured`](crate::BudgetSpend::Unmeasured)
+    /// whenever the usage read failed or held no Actions item.
     pub budget: Result<BudgetStatus, ActionsBillingError>,
 }
 

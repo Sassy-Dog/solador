@@ -3813,6 +3813,14 @@ mod tests {
         let amber = source_view("actionsBilling", "Actions billing", &bar(color::AMBER));
         assert_eq!(amber["attentionColor"], color::hex(color::AMBER));
 
+        // Spend over a zero budget: the panel's own payload carries the full red
+        // bar, so the row is flagged red through the same path.
+        let zero = crate::actions_billing::Fixture::ZeroBudgetOver;
+        let over = crate::dump_actions_billing(zero, false);
+        let source = source_view("actionsBilling", "Actions billing", &over);
+        assert_eq!(source["attentionCount"], 1);
+        assert_eq!(source["attentionColor"], color::hex(color::RED));
+        assert!(list(&source, "warnings").is_empty());
         let none = json!({"budget": null,
             "budgetNote":{"text":"no Actions budget set","color":color::hex(color::MUTED)},
             "headline":{"value":"$4.00","caption":"c","valueColor":color::hex(color::GREEN)}});

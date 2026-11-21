@@ -294,6 +294,19 @@ impl<S> ProviderState<S> {
         self.reason_is_unreadable = false;
     }
 
+    /// Drop the retained figure and its error, leaving what the credential
+    /// store said untouched. For a figure that belongs to something else (another
+    /// organization) when nothing was observed about the key: unlike
+    /// [`unconfigure`](Self::unconfigure) it records no absence, so a pass that
+    /// then cannot read the keychain still says so rather than painting a setup
+    /// instruction.
+    pub fn clear_figures(&mut self) {
+        self.summary = None;
+        self.last_updated = None;
+        self.last_error = None;
+        self.reason_is_unreadable = false;
+    }
+
     /// A pass read this provider's key. Called before the request goes out, so
     /// the section can say it is loading rather than waiting on the round trip
     /// to learn it exists at all.
