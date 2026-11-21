@@ -547,6 +547,14 @@
 - All of it is sized from the window inside the Full view. The tile's own
   `coreRowSpan`, `hostOverflow` and `rowGapPx` reach it through `HostLook`; the
   tile owns the settings, the window owns the width.
+- **A read that names a tile is the Full view's read.** The frontend sends
+  `{tile}` only from a tile's Full view (`tileArgs` in `app/ui/dashboard.js`),
+  so Full-view-only content is added only on that path, in Rust, and never
+  hidden by the page: the Machines look (`cockpit_for_tile`, `HostLook`) and the
+  Actions billing daily trend (`actions_billing_read`, `actions_billing::for_read`:
+  `trend` and `trendNote` are null in a read that names no tile, #771). The
+  dashboard's rows are built from the unnamed read, so the overview has none of
+  it.
 - **Unknown width (`<= 0` or NaN) stacks**: `host_columns` and `panel_columns`
   both answer 1, because stacking can never be unreadable. Assuming wide is what
   let a dead measurement pass for a deliberate layout.

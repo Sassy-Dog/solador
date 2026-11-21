@@ -888,7 +888,10 @@ fn trend_items() -> Vec<actionsbilling::UsageItem> {
         // The newest day is a few hours before the read, a lagging report.
         let hour = if day == 14 { 19 } else { 0 };
         items.push(linux_item(day, hour, minutes * 0.7, "gadget-api"));
-        items.push(linux_item(day, hour, minutes * 0.3, "pipe-fitting"));
+        // Nov 5's second share is an org-level item (no repository), which the
+        // line counts as the stat does.
+        let second = if day == 5 { "" } else { "pipe-fitting" };
+        items.push(linux_item(day, hour, minutes * 0.3, second));
     }
     items
 }

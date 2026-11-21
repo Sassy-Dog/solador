@@ -575,3 +575,27 @@ fn the_series_length_is_the_day_of_the_month() {
     assert_eq!(first, day(2026, 2, 1));
     assert_eq!(minutes.len(), 28);
 }
+
+#[test]
+fn org_level_minutes_count_toward_the_day_but_feed_no_repo_rule() {
+    // An empty repositoryName is an org-level item: real minutes in the day's
+    // total, and no repo's.
+    let hosted = HostedDays::from_items(&[
+        linux(1, 100.0, "repo-a"),
+        linux(1, 40.0, ""),
+        linux(2, 25.0, ""),
+    ]);
+    let (_, _, minutes) = trend(&hosted, day(2026, 11, 2));
+    assert_eq!(minutes, [140.0, 25.0]);
+    assert_eq!(minutes_on(&hosted, day(2026, 11, 1), "repo-a"), 100.0);
+    assert_eq!(hosted.repos_on(day(2026, 11, 2)).count(), 0);
+    // Storage with no repo still never counts.
+    let hosted = HostedDays::from_items(&[item(
+        "2026-11-01T00:00:00Z",
+        "Actions storage",
+        "GigabyteHours",
+        9.0,
+        "",
+    )]);
+    assert_eq!(trend(&hosted, day(2026, 11, 2)).2, [0.0, 0.0]);
+}

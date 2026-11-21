@@ -200,7 +200,11 @@
   fewer than 2 days (the newest day is the 1st) there is no line and the Full
   view says `the daily trend starts on the 2nd`. A failed read, a month with no
   Actions usage and the setup state have no chart and no sentence: the tile's own
-  message stands. The y range is `0` to the series maximum. The decision is
+  message stands. Org-level items (no `repositoryName`) are counted in each
+  day's total, as the `HOSTED MINUTES` stat counts them, though they feed no
+  per-repo rule. A month whose minutes are all zero (storage only) keeps a flat
+  line at the floor with the caption `peak 0 min`: a measured zero is a value,
+  not a gap. The y range is `0` to the series maximum. The decision is
   Rust's: only a read that names a tile (which only the Full view sends) carries
   the `trend` and `trendNote` keys, `tile_scope` drops them for a tile that
   picked rows (the trend is not a row), and the JS only paints them.

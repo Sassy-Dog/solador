@@ -857,6 +857,28 @@ fn a_failed_read_no_usage_or_no_setup_has_no_trend_and_no_sentence() {
 }
 
 #[test]
+fn the_trend_adds_up_to_the_hosted_minutes_stat_org_level_items_included() {
+    let p = payload(Fixture::Measured);
+    let sum: f64 = trend_values(&p).iter().sum();
+    assert_eq!(minutes(sum), p["stats"][0]["value"]);
+}
+
+#[test]
+fn a_month_with_no_minutes_is_a_flat_measured_zero_line_not_a_sentence() {
+    // A storage-only month is `Measured` with an empty hosted fold: every day
+    // is a measured 0, so the line stays, at the floor, and says so.
+    let through = DateTime::parse_from_rfc3339("2023-11-03T10:00:00Z")
+        .unwrap()
+        .into();
+    let (trend, note) = trend_view(&HostedDays::default(), through);
+    assert_eq!(note, Value::Null);
+    assert_eq!(trend["values"], json!([0.0, 0.0, 0.0]));
+    assert_eq!(trend["lo"], json!(0.0));
+    assert_eq!(trend["hi"], json!(0.0));
+    assert_eq!(trend["caption"], "Nov 1 \u{2013} Nov 3 \u{b7} peak 0 min");
+}
+
+#[test]
 fn the_trend_adds_no_overview_row_and_the_fixtures_raise_no_rule() {
     // Rows are what the overview tile is made of; the trend is not one.
     assert!(rows(&payload(Fixture::Measured)).is_empty());
