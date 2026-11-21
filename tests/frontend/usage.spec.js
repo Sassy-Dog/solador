@@ -291,6 +291,7 @@ test("a degraded panel is exactly as tall as a healthy one, however long the war
 
 test("a pathologically long warning stays inside the tile and starves nothing beside it", async ({ page, baseURL }) => {
   const healthy = await gotoWithUsage(page, baseURL);
+  await expect(page.locator("#usagePanel")).toBeVisible();
   const cell = await page.locator("#usagePanel").boundingBox();
   const amber = (await fixture(baseURL, "sample-usage-stale.json")).footer.color;
 
@@ -360,6 +361,7 @@ test("a section with no reading publishes no age rather than a fresh-looking zer
   // that null renders NOTHING: not an empty amber element, and not a reserved
   // line's worth of blank space that would read as a measured value.
   const healthy = await gotoWithUsage(page, baseURL);
+  await expect(page.locator("#usagePanel .panel-hdr")).toBeVisible();
   const before = await page.locator("#usagePanel .panel-hdr").boundingBox();
 
   const loading = { ...healthy, freshness: null };

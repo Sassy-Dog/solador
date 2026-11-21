@@ -530,6 +530,8 @@ test("a sole owner's card fills the Repos Full view", async ({ page, baseURL }) 
   await gotoWithFixtures(page, baseURL, { repos }, "repos");
   const card = page.locator("#reposBody .gh-card");
   await expect(card).toHaveCount(1);
+  await expect(card).toBeVisible();
+  await expect(page.locator("#reposBody")).toBeVisible();
   const [one, body] = await Promise.all([card.boundingBox(), page.locator("#reposBody").boundingBox()]);
   expect(Math.round(one.width)).toBe(Math.round(body.width));
 });
@@ -952,6 +954,7 @@ test("a long Repos warning ellipsises itself, never the panel's name", async ({ 
   // plus the page padding.
   await page.setViewportSize({ width: 908, height: 1200 });
   await gotoWithFixtures(page, baseURL, { repos: refused }, "repos");
+  await expect(page.locator("#reposPanel")).toBeVisible();
   expect(Math.round((await page.locator("#reposPanel").boundingBox()).width)).toBe(876);
   const stale = page.locator("#reposStale");
   await expect(stale).toBeVisible();

@@ -93,7 +93,7 @@ for (const width of [375, 1024, 1600]) {
     await warnings.focus();
     await expect(warnings).toBeFocused();
     await expect(warnings).toHaveAttribute('title', failed.tiles[0].warnings[0].text);
-    expect(await warnings.evaluate(el => getComputedStyle(el).overflowX)).toBe('hidden');
+    await expect(warnings).toHaveCSS('overflow-x', 'hidden');
     const reads = await page.evaluate(() => window.dashboardReads);
     await expect.poll(() => page.evaluate(() => window.dashboardReads)).toBeGreaterThan(reads);
     await expect(warnings).toBeFocused();

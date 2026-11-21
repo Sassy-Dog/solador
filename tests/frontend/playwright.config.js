@@ -44,8 +44,9 @@ export default {
   // CI runs one worker per logical CPU. Left unset, Playwright uses half the
   // CPUs, which is one worker on the hosted arm64 macOS runner and made the
   // 535-test run take 11.5 min (#763). Locally the default stands. No retries
-  // and no raised timeouts: a test that fails only under several workers has
-  // an ordering dependency to fix (docs/TESTING.md).
+  // and no raised timeouts: a failure that appears only under several workers
+  // is fixed at its cause, which so far is a race against paint, a test reading
+  // the box of an element it never waited for (docs/TESTING.md).
   workers: process.env.CI ? "100%" : undefined,
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {

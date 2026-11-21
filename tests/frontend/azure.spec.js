@@ -275,6 +275,7 @@ test("a long warning yields its width before the freshness clock does", async ({
   const stale = await gotoWithAzure(page, baseURL, "sample-azure-stale.json");
   expect(stale.freshness.text, "this fixture has both clocks in the header").toBeTruthy();
   expect(stale.footer.text).toBeTruthy();
+  await expect(page.locator("#azurePanel")).toBeVisible();
   const cell = await page.locator("#azurePanel").boundingBox();
 
   await page.evaluate(
