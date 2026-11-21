@@ -18,6 +18,7 @@ use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pendin
 use viewmodel::cockpit::{host_columns, HOST_CARD_MIN_WIDTH, SPACING};
 use viewmodel::color;
 
+mod actions_billing;
 mod azure;
 mod cadence;
 mod containers;
@@ -41,6 +42,7 @@ mod volumes;
 mod window_fit;
 mod window_state;
 
+use actions_billing::ActionsBillingState;
 use azure::AzureState;
 use containers::ContainersState;
 use crons::CronsState;
@@ -311,6 +313,12 @@ struct App {
     /// A four-hour cadence is long enough that waiting one out is
     /// indistinguishable from the export location not having been accepted.
     azure_wake: tokio::sync::Notify,
+    /// The Actions billing panel's state, on its own hourly cadence.
+    actions_billing: Mutex<ActionsBillingState>,
+    /// Cuts the Actions billing loop's sleep short after its source is saved.
+    /// An hour is long enough that waiting one out is indistinguishable from
+    /// the token or organization not having been accepted.
+    actions_billing_wake: tokio::sync::Notify,
     /// The OpenClaw panel's state. **Not on a poll cadence**: it is written by
     /// a live WebSocket session as frames arrive, and the `openclaw` command
     /// only reads whatever the socket has published.
@@ -1092,6 +1100,7 @@ fn wake_after_resume(app: &App) {
     wake_services(app);
     wake_usage(app, UsageWake::Everything);
     app.azure_wake.notify_one();
+    app.actions_billing_wake.notify_one();
     app.containers_wake.notify_one();
     app.crons_wake.notify_one();
     // Costs nothing unless a read is due: the plan loop's gate compares the
@@ -2757,6 +2766,7 @@ fn stored_secrets(
         neon: stored_key(SecretKey::NeonApiKey),
         sentry: stored_key(SecretKey::SentryUsageToken),
         vercel: stored_key(SecretKey::VercelApiToken),
+        actions_billing: stored_key(SecretKey::ActionsBillingToken),
         anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
         openai_admin: stored_key(SecretKey::OpenAiAdminKey),
         openclaw: stored_key(SecretKey::OpenClawBearerToken),
@@ -2997,6 +3007,7 @@ fn dashboard_view_in(width: f64, app: &App) -> Value {
         openai_unscoped(app),
         usage_unscoped(app),
         azure_cost_unscoped(app),
+        actions_billing_unscoped(app),
         openclaw_unscoped(app),
     ];
     cadence::attach(&mut payloads, &settings);
@@ -4057,6 +4068,101 @@ async fn azure_loop(app: Arc<App>) {
     }
 }
 
+/// One Actions billing pass: both reads of the org's billing endpoints.
+///
+/// The token is re-read from the credential store **every pass**, with the org,
+/// the rule `poll_usage_providers` follows, so a Save in Settings applies on
+/// the next pass rather than the next launch. It goes straight into the client,
+/// whose `Debug` redacts it, and no error here carries it: the crate's errors
+/// are a kind and a status code.
+async fn poll_actions_billing(app: &Arc<App>) {
+    let token = read_credential(&*app.credentials, SecretKey::ActionsBillingToken);
+    let org = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().actions_billing_org.trim().to_owned()
+    };
+    let token = match token {
+        // "No token" or "no org" is the setup state; "the keychain would not
+        // answer" is not, because that would delete a live figure for an hour.
+        Credential::Absent => {
+            app.actions_billing
+                .lock()
+                .expect("actions billing state poisoned")
+                .unconfigure();
+            return;
+        }
+        Credential::Unreadable => {
+            app.actions_billing
+                .lock()
+                .expect("actions billing state poisoned")
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE);
+            return;
+        }
+        Credential::Present(token) => token,
+    };
+    if org.is_empty() {
+        app.actions_billing
+            .lock()
+            .expect("actions billing state poisoned")
+            .unconfigure();
+        return;
+    }
+    // `new` returns `None` only for a blank token, which `Present` excludes.
+    let Some(client) = actionsbilling::ActionsBillingClient::new(&token) else {
+        return;
+    };
+    app.actions_billing
+        .lock()
+        .expect("actions billing state poisoned")
+        .begin(&org);
+    let read = client.month_to_date(&org, github::now_utc()).await;
+    // The crate's errors are a kind and a status code, so this cannot carry the
+    // token, a URL or a body. Before the lock: `eprintln!` panics on a closed
+    // stderr.
+    if let Err(e) = &read.usage {
+        eprintln!("Actions billing usage: {}", e.user_message());
+    }
+    if let Err(e) = &read.budget {
+        eprintln!("Actions billing budget: {}", e.user_message());
+    }
+    // Stamped as the read completes, so the footer's `last ok` is the last
+    // success and not the moment the pass began.
+    app.actions_billing
+        .lock()
+        .expect("actions billing state poisoned")
+        .record(read, panel::now_unix());
+}
+
+/// How soon the Actions billing poll retries while it has never once
+/// succeeded **and the failure was one a retry can fix** (the network not up at
+/// login): that should not leave a red card for a whole cadence. A rejected
+/// token, a wrong organization or a rate limit is not retried early, because
+/// asking again every minute only repeats the refusal. `actions_billing_wake`
+/// fires on a save.
+const ACTIONS_BILLING_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The Actions billing panel's poll loop, on the operator's cadence for this
+/// panel once it has something to show, and a short retry until then.
+async fn actions_billing_loop(app: Arc<App>) {
+    loop {
+        poll_actions_billing(&app).await;
+        let quick = app
+            .actions_billing
+            .lock()
+            .expect("actions billing state poisoned")
+            .wants_quick_retry();
+        let wait = if quick {
+            ACTIONS_BILLING_FIRST_READ_RETRY
+        } else {
+            panel_interval(&app.store, PanelInterval::ActionsBilling)
+        };
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = app.actions_billing_wake.notified() => {}
+        }
+    }
+}
+
 /// Guards the Anthropic panel's counterpart to [`FIRST_REQUEST`].
 static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
@@ -4218,6 +4324,28 @@ fn azure_cost_unscoped(state: &App) -> Value {
         eprintln!("azure_cost: first frontend request (headline: {has_headline})");
     });
     payload
+}
+
+#[tauri::command]
+fn actions_billing(
+    tile: Option<String>,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    scope_to_tile(&state, "actionsBilling", tile.as_deref(), || {
+        actions_billing_unscoped(&state)
+    })
+}
+
+/// [`actions_billing`] without a tile: the whole source, as the dashboard reads
+/// it. The cadence is read at render time, like Azure's, so a save re-dates the
+/// card in the same response.
+fn actions_billing_unscoped(state: &App) -> Value {
+    let cadence_secs = panel_interval(&state.store, PanelInterval::ActionsBilling).as_secs();
+    let panel = state
+        .actions_billing
+        .lock()
+        .expect("actions billing state poisoned");
+    actions_billing::view(&panel, cadence_secs, panel::now_unix())
 }
 
 // MARK: the OpenClaw panel
@@ -4576,6 +4704,7 @@ fn wake_notify(app: &App, target: WakeTarget) -> &tokio::sync::Notify {
         WakeTarget::Services => &app.services_wake,
         WakeTarget::Usage => &app.usage_wake,
         WakeTarget::Azure => &app.azure_wake,
+        WakeTarget::ActionsBilling => &app.actions_billing_wake,
         WakeTarget::Crons => &app.crons_wake,
         WakeTarget::PlanUsage => &app.plan_usage_wake,
     }
@@ -4590,6 +4719,7 @@ enum WakeTarget {
     Services,
     Usage,
     Azure,
+    ActionsBilling,
     Crons,
     PlanUsage,
 }
@@ -4604,6 +4734,7 @@ fn wake_target(panel: PanelInterval) -> WakeTarget {
         PanelInterval::Services => WakeTarget::Services,
         PanelInterval::ClaudeRollups | PanelInterval::UsageProviders => WakeTarget::Usage,
         PanelInterval::AzureCost => WakeTarget::Azure,
+        PanelInterval::ActionsBilling => WakeTarget::ActionsBilling,
         PanelInterval::Crons => WakeTarget::Crons,
         PanelInterval::PlanUsage => WakeTarget::PlanUsage,
     }
@@ -4929,6 +5060,10 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
             // an operator who has just fixed a typo waits to find out whether it
             // worked. The budget is read at render time and needs no wake.
             SourceWake::Azure => self.0.azure_wake.notify_one(),
+            // The token and organization are read on an hourly rhythm, so
+            // without this an operator who has just pasted a token waits to
+            // find out whether it worked.
+            SourceWake::ActionsBilling => self.0.actions_billing_wake.notify_one(),
             // Accounts are the GitHub pass's identities, so a save that does not
             // reach the loop leaves the panels fetching with the previous set
             // for a full GitHub cadence.
@@ -6685,6 +6820,20 @@ fn dump_azure(kind: azure::Fixture, stale: bool, budget: f64) -> Value {
     )
 }
 
+/// The Actions billing panel as a fixture, at a fixed instant for the reason
+/// [`dump_azure`] gives. `stale` dates the last successful read most of a day
+/// back, against the default cadence's window.
+fn dump_actions_billing(kind: actions_billing::Fixture, stale: bool) -> Value {
+    const NOW: u64 = 1_700_000_000;
+    let cadence_secs = u64::from(PanelInterval::ActionsBilling.spec().default_secs);
+    let read_at = if stale { NOW - 23 * 3_600 } else { NOW };
+    actions_billing::view(
+        &actions_billing::fixture_state(kind, read_at),
+        cadence_secs,
+        NOW,
+    )
+}
+
 /// The Sentry Crons panel as a fixture.
 ///
 /// Both clocks are fixed so the file is byte-stable across regenerations: the
@@ -6757,6 +6906,7 @@ fn dump_settings() -> Value {
         neon: settings::StoredKey::Absent,
         sentry: settings::StoredKey::Stored,
         vercel: settings::StoredKey::Stored,
+        actions_billing: settings::StoredKey::Absent,
         anthropic_admin: settings::StoredKey::Absent,
         openai_admin: settings::StoredKey::Absent,
         openclaw: settings::StoredKey::Absent,
@@ -7091,6 +7241,7 @@ fn dump_dashboard_with(layout: &store::DashboardLayout, repos: Value) -> Value {
         dump_openai(usage::Fixture::Measured, false),
         dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
         dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
+        dump_actions_billing(actions_billing::Fixture::Measured, false),
         dump_openclaw(openclaw::Fixture::Connected),
     ];
     cadence::attach(&mut payloads, &cadences);
@@ -7319,6 +7470,27 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &dump_azure(kind, stale, budget));
         return true;
     }
+    if let Some(path) = dump_flag_path(
+        args,
+        "--dump-actions-billing",
+        "sample-actions-billing.json",
+    ) {
+        let kind = if args.iter().any(|arg| arg == "--unconfigured") {
+            actions_billing::Fixture::Unconfigured
+        } else if empty {
+            actions_billing::Fixture::Empty
+        } else if args.iter().any(|arg| arg == "--error") {
+            actions_billing::Fixture::Failed
+        } else if args.iter().any(|arg| arg == "--no-budget") {
+            actions_billing::Fixture::NoBudget
+        } else if args.iter().any(|arg| arg == "--over-budget") {
+            actions_billing::Fixture::OverBudget
+        } else {
+            actions_billing::Fixture::Measured
+        };
+        write_json(&path, &dump_actions_billing(kind, stale));
+        return true;
+    }
     if let Some(path) = dump_flag_path(args, "--dump-services", "sample-services.json") {
         // `--empty` is a pass that *looked* and found nothing to watch — the
         // rendering an unconfigured cockpit gets now that the vendor list is
@@ -7516,6 +7688,8 @@ fn new_app(
         crons_wake: tokio::sync::Notify::new(),
         azure: Mutex::new(AzureState::new()),
         azure_wake: tokio::sync::Notify::new(),
+        actions_billing: Mutex::new(ActionsBillingState::new()),
+        actions_billing_wake: tokio::sync::Notify::new(),
         openclaw: Mutex::new(OpenClawState::new()),
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
@@ -7709,6 +7883,8 @@ fn main() {
     rt.spawn(crons_loop(Arc::clone(&app)));
     // Azure cost, on the reader's own 4h cadence.
     rt.spawn(azure_loop(Arc::clone(&app)));
+    // Actions billing, hourly by default like the metered providers.
+    rt.spawn(actions_billing_loop(Arc::clone(&app)));
     // OpenClaw: a live WebSocket, not a cadence. It idles at once when no
     // gateway is configured and wakes the moment one is saved.
     rt.spawn(openclaw_loop(Arc::clone(&app)));
@@ -7789,6 +7965,7 @@ fn main() {
             anthropic,
             openai,
             azure_cost,
+            actions_billing,
             services,
             crons,
             openclaw,
@@ -7957,6 +8134,7 @@ mod tests {
             (PanelInterval::ClaudeRollups, WakeTarget::Usage),
             (PanelInterval::UsageProviders, WakeTarget::Usage),
             (PanelInterval::AzureCost, WakeTarget::Azure),
+            (PanelInterval::ActionsBilling, WakeTarget::ActionsBilling),
             (PanelInterval::Crons, WakeTarget::Crons),
             (PanelInterval::PlanUsage, WakeTarget::PlanUsage),
         ];
@@ -8835,6 +9013,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn actions_billing_saves_its_own_token_wakes_its_loop_and_never_echoes_the_token() {
+        const SECRET: &str = "github_pat_billing_secret_x";
+        let (dir, _rt, app) = test_app();
+        let typed = vec![("org".to_owned(), " acme ".to_owned())];
+        save_source_with_in(
+            &app,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some(SECRET),
+            &typed,
+            true,
+        )
+        .unwrap();
+        assert!(
+            woken(&app.actions_billing_wake),
+            "the Actions billing loop heard of the save"
+        );
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::ActionsBillingToken)
+                .unwrap()
+                .as_deref(),
+            Some(SECRET)
+        );
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::GitHubAccessToken)
+                .unwrap(),
+            None,
+            "the account token is a different item"
+        );
+        {
+            let store = app.store.lock().unwrap();
+            assert_eq!(store.settings().actions_billing_org, "acme");
+            assert!(store
+                .dashboard()
+                .is_some_and(|layout| layout.tiles.iter().any(|t| t.source == "actionsBilling")));
+        }
+        // The token is in no payload the frontend can read, and not on disk.
+        let vm = settings_payload(&app);
+        let row = vm["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["kind"] == "actionsBilling")
+            .cloned()
+            .expect("a saved token and org is a row");
+        assert_eq!(row["status"]["text"], "Configured");
+        assert!(!vm.to_string().contains(SECRET));
+        assert!(!actions_billing_unscoped(&app).to_string().contains(SECRET));
+        let on_disk = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .collect::<String>();
+        assert!(on_disk.contains("acme") && !on_disk.contains(SECRET));
+
+        // The org is required of a ticked part, and refused in its own words
+        // before anything is written.
+        let refused = save_source_in(&app, "actionsBilling", &parts(&["billing"]), None, false);
+        assert_eq!(
+            refused.unwrap_err(),
+            "Enter the GitHub organization whose Actions billing to read."
+        );
+        assert_eq!(
+            app.store.lock().unwrap().settings().actions_billing_org,
+            "acme"
+        );
+        save_source_in(&app, "actionsBilling", &parts(&[]), None, true).unwrap();
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::ActionsBillingToken)
+                .unwrap(),
+            None
+        );
+        assert_eq!(app.store.lock().unwrap().settings().actions_billing_org, "");
+    }
+
     /// Azure Cost has no key: finishing its steps writes the export location and
     /// the budget, wakes the Azure loop (four hours is too long to learn that a
     /// typo was fixed) and the status pages (a configured export is what makes
@@ -9388,11 +9646,12 @@ mod tests {
         use std::sync::atomic::Ordering;
         let (_dir, _rt, app) = test_app();
         wake_after_resume(&app);
-        let loops: [(&str, &tokio::sync::Notify); 8] = [
+        let loops: [(&str, &tokio::sync::Notify); 9] = [
             ("github", &app.github_wake),
             ("services", &app.services_wake),
             ("usage", &app.usage_wake),
             ("azure", &app.azure_wake),
+            ("actions billing", &app.actions_billing_wake),
             ("containers", &app.containers_wake),
             ("crons", &app.crons_wake),
             ("plan usage", &app.plan_usage_wake),
@@ -9585,6 +9844,7 @@ mod tests {
             WakeTarget::Services,
             WakeTarget::Usage,
             WakeTarget::Azure,
+            WakeTarget::ActionsBilling,
             WakeTarget::Crons,
             WakeTarget::PlanUsage,
         ] {
@@ -9619,12 +9879,13 @@ mod tests {
         assert!(stale(&app), "cleared: back to the default's 30s");
     }
 
-    const ALL_WAKE_TARGETS: [WakeTarget; 7] = [
+    const ALL_WAKE_TARGETS: [WakeTarget; 8] = [
         WakeTarget::Containers,
         WakeTarget::GitHub,
         WakeTarget::Services,
         WakeTarget::Usage,
         WakeTarget::Azure,
+        WakeTarget::ActionsBilling,
         WakeTarget::Crons,
         WakeTarget::PlanUsage,
     ];
@@ -9654,6 +9915,12 @@ mod tests {
                 PanelInterval::AzureCost,
                 21_600,
                 WakeTarget::Azure,
+            ),
+            (
+                "actions_billing",
+                PanelInterval::ActionsBilling,
+                7_200,
+                WakeTarget::ActionsBilling,
             ),
             (
                 "containers",
@@ -9707,6 +9974,7 @@ mod tests {
             ("github", WakeTarget::GitHub),
             ("claude_rollups", WakeTarget::Usage),
             ("azure_cost", WakeTarget::Azure),
+            ("actions_billing", WakeTarget::ActionsBilling),
             ("services", WakeTarget::Services),
         ] {
             let (_dir, _rt, app) = test_app();
@@ -9717,6 +9985,7 @@ mod tests {
                 WakeTarget::Services,
                 WakeTarget::Usage,
                 WakeTarget::Azure,
+                WakeTarget::ActionsBilling,
                 WakeTarget::Crons,
                 WakeTarget::PlanUsage,
             ] {
@@ -9734,12 +10003,13 @@ mod tests {
     #[test]
     fn each_wake_target_fires_its_own_notify() {
         let (_dir, _rt, app) = test_app();
-        let expected: [(WakeTarget, &tokio::sync::Notify); 7] = [
+        let expected: [(WakeTarget, &tokio::sync::Notify); 8] = [
             (WakeTarget::Containers, &app.containers_wake),
             (WakeTarget::GitHub, &app.github_wake),
             (WakeTarget::Services, &app.services_wake),
             (WakeTarget::Usage, &app.usage_wake),
             (WakeTarget::Azure, &app.azure_wake),
+            (WakeTarget::ActionsBilling, &app.actions_billing_wake),
             (WakeTarget::Crons, &app.crons_wake),
             (WakeTarget::PlanUsage, &app.plan_usage_wake),
         ];
@@ -10159,7 +10429,7 @@ mod tests {
     #[test]
     fn each_panel_command_scopes_its_tile_to_its_own_source() {
         // Command, the function whose body makes the call, and the call's text.
-        let table: [(&str, &str, &str); 11] = [
+        let table: [(&str, &str, &str); 12] = [
             ("cockpit", "cockpit_for_tile", "tile_from_store(app, id, \""),
             ("repos", "repos", "scope_to_tile(&state, \""),
             ("runners", "runners", "scope_to_tile(&state, \""),
@@ -10170,6 +10440,11 @@ mod tests {
             ("anthropic", "anthropic", "scope_to_tile(&state, \""),
             ("openai", "openai", "scope_to_tile(&state, \""),
             ("azure_cost", "azure_cost", "scope_to_tile(&state, \""),
+            (
+                "actions_billing",
+                "actions_billing",
+                "scope_to_tile(&state, \"",
+            ),
             ("openclaw", "openclaw", "scope_to_tile(&state, \""),
         ];
         let expected = [
@@ -10183,6 +10458,7 @@ mod tests {
             ("anthropic", "anthropic"),
             ("openai", "openai"),
             ("azure_cost", "azureCost"),
+            ("actions_billing", "actionsBilling"),
             ("openclaw", "openclawAgents"),
         ];
         // Only the code above this module: its own table must not be read back.
@@ -10223,9 +10499,9 @@ mod tests {
                 && cockpit.contains("Some(id) => cockpit_for_tile("),
             "the cockpit command scopes a Machines tile with its own tile"
         );
-        // The eleven are all of them. Every function that calls into the scoping
+        // The twelve are all of them. Every function that calls into the scoping
         // is a row above, `cockpit`, or the scoping itself, whatever it calls its
-        // tile: a twelfth command that scopes one is a new row here.
+        // tile: a thirteenth command that scopes one is a new row here.
         let mut callers = std::collections::BTreeSet::new();
         let mut current = "";
         for line in source.lines() {

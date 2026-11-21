@@ -31,6 +31,7 @@ export const SOURCE_READS = [
   ["openai", "openai", "openai"],
   ["usage", "usage", "usage"],
   ["azureCost", "azure_cost", "azure"],
+  ["actionsBilling", "actions_billing", "actions-billing"],
   ["openclawAgents", "openclaw", "openclaw"],
 ];
 

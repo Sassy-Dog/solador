@@ -110,6 +110,8 @@ pub struct StoredSecrets {
     pub neon: StoredKey,
     pub sentry: StoredKey,
     pub vercel: StoredKey,
+    /// The Actions billing token, its own item and never an account's.
+    pub actions_billing: StoredKey,
     /// Whether each vendor's Admin API key is stored, which is that part of the
     /// source being added.
     pub anthropic_admin: StoredKey,
@@ -993,6 +995,10 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             target = editor("azure", None);
             ("Azure Cost source", &["azure"])
         }
+        "actionsBilling" => {
+            target = editor("actionsBilling", None);
+            ("Actions billing source", &["actionsBilling"])
+        }
         "openclawAgents" => {
             target = editor("openclaw", None);
             ("OpenClaw source", &["openclaw"])
@@ -1070,6 +1076,8 @@ pub const VERCEL_TITLE: &str = store::source_save::VERCEL_TITLE;
 pub const SENTRY_TITLE: &str = store::source_save::SENTRY_TITLE;
 /// Azure Cost's daily export and monthly budget.
 pub const AZURE_TITLE: &str = store::source_save::AZURE_TITLE;
+/// The GitHub organization's Actions billing.
+pub const ACTIONS_BILLING_TITLE: &str = store::source_save::ACTIONS_BILLING_TITLE;
 /// The button, and the heading of the catalog it opens.
 pub const ADD_SOURCE_LABEL: &str = "Add source";
 
@@ -1255,6 +1263,35 @@ fn connections_section(
             ));
         }
     }
+    // Its own token and its own org: the GitHub account's token never stands in
+    // for it, and neither half alone is a working source.
+    let billing_token_there = stored.actions_billing != StoredKey::Absent;
+    if !s.actions_billing_org.is_empty() || billing_token_there {
+        rows.push(row(
+            "actionsBilling".into(),
+            "actionsBilling",
+            None,
+            ACTIONS_BILLING_TITLE,
+            s.actions_billing_org.clone(),
+            "Actions billing",
+            if stored.actions_billing == StoredKey::Unread {
+                row_status_not_read()
+            } else if stored.actions_billing == StoredKey::Stored
+                && !s.actions_billing_org.is_empty()
+            {
+                status("Configured", false)
+            } else {
+                status(
+                    if billing_token_there {
+                        "Setup incomplete"
+                    } else {
+                        "Token needed"
+                    },
+                    true,
+                )
+            },
+        ));
+    }
     if azure_export_there(s) || azure_budget_there(s) {
         // A budget alone is a half-made source: the panel has no export to read.
         let complete = !s.azure_storage_account.is_empty() && !s.azure_cost_container.is_empty();
@@ -1398,6 +1435,7 @@ fn connections_section(
             sentry_entry(s, stored, store.tile_sources),
             vercel_entry(s, stored, store.tile_sources),
             azure_entry(s, store.tile_sources),
+            actions_billing_entry(s, stored, store.tile_sources),
             {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
             services_entry(s, store.tile_sources),
             {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
@@ -1844,6 +1882,43 @@ fn vercel_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
         "kind": "vercel", "title": VERCEL_TITLE,
         "feeds": "Billing usage",
         "walk": {"parts": [part], "tile": tile_offer("usage", tile_sources)},
+    })
+}
+
+/// Actions billing: one part, a dedicated token and the organization it reads.
+///
+/// The token is **not** the GitHub account's, and the help says so in the words
+/// a person creating it needs: which resource owner, which one permission, and
+/// that an org admin must create it, because the endpoints require one. The
+/// organization is required of a ticked part (`store::source_save`), so Rust
+/// refuses it at Finish with the sentence the table carries.
+fn actions_billing_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    let key = stored.actions_billing;
+    let mut part = with_secret(
+        walk_part(
+            "billing",
+            ACTIONS_BILLING_TITLE,
+            "Hosted minutes, net spend and the Actions budget",
+            key != StoredKey::Absent || !s.actions_billing_org.is_empty(),
+            "Actions billing",
+            "Powers the Actions billing tile: this month\u{2019}s hosted Actions minutes and net spend by repo and by SKU, and a bar for the organization\u{2019}s Actions budget. This needs its own fine-grained personal access token, separate from your GitHub account\u{2019}s: resource owner is the organization, and Organization permissions \u{2192} Administration: Read, with nothing else. It must be created by an organization admin, because GitHub\u{2019}s billing endpoints require one, and the organization needs GitHub\u{2019}s enhanced billing platform. The token is kept in your OS credential store; the organization\u{2019}s login is not a secret and is stored as a normal preference.",
+        ),
+        key,
+        "Billing token",
+        "github_pat_\u{2026}",
+        "token",
+    );
+    part["inputs"] = json!([walk_input(
+        "org",
+        "Organization (login)",
+        &s.actions_billing_org,
+        false,
+        false
+    )]);
+    json!({
+        "kind": "actionsBilling", "title": ACTIONS_BILLING_TITLE,
+        "feeds": "Actions minutes, spend and budget",
+        "walk": {"parts": [part], "tile": tile_offer("actionsBilling", tile_sources)},
     })
 }
 
@@ -3241,6 +3316,7 @@ mod tests {
             neon: StoredKey::Absent,
             sentry: StoredKey::Stored,
             vercel: StoredKey::Absent,
+            actions_billing: StoredKey::Absent,
             anthropic_admin: StoredKey::Absent,
             openai_admin: StoredKey::Absent,
             openclaw: StoredKey::Absent,
@@ -3416,7 +3492,7 @@ mod tests {
             &facts(),
         );
         assert_eq!(vm["connections"]["rows"], json!([]));
-        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 12);
+        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 13);
         assert!(vm["connections"].get("automatic").is_none());
     }
 

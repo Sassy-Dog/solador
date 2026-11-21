@@ -71,8 +71,8 @@ pub const NO_DATA_MESSAGE: &str = "no cost data";
 
 /// Amber at 90% of budget, red at budget. Same thresholds as the Usage panel's
 /// Sentry quota bar.
-const BUDGET_AMBER_AT: f64 = 0.9;
-const BUDGET_RED_AT: f64 = 1.0;
+pub(crate) const BUDGET_AMBER_AT: f64 = 0.9;
+pub(crate) const BUDGET_RED_AT: f64 = 1.0;
 
 /// How many rows each breakdown column shows — `azurecost::TOP_N`, restated as
 /// the *render* cap so a reader of this file can see it, and asserted equal to
@@ -114,7 +114,7 @@ pub fn usd(amount: f64) -> String {
 }
 
 /// `1234567` -> `1,234,567`.
-fn group_thousands(digits: &str) -> String {
+pub(crate) fn group_thousands(digits: &str) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
@@ -132,7 +132,7 @@ fn group_thousands(digits: &str) -> String {
 /// UTC arithmetic and the panel must read the same on every machine — a
 /// locale-sensitive formatter is one build flag away from stamping "juin" on an
 /// Azure bill.
-const MONTHS_LONG: [&str; 12] = [
+pub(crate) const MONTHS_LONG: [&str; 12] = [
     "January",
     "February",
     "March",
@@ -148,7 +148,7 @@ const MONTHS_LONG: [&str; 12] = [
 ];
 
 /// The `MMM` forms, for the trailing label where space is tight.
-const MONTHS_SHORT: [&str; 12] = [
+pub(crate) const MONTHS_SHORT: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 

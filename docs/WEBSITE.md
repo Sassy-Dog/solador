@@ -54,7 +54,10 @@ to how `remote::plan` refuses is a change to the prompt.
 `the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
 `site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
 from `tests/frontend/og-card.html`. The eleven `panel-*.png` are a tile's **Full
-view** (View, then Full view) of the showcase readings. Full view lays a panel out
+view** (View, then Full view) of the showcase readings. **Actions billing is the
+twelfth tile and has a card on the home page but no screenshot yet**: it has no
+showcase fixture, and generating its image rewrites every committed PNG, so it
+is its own follow-up rather than a drive-by here. Full view lays a panel out
 in columns across the whole window, so the window is sized per panel in
 `tests/frontend/screenshots.spec.js` to the shape its card needs: `.tile-shot img`
 crops each image into a box that keeps the 3-up aspect, 311:195, at every width

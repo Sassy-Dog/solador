@@ -43,6 +43,9 @@ pub const VERCEL_TITLE: &str = "Vercel";
 pub const SENTRY_TITLE: &str = "Sentry";
 /// Azure Cost's daily export and monthly budget.
 pub const AZURE_TITLE: &str = "Azure Cost";
+/// The GitHub organization's Actions billing: hosted minutes, net spend and its
+/// Actions budget.
+pub const ACTIONS_BILLING_TITLE: &str = "Actions billing";
 /// A GitHub account: the repos it fetches and the organizations it watches.
 pub const GITHUB_TITLE: &str = "GitHub";
 
@@ -76,6 +79,9 @@ pub enum SourceWake {
     /// The Azure Cost loop, whose four-hour rhythm would otherwise leave a
     /// corrected export location unread until the next pass.
     Azure,
+    /// The Actions billing loop, whose hourly rhythm would otherwise leave a
+    /// newly saved token or organization unread until the next pass.
+    ActionsBilling,
     /// The GitHub pass, whose identities are the accounts, and the Service
     /// Health pass, which derives its watched set from them.
     Accounts,
@@ -340,7 +346,7 @@ fn account_orgs(
 /// budget). A source with no key at all is a source whose reads are signed
 /// elsewhere; Azure Cost's are by the `az` CLI session, so its parts hold inputs
 /// and nothing else.
-pub const SOURCES: [SourceSpec; 9] = [
+pub const SOURCES: [SourceSpec; 10] = [
     SourceSpec {
         kind: "anthropic",
         title: ANTHROPIC_TITLE,
@@ -566,6 +572,33 @@ pub const SOURCES: [SourceSpec; 9] = [
             },
         ],
         wake: SourceWake::Azure,
+        rows: None,
+    },
+    SourceSpec {
+        kind: "actionsBilling",
+        title: ACTIONS_BILLING_TITLE,
+        tile_source: "actionsBilling",
+        parts: &[SourcePart {
+            key: Some(PartKey {
+                secret: KeyAt::Item(SecretKey::ActionsBillingToken),
+                missing: "Enter a billing token.",
+                unreadable: "Couldn't read the credential store, so a stored billing token \
+                    can't be removed. Nothing changed.",
+                spend: None,
+            }),
+            inputs: &[SourceInput {
+                id: "org",
+                number: false,
+                advanced: false,
+                required: Some("Enter the GitHub organization whose Actions billing to read."),
+                apply: Apply::Setting(|settings, value| {
+                    value.clone_into(&mut settings.actions_billing_org);
+                    Ok(())
+                }),
+            }],
+            ..SourcePart::new("billing")
+        }],
+        wake: SourceWake::ActionsBilling,
         rows: None,
     },
     SourceSpec {
@@ -1293,6 +1326,7 @@ mod tests {
                 "vercel",
                 "sentry",
                 "azure",
+                "actionsBilling",
                 "account"
             ]
         );
@@ -2138,7 +2172,119 @@ mod tests {
     }
 
     #[test]
-    fn only_azure_and_a_github_name_require_an_input() {
+    fn actions_billing_saves_its_token_and_org_and_wakes_its_loop() {
+        let env = Fake::new();
+        let status = save_source_with(
+            &env,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some(" billing_secret "),
+            &typed(&[("org", " acme ")]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(status, "Actions billing saved.");
+        assert_eq!(
+            env.credentials
+                .secret(SecretKey::ActionsBillingToken)
+                .unwrap()
+                .as_deref(),
+            Some("billing_secret")
+        );
+        assert_eq!(
+            env.credentials
+                .secret(SecretKey::GitHubAccessToken)
+                .unwrap(),
+            None,
+            "the account token is a different item"
+        );
+        let store = env.store.lock().unwrap();
+        assert_eq!(store.settings().actions_billing_org, "acme");
+        assert!(store
+            .dashboard()
+            .unwrap()
+            .tiles
+            .iter()
+            .any(|tile| tile.source == "actionsBilling"));
+        drop(store);
+        assert_eq!(*env.woken.borrow(), [SourceWake::ActionsBilling]);
+    }
+
+    #[test]
+    fn actions_billing_refuses_an_empty_org_or_token_in_its_own_words_and_writes_nothing() {
+        let env = Fake::new();
+        let no_org = save_source_with(
+            &env,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some("billing_secret"),
+            &typed(&[("org", "  ")]),
+            false,
+        );
+        assert_eq!(
+            no_org.unwrap_err(),
+            "Enter the GitHub organization whose Actions billing to read."
+        );
+        let no_token = save_source_with(
+            &env,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            None,
+            &typed(&[("org", "acme")]),
+            false,
+        );
+        assert_eq!(no_token.unwrap_err(), "Enter a billing token.");
+        assert_eq!(
+            env.credentials
+                .secret(SecretKey::ActionsBillingToken)
+                .unwrap(),
+            None
+        );
+        assert!(env
+            .store
+            .lock()
+            .unwrap()
+            .settings()
+            .actions_billing_org
+            .is_empty());
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn removing_actions_billing_forgets_the_token_and_the_org() {
+        let env = Fake::new();
+        save_source_with(
+            &env,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some("billing_secret"),
+            &typed(&[("org", "acme")]),
+            false,
+        )
+        .unwrap();
+        let status = save_source(&env, "actionsBilling", &parts(&[]), None, true).unwrap();
+        assert_eq!(status, "Actions billing removed.");
+        assert_eq!(
+            env.credentials
+                .secret(SecretKey::ActionsBillingToken)
+                .unwrap(),
+            None
+        );
+        assert!(env
+            .store
+            .lock()
+            .unwrap()
+            .settings()
+            .actions_billing_org
+            .is_empty());
+    }
+
+    #[test]
+    fn only_azure_actions_billing_and_a_github_name_require_an_input() {
         for spec in &SOURCES {
             let required: Vec<_> = spec
                 .parts
@@ -2149,6 +2295,8 @@ mod tests {
                 .collect();
             if spec.kind == "azure" {
                 assert_eq!(required, ["account", "container", "budgetUsd"]);
+            } else if spec.kind == "actionsBilling" {
+                assert_eq!(required, ["org"]);
             } else if spec.kind == "account" {
                 assert_eq!(required, ["name"]);
             } else {

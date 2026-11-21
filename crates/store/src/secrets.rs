@@ -68,6 +68,12 @@ pub enum SecretKey {
     SentryUsageToken,
     /// Vercel API token, for the Usage panel's spend rows.
     VercelApiToken,
+    /// Fine-grained GitHub PAT behind the Actions billing panel: resource owner
+    /// the org, Organization permissions: Administration: read, created by an
+    /// org admin. Deliberately **not** [`SecretKey::GitHubAccessToken`] or a
+    /// [`SecretKey::VendorToken`]: the Repos / Runners token never gains the
+    /// billing permission, so this one is its own item.
+    ActionsBillingToken,
     /// Anthropic Admin API key, for the Anthropic source's API spend.
     AnthropicAdminKey,
     /// OpenAI Admin API key, for the OpenAI source's API spend.
@@ -99,6 +105,7 @@ impl SecretKey {
             SecretKey::NeonApiKey => "neon_api_key".to_owned(),
             SecretKey::SentryUsageToken => "sentry_usage_token".to_owned(),
             SecretKey::VercelApiToken => "vercel_api_token".to_owned(),
+            SecretKey::ActionsBillingToken => "actions_billing_token".to_owned(),
             SecretKey::AnthropicAdminKey => "anthropic_admin_key".to_owned(),
             SecretKey::OpenAiAdminKey => "openai_admin_key".to_owned(),
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
@@ -130,6 +137,7 @@ impl SecretKey {
             | SecretKey::NeonApiKey
             | SecretKey::SentryUsageToken
             | SecretKey::VercelApiToken
+            | SecretKey::ActionsBillingToken
             | SecretKey::AnthropicAdminKey
             | SecretKey::OpenAiAdminKey
             | SecretKey::OpenClawBearerToken => true,
@@ -156,6 +164,7 @@ impl SecretKey {
                 | SecretKey::NeonApiKey
                 | SecretKey::SentryUsageToken
                 | SecretKey::VercelApiToken
+                | SecretKey::ActionsBillingToken
                 | SecretKey::AnthropicAdminKey
                 | SecretKey::OpenAiAdminKey
                 | SecretKey::OpenClawBearerToken => true,
@@ -169,6 +178,7 @@ impl SecretKey {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
+            SecretKey::ActionsBillingToken,
             SecretKey::AnthropicAdminKey,
             SecretKey::OpenAiAdminKey,
             SecretKey::OpenClawBearerToken,
@@ -816,6 +826,7 @@ mod tests {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
+            SecretKey::ActionsBillingToken,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
         ];
@@ -846,6 +857,7 @@ mod tests {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
+            SecretKey::ActionsBillingToken,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
         ];
@@ -880,6 +892,7 @@ mod tests {
         assert!(SecretKey::NeonApiKey.consolidatable());
         assert!(SecretKey::SentryUsageToken.consolidatable());
         assert!(SecretKey::VercelApiToken.consolidatable());
+        assert!(SecretKey::ActionsBillingToken.consolidatable());
         assert!(SecretKey::AnthropicAdminKey.consolidatable());
         assert!(SecretKey::OpenAiAdminKey.consolidatable());
         assert!(SecretKey::OpenClawBearerToken.consolidatable());
@@ -896,6 +909,7 @@ mod tests {
                 "neon_api_key",
                 "sentry_usage_token",
                 "vercel_api_token",
+                "actions_billing_token",
                 "anthropic_admin_key",
                 "openai_admin_key",
                 "openclaw_bearer_token",

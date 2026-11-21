@@ -141,7 +141,7 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
 - **No seeded container grouping rules**, and matching is first-match-wins.
 - **Another program's credential is read, never kept** (Security below); the
   Anthropic tile's Claude Code rollups have **no account** and a subscription is not an account.
-- **Eight panel cadences are the operator's**, edited in the owning tile's
+- **Nine panel cadences are the operator's**, edited in the owning tile's
   Configure and read after every pass; a below-floor value is refused with its
   reason, not clamped (`set_panel_interval_secs` / `panel_interval_secs` still
   clamp, because a hand-edited `store.json` never reaches the refusal).

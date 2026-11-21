@@ -970,6 +970,7 @@ const ROW_LISTS = [
   { source: "openai", command: "openai", file: "sample-openai.json", list: "#openaiBody .pv-section", row: ".pv-row, .pv-item, .db-host-stats", margin: 7 },
   { source: "usage", command: "usage", file: "sample-usage.json", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
   { source: "azureCost", command: "azure_cost", file: "sample-azure.json", list: "#azureBody .pv-section", row: ".pv-item" },
+  { source: "actionsBilling", command: "actions_billing", file: "sample-actions-billing.json", list: "#actionsBillingBody .pv-section", row: ".pv-item" },
   { source: "services", command: "services", file: "sample-services.json", list: "#servicesBody", row: ".svc-row" },
   { source: "sentryCrons", command: "crons", file: "sample-crons.json", list: "#cronsBody", row: ".cron-row" },
   { source: "openclawAgents", command: "openclaw", file: "sample-openclaw.json", list: "#openclawBody .oc-section", row: ".oc-row, .oc-agent" },

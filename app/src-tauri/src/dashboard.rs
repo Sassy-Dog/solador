@@ -30,7 +30,7 @@ pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the 
 /// words: neither is a vendor's failure (#656).
 pub const TILE_READ_FAILED: &str = "Could not read this tile\u{2019}s data for the Full view.";
 
-pub const SOURCES: [(&str, &str); 11] = [
+pub const SOURCES: [(&str, &str); 12] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
     ("ghRunners", "GitHub Runners"),
@@ -41,6 +41,7 @@ pub const SOURCES: [(&str, &str); 11] = [
     ("openai", "OpenAI"),
     ("usage", "Usage"),
     ("azureCost", "Azure Cost"),
+    ("actionsBilling", "Actions billing"),
     ("openclawAgents", "OpenClaw"),
 ];
 
@@ -927,6 +928,52 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
             }
             rows
         }
+        "actionsBilling" => {
+            let mut rows = Vec::new();
+            if let Some(value) = p["headline"]["value"].as_str() {
+                let mut r = row(
+                    "mtd",
+                    "Month to date",
+                    value,
+                    tint(&p["headline"]["valueColor"]),
+                    red(&p["headline"]["valueColor"]),
+                );
+                // The caption names the month; the report's own lag is a plain
+                // line beside it, never a warning.
+                r["detail"] = p["headline"]["caption"].clone();
+                rows.push(r);
+            }
+            for v in list(p, "stats") {
+                rows.push(row(
+                    &format!("stat-{}", string(v, "label")),
+                    string(v, "label"),
+                    string(v, "value"),
+                    tint(&v["valueColor"]),
+                    red(&v["valueColor"]),
+                ));
+            }
+            // Flags exactly as Azure's budget row does: a bar that is red or
+            // amber raises the tile and feeds the Needs Attention chips. No
+            // budget, and a bar with no fraction, flag nothing.
+            if !p["budget"].is_null() {
+                rows.push(row(
+                    "budget",
+                    string(&p["budget"], "label"),
+                    string(&p["budget"], "value"),
+                    tint(&p["budget"]["bar"]["color"]),
+                    red(&p["budget"]["bar"]["color"]) || amber(&p["budget"]["bar"]["color"]),
+                ));
+            } else if let Some(note) = p["budgetNote"]["text"].as_str() {
+                rows.push(row(
+                    "budget",
+                    "Budget",
+                    note,
+                    tint(&p["budgetNote"]["color"]),
+                    false,
+                ));
+            }
+            rows
+        }
         "openclawAgents" => {
             let mut rows = Vec::new();
             for runtime in list(p, "runtimes") {
@@ -1045,6 +1092,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "openai" => "Codex\u{2019}s plan limits and API spend",
         "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",
+        "actionsBilling" => "Hosted Actions minutes, spend and budget for your GitHub organization",
         "openclawAgents" => "Activity from your OpenClaw gateway",
         _ => "",
     };
@@ -1100,7 +1148,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
     }
     let has_fields = columns.len() > 1;
     columns.push(json!({"key":"value", "label":match id {
-        "sentryCrons" => "Broken for", "anthropic" | "openai" | "usage" | "azureCost" => "Value", _ => "Status"
+        "sentryCrons" => "Broken for", "anthropic" | "openai" | "usage" | "azureCost" | "actionsBilling" => "Value", _ => "Status"
     }}));
     if !has_fields {
         columns.push(json!({"key":"context", "label":"Details"}));
@@ -2825,6 +2873,7 @@ mod tests {
                 "OpenAI",
                 "Usage",
                 "Azure Cost",
+                "Actions billing",
                 "OpenClaw",
             ]
         );
@@ -3740,6 +3789,49 @@ mod tests {
             let source = source_view(id, id, &json!({}));
             assert!(string(&source, "hint").contains("API spend"), "{id}");
         }
+    }
+
+    /// The Actions billing budget row flags exactly as Azure's does: a bar that
+    /// is red or amber raises the tile and feeds the Needs Attention chips, a
+    /// green bar, no budget and a healthy tile flag nothing. The report's lag
+    /// (`dataThrough`) is not a warning in any of them.
+    #[test]
+    fn the_actions_billing_budget_row_flags_amber_and_red_and_nothing_else() {
+        let bar = |color: u32| {
+            json!({"budget":{"label":"BUDGET","value":"$1.00 / $2.00",
+                "bar":{"color":color::hex(color)}},
+                "dataThrough":{"text":"usage through Nov 14 19:00 UTC","color":color::hex(color::MUTED)},
+                "footer":null,"freshness":null})
+        };
+        for (shade, flagged) in [(color::GREEN, 0), (color::AMBER, 1), (color::RED, 1)] {
+            let source = source_view("actionsBilling", "Actions billing", &bar(shade));
+            assert_eq!(source["attentionCount"], flagged, "{shade:#x}");
+            assert!(list(&source, "warnings").is_empty(), "{shade:#x}");
+        }
+        let red = source_view("actionsBilling", "Actions billing", &bar(color::RED));
+        assert_eq!(red["attentionColor"], color::hex(color::RED));
+        let amber = source_view("actionsBilling", "Actions billing", &bar(color::AMBER));
+        assert_eq!(amber["attentionColor"], color::hex(color::AMBER));
+
+        let none = json!({"budget": null,
+            "budgetNote":{"text":"no Actions budget set","color":color::hex(color::MUTED)},
+            "headline":{"value":"$4.00","caption":"c","valueColor":color::hex(color::GREEN)}});
+        let source = source_view("actionsBilling", "Actions billing", &none);
+        assert_eq!(source["attentionCount"], 0);
+        let ids: Vec<&str> = list(&source, "rows")
+            .iter()
+            .map(|r| string(r, "id"))
+            .collect();
+        assert_eq!(ids, ["mtd", "budget"]);
+    }
+
+    /// A poller warning is a tile warning; a lagging report alone is not.
+    #[test]
+    fn a_footer_or_clock_on_actions_billing_is_a_tile_warning() {
+        let late =
+            json!({"footer":{"text":"stale","color":color::hex(color::AMBER)},"freshness":null});
+        let source = source_view("actionsBilling", "Actions billing", &late);
+        assert_eq!(list(&source, "warnings").len(), 1);
     }
 
     #[test]

@@ -121,6 +121,32 @@
   paint a setup sentence; with all three missing it says what to add, and a
   credential store that would not answer says that instead.
 - **Azure Cost** — the daily cost export, on its own cadence (4h by default).
+- **Actions billing** — a GitHub organization's month-to-date hosted Actions
+  minutes and **net** spend (the headline), a bar of net spend over the org's
+  organization-scoped Actions budget, a per-SKU breakdown, the top repos by
+  minutes and a plain `usage through <newest item time>` line. Its own loop and
+  cadence (`PanelInterval::ActionsBilling`, 1h by default, floor 300s, the same
+  figures and reason as `UsageProviders`: a vendor API against a rate-limit
+  budget, with figures that move over hours), its own credential (a dedicated
+  billing token, never the GitHub account's) and the organization's login, both
+  re-read from the store on every pass. It is two reads, kept as two halves of
+  state (`usage` and `budget`), so a failed budget read never hides the usage
+  and the reverse, and each half retains its last good figure, unless the organization changed: a pass for a different org drops both halves first, so a failed read never shows the old org's figures. **Staleness:** the
+  footer and the freshness line are about the *poller* and keep the meaning
+  every panel gives them: the last successful read (per half, attributed
+  `usage:` / `budget:`), the footer's window 1.5 cycles of the cadence, and the
+  freshness line at one cycle. **`usage through` is the *report's* lag, which is
+  separate and is fed into neither:** any non-empty footer or freshness is a
+  Needs Attention warning (`dashboard::source_view`), and a report that always
+  lags by hours would light the tile permanently. The bar is amber from 0.9 and
+  red from 1.0 of the budget (Azure Cost's constants) and flags the tile row
+  exactly as Azure's does; its label says whether the budget stops jobs
+  (`prevent_further_usage`). No budget shows `no Actions budget set` and no bar,
+  never a 0% one; a month with no Actions usage says so in words, never `$0.00`.
+  Setup (no token or organization) is a muted sentence naming Settings →
+  Sources; a rejected token is the red `Fault` sentence and names Administration:
+  Read and an org admin; a response missing a field the read decides on is
+  unreadable, not softened.
 - **Sentry Crons** — every cron monitor environment that is not `ok`, and **how
   long it has been broken** (its own cadence, 1h by default). The age comes from
   `activeIncident.startingTimestamp`, never from `lastCheckIn` — measuring from
@@ -162,7 +188,7 @@
   moves the window with the save and not one pass later. Every other
   cadence-following footer reads its cadence at render time, so a save already
   moves it: Containers (2.5 cycles, never under 30s; the shared 150s floor would
-  loosen the 10s default five-fold, #633), Azure Cost (cadence + 1h) and the plan limits (twice the
+  loosen the 10s default five-fold, #633), Azure Cost (cadence + 1h), Actions billing (1.5 cycles, per half) and the plan limits (twice the
   cadence). Sentry Crons and the metered Usage providers (Neon, Sentry, Vercel)
   read it at render time too, each its own (`PanelInterval::Crons` and
   `UsageProviders`): the window is 1.5 cycles

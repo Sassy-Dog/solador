@@ -14,6 +14,7 @@
     openai: "openaiTitle",
     usage: "usageTitle",
     azureCost: "azureTitle",
+    actionsBilling: "actionsBillingTitle",
     services: "servicesTitle",
     sentryCrons: "cronsTitle",
     openclawAgents: "openclawTitle",

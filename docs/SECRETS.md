@@ -7,7 +7,7 @@ Two different things get called "secrets" below, and keeping them apart is the
 whole point of this document:
 
 - **Runtime credentials** — the tokens *you* give the app so it can read your
-  GitHub, Neon, Sentry, Vercel and Azure accounts. These live in your OS
+  GitHub (the Repos and Runners token, and a separate billing token), Neon, Sentry, Vercel and Azure accounts. These live in your OS
   credential store. The app never writes them to disk.
 - **Build-time configuration** — optional environment variables the
   maintainer's *release* build uses. Everything else builds without them.
@@ -21,6 +21,7 @@ Credential Manager on Windows), never in `store.json`.
 |---|---|---|
 | GitHub fine-grained PAT | Repos, Runners | read: Actions, Contents, Issues, Pull requests; org: Projects (READY column), Self-hosted runners |
 | Per-host bearer token | Hosts, Containers | whatever the agent was installed with |
+| GitHub fine-grained PAT, **billing** (`actions_billing_token`) | Actions billing | resource owner the organization; Organization permissions: **Administration: read** only; created by an org admin. Its own item: the Repos / Runners token above never carries it |
 | Neon API key | Usage | organization-scoped |
 | Sentry auth token | Usage, Sentry Crons | `org:read` only |
 | Vercel API token | Usage | read |

@@ -1535,6 +1535,7 @@ mod tests {
             sentry_usage_enabled: true,
             sentry_crons_enabled: false,
             vercel_team_id: "team_fixture".into(),
+            actions_billing_org: "org-fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             // Flipped off the default so the round trip proves the field
             // persists rather than reappearing from `Default`.

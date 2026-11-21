@@ -40,6 +40,8 @@ solador-usage = { path = "../../crates/usage" }
 # The Azure Cost panel's reader — the SAS blob transport, the CSV fold, and the
 # fingerprint cache that keeps an unchanged export free.
 solador-azurecost = { path = "../../crates/azurecost" }
+# The GitHub org billing reader behind the Actions billing tile; app-only.
+solador-actionsbilling = { path = "../../crates/actionsbilling" }
 # The OpenClaw panel's gateway client: WS protocol v3, the Ed25519 device
 # identity, and the frame→snapshot reducer. Default features (`ws`) on, because
 # this crate is the one consumer that actually opens the socket.

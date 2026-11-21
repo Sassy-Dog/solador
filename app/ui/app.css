@@ -567,7 +567,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 }
 .pv-message { font-size:11px; color:var(--muted); margin:0; }
 .pv-divider { border:0; border-top:1px solid var(--line); margin:0; width:100%; }
-.pv-note { font-size:11px; color:var(--muted); }
+.pv-note { font-size:11px; color:var(--muted); margin:0; }
 .pv-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 /* A named breakdown line (a project, a resource group): dot, name, figure. */
 .pv-item { display:flex; align-items:center; gap:7px; min-width:0; }
@@ -640,21 +640,25 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    cost stack and the top-N lists. Pure CSS, so a resize re-splits it without
    waiting out the panel's own 10s poll, and the DOM is identical either way.
    `align-items:start` keeps the shorter side short. */
-#azureBody {
+#azureBody, #actionsBillingBody {
   display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
   gap:10px 24px; align-items:start;
 }
 .az-main { display:flex; flex-direction:column; gap:10px; min-width:0; }
 /* The same hole on this panel: a payload with a headline but no breakdowns
    leaves one grid item, which takes both tracks instead of half the card. */
-#azureBody > .az-main:last-child { grid-column: 1 / -1; }
+#azureBody > .az-main:last-child,
+#actionsBillingBody > .az-main:last-child { grid-column: 1 / -1; }
 /* A message names a state of the whole panel, so it spans the split. */
-#azureBody > .pv-message { grid-column: 1 / -1; }
+#azureBody > .pv-message,
+#actionsBillingBody > .pv-message { grid-column: 1 / -1; }
 /* The rule between the costs and the breakdowns: it separates them when they
    are stacked, and there is nothing for it to separate once they sit side by
    side — the gutter does that job. */
-#azureBody > .pv-divider { grid-column: 1 / -1; }
-#azurePanel[data-cols="2"] #azureBody > .pv-divider { display:none; }
+#azureBody > .pv-divider,
+#actionsBillingBody > .pv-divider { grid-column: 1 / -1; }
+#azurePanel[data-cols="2"] #azureBody > .pv-divider,
+#actionsBillingPanel[data-cols="2"] #actionsBillingBody > .pv-divider { display:none; }
 
 /* ---- OpenClaw ----------------------------------------------------------
    Per-agent rows, a cron line, a wrapping row of channel dots, and the pairing
@@ -911,7 +915,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   align-content:start;
 }
 .panel-body > * { flex-shrink:0; }
-#usageBody, #anthropicBody, #openaiBody, #azureBody, #openclawBody { min-height:300px; }
+#usageBody, #anthropicBody, #openaiBody, #azureBody, #actionsBillingBody, #openclawBody { min-height:300px; }
 #reposHealth { height:15px; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #reposHealth[hidden] { display:block !important; visibility:hidden; }
 .svc-state { width:18ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
