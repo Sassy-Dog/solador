@@ -4338,14 +4338,17 @@ fn actions_billing(
     tile: Option<String>,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
+    // Only a tile's Full view names its tile (`tileArgs` in dashboard.js), so a
+    // read with one is the one place the daily trend is built (#771).
+    let full_view = tile.is_some();
     scope_to_tile(&state, "actionsBilling", tile.as_deref(), || {
-        actions_billing_unscoped(&state)
+        actions_billing::for_read(actions_billing_unscoped(&state), full_view)
     })
 }
 
 /// [`actions_billing`] without a tile: the whole source, as the dashboard reads
-/// it. The cadence is read at render time, like Azure's, so a save re-dates the
-/// card in the same response.
+/// it (which paints no trend). The cadence is read at render time, like Azure's,
+/// so a save re-dates the card in the same response.
 fn actions_billing_unscoped(state: &App) -> Value {
     let cadence_secs = panel_interval(&state.store, PanelInterval::ActionsBilling).as_secs();
     // The Billing alerts are read here, at view time, and the store lock is
@@ -7525,6 +7528,8 @@ fn run_dump(args: &[String]) -> bool {
             actions_billing::Fixture::Spike
         } else if args.iter().any(|arg| arg == "--macos-on-self-hosted") {
             actions_billing::Fixture::MacosOnSelfHosted
+        } else if args.iter().any(|arg| arg == "--first-day") {
+            actions_billing::Fixture::FirstDay
         } else {
             actions_billing::Fixture::Measured
         };
@@ -8476,6 +8481,35 @@ mod tests {
                 "{name} reaches a banner path"
             );
         }
+    }
+
+    /// The daily trend (#771) is built for a tile's Full view alone: the
+    /// dashboard's read and the panel's read without a tile carry none of it.
+    #[test]
+    fn the_daily_trend_is_only_in_the_full_views_read() {
+        let (_dir, _rt, app) = test_app_over(Silent);
+        *app.actions_billing.lock().unwrap() =
+            actions_billing::fixture_state(actions_billing::Fixture::Measured, panel::now_unix());
+        let whole = actions_billing_unscoped(&app);
+        let overview = actions_billing::for_read(whole.clone(), false);
+        assert!(overview["trend"].is_null() && overview["trendNote"].is_null());
+        assert!(!overview["headline"].is_null());
+        let full = actions_billing::for_read(whole, true);
+        assert_eq!(full["trend"]["label"], "HOSTED MINUTES PER DAY");
+        assert_eq!(full["headline"], overview["headline"]);
+    }
+
+    /// The command hands `for_read` whether a tile was named, which only a
+    /// tile's Full view does (`tileArgs` in dashboard.js).
+    #[test]
+    fn the_actions_billing_command_keeps_the_trend_only_for_a_named_tile() {
+        let whole = include_str!("main.rs").replace("\r\n", "\n");
+        let start = whole.find("\nfn actions_billing(").unwrap();
+        let body = &whole[start..start + whole[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("let full_view = tile.is_some();"));
+        assert!(
+            body.contains("actions_billing::for_read(actions_billing_unscoped(&state), full_view)")
+        );
     }
 
     /// Org A's figures, then the settings name org B (or none) and the keychain

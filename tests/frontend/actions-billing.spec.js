@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
+import { gotoTileFull, lastArgs, openTileFull, stubTileIpc, tileIdFor } from "./tile-full.js";
 
 // The Actions billing panel paints what the `actions_billing` command decided
 // and nothing else: the thresholds, the money and the minutes are Rust's, and
@@ -300,4 +300,97 @@ test("a warning costs the card no height, however long it is", async ({ page, ba
   const after = await panel.boundingBox();
   expect(after.height).toBeCloseTo(before.height, 1);
   expect(after.width).toBeCloseTo(before.width, 1);
+});
+
+// The daily hosted-minutes trend (#771). The series, its range, its caption and
+// the sentence for the 1st of a month are Rust's; the page draws the series
+// with the host sparkline painter and computes nothing.
+
+const trend = (page) => page.locator('#actionsBillingBody [data-section="trend"]');
+
+/** The y of each point of the trend's polyline (0 top, 100 bottom). Read inside
+ *  `expect.poll`: the 10 s read may replace the node between two statements. */
+const trendYs = async (page) => {
+  const points = await trend(page).locator(".plot svg polyline").getAttribute("points", { timeout: 1000 }).catch(() => "");
+  return points ? points.split(" ").map((pt) => Number(pt.split(",")[1])) : [];
+};
+
+test("the Full view draws one point per day, 1st through the newest, with Rust's label and caption (#771)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  expect(p.trend.values.length).toBeGreaterThan(2);
+  expect(p.trend.values, "the fixture holds a measured zero day").toContain(0);
+  await expect(trend(page).locator(".lbl")).toHaveText(p.trend.label);
+  await expect(trend(page).locator(".pv-note")).toHaveText(p.trend.caption);
+  await expect(trend(page).locator(".plot svg")).toBeVisible();
+  await expect.poll(async () => (await trendYs(page)).length).toBe(p.trend.values.length);
+  // No sentence beside a line.
+  await expect(page.locator('#actionsBillingBody [data-section="trend-note"]')).toHaveCount(0);
+});
+
+test("a day with no items is drawn at the floor of the range, and the peak at the top (#771)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  const zero = p.trend.values.indexOf(0);
+  const peak = p.trend.values.indexOf(p.trend.hi);
+  expect(zero).toBeGreaterThanOrEqual(0);
+  expect(peak).toBeGreaterThanOrEqual(0);
+  await expect(trend(page).locator(".plot svg polyline")).toBeVisible();
+  // The painter's y runs 0 (top) to 100 (bottom): lo is the bottom.
+  await expect.poll(async () => (await trendYs(page))[zero]).toBe(100);
+  await expect.poll(async () => (await trendYs(page))[peak]).toBe(0);
+});
+
+test("the overview tile draws no chart; the trend is the Full view's alone (#771)", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const payload = await fixture(baseURL, "sample-actions-billing.json");
+  // Rust builds the trend for a read that names a tile (the Full view's) and
+  // for no other, so the stub answers only that read with the fixture.
+  const tileId = tileIdFor("actionsBilling");
+  await stubTileIpc(page, baseURL, { source: "actionsBilling", cockpit, answers: { actions_billing: { __byTile: { [tileId]: payload } } } });
+  await page.goto("/index.html");
+  const tile = page.locator(`[data-tile="${tileId}"]`);
+  await expect(tile).toBeVisible();
+  await expect(tile.locator("svg, .plot")).toHaveCount(0);
+  await expect(page.locator("#actionsBillingBody .plot")).toHaveCount(0);
+  await expect(page.locator("#actionsBillingPanel")).toBeHidden();
+
+  await openTileFull(page, "actionsBilling");
+  await expect(trend(page).locator(".plot svg polyline")).toBeVisible();
+  expect(await lastArgs(page, "actions_billing")).toEqual({ tile: tileId });
+  await expect(tile.locator("svg, .plot")).toHaveCount(0);
+});
+
+test("on the 1st of a month the Full view says the trend starts on the 2nd and draws no line (#771)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL, "sample-actions-billing-first-day.json");
+  expect(p.trend).toBeNull();
+  const note = page.locator('#actionsBillingBody [data-section="trend-note"]');
+  await expect(note).toHaveText(p.trendNote.text);
+  await expect(note).toHaveCSS("color", rgb(p.trendNote.color));
+  await expect(page.locator("#actionsBillingBody .plot")).toHaveCount(0);
+  await expect(page.locator("#actionsBillingBody svg")).toHaveCount(0);
+});
+
+test("a failed read, a month with no usage and an unset panel draw no chart and no trend sentence (#771)", async ({ page, baseURL }) => {
+  for (const name of ["error", "empty", "unconfigured"]) {
+    const p = await gotoPanel(page, baseURL, `sample-actions-billing-${name}.json`);
+    expect(p.trend, name).toBeNull();
+    expect(p.trendNote, name).toBeNull();
+    await expect(page.locator("#actionsBillingBody .pv-message"), name).toBeVisible();
+    await expect(page.locator("#actionsBillingBody .plot"), name).toHaveCount(0);
+    await expect(page.locator('#actionsBillingBody [data-section="trend-note"]'), name).toHaveCount(0);
+  }
+});
+
+test("the renderer draws the series it is given and invents no day (#771)", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  // Three days, the middle one the peak: nothing here pads, sorts or fills.
+  await page.evaluate(
+    (vm) =>
+      window.__SOLADOR_ACTIONS_BILLING_TEST__.render({
+        ...vm,
+        trend: { ...vm.trend, values: [0, 5, 0], lo: 0, hi: 5, caption: "any words Rust chose" },
+      }),
+    p
+  );
+  await expect(trend(page).locator(".pv-note")).toHaveText("any words Rust chose");
+  await expect.poll(() => trendYs(page)).toEqual([100, 0, 100]);
 });

@@ -481,3 +481,97 @@ async fn a_late_month_never_asks_for_the_previous_month() {
     assert_eq!(asked.len(), 1);
     assert!(asked[0].contains("month=11"));
 }
+// MARK: - Daily trend (#771)
+
+fn trend(hosted: &HostedDays, through: NaiveDate) -> (NaiveDate, NaiveDate, Vec<f64>) {
+    match hosted.daily_total(through) {
+        DailyTrend::Series {
+            first,
+            last,
+            minutes,
+        } => (first, last, minutes),
+        DailyTrend::StartsOnSecond => panic!("expected a series"),
+    }
+}
+
+#[test]
+fn the_trend_sums_every_repo_per_day_from_the_first_through_the_newest_day() {
+    let hosted = HostedDays::from_items(&[
+        linux(1, 100.0, "repo-a"),
+        linux(1, 50.0, "repo-b"),
+        linux(2, 30.0, "repo-a"),
+        item(
+            "2026-11-02T00:00:00Z",
+            "Actions macOS 3-core",
+            "Minutes",
+            5.0,
+            "repo-b",
+        ),
+        linux(3, 7.0, "repo-b"),
+    ]);
+    let (first, last, minutes) = trend(&hosted, day(2026, 11, 3));
+    assert_eq!(first, day(2026, 11, 1));
+    assert_eq!(last, day(2026, 11, 3));
+    assert_eq!(minutes, [150.0, 35.0, 7.0]);
+}
+
+#[test]
+fn a_day_with_no_items_is_a_measured_zero() {
+    let hosted = HostedDays::from_items(&[linux(1, 10.0, "repo-a"), linux(4, 20.0, "repo-a")]);
+    let (_, _, minutes) = trend(&hosted, day(2026, 11, 4));
+    assert_eq!(minutes, [10.0, 0.0, 0.0, 20.0]);
+}
+
+#[test]
+fn days_after_the_newest_day_are_not_in_the_series() {
+    // Items past `through` cannot come from the report, but the series stops at
+    // `through` regardless: no point and no zero beyond it.
+    let hosted = HostedDays::from_items(&[linux(1, 10.0, "repo-a"), linux(9, 99.0, "repo-a")]);
+    let (_, last, minutes) = trend(&hosted, day(2026, 11, 3));
+    assert_eq!(last, day(2026, 11, 3));
+    assert_eq!(minutes, [10.0, 0.0, 0.0]);
+}
+
+#[test]
+fn storage_and_other_products_never_enter_the_trend() {
+    let hosted = HostedDays::from_items(&[
+        item(
+            "2026-11-02T00:00:00Z",
+            "Actions storage",
+            "GigabyteHours",
+            50_000.0,
+            "repo-a",
+        ),
+        UsageItem {
+            product: "packages".into(),
+            ..linux(2, 50_000.0, "repo-a")
+        },
+        linux(1, 1.0, "repo-a"),
+    ]);
+    let (_, _, minutes) = trend(&hosted, day(2026, 11, 2));
+    assert_eq!(minutes, [1.0, 0.0]);
+}
+
+#[test]
+fn the_second_is_the_first_day_with_a_line() {
+    let hosted = HostedDays::from_items(&[linux(1, 10.0, "repo-a")]);
+    assert_eq!(
+        hosted.daily_total(day(2026, 11, 1)),
+        DailyTrend::StartsOnSecond
+    );
+    let (_, _, minutes) = trend(&hosted, day(2026, 11, 2));
+    assert_eq!(minutes.len(), 2);
+}
+
+#[test]
+fn an_empty_fold_through_a_later_day_is_all_measured_zeros() {
+    let (_, _, minutes) = trend(&HostedDays::default(), day(2026, 11, 3));
+    assert_eq!(minutes, [0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn the_series_length_is_the_day_of_the_month() {
+    let (first, _, minutes) = trend(&HostedDays::default(), day(2026, 2, 28));
+    assert_eq!(first, day(2026, 2, 1));
+    assert_eq!(minutes.len(), 28);
+}

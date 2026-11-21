@@ -790,3 +790,75 @@ fn a_refused_save_says_why_and_changes_nothing() {
     let reopened = store::Store::open_in(dir.path(), false).unwrap();
     assert_eq!(reopened.settings().actions_billing_alerts, before);
 }
+// MARK: - Daily trend (#771)
+
+fn trend_values(p: &Value) -> Vec<f64> {
+    p["trend"]["values"]
+        .as_array()
+        .expect("a trend series")
+        .iter()
+        .map(|v| v.as_f64().expect("a number"))
+        .collect()
+}
+
+#[test]
+fn the_measured_fixture_carries_a_trend_from_the_first_through_the_newest_day_with_a_zero_day() {
+    let p = payload(Fixture::Measured);
+    let values = trend_values(&p);
+    // Nov 1 through Nov 14, the newest day in the report; Nov 9 had no item.
+    assert_eq!(values.len(), 14);
+    assert!(values[8].abs() < 1e-9, "the day with no items is a 0");
+    assert_eq!(values.iter().filter(|v| **v > 0.0).count(), 13);
+    assert_eq!(p["trend"]["label"], "HOSTED MINUTES PER DAY");
+    assert_eq!(p["trend"]["first"], "Nov 1");
+    assert_eq!(p["trend"]["last"], "Nov 14");
+    assert_eq!(p["trendNote"], Value::Null);
+}
+
+#[test]
+fn the_trend_range_is_zero_to_the_series_maximum() {
+    let p = payload(Fixture::Measured);
+    let peak = trend_values(&p).into_iter().fold(0.0_f64, f64::max);
+    assert!(peak > 0.0);
+    assert!(p["trend"]["lo"].as_f64().unwrap().abs() < 1e-9);
+    assert!((p["trend"]["hi"].as_f64().unwrap() - peak).abs() < 1e-9);
+    assert_eq!(
+        p["trend"]["caption"],
+        format!("Nov 1 \u{2013} Nov 14 \u{b7} peak {}", minutes(peak))
+    );
+    assert!(p["trend"]["color"].as_str().unwrap().starts_with('#'));
+}
+
+#[test]
+fn the_trend_is_the_sum_of_the_repo_days_and_leaves_storage_out() {
+    let p = payload(Fixture::Spike);
+    let values = trend_values(&p);
+    // Nov 1..13 are 300 + 200 + 90 each; Nov 14 is 220 + 1,500 + 80.
+    assert_eq!(values.len(), 14);
+    assert!(values[..13].iter().all(|v| (v - 590.0).abs() < 1e-9));
+    assert!((values[13] - 1_800.0).abs() < 1e-9);
+}
+
+#[test]
+fn on_the_first_of_a_month_there_is_no_line_and_a_sentence_instead() {
+    let p = payload(Fixture::FirstDay);
+    assert_eq!(p["trend"], Value::Null);
+    assert_eq!(p["trendNote"]["text"], "the daily trend starts on the 2nd");
+    assert_eq!(p["trendNote"]["color"], color::hex(color::MUTED));
+}
+
+#[test]
+fn a_failed_read_no_usage_or_no_setup_has_no_trend_and_no_sentence() {
+    for kind in [Fixture::Failed, Fixture::Empty, Fixture::Unconfigured] {
+        let p = payload(kind);
+        assert_eq!(p["trend"], Value::Null, "{kind:?}");
+        assert_eq!(p["trendNote"], Value::Null, "{kind:?}");
+    }
+}
+
+#[test]
+fn the_trend_adds_no_overview_row_and_the_fixtures_raise_no_rule() {
+    // Rows are what the overview tile is made of; the trend is not one.
+    assert!(rows(&payload(Fixture::Measured)).is_empty());
+    assert!(rows(&payload(Fixture::FirstDay)).is_empty());
+}

@@ -101,6 +101,7 @@ app/ui/sample-actions-billing-over-budget.json
 app/ui/sample-actions-billing-zero-budget-over.json
 app/ui/sample-actions-billing-spike.json
 app/ui/sample-actions-billing-macos-on-self-hosted.json
+app/ui/sample-actions-billing-first-day.json
 app/ui/sample-services.json
 app/ui/sample-services-empty.json
 app/ui/sample-services-stale.json

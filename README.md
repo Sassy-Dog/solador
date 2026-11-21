@@ -95,7 +95,7 @@ carries one splits, and Detail and Full show every runner's labels.
 | **OpenAI** | Codex's plan limits and your organization's API spend this month, each only if you set it up |
 | **Usage** | Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
-| **Actions billing** | your GitHub organization's hosted Actions minutes and net spend this month, by SKU and by repo, against its Actions budget, flagging a repo's daily spike and hosted macOS minutes on repos you list as self-hosted, and how far behind the report is |
+| **Actions billing** | your GitHub organization's hosted Actions minutes and net spend this month, by SKU and by repo, against its Actions budget, flagging a repo's daily spike and hosted macOS minutes on repos you list as self-hosted, a day-by-day hosted-minutes line in its Full view, and how far behind the report is |
 | **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
 | **Service Health** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
 | **OpenClaw** | an [OpenClaw](crates/openclaw/) agent farm, over a live WebSocket — the one panel that is event-driven rather than polled |

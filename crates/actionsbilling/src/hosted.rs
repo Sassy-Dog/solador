@@ -86,6 +86,49 @@ impl HostedDays {
     }
 }
 
+/// The month's total hosted minutes per day, for the Full view's trend (#771).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DailyTrend {
+    /// One value per day from `first` (the 1st) through `last` (the report's
+    /// newest day), inclusive. A day with no item is a measured 0; no day after
+    /// `last` is in it.
+    Series {
+        first: NaiveDate,
+        last: NaiveDate,
+        minutes: Vec<f64>,
+    },
+    /// The report's newest day is the 1st: a line needs two days, so none is
+    /// drawn and the day it starts on is the 2nd.
+    StartsOnSecond,
+}
+
+impl HostedDays {
+    /// Total hosted minutes per day, every repo summed, from the 1st of
+    /// `through`'s month through `through`. Storage is never in the fold, so it
+    /// never counts. `through` is the report's own newest day, an argument and
+    /// never a clock.
+    #[must_use]
+    pub fn daily_total(&self, through: NaiveDate) -> DailyTrend {
+        let first = month_start(through);
+        let days = through.day();
+        if days < 2 {
+            return DailyTrend::StartsOnSecond;
+        }
+        let minutes = (0..u64::from(days))
+            .map(|offset| {
+                first
+                    .checked_add_days(Days::new(offset))
+                    .map_or(0.0, |day| self.repos_on(day).map(|(_, m)| m.hosted).sum())
+            })
+            .collect();
+        DailyTrend::Series {
+            first,
+            last: through,
+            minutes,
+        }
+    }
+}
+
 /// What the previous month's read came to, for a window that crosses a month
 /// start. Its own state beside the current month's, so a failure here never
 /// hides that month or the budget.

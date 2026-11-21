@@ -3889,6 +3889,22 @@ mod tests {
         assert_eq!(source["billingAlerts"]["heading"], "Billing alerts");
     }
 
+    /// The daily trend (#771) is the Full view's alone: the overview tile and
+    /// its Detail are built from the source's rows, and no row carries it.
+    #[test]
+    fn the_daily_trend_is_in_no_overview_row() {
+        for fixture in [
+            crate::actions_billing::Fixture::Measured,
+            crate::actions_billing::Fixture::FirstDay,
+        ] {
+            let payload = crate::dump_actions_billing(fixture, false);
+            let source = source_view("actionsBilling", "Actions billing", &payload);
+            let text = source.to_string();
+            assert!(!text.contains("PER DAY"), "{fixture:?}");
+            assert!(!text.contains("trend"), "{fixture:?}");
+        }
+    }
+
     #[test]
     fn an_unjudged_billing_alert_rule_is_listed_but_flags_nothing() {
         let payload = json!({"alerts":[{"id":"spike-unknown","label":"SPIKE CHECK","value":"\u{2014}",

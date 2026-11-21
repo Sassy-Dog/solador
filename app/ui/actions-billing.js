@@ -104,6 +104,23 @@ function alertNode(alert) {
   return el;
 }
 
+/** The daily hosted-minutes trend's section: Rust's label and caption around an
+ *  empty `.plot` that `spark()` fills once the section is in the page (it
+ *  measures the node). The series, its range and its dates are Rust's; the
+ *  length of the series is the painter's capacity. */
+function trendNode(trend) {
+  const el = node("div", "pv-section az-trend");
+  el.dataset.section = "trend";
+  el.appendChild(node("div", "lbl", trend.label));
+  const plot = node("div", "plot");
+  plot.dataset.h = "56";
+  el.appendChild(plot);
+  const caption = node("p", "pv-note", trend.caption);
+  caption.style.color = trend.captionColor;
+  el.appendChild(caption);
+  return el;
+}
+
 /** A coloured one-line sentence: the budget note and the report's lag. */
 function noteNode(note, section) {
   const el = node("p", "pv-note", note.text);
@@ -163,6 +180,12 @@ function renderActionsBilling(payload) {
 
   for (const alert of payload.alerts || []) main.appendChild(alertNode(alert));
 
+  // The daily trend (#771): the Full view's alone. This panel is only on screen
+  // there, and Rust leaves `trend` and `trendNote` null for a failed read, a
+  // month with no usage and a tile that picked rows.
+  if (payload.trend) main.appendChild(trendNode(payload.trend));
+  else if (payload.trendNote) main.appendChild(noteNode(payload.trendNote, "trend-note"));
+
   if (main.childElementCount) children.push(main);
 
   const columns = payload.breakdowns || [];
@@ -173,7 +196,15 @@ function renderActionsBilling(payload) {
     children.push(grid);
   }
 
-  $b("actionsBillingBody").replaceChildren(...children);
+  const body = $b("actionsBillingBody");
+  // The painter keeps each chart it was given; drop the ones this repaint is
+  // about to discard.
+  forgetCharts(body);
+  body.replaceChildren(...children);
+  if (payload.trend) {
+    const t = payload.trend;
+    spark(body.querySelector('[data-section="trend"] .plot'), [{ values: t.values, color: t.color }], t.lo, t.hi, t.values.length);
+  }
 
   // The poller's warning, in the header so a degrading tile does not grow. A
   // healthy, current panel renders none.
