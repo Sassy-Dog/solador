@@ -528,9 +528,9 @@ fn an_org_only_change_drops_the_old_orgs_figures_before_the_credential_read() {
     state.note_org("org-b");
     state.unreadable("the credential store would not answer");
     let p = view(&state, CADENCE, NOW);
-    assert!(p["headline"].is_null() && p["budget"].is_null(), "{p}");
+    assert!(p["headline"].is_null() && p["budget"].is_null());
     assert!(p["breakdowns"].as_array().unwrap().is_empty());
-    assert!(!p.to_string().contains("$95.00"), "{p}");
+    assert!(!p.to_string().contains("$95.00"));
     // Nothing was observed about the credential, so the keychain's refusal is
     // what the tile says, never the setup instruction.
     assert_eq!(

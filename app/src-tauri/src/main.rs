@@ -8397,7 +8397,7 @@ mod tests {
             let p = actions_billing_unscoped(&app);
             assert!(
                 p["headline"].is_null() && p["budget"].is_null(),
-                "{next_org:?}: {p}"
+                "{next_org:?}"
             );
             assert_eq!(
                 p["message"]["text"],
