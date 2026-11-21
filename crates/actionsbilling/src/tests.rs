@@ -492,19 +492,77 @@ fn messages_come_from_the_vocabulary() {
 async fn the_token_never_appears_in_debug_or_error_output() {
     let server = MockServer::start().await;
     let c = client(&server);
-    assert!(!format!("{c:?}").contains(TOKEN));
-    assert!(!format!("{c:#?}").contains(TOKEN));
+    assert!(
+        !format!("{c:?}").contains(TOKEN),
+        "client Debug leaked the token"
+    );
+    assert!(
+        !format!("{c:#?}").contains(TOKEN),
+        "client pretty Debug leaked the token"
+    );
 
     // A server that echoes the token back must not reach any error output.
     for status in [401u16, 403, 404, 429, 500, 418] {
         let err = status_error(status, None, TOKEN).await;
-        for text in [format!("{err}"), format!("{err:?}"), err.user_message()] {
-            assert!(!text.contains(TOKEN), "HTTP {status}: {text}");
+        for (which, text) in [
+            ("Display", format!("{err}")),
+            ("Debug", format!("{err:?}")),
+            ("user message", err.user_message()),
+        ] {
+            // The message names the output, never the output itself.
+            assert!(
+                !text.contains(TOKEN),
+                "HTTP {status}: {which} leaked the token"
+            );
         }
     }
     let dead = ActionsBillingClient::with_base_url("http://127.0.0.1:1", TOKEN).expect("c");
     let err = dead.usage_items("o", 2026, 11).await.expect_err("refused");
-    assert!(!format!("{err} {err:?} {}", err.user_message()).contains(TOKEN));
+    assert!(
+        !format!("{err} {err:?} {}", err.user_message()).contains(TOKEN),
+        "an unreachable error leaked the token"
+    );
     let truncated = ActionsBillingError::BudgetsTruncated;
-    assert!(!format!("{truncated:?}").contains(TOKEN));
+    assert!(
+        !format!("{truncated:?}").contains(TOKEN),
+        "BudgetsTruncated Debug leaked the token"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_key_the_summary_decides_on_is_undecodable() {
+    let mut item: serde_json::Value = serde_json::from_str(USAGE).unwrap();
+    item["usageItems"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("unitType");
+    let mut no_prevent: serde_json::Value = serde_json::from_str(BUDGETS).unwrap();
+    no_prevent["budgets"][2]
+        .as_object_mut()
+        .unwrap()
+        .remove("prevent_further_usage");
+    let mut no_next: serde_json::Value = serde_json::from_str(BUDGETS).unwrap();
+    no_next.as_object_mut().unwrap().remove("has_next_page");
+
+    let server = MockServer::start().await;
+    let base = "/organizations/example-org/settings/billing";
+    Mock::given(path(format!("{base}/usage")))
+        .respond_with(json(&item.to_string()))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        client(&server).usage_items("example-org", 2026, 11).await,
+        Err(ActionsBillingError::Undecodable)
+    );
+    for body in [no_prevent, no_next] {
+        let server = MockServer::start().await;
+        Mock::given(path(format!("{base}/budgets")))
+            .respond_with(json(&body.to_string()))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            client(&server).budgets("example-org").await,
+            Err(ActionsBillingError::Undecodable)
+        );
+    }
 }

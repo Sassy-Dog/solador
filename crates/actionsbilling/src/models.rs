@@ -16,9 +16,8 @@ pub struct UsageItem {
     /// RFC 3339; the newest items carry a time.
     pub date: DateTime<Utc>,
     pub product: String,
-    #[serde(default)]
     pub sku: String,
-    #[serde(rename = "unitType", default)]
+    #[serde(rename = "unitType")]
     pub unit_type: String,
     pub quantity: f64,
     #[serde(rename = "grossAmount")]
@@ -36,7 +35,6 @@ pub struct UsageItem {
 #[derive(Debug, Deserialize)]
 pub(crate) struct BudgetsPage {
     pub(crate) budgets: Vec<Budget>,
-    #[serde(default)]
     pub(crate) has_next_page: bool,
 }
 
@@ -46,14 +44,11 @@ pub struct Budget {
     pub id: serde_json::Value,
     #[serde(default)]
     pub budget_type: String,
-    #[serde(default)]
     pub budget_scope: String,
     #[serde(default)]
     pub budget_entity_name: String,
-    #[serde(default)]
     pub budget_product_sku: String,
     pub budget_amount: f64,
-    #[serde(default)]
     pub prevent_further_usage: bool,
 }
 

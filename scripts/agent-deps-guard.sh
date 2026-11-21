@@ -56,6 +56,12 @@ if grep -q '^solador-subscription ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves solador-subscription — that crate reads Claude Code's and Codex's saved sign-ins for the cockpit's Usage panel; the agent must never carry it"
     exit 1
 fi
+# The org billing reader (crates/actionsbilling, #768) holds an org-admin
+# billing token for a cockpit tile; a daemon on a host has no business with it.
+if grep -q '^solador-actionsbilling ' <<< "$agent_tree"; then
+    echo "::error::agent/ resolves solador-actionsbilling — that crate reads GitHub org billing with an org-admin token for the cockpit's Actions billing tile; the agent must never carry it"
+    exit 1
+fi
 # The other absence AGENTS.md names (its Project Structure section and
 # docs/PROJECT-STRUCTURE.md), asserted the same way now that the
 # agent has an HTTP stack and a failure enum that make "report a failed
@@ -79,4 +85,4 @@ if grep -qE '^(aws-lc-rs|aws-lc-sys) ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves aws-lc-rs or aws-lc-sys — agent/Cargo.toml pins rcgen/rustls/axum-server onto the ring crypto provider specifically to avoid this second backend and its C/cmake build; check that pin rather than adding a workaround here"
     exit 1
 fi
-echo "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-hostsetup, solador-subscription, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."
+echo "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-hostsetup, solador-subscription, solador-actionsbilling, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."

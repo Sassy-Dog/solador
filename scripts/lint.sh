@@ -174,12 +174,12 @@ fi
 # job runs; see its header for why it lists the tree rather than asking
 # `cargo tree -i`.
 if command_exists cargo; then
-    log_info "cargo tree: agent/ must not resolve crates/updatefeed, crates/agentrelease, crates/hostsetup or crates/subscription…"
+    log_info "cargo tree: agent/ must not resolve crates/updatefeed, crates/agentrelease, crates/hostsetup, crates/subscription or crates/actionsbilling…"
     if deps_out="$("$SCRIPT_DIR/agent-deps-guard.sh" 2>&1)"; then
-        log_success "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-hostsetup or solador-subscription"
+        log_success "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-hostsetup, solador-subscription or solador-actionsbilling"
     else
         echo "$deps_out"
-        log_error "agent/ resolves solador-updatefeed, solador-agentrelease, solador-hostsetup or solador-subscription, or cargo tree failed (see above)"
+        log_error "agent/ resolves solador-updatefeed, solador-agentrelease, solador-hostsetup, solador-subscription or solador-actionsbilling, or cargo tree failed (see above)"
         status=1
     fi
 fi

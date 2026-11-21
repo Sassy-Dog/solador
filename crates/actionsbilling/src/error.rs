@@ -13,9 +13,6 @@ const VENDOR: &str = "GitHub";
 /// Why a billing read produced nothing.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActionsBillingError {
-    /// The caller passed an empty token. Never reaches the network.
-    #[error("no GitHub billing token configured")]
-    MissingToken,
     /// 401: the token is missing, mistyped, expired or revoked.
     #[error("GitHub rejected the billing token")]
     Unauthorized,
@@ -53,7 +50,6 @@ impl ActionsBillingError {
     #[must_use]
     pub fn fault(&self) -> Fault {
         match self {
-            ActionsBillingError::MissingToken => Fault::NotConfigured,
             ActionsBillingError::Unauthorized | ActionsBillingError::Forbidden => {
                 Fault::CredentialRejected
             }

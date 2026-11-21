@@ -102,7 +102,7 @@ per-host daemon, `scripts/` the build and guard shell scripts behind `./dev`,
 `tests/frontend` the Playwright suite, `site/` solador.app, `docs/` the
 long-form docs. **Dependency edges that must not exist:** `agent/` never
 resolves `crates/updatefeed`, `crates/agentrelease`, `crates/hostsetup`,
-`crates/subscription`, `crates/crashreport` (asserted by
+`crates/subscription`, `crates/actionsbilling`, `crates/crashreport` (asserted by
 `scripts/agent-deps-guard.sh`). The per-crate descriptions are in
 `docs/PROJECT-STRUCTURE.md`. `.claude/` is untracked except
 `.claude/sassy-dog/<name>.md` (see Security).
