@@ -189,6 +189,26 @@
   minutes for that day are unknown; it flags nothing either. The
   multiple, the floor and the list are Configure → **Billing alerts**, shared by
   every Actions billing tile (`store::actions_billing_alerts`).
+  **The daily trend (#771)** is one line of the month's **total hosted minutes
+  per day**, drawn in the tile's **Full view only** with the host sparkline
+  painter (`spark()`); the overview tile and Detail show no chart. It sums every
+  `actions` SKU whose `unitType` is `Minutes` over every repo, from the same
+  per-repo, per-day fold the rules use (`HostedDays::daily_total`; storage never
+  counts, and there is no per-SKU split). The series runs from the **1st through
+  the `usage through` day, inclusive**: a day in that range with no item is a
+  measured **0**, and a day after it is not drawn at all (no point, no zero). With
+  fewer than 2 days (the newest day is the 1st) there is no line and the Full
+  view says `the daily trend starts on the 2nd`. A failed read, a month with no
+  Actions usage and the setup state have no chart and no sentence: the tile's own
+  message stands. Org-level items (no `repositoryName`) are counted in each
+  day's total, as the `HOSTED MINUTES` stat counts them, though they feed no
+  per-repo rule. A month whose minutes are all zero (storage only) keeps a flat
+  line at the floor with the caption `peak 0 min`: a measured zero is a value,
+  not a gap. The y range is `0` to the series maximum. The decision is
+  Rust's: the `actions_billing` command keeps `trend` and `trendNote` only in a
+  read that names a tile (which only the Full view sends) and nulls them in any
+  other, `tile_scope` drops them for a tile that picked rows (the trend is not
+  a row), no overview row carries them, and the JS only paints them.
   Setup (no token or organization) is a muted sentence naming Settings →
   Sources; a rejected token is the red `Fault` sentence and names Administration:
   Read and an org admin; a response missing a field the read decides on is

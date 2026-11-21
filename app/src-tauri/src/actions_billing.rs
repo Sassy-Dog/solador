@@ -59,8 +59,8 @@
 //! bar; an unmeasured spend paints the em dash. No ratio is ever formed.
 
 use actionsbilling::{
-    BudgetSpend, BudgetStatus, HostedDays, MonthRead, PreviousMonth, SpikeThresholds, Totals,
-    UsageSummary,
+    BudgetSpend, BudgetStatus, DailyTrend, HostedDays, MonthRead, PreviousMonth, SpikeThresholds,
+    Totals, UsageSummary,
 };
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use serde_json::{json, Value};
@@ -143,6 +143,77 @@ pub fn through(at: DateTime<Utc>) -> String {
 fn month_year((year, month): (i32, u32)) -> String {
     let name = MONTHS_LONG[(month.saturating_sub(1) as usize).min(11)];
     format!("{name} {year}")
+}
+
+/// What the trend is called wherever it is named.
+const TREND_LABEL: &str = "HOSTED MINUTES PER DAY";
+
+/// The sentence for a report whose newest day is the 1st: one day is not a line.
+pub const TREND_STARTS_ON_SECOND: &str = "the daily trend starts on the 2nd";
+
+/// `Nov 14`, in UTC like the report's own dates.
+fn month_day(day: NaiveDate) -> String {
+    format!(
+        "{} {}",
+        MONTHS_SHORT[(day.month0() as usize).min(11)],
+        day.day()
+    )
+}
+
+/// The Full view's daily hosted-minutes trend (#771), as the `(trend,
+/// trendNote)` pair: a line with its y range and caption, or the sentence that
+/// says why there is none. The series, the gaps and the range are decided in
+/// [`actionsbilling::hosted`]; this only words them. `lo` is 0 and `hi` the
+/// series maximum, so the painter needs nothing else.
+fn trend_view(hosted: &HostedDays, data_through: DateTime<Utc>) -> (Value, Value) {
+    match hosted.daily_total(data_through.date_naive()) {
+        DailyTrend::StartsOnSecond => (
+            Value::Null,
+            json!({
+                "text": TREND_STARTS_ON_SECOND,
+                "color": color::hex(color::MUTED),
+            }),
+        ),
+        DailyTrend::Series {
+            first,
+            last,
+            minutes: values,
+        } => {
+            let peak = values.iter().copied().fold(0.0_f64, f64::max);
+            (
+                json!({
+                    "label": TREND_LABEL,
+                    "values": values,
+                    "lo": 0.0,
+                    "hi": peak,
+                    "first": month_day(first),
+                    "last": month_day(last),
+                    "caption": format!(
+                        "{} \u{2013} {} \u{b7} peak {}",
+                        month_day(first),
+                        month_day(last),
+                        minutes(peak)
+                    ),
+                    "color": color::hex(color::GREEN),
+                    "captionColor": color::hex(color::MUTED),
+                }),
+                Value::Null,
+            )
+        }
+    }
+}
+
+/// The payload as the `actions_billing` command answers it: the daily trend
+/// (#771) stays only for a read that names a tile (the Full view's). A read that
+/// names none, such as the boot read, carries neither the line nor its sentence.
+/// The dashboard does not come through here; no row it builds carries the trend.
+#[must_use]
+pub fn for_read(mut payload: Value, full_view: bool) -> Value {
+    if !full_view {
+        payload["trend"] = Value::Null;
+        payload["trendNote"] = Value::Null;
+    }
+    payload
 }
 
 // MARK: - State
@@ -533,6 +604,8 @@ pub fn view(
         "budgetNote": Value::Null,
         "dataThrough": Value::Null,
         "alerts": Value::Array(vec![]),
+        "trend": Value::Null,
+        "trendNote": Value::Null,
         "billingAlerts": alerts_section(alerts),
         "breakdowns": Value::Array(vec![]),
         "footer": Value::Null,
@@ -677,6 +750,7 @@ pub fn view(
             }
             payload["breakdowns"] = json!(breakdowns);
             payload["alerts"] = json!(alert_rows(hosted, &state.previous, *data_through, alerts));
+            (payload["trend"], payload["trendNote"]) = trend_view(hosted, *data_through);
         }
     }
     payload
@@ -708,6 +782,9 @@ pub enum Fixture {
     /// A repo on the self-hosted list with hosted macOS minutes: a red
     /// `MACOS ON SELF-HOSTED` row.
     MacosOnSelfHosted,
+    /// The report's newest day is the 1st of the month: no line, and the
+    /// sentence that the trend starts on the 2nd.
+    FirstDay,
 }
 
 /// The fixture's month and the instant it was read, fixed so the file is
@@ -777,6 +854,58 @@ fn fixture_items(kind: Fixture) -> Vec<actionsbilling::UsageItem> {
     items
 }
 
+/// One invented Linux item for `repo` on Nov `day` (UTC) of the fixture month.
+fn linux_item(day: u32, hour: u32, quantity: f64, repo: &str) -> actionsbilling::UsageItem {
+    actionsbilling::UsageItem {
+        date: DateTime::parse_from_rfc3339(&format!("2023-11-{day:02}T{hour:02}:00:00Z"))
+            .expect("a valid instant")
+            .into(),
+        product: "actions".to_owned(),
+        sku: "Actions Linux".to_owned(),
+        unit_type: "Minutes".to_owned(),
+        quantity,
+        gross_amount: quantity * 0.008,
+        discount_amount: quantity * 0.002,
+        net_amount: quantity * 0.006,
+        repository_name: repo.to_owned(),
+    }
+}
+
+/// The daily minutes behind the `Measured` fixture's trend, Nov 1 through Nov
+/// 14, split over two repos. Nov 9 has no item at all, so the series holds a
+/// measured zero. The days sum to the fixture's 7,545 minutes, and none nears
+/// the spike floor, so no rule row appears. Every figure is invented.
+fn trend_items() -> Vec<actionsbilling::UsageItem> {
+    const DAILY: [f64; 14] = [
+        540.0, 610.0, 160.0, 120.0, 620.0, 700.0, 650.0, 590.0, 0.0, 630.0, 610.0, 680.0, 820.0,
+        815.0,
+    ];
+    let mut items = Vec::new();
+    for (index, minutes) in DAILY.iter().enumerate() {
+        if *minutes == 0.0 {
+            continue;
+        }
+        let day = u32::try_from(index).expect("14 days") + 1;
+        // The newest day is a few hours before the read, a lagging report.
+        let hour = if day == 14 { 19 } else { 0 };
+        items.push(linux_item(day, hour, minutes * 0.7, "gadget-api"));
+        // Nov 5's second share is an org-level item (no repository), which the
+        // line counts as the stat does.
+        let second = if day == 5 { "" } else { "pipe-fitting" };
+        items.push(linux_item(day, hour, minutes * 0.3, second));
+    }
+    items
+}
+
+/// The `FirstDay` fixture's usage: the report's newest day is Nov 1, so the
+/// series has one day and the trend has no line.
+fn first_day_items() -> Vec<actionsbilling::UsageItem> {
+    vec![
+        linux_item(1, 0, 40.0, "gadget-api"),
+        linux_item(1, 3, 25.0, "pipe-fitting"),
+    ]
+}
+
 /// A hand-made state for the offline fixtures. Every figure is invented.
 #[must_use]
 pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
@@ -814,7 +943,7 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
         top_repos,
         // 2023-11-14T19:00:00Z, three hours before the fixture's read.
         data_through: DateTime::from_timestamp(1_699_988_400, 0).expect("a valid instant"),
-        hosted: HostedDays::default(),
+        hosted: HostedDays::from_items(&trend_items()),
     };
     // 40.60 of a 45.00 budget is 90.2%: the amber step, not a flat green bar.
     let budget = BudgetStatus::Present {
@@ -865,6 +994,17 @@ pub fn fixture_state(kind: Fixture, at: u64) -> ActionsBillingState {
                 actionsbilling::summarize_usage(&fixture_items(kind)),
                 BudgetStatus::Absent,
             ),
+            at,
+        ),
+        // On the 1st the spike window reaches into October, which a real read
+        // fetches; it held nothing for these repos, so no rule row is unknown.
+        Fixture::FirstDay => state.record(
+            MonthRead {
+                period: FIXTURE_PERIOD,
+                previous: PreviousMonth::Read(HostedDays::default()),
+                usage: Ok(actionsbilling::summarize_usage(&first_day_items())),
+                budget: Ok(BudgetStatus::Absent),
+            },
             at,
         ),
         Fixture::Empty => state.record(ok(UsageSummary::NoUsage, BudgetStatus::Absent), at),

@@ -4338,14 +4338,25 @@ fn actions_billing(
     tile: Option<String>,
     state: tauri::State<'_, Arc<App>>,
 ) -> Result<Value, String> {
-    scope_to_tile(&state, "actionsBilling", tile.as_deref(), || {
-        actions_billing_unscoped(&state)
+    actions_billing_read(&state, tile.as_deref())
+}
+
+/// What the `actions_billing` command answers. Only a tile's Full view names
+/// its tile (`tileArgs` in dashboard.js), so a read with one is the one that
+/// keeps the daily trend (#771); `for_read` removes it from a read that names no
+/// tile, such as the boot read made before dashboard.js loads. `None` is not the
+/// overview's read: the overview never calls this command (its rows come from
+/// `actions_billing_unscoped`, and none carries the trend).
+fn actions_billing_read(state: &App, tile: Option<&str>) -> Result<Value, String> {
+    let full_view = tile.is_some();
+    scope_to_tile(state, "actionsBilling", tile, || {
+        actions_billing::for_read(actions_billing_unscoped(state), full_view)
     })
 }
 
 /// [`actions_billing`] without a tile: the whole source, as the dashboard reads
-/// it. The cadence is read at render time, like Azure's, so a save re-dates the
-/// card in the same response.
+/// it (which paints no trend). The cadence is read at render time, like Azure's,
+/// so a save re-dates the card in the same response.
 fn actions_billing_unscoped(state: &App) -> Value {
     let cadence_secs = panel_interval(&state.store, PanelInterval::ActionsBilling).as_secs();
     // The Billing alerts are read here, at view time, and the store lock is
@@ -7525,6 +7536,8 @@ fn run_dump(args: &[String]) -> bool {
             actions_billing::Fixture::Spike
         } else if args.iter().any(|arg| arg == "--macos-on-self-hosted") {
             actions_billing::Fixture::MacosOnSelfHosted
+        } else if args.iter().any(|arg| arg == "--first-day") {
+            actions_billing::Fixture::FirstDay
         } else {
             actions_billing::Fixture::Measured
         };
@@ -8476,6 +8489,26 @@ mod tests {
                 "{name} reaches a banner path"
             );
         }
+    }
+
+    /// The daily trend (#771) is kept for a tile's Full view alone, and the
+    /// read the command answers is what decides it: a read naming no tile (such
+    /// as the boot read) carries none of it, a stored tile id (the Full view's)
+    /// carries it.
+    #[test]
+    fn the_daily_trend_is_only_in_a_read_that_names_a_tile() {
+        let (_dir, _rt, app) = test_app_over(Silent);
+        tile_in(&app, "t-billing", "actionsBilling", "all", false);
+        *app.actions_billing.lock().unwrap() =
+            actions_billing::fixture_state(actions_billing::Fixture::Measured, panel::now_unix());
+        let overview = actions_billing_read(&app, None).unwrap();
+        assert!(overview["trend"].is_null() && overview["trendNote"].is_null());
+        assert!(!overview["headline"].is_null());
+        let full = actions_billing_read(&app, Some("t-billing")).unwrap();
+        assert_eq!(full["trend"]["label"], "HOSTED MINUTES PER DAY");
+        assert_eq!(full["headline"], overview["headline"]);
+        // A tile that is not this source's is refused, and builds nothing.
+        assert!(actions_billing_read(&app, Some("nope")).is_err());
     }
 
     /// Org A's figures, then the settings name org B (or none) and the keychain
@@ -10588,8 +10621,8 @@ mod tests {
             ("azure_cost", "azure_cost", "scope_to_tile(&state, \""),
             (
                 "actions_billing",
-                "actions_billing",
-                "scope_to_tile(&state, \"",
+                "actions_billing_read",
+                "scope_to_tile(state, \"",
             ),
             ("openclaw", "openclaw", "scope_to_tile(&state, \""),
         ];
@@ -10630,12 +10663,16 @@ mod tests {
                 continue;
             }
             assert!(
-                literal[got.len()..].starts_with("\", tile.as_deref(),"),
+                literal[got.len()..].starts_with("\", tile.as_deref(),")
+                    || literal[got.len()..].starts_with("\", tile,"),
                 "the {command} command hands its own tile to `scope_to_tile`"
             );
+            // `actions_billing_read` is the command's body (it adds the Full
+            // view's trend), so its builder is the command's `_unscoped`.
+            let builder = format!("{}_unscoped(", function.trim_end_matches("_read"));
             assert!(
-                body.contains(&format!("{function}_unscoped(&state)")),
-                "the {command} command builds with `{function}_unscoped`"
+                body.contains(&builder),
+                "the {command} command builds with `{builder}`"
             );
         }
         // `cockpit` reaches `cockpit_for_tile`, the row above, only with its own tile.

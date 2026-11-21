@@ -259,6 +259,10 @@ fn scope_actions_billing(payload: &mut Value, kept: &BTreeSet<String>) {
         clear(payload, "budget");
         clear(payload, "budgetNote");
     }
+    // The trend (#771) is not a row anyone can pick, so a tile that picked
+    // rows does not show it. Only a tile that keeps everything does.
+    clear(payload, "trend");
+    clear(payload, "trendNote");
 }
 
 fn scope_openclaw(payload: &mut Value, kept: &BTreeSet<String>) {
@@ -725,6 +729,19 @@ mod tests {
         assert_eq!(out["alerts"], json!([p["alerts"][1].clone()]));
         let out = scope_payload(&tile("actionsBilling", "item:budget"), p);
         assert_eq!(out["alerts"], json!([]));
+    }
+
+    #[test]
+    fn actions_billing_trend_belongs_to_a_tile_that_keeps_every_row_only() {
+        let mut p = actions_billing_payload();
+        p["trend"] = json!({"label":"HOSTED MINUTES PER DAY","values":[1.0,2.0]});
+        p["trendNote"] = json!({"text":"n"});
+        let out = scope_payload(&tile("actionsBilling", "item:budget"), p.clone());
+        assert_eq!(out["trend"], Value::Null);
+        assert_eq!(out["trendNote"], Value::Null);
+        let out = scope_payload(&tile("actionsBilling", "all"), p.clone());
+        assert_eq!(out["trend"], p["trend"]);
+        assert_eq!(out["trendNote"], p["trendNote"]);
     }
 
     fn openclaw_payload() -> Value {

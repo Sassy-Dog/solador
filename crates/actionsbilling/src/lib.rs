@@ -37,8 +37,8 @@ pub mod summary;
 pub use client::{ActionsBillingClient, MonthRead, API_VERSION, DEFAULT_BASE_URL};
 pub use error::ActionsBillingError;
 pub use hosted::{
-    macos_flags, needs_previous_month, previous_period, spike_flags, DayMinutes, HostedDays,
-    MacosFlag, MacosReport, PreviousMonth, SpikeFlag, SpikeReport, SpikeThresholds,
+    macos_flags, needs_previous_month, previous_period, spike_flags, DailyTrend, DayMinutes,
+    HostedDays, MacosFlag, MacosReport, PreviousMonth, SpikeFlag, SpikeReport, SpikeThresholds,
     SPIKE_WINDOW_DAYS,
 };
 pub use models::{

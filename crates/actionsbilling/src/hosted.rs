@@ -35,10 +35,12 @@ pub struct DayMinutes {
 }
 
 /// A month's hosted minutes by `(day, repository)`. Items with no repository
-/// are org-level and belong to no repo, so they are not here.
+/// are org-level and belong to no repo, so they are not in the per-repo map the
+/// rules read; they are kept apart, by day, so the daily trend still counts them.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostedDays {
     days: BTreeMap<(NaiveDate, String), DayMinutes>,
+    org_level: BTreeMap<NaiveDate, f64>,
 }
 
 fn is_macos(sku: &str) -> bool {
@@ -51,12 +53,16 @@ impl HostedDays {
     #[must_use]
     pub fn from_items(items: &[UsageItem]) -> Self {
         let mut days: BTreeMap<(NaiveDate, String), DayMinutes> = BTreeMap::new();
+        let mut org_level: BTreeMap<NaiveDate, f64> = BTreeMap::new();
         for item in items {
             if item.product != "actions"
                 || item.unit_type != "Minutes"
-                || item.repository_name.is_empty()
                 || !item.quantity.is_finite()
             {
+                continue;
+            }
+            if item.repository_name.is_empty() {
+                *org_level.entry(item.date.date_naive()).or_default() += item.quantity;
                 continue;
             }
             let entry = days
@@ -67,7 +73,7 @@ impl HostedDays {
                 entry.macos += item.quantity;
             }
         }
-        HostedDays { days }
+        HostedDays { days, org_level }
     }
 
     /// The repo's minutes on `day`; 0 for a day it has no item on.
@@ -83,6 +89,52 @@ impl HostedDays {
             .range((day, String::new())..)
             .take_while(move |((d, _), _)| *d == day)
             .map(|((_, repo), minutes)| (repo.as_str(), *minutes))
+    }
+}
+
+/// The month's total hosted minutes per day, for the Full view's trend (#771).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DailyTrend {
+    /// One value per day from `first` (the 1st) through `last` (the report's
+    /// newest day), inclusive. A day with no item is a measured 0; no day after
+    /// `last` is in it.
+    Series {
+        first: NaiveDate,
+        last: NaiveDate,
+        minutes: Vec<f64>,
+    },
+    /// The report's newest day is the 1st: a line needs two days, so none is
+    /// drawn and the day it starts on is the 2nd.
+    StartsOnSecond,
+}
+
+impl HostedDays {
+    /// Total hosted minutes per day, every repo and the org-level items summed, from the 1st of
+    /// `through`'s month through `through`. Storage is never in the fold, so it
+    /// never counts. `through` is the report's own newest day, an argument and
+    /// never a clock.
+    #[must_use]
+    pub fn daily_total(&self, through: NaiveDate) -> DailyTrend {
+        let first = month_start(through);
+        let days = through.day();
+        if days < 2 {
+            return DailyTrend::StartsOnSecond;
+        }
+        let minutes = (0..u64::from(days))
+            .map(|offset| {
+                first
+                    .checked_add_days(Days::new(offset))
+                    .map_or(0.0, |day| {
+                        let repos: f64 = self.repos_on(day).map(|(_, m)| m.hosted).sum();
+                        repos + self.org_level.get(&day).copied().unwrap_or(0.0)
+                    })
+            })
+            .collect();
+        DailyTrend::Series {
+            first,
+            last: through,
+            minutes,
+        }
     }
 }
 
