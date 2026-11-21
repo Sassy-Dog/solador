@@ -8459,8 +8459,11 @@ mod tests {
     /// banner paths feed `deliver_banners` from the GitHub approval notices, the
     /// service status notices and the update check; the rule rows are payload
     /// only. Pinned here: the tripped fixtures are red rows with no notice
-    /// anywhere in the payload, and nothing on the Actions billing path
-    /// (`poll_actions_billing`, its view module) reaches a notification.
+    /// anywhere in the payload; the pin covers `main.rs`'s non-test source
+    /// (one `.notification()`, inside `deliver_banners`, and three named
+    /// `deliver_banners(` call sites); and the scan covers the
+    /// `poll_actions_billing` body and the `actions_billing.rs` view module,
+    /// which may name neither `deliver_` nor `notification()`.
     #[test]
     fn the_billing_alert_rules_deliver_no_banner() {
         for kind in [
@@ -8499,6 +8502,25 @@ mod tests {
             errors.iter().any(|e| e.contains(".notification() calls")),
             "{errors:?}"
         );
+        // The billing path itself reaches no banner, by any name or wrapper.
+        let start = source.find("async fn poll_actions_billing").unwrap();
+        let poll = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let view = include_str!("actions_billing.rs").replace("\r\n", "\n");
+        assert_eq!(billing_path_errors(poll, &view), Vec::<String>::new());
+        // Negative control: a banner call from the view module fails the scan.
+        let doctored =
+            format!("{view}\nfn x(app: &App) {{ crate::deliver_banners(app, \"b\", &[]); }}\n");
+        assert!(!billing_path_errors(poll, &doctored).is_empty());
+    }
+
+    /// The billing path's own banner reach: neither the `poll_actions_billing`
+    /// body nor the view module may contain `deliver_` or `notification()`.
+    fn billing_path_errors(poll: &str, view: &str) -> Vec<String> {
+        [("poll_actions_billing", poll), ("actions_billing.rs", view)]
+            .iter()
+            .filter(|(_, text)| text.contains("deliver_") || text.contains("notification()"))
+            .map(|(name, _)| format!("{name} reaches a banner path"))
+            .collect()
     }
 
     /// What is wrong with the banner paths in `source` (main.rs above its test
