@@ -81,6 +81,7 @@ pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
         "openai" => scope_openai(&mut payload, &kept),
         "usage" => scope_groups(&mut payload, "providers", &kept),
         "azureCost" => scope_azure(&mut payload, &kept),
+        "actionsBilling" => scope_actions_billing(&mut payload, &kept),
         "openclawAgents" => scope_openclaw(&mut payload, &kept),
         // Hosts are filtered before layout (they are cards, not rows).
         _ => {}
@@ -234,6 +235,26 @@ fn scope_azure(payload: &mut Value, kept: &BTreeSet<String>) {
     );
     if !kept.contains("budget") {
         clear(payload, "budget");
+    }
+}
+
+/// The rows `source_rows` builds for Actions billing are `mtd`, one `stat-…` per
+/// stat and `budget` (the bar, or the note that there is no budget). The
+/// breakdowns, the report's lag and the message stay: they describe the whole
+/// panel and have no row of their own.
+fn scope_actions_billing(payload: &mut Value, kept: &BTreeSet<String>) {
+    if !kept.contains("mtd") {
+        clear(payload, "headline");
+    }
+    retain_in(
+        payload,
+        "stats",
+        |v| format!("stat-{}", str_of(v, "label")),
+        kept,
+    );
+    if !kept.contains("budget") {
+        clear(payload, "budget");
+        clear(payload, "budgetNote");
     }
 }
 
@@ -655,6 +676,34 @@ mod tests {
         assert_eq!(out["headline"], p["headline"]);
         assert_eq!(out["budget"], Value::Null);
         let out = scope_payload(&tile("azureCost", "item:cost-Today"), p.clone());
+        assert_eq!(out["stats"], p["stats"]);
+        assert_eq!(out["headline"], Value::Null);
+    }
+
+    fn actions_billing_payload() -> Value {
+        json!({"headline":{"value":"$10","caption":"c"},
+            "stats":[{"label":"HOSTED MINUTES","value":"1 min"}],
+            "budget":{"label":"BUDGET","value":"50%","bar":{"color":"#fff"}},
+            "budgetNote":null,
+            "dataThrough":{"text":"usage through Nov 14 19:00 UTC"},
+            "breakdowns":[{"title":"b"}]})
+    }
+
+    #[test]
+    fn actions_billing_scopes_keep_only_the_rows_they_name() {
+        let p = actions_billing_payload();
+        let out = scope_payload(&tile("actionsBilling", "item:budget"), p.clone());
+        assert_eq!(out["headline"], Value::Null);
+        assert_eq!(out["stats"], json!([]));
+        assert_eq!(out["budget"], p["budget"]);
+        assert_eq!(out["dataThrough"], p["dataThrough"]);
+        let out = scope_payload(&tile("actionsBilling", "item:mtd"), p.clone());
+        assert_eq!(out["headline"], p["headline"]);
+        assert_eq!(out["budget"], Value::Null);
+        let out = scope_payload(
+            &tile("actionsBilling", "item:stat-HOSTED MINUTES"),
+            p.clone(),
+        );
         assert_eq!(out["stats"], p["stats"]);
         assert_eq!(out["headline"], Value::Null);
     }

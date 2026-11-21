@@ -4365,6 +4365,7 @@ dependencies = [
  "rcgen",
  "serde",
  "serde_json",
+ "solador-actionsbilling",
  "solador-agentrelease",
  "solador-azurecost",
  "solador-buildversion",

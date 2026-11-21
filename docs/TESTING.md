@@ -315,13 +315,13 @@ timing-sensitive waits named above first. `csp_server.py` holds no
 request state, so parallel workers share one server.
 
 **Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
-`azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
+`actions-billing`, `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
 `tests/frontend/tile-full.js`: it stubs the IPC, boots the overview with one
 `all`-scoped tile per source, and opens the panel through the tile's View button
 then **Full view** (`tileFull`), the one way in; there is no URL or hook that
 skips the menu. `status-layout` keeps its own multi-frame stub but builds its
 Full-view tiles with the same `dashboardWithTiles` and enters them with the same
-`openTileFull`; its clipping test walks all eleven sources' Full views. The specs
+`openTileFull`; its clipping test walks all twelve sources' Full views. The specs
 that walk every source share `SOURCE_READS` from the same file, and
 `overview-standalone.spec.js` fails if that list, `PANEL_READS` or
 `PANEL_SECTIONS` stops matching the sources Rust declares. A tile's

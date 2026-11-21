@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => { expect(page.statusErrors).toEqual([]); });
 
-const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', anthropic: 'anthropic', openai: 'openai', usage: 'usage', azure_cost: 'azure', openclaw: 'openclaw' };
+const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', anthropic: 'anthropic', openai: 'openai', usage: 'usage', azure_cost: 'azure', actions_billing: 'actions-billing', openclaw: 'openclaw' };
 // `sources` replaces the overview's tiles with one `all`-scoped tile per source
 // (ids from tile-full.js), for a test that enters a tile's Full view.
 async function open(page, baseURL, sources = null) {

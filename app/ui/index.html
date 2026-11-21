@@ -166,6 +166,27 @@
       <div class="panel-body" id="azureBody" tabindex="0" role="region" aria-labelledby="azureTitle"></div>
     </section>
 
+    <!-- Actions billing. This month's hosted Actions minutes and net spend for
+         one GitHub organization, a bar for its Actions budget, and the
+         breakdowns by SKU and by repo. Same rules as above: every figure, the
+         bar's colour and every sentence are actions-billing.js applying what the
+         `actions_billing` command decided.
+         `#actionsBillingFreshness` and `#actionsBillingStale` are the two
+         clocks about the POLLER, exactly as Azure's are. The report's own lag
+         (`usage through ...`) is a third thing, a plain line in the body, and
+         is deliberately in neither: a report that always lags by hours would
+         otherwise light the tile's attention warning permanently. -->
+    <section class="panel" id="actionsBillingPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="actionsBillingTitle"></h2>
+        <span class="panel-asof" id="actionsBillingFreshness" hidden></span>
+        <span class="panel-stale" id="actionsBillingStale" hidden></span>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="actionsBillingTrailing"></span>
+      </header>
+      <div class="panel-body" id="actionsBillingBody" tabindex="0" role="region" aria-labelledby="actionsBillingTitle"></div>
+    </section>
+
     <!-- Services. Third-party availability for the vendors this cockpit is
          already reading, plus any Atlassian Statuspage the operator added — the
          list is derived from configuration, not shipped. Each is read from
@@ -335,6 +356,7 @@
   <script src="ai-sources.js"></script>
   <script src="usage.js"></script>
   <script src="azure.js"></script>
+  <script src="actions-billing.js"></script>
   <script src="services.js"></script>
   <script src="cronmonitors.js"></script>
   <script src="openclaw.js"></script>

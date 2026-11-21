@@ -114,6 +114,8 @@ pub enum PanelInterval {
     UsageProviders,
     /// The Azure Cost panel's daily export read.
     AzureCost,
+    /// The Actions billing panel's two reads of the org's billing endpoints.
+    ActionsBilling,
     /// The Sentry Crons panel.
     Crons,
     /// The Anthropic and OpenAI panels' plan windows (`crates/subscription`).
@@ -166,13 +168,14 @@ pub struct IntervalSpec {
 
 impl PanelInterval {
     /// Every panel that has a settable cadence, in a stable order for UI.
-    pub const ALL: [PanelInterval; 8] = [
+    pub const ALL: [PanelInterval; 9] = [
         PanelInterval::Containers,
         PanelInterval::GitHub,
         PanelInterval::Services,
         PanelInterval::ClaudeRollups,
         PanelInterval::UsageProviders,
         PanelInterval::AzureCost,
+        PanelInterval::ActionsBilling,
         PanelInterval::Crons,
         PanelInterval::PlanUsage,
     ];
@@ -199,6 +202,7 @@ impl PanelInterval {
     /// | `ClaudeRollups` | 1m | the same, formerly `usage_loop`'s outer sleep |
     /// | `UsageProviders` | 1h | `usage::PROVIDER_POLL_INTERVAL_SECS` |
     /// | `AzureCost` | 4h | `azurecost::POLL_INTERVAL` |
+    /// | `ActionsBilling` | 1h | new with the source; `UsageProviders`' hour |
     /// | Crons | 1h | *shares* `usage::PROVIDER_POLL_INTERVAL_SECS` |
     /// | `PlanUsage` | 15m | new with the source; orca's own default |
     #[must_use]
@@ -284,6 +288,20 @@ impl PanelInterval {
                 label: "Azure Cost",
                 floor_reason:
                     "the export is published about once a day, and every poll mints a SAS and may pull the whole blob, so a shorter cadence buys nothing and moves real egress",
+            },
+            // New with the source, so there is no older constant to mirror; the
+            // figures are `UsageProviders`', for the same reason. Two reads per
+            // pass (usage and budgets) against the account's REST rate-limit
+            // budget, and GitHub's billing figures move on the order of hours
+            // (the usage report itself lags), so a shorter cadence spends quota
+            // to learn nothing. Floor 300s.
+            PanelInterval::ActionsBilling => IntervalSpec {
+                key: "actions_billing",
+                default_secs: 60 * 60,
+                floor_secs: 300,
+                label: "Actions billing",
+                floor_reason:
+                    "two billing reads answer on one pass against a rate-limit budget, and the figures move on the order of hours",
             },
             // Crons has **no constant of its own today**: `crons_loop` in
             // `app/src-tauri/src/main.rs` sleeps on `usage`'s
@@ -628,6 +646,12 @@ pub struct Settings {
     /// than sending it empty — Vercel answers 400 to `teamId=`.
     #[serde(default)]
     pub vercel_team_id: String,
+    /// The GitHub organization whose billing the Actions billing panel reads
+    /// (its login; non-secret — the billing token is a credential). Empty means
+    /// unset, which the panel says out loud rather than guessing an org from
+    /// the GitHub account's.
+    #[serde(default)]
+    pub actions_billing_org: String,
     /// OpenClaw gateway URL (non-secret; the bearer token is a credential).
     pub openclaw_gateway_url: String,
     /// Fire an OS notification once when a tracked run transitions into the
@@ -836,6 +860,7 @@ impl Default for Settings {
             sentry_usage_enabled: false,
             sentry_crons_enabled: false,
             vercel_team_id: String::new(),
+            actions_billing_org: String::new(),
             openclaw_gateway_url: String::new(),
             notify_on_approval_needed: true,
             notify_on_service_change: true,
@@ -1038,6 +1063,7 @@ mod tests {
             sentry_usage_enabled: true,
             sentry_crons_enabled: false,
             vercel_team_id: "team_fixture".into(),
+            actions_billing_org: "org-fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             notify_on_approval_needed: false,
             notify_on_service_change: false,
@@ -1291,6 +1317,19 @@ mod tests {
             }
         );
         assert_eq!(s.panel_interval_secs(PanelInterval::AzureCost), 3600);
+    }
+
+    #[test]
+    fn actions_billing_defaults_to_an_hour_with_a_five_minute_floor_and_refuses_below_it() {
+        let s = Settings::default();
+        assert_eq!(s.panel_interval_secs(PanelInterval::ActionsBilling), 3600);
+        let spec = PanelInterval::ActionsBilling.spec();
+        assert_eq!((spec.key, spec.floor_secs), ("actions_billing", 300));
+        let rejection = PanelInterval::ActionsBilling
+            .check_secs(299)
+            .expect_err("299s is below the floor");
+        assert_eq!(rejection.floor_secs(), 300);
+        assert_eq!(PanelInterval::ActionsBilling.check_secs(300), Ok(300));
     }
 
     #[test]
@@ -1619,6 +1658,7 @@ mod tests {
                 "claude_rollups",
                 "usage_providers",
                 "azure_cost",
+                "actions_billing",
                 "crons",
                 "plan_usage"
             ]

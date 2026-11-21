@@ -104,7 +104,7 @@
 │   ├── src-tauri/          # Tauri v2 shell: one poll task per host plus this
 │   │                       #   machine (src/local.rs); `cockpit`, `containers`,
 │   │                       #   `repos`/`runners`, `usage`, `anthropic`, `openai`,
-│   │                       #   `azure_cost`, `crons`, `openclaw` + `settings_*`
+│   │                       #   `azure_cost`, `actions_billing`, `crons`, `openclaw` + `settings_*`
 │   │                       #   (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler
 ├── agent/                  # Per-host metrics agent (workspace member, Linux CI)

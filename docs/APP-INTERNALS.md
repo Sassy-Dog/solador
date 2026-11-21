@@ -325,9 +325,9 @@
   that provider back) and a generation counter, so a reading that lands after
   its toggle flipped is dropped rather than painted under the new setting. A
   provider that is off is never read and never woken.
-- **Eight cadences are the operator's, not constants**: containers, GitHub
+- **Nine cadences are the operator's, not constants**: containers, GitHub
   (Repos and Runners), Services, the Claude rollups, the metered providers,
-  Azure cost, Sentry crons and the plan limits are `store.json`'s `panel_intervals`,
+  Azure cost, Actions billing, Sentry crons and the plan limits are `store.json`'s `panel_intervals`,
   each clamped to a floor stated beside the source it protects
   (`PanelInterval::spec`). Today's constants are their *defaults*, so an
   unconfigured store polls exactly as it always did. Every loop re-reads its
@@ -340,7 +340,7 @@
   maps a panel to a list of sources), Service Health, Anthropic (three: the Claude
   rollups, the plan limits and the metered providers' cadence, which also reads
   its API spend), OpenAI (two: the plan limits and API spend, the same two keys),
-  Usage (the metered providers), Azure Cost and Sentry
+  Usage (the metered providers), Azure Cost, Actions billing and Sentry
   Crons — under **Poll cadence**, one control per cadence (a
   source carries a `cadences` list, so a tile fed by two polls shows both), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
   answering with the re-rendered dashboard), not with the tile's Apply. It shows
@@ -364,7 +364,7 @@
   serialised — so the first save drops the key and a cadence cleared afterwards
   is not seeded again. The GitHub, Services and Claude-rollup footers' staleness windows follow
   their cadence (`panel::stale_after_for_cadence`, 2.5 cycles, never under 150s)
-  rather than a flat 150s; Containers, Azure Cost and the plan limits have their
+  rather than a flat 150s; Containers, Azure Cost, Actions billing and the plan limits have their
   own rules (see the footer list under Services in `docs/PANELS.md`).
 - Sentry cron monitors: `crates/usage/src/sentry.rs`'s `cron_monitors()` /
   `summarize_monitors()` plus `app/src-tauri/src/crons.rs`. Three wire traps are
@@ -501,6 +501,18 @@
   so `SERVICE` itself is now the one name that must never move — a move
   orphans every stored credential at once, and orphaned is worse than
   deleted, because they stay there being useless.
+- The Actions billing panel reads the organization's billing endpoints with a
+  dedicated fine-grained PAT (`SecretKey::ActionsBillingToken`, item
+  `actions_billing_token`; Organization → Administration: read, created by an
+  org admin) and the organization's login (`actions_billing_org`). The token is
+  never the GitHub account's, is re-read from the credential store on every
+  pass by `poll_actions_billing`, goes straight into
+  `actionsbilling::ActionsBillingClient` (whose `Debug` redacts it and whose
+  errors carry no string a transport produced) and appears in no payload. The
+  crate is app-only (`scripts/agent-deps-guard.sh`). The panel's view is
+  `app/src-tauri/src/actions_billing.rs`; see `docs/PANELS.md` for the two
+  clocks (the poller's footer and freshness, and the report's `usage through`
+  line, which is in neither).
 - The Azure Cost panel stores no credential: it mints a short-lived,
   container-scoped SAS per poll by shelling out to the Azure CLI (`az`, signed
   in as the operator).

@@ -37,6 +37,7 @@ pub fn source_ids(panel: PanelInterval) -> &'static [&'static str] {
         PanelInterval::ClaudeRollups => &["anthropic"],
         PanelInterval::UsageProviders => &["usage", "anthropic", "openai"],
         PanelInterval::AzureCost => &["azureCost"],
+        PanelInterval::ActionsBilling => &["actionsBilling"],
         PanelInterval::Crons => &["sentryCrons"],
         PanelInterval::PlanUsage => &["anthropic", "openai"],
     }
@@ -299,6 +300,38 @@ mod tests {
         assert_eq!(
             s["status"],
             json!("Set to 6 hours. The default is 4 hours.")
+        );
+    }
+
+    /// Actions billing hosts its cadence in its own tile's Configure, at the
+    /// hour and the five-minute floor the store declares.
+    #[test]
+    fn actions_billing_hosts_its_cadence_at_an_hour_with_a_five_minute_floor() {
+        assert_eq!(
+            source_ids(PanelInterval::ActionsBilling),
+            ["actionsBilling"]
+        );
+        let mut settings = Settings::default();
+        let s = section(
+            &settings,
+            PanelInterval::ActionsBilling,
+            &["Actions billing"],
+        );
+        assert_eq!(s["id"], json!("actions_billing"));
+        assert_eq!(s["value"], json!(3600));
+        assert_eq!(s["min"], json!(300));
+        settings
+            .panel_intervals
+            .insert("actions_billing".to_owned(), 30);
+        let s = section(
+            &settings,
+            PanelInterval::ActionsBilling,
+            &["Actions billing"],
+        );
+        assert_eq!(
+            s["value"],
+            json!(300),
+            "a hand-edited value reads as the floor"
         );
     }
 

@@ -6,7 +6,7 @@ and **Sentry Crons**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. A tile stores its own title, so these are the names a
 new layout, an added tile and a new tile's Full view start with: a saved tile
 keeps the title it was saved with (an existing "Runners" or "Scheduled Jobs"
-tile stays that until you rename it in Configure; there is no migration). **Add tile** also offers Containers/VMs, Usage, Azure Cost
+tile stays that until you rename it in Configure; there is no migration). **Add tile** also offers Containers/VMs, Usage, Azure Cost, Actions billing
 and OpenClaw. Each tile opens its readings in Detail, and Detail opens the tile's own
 **Full view** (see [Dashboard tiles](#dashboard-tiles)); **Escape**
 returns from a Full view to the overview. Sources and credentials remain
@@ -135,7 +135,7 @@ the toolbar's button alone. By id (built from `getElementById` and `$()` in
 - `#cockpit`, `#hostsTitle`, `#hostTabs` and the `#cardTpl` template: the
   Machines tile's Full view (`renderCockpit`) and `gridWidth` need them.
 - Each panel's section and title ids (`containersPanel`/`containersTitle`,
-  `reposPanel`, `runnersPanel`, `usagePanel`, `azurePanel`, `servicesPanel`,
+  `reposPanel`, `runnersPanel`, `usagePanel`, `azurePanel`, `actionsBillingPanel`, `servicesPanel`,
   `cronsPanel`, `openclawPanel`, and their `…Title`): `PANEL_SECTIONS` in `app.js`
   and `sourceTitles` in `dashboard.js` map tiles to them, and each renderer writes
   to fixed ids inside.
@@ -452,7 +452,7 @@ cards grow to fit their content in the **page's** scroll. `layout-stability.js`
 retains their largest measured height at the current width, so temporary empty
 or failed polls do not collapse them. Minimum reservations are 196px for Machines,
 144px for other summary tiles, 360px for detailed tiles/List inspectors, 200px for
-list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards. The
+list panels, 300px for Usage/Azure Cost/Actions billing/OpenClaw, and 960px for host cards. The
 200px and 300px panel floors hold outside a tile's Full view; inside one a panel
 fits its content (`dashboard.css` sets `min-height:0`) and keeps only what
 `layout-stability.js` measured in that same tile's Full view. Opening or switching
@@ -609,16 +609,17 @@ does not fit it yet:
 | Runner group labels | GitHub Runners tile Configure, marked shared | rule 4 |
 | Container Group Rules | Containers tile Configure, marked shared (#613) | rule 4 |
 | Accounts, tokens, hosts, providers | Settings → Sources | rule 2 |
+| The Actions billing organization and its billing token (a fine-grained PAT of its own, never the GitHub account's) | Settings → Sources → **Actions billing** | rule 2 |
 | Crash reporting, updates | Settings | rule 3 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, GitHub (Repos and Runners), Services, Anthropic (local logs; API spend; plan limits), OpenAI (API spend; plan limits), Usage (metered providers), Azure Cost and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
+| Poll cadence of Containers, GitHub (Repos and Runners), Services, Anthropic (local logs; API spend; plan limits), OpenAI (API spend; plan limits), Usage (metered providers), Azure Cost, Actions billing and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the GitHub Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
 | CPU core rows, Row spacing, host overflow, Detail / Full view Table-or-List | the tile's Configure → **Full view** / **Detail** page, per tile | rule 1 ([#647](https://github.com/Sassy-Dog/solador/issues/647)) |
 
 ### Settings and sources
 
 Settings opens on **Sources**, with one entry per GitHub account, remote
-host, usage provider, Azure export, OpenClaw gateway, custom status page and
+host, usage provider, Azure export, Actions billing org, OpenClaw gateway, custom status page and
 each of the sources below that you have added. Each entry names the panels it
 feeds. GitHub repos and runners share the account editor; Sentry usage and
 scheduled jobs share Sentry's steps. **Add source** lists every source there
@@ -629,7 +630,7 @@ Usage section and Sentry Crons, as it did (`sentry_usage_enabled` and
 `sentry_crons_enabled` read as on when the file has neither).
 
 **This machine**, **Anthropic**, **OpenAI**, **Service health**, **Neon**,
-**Sentry**, **Vercel** and **Azure Cost** open as steps, and a row (or a Usage tile's **Manage source**)
+**Sentry**, **Vercel**, **Azure Cost** and **Actions billing** open as steps, and a row (or a Usage tile's **Manage source**)
 reopens the same steps with its choices read back. Anthropic asks what to set
 up: **API key**, **Subscription**, **Local usage**. OpenAI asks the first two.
 Each part picked gets one step, then **Ready** summarises what the source will
@@ -658,6 +659,17 @@ reads `Setup incomplete` in two cases, a budget with no export and half an expor
 (a storage account without a container, or the reverse), because either leaves
 nothing to read.
 
+**Actions billing** is one part: the organization's login and a **billing token** of its own. The token is a
+fine-grained personal access token whose resource owner is the organization, with
+Organization permissions → **Administration: Read** and nothing else, created by an
+organization admin, because GitHub's billing endpoints require one. It is **not**
+the GitHub account's token, which keeps its permissions unchanged, and it is stored
+under its own credential-store item (`actions_billing_token`); the organization is a
+plain preference (`actions_billing_org`). An empty organization or token is refused at
+**Finish** with its own sentence before anything is written, and removing the source
+forgets both. The row reads `Setup incomplete` with one half saved. Ready offers the
+one Actions billing tile. The walk is in [docs/github-setup.md](../docs/github-setup.md).
+
 No key is saved by a button on its step: keys and IDs are written at
 **Finish**, so Back and Cancel leave no key, no ID and no tile. Nothing is applied until **Finish**, which
 sends everything in one `settings_save_source` call, so Cancel has nothing to
@@ -684,7 +696,7 @@ than the settings. A save with no parts and a row is that account removed, with
 its token; a row takes all of its parts or none, and anything between is refused
 before the first write (unticking the token would delete it). An input
 may be **required**: it carries the sentence refusing a ticked part that sends
-it empty or not at all (Azure's export location and budget), checked with every
+it empty or not at all (Azure's export location and budget, Actions billing's organization), checked with every
 other refusal and so before the first write. An unticked part is never refused
 for it, because sending nothing is how a part is removed. Parts may share a key (Sentry's two parts name one
 token) or an input id (its slug): a shared key is kept while any part that
@@ -847,6 +859,8 @@ app/
 │   ├── src/plan_usage.rs # the plans: the opt-in gate, each provider's
 │   │                     #   schedule, and each plan's row and meters
 │   ├── src/azure.rs      # the Azure Cost panel
+│   ├── src/actions_billing.rs  # the Actions billing panel: two reads, two
+│   │                     #   halves of state, and the budget bar
 │   ├── src/openclaw.rs   # the OpenClaw panel: the device-key store, the live
 │   │                     #   session, and every string the panel paints
 │   ├── capabilities/     # default.json — the webview's ACL (one grant; see
@@ -863,6 +877,7 @@ app/
     ├── ai-sources.js     # the Anthropic and OpenAI panels
     ├── usage.js          # the Usage panel
     ├── azure.js          # the Azure Cost panel
+    ├── actions-billing.js  # the Actions billing panel
     └── openclaw.js       # the OpenClaw panel
 ```
 
@@ -887,6 +902,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats, Vercel spend, and Anthropic and OpenAI API spend (`api_spend`) |
 | [`subscription`](../crates/subscription) | the Claude and Codex plans' limits (windows, and an Enterprise seat's spend cap) and the plan's name: reads each tool's own saved sign-in (read-only), one undocumented usage endpoint each, and one field of `~/.claude.json`; app-only |
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
+| [`actionsbilling`](../crates/actionsbilling) | the GitHub org billing reader (#768): month-to-date Actions minutes and net spend by SKU and repo, and the org's Actions budget, from a dedicated billing token. App-only: `agent/` never resolves it |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 | [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
 | [`hostsetup`](../crates/hostsetup) | `solador-app host …`: the command mode, and the hand-off channel (a Unix socket, a Windows named pipe) the running app serves it on |
@@ -1571,13 +1587,14 @@ container the runtimes reported, including the ones rules hid or collapsed (so
 cruft building up stays visible), while `· N missing` counts exactly what the
 rollup can no longer see.
 
-## The `usage`, `anthropic`, `openai` and `azure_cost` commands
+## The `usage`, `anthropic`, `openai`, `azure_cost` and `actions_billing` commands
 
 ```js
 await window.__TAURI__.core.invoke("usage");
 await window.__TAURI__.core.invoke("anthropic");
 await window.__TAURI__.core.invoke("openai");
 await window.__TAURI__.core.invoke("azure_cost");
+await window.__TAURI__.core.invoke("actions_billing");
 ```
 
 The first three read one poller's state and share nothing else: each carries
@@ -1700,6 +1717,23 @@ behind one never reaches another's warning or chip.
   //     dimmed `headline.valueColor`; "unknown" (and a null age, never a 0)
   //     when nothing has ever been read.
 }
+
+// actions_billing — the payload keeps Azure's shape where the widgets are shared
+{
+  "id": "actionsBilling", "title": "Actions billing",
+  "trailing": "7,545 min · $40.60",
+  "message": null,   // or {"text", "color"}: muted setup sentence naming Settings → Sources,
+                     //   muted "no Actions usage this month", or the red Fault sentence
+  "headline": {"value": "$40.60", "caption": "net Actions spend · November 2023 to date", …},
+  "stats": [{"label": "HOSTED MINUTES", "value": "7,545 min", …}],
+  "budget": {"label": "BUDGET · STOPS JOBS AT LIMIT", "value": "$40.60 / $45.00",
+             "bar": {"fraction": 0.902, "color": …}},   // amber at 0.9, red at 1.0 (Azure's constants)
+  "budgetNote": null, // {"text": "no Actions budget set"} when there is none: no `budget`, no bar
+  "dataThrough": {"text": "usage through Nov 14 19:00 UTC", "color": …},
+  "breakdowns": [{"title": "BY SKU", "rows": […]}, {"title": "TOP REPOS", "rows": […]}],
+  "footer": null,     // the poller, per half: "⚠ usage: …" / "⚠ budget: …", window 1.5 cycles
+  "freshness": null   // the poller's clock, per half, merged into one header line
+}
 ```
 
 **Four sources, and Vercel is the odd one.** Claude Code's token rollups are
@@ -1712,7 +1746,25 @@ see [the plans' own limits](#the-plans-own-limits). Azure cost is its own loop
 on 4h (`azurecost::POLL_INTERVAL`, its default since the cadence became the
 operator's in [#301](https://github.com/Sassy-Dog/solador/issues/301)), because
 the export is published about once a day and the crate's fingerprint cache makes
-an unchanged cycle cost one blob listing and zero partition bodies.
+an unchanged cycle cost one blob listing and zero partition bodies. Actions
+billing is another loop of its own (`actions_billing_loop`, hourly by default,
+floor 300s, `PanelInterval::ActionsBilling`): two reads of the org's billing
+endpoints per pass, with the token and the organization re-read from the store on
+**every** pass, so a saved token takes effect without a restart.
+
+**Actions billing keeps its three kinds of time apart.** The footer and the
+freshness line are about the *poller*: the footer's `last ok` is the last
+successful read (per half, `usage` and `budget`, each its own `ProviderState`, so
+a failed budget read never hides the usage and the reverse), and both are absent
+while the tile is healthy. `dataThrough` is about the *report*: GitHub's usage
+report lags by hours, so it says `usage through <newest item time>` as a plain
+line in the body, and it is deliberately **in neither header line**, because any
+non-empty footer or freshness is a Needs Attention warning and a report that
+always lags would light the tile permanently. The budget half keeps the spend its
+fraction was measured against, so a retained bar is never printed beside a newer
+headline as one ratio. A month with no Actions usage is a measurement, said in
+words, and an org with no Actions budget shows `budgetNote` and no bar: never
+`$0.00`, never a 0% bar.
 
 **Every slow-cadence panel carries two staleness clocks, and they are not the
 same question** ([#302](https://github.com/Sassy-Dog/solador/issues/302),
@@ -2405,6 +2457,7 @@ a portfolio fetch on a credential it has no use for.
 | an account (saved, enabled, removed), a status page saved, toggled or removed, and a resume from sleep | the Services loop (`wake_services`): the watched set is derived from those, and the pass no longer rides the GitHub loop. An account edit wakes both |
 | Finish on Neon's, Sentry's or Vercel's steps (the key, the org, team or slug, and for Sentry the part flags; Remove source too) | the usage loop, *forcing* its provider half onto that pass; Sentry's Finish also wakes the Crons loop. Every Finish also wakes the Services loop, because `services::active_vendors` derives the Neon, Vercel and Azure vendors from those |
 | Finish on Azure Cost's steps (the export location and the budget; Remove source too) | the Azure loop (`SourceWake::Azure` notifies `azure_wake`), so a new or corrected export is read now rather than at the next four-hour pass |
+| Finish on Actions billing's steps (the billing token and the organization; Remove source too) | the Actions billing loop (`SourceWake::ActionsBilling` notifies `actions_billing_wake`), so a newly saved token or organization is read now rather than at the next hourly pass |
 | Finish on a source's steps | the Services loop (`wake_services`): any part of a source can add or remove a watched vendor, so the pass does not wait for its cadence |
 | a plan opt-in changed at Finish | the plan loop, after forgetting that one provider's reading (and un-parking it). Only a provider that is on and due is read |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`, which dispatches on the pure `wake_target`, a test pinning each cadence's loop). The save also refreshes the staleness windows cached in panel state (GitHub, Claude rollups, Services) from the store (`sync_cadences`) before the re-render, so a shortened cadence does not leave the previous pass's window on screen; Containers (2.5 cycles, never under 30s, [#633](https://github.com/Sassy-Dog/solador/issues/633)), Azure Cost (cadence + 1h) and the plan limits (twice the cadence) read their cadence at render time and need no such step; Sentry Crons and the metered Usage providers read theirs at render time too, each its own, and their window is 1.5 cycles of it, so the save moves it in the same response ([#635](https://github.com/Sassy-Dog/solador/issues/635)). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
@@ -2417,7 +2470,7 @@ a portfolio fetch on a credential it has no use for.
 
 **A resume is the one caller allowed to wake every loop at once**, and it is not
 a mutation. Closing a laptop suspends every poll task, so the slow loops —
-GitHub, usage, Sentry Crons, Azure (4h), containers, OpenClaw, the plan limits — otherwise resume on their
+GitHub, usage, Sentry Crons, Azure (4h), Actions billing, containers, OpenClaw, the plan limits — otherwise resume on their
 own schedule and the cockpit paints last night's data for up to a full interval
 after the lid opens. The plan loop's wake reads only a provider that is on and
 due by the wall clock, so a short nap spends no request. The usage wake forces
@@ -2508,7 +2561,7 @@ Two things worth knowing about this surface:
   than a preference, and Neon, Sentry and the Azure export publish on the order
   of hours or days, so each keeps a cadence of its own. Those per-panel cadences
   — containers, GitHub, Services, the Claude rollups, the metered providers,
-  Azure cost, Sentry crons and the Claude and Codex plan limits — are the
+  Azure cost, Actions billing, Sentry crons and the Claude and Codex plan limits — are the
   store's `panel_intervals`, each clamped to a floor stated beside the source it
   protects ([#300](https://github.com/Sassy-Dog/solador/issues/300)) and re-read
   by its loop every pass ([#301](https://github.com/Sassy-Dog/solador/issues/301)),
@@ -2517,7 +2570,7 @@ Two things worth knowing about this surface:
   Configure of the tile(s) each feeds (**Poll cadence** — Containers, GitHub
   Repos and Runners, Service Health, Anthropic (three: local logs, API spend and
   plans), OpenAI (two: API spend and plans), Usage (metered providers), Azure
-  Cost, Sentry Crons), not
+  Cost, Actions billing, Sentry Crons), not
   here; it was this tab's **Panel Poll Cadence**
   group ([#337](https://github.com/Sassy-Dog/solador/issues/337)). It says it is
   shared by every tile of that source and the Full view, saves on the click
@@ -3081,6 +3134,12 @@ cargo run -p solador-app -- --dump-openai sample-openai.json       # the OpenAI 
 #   `--plan-edges` has both on too, as an Enterprise seat's budget beside a
 #   Codex that failed before any reading; `--unmeasured` and `--empty` have both
 #   off, so they show the plans' setup line.
+cargo run -p solador-app -- --dump-actions-billing sample-actions-billing.json  # the Actions billing panel
+#   …plus `--empty` (a month with no Actions usage), `--error` (red, a rejected
+#   token), `--stale` (the same good read, dated 23h back), `--unconfigured`
+#   (the setup sentence), `--no-budget` (no Actions budget: a note, no bar) and
+#   `--over-budget` (red bar, a budget that does not stop jobs). The default is
+#   amber at 90% of a budget that stops jobs. Every amount is invented.
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no export location at all) and
@@ -3335,6 +3394,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `panel_interval_save` / `panel_interval_clear` | **Edit dashboard** → a Containers tile's **Configure** → **Poll cadence**: set it to `1` and press the section's **Apply**; then set it to `30` and **Apply**; then press **Use default**; also type `10000000000` and press **Apply** | the `1` is **refused** — one sentence beside the section naming the panel, its 5-second floor, why that floor exists and what you asked for — the field keeps what you typed and the status still reads `Using the default, 10 seconds`, because nothing was written. `30` saves on the click, before the tile's **Apply**, the status becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the status back to the default wording. The section says it is shared, and Settings → **Preferences** has no cadence group at all. `10000000000` is **refused** with `Not saved — … the largest cadence that can be stored` and never with `invalid value`, and the status line is unchanged: that decode at the IPC boundary is covered only by this checklist. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | `panel_interval_save` (GitHub) | **Edit dashboard** → a GitHub Runners tile's **Configure** → **Poll cadence**: set it to `300` and the section's **Apply**; then open a GitHub Repos tile's **Configure** | the GitHub Runners tile's section names both tiles it is shared by; `300` saves on the click and the Repos tile's **Poll cadence** reads `Set to 5 minutes…` with no further action (one cadence, not one per tile). Service Health has a **Poll cadence** of its own and is unchanged, and a runner list 3 minutes old is not yet flagged stale (the window is 2.5 cycles). Settings → **Preferences** has no Refresh Interval, only a note saying where the cadences went |
 | `runner_group_label_add` / `runner_group_label_move` / `runner_group_label_remove` | with runners showing, **Edit dashboard** → the GitHub Runners tile's **Configure** → **Group by labels**: type a label one of your runners carries (e.g. `runner-large`) and press **Add**; type the same label in other capitals and **Add** again; add a second label from **Seen on your runners** and press **Move up** on it; then **Remove** both | the first saves on the click, before **Apply**, and the row reads `carried by N runners`; the tile preview splits only the type where a runner carries it into `· <label>` and `· other`, every other type stays plain, and after leaving editing a click on either group opens Detail onto exactly its runners, its Labels column highlighting the label that matched. The second is **refused** as already listed. **Move up** reorders the list, and a runner carrying both labels moves to the group of whichever label is now first. **Remove** puts the tile back to plain OS · architecture types, and Settings → **Preferences** has no group-label editor at all. A count of `no runner carries this label` for a label that is on screen is the defect this row exists to catch |
+| Actions billing (`settings_save_source` and `actions_billing`) | needs a fine-grained PAT created by an **organization admin**, resource owner the org, Organization permissions → Administration: Read only: **not run in CI or by the agent that built it, and no step here can be run without one**. Add source → **Actions billing**, **Finish** with the organization empty, then with the token empty; then fill both and **Finish**. Open the tile's **Full view** | each empty field is refused at **Finish** with its own sentence (`Enter the GitHub organization whose Actions billing to read.`, `Enter a billing token.`) and writes nothing. A saved pair is read in seconds, not at the next hourly pass: the tile shows this month's hosted minutes and net spend, a bar against the org's Actions budget (amber from 90%, red from 100%, labelled with whether the budget stops jobs), a per-SKU breakdown, the top repos and a plain `usage through …` line. A token missing Administration: Read, or one an org admin did not create, reads as the red credential sentence naming both. The terminal never prints the token |
 | Azure Cost (`settings_save_source`, a source with no key) | Add source → **Azure Cost**, tick **Cost export** and **Monthly budget**. **Finish** with the storage account empty, then again with the budget empty; then fill all three (storage account, container, a budget above zero) and **Finish**. Open the row, untick **Monthly budget**, **Finish** | each empty field is refused at **Finish** with its own sentence (`Enter the storage account that holds the cost export.`, `Enter the container the cost export is written to.`, `Enter a monthly budget above zero.`), the steps stay open with what was typed, and nothing is saved. Settings never asks for a key. With all three saved, the Azure Cost tile reads the export within seconds (not at the next four-hour pass) and draws the budget bar; and, only when Service health is itself added (`services::active_vendors` filters on it), Service health gains Azure. Unticking the budget removes the bar and leaves the export. Before Finish nothing is stored, and **Remove source** clears all three. A budget bar that needs a separate Apply, or an export that waits hours to be read after a save, is the defect this row exists to catch |
 | usage providers | Add source → **Neon** (key, then organization ID), **Vercel**, and **Sentry** (pick **Usage** and/or **Scheduled jobs**, then the `org:read` token and slug once), **Finish** | sections appear in seconds, and Sentry Crons reads the same token. With only **Usage** picked, a Sentry Crons tile reads `Sentry's Scheduled jobs isn't set up — add it in Settings → Sources` (not a request for a token, which is stored); with only **Scheduled jobs** picked, the Usage tile has no Sentry section. To check the way back, open the Sentry row, tick **Scheduled jobs** and **Finish**: the tile reads `reading monitors…`, then the monitors (a silent keychain at that moment is covered by a unit test, not this row). Unticking one part later keeps the token for the other, and **Remove source** clears it. A key with **no org id** renders `—` on both figures, never `0.0 CU-h`. Before Finish nothing is stored: **Cancel** from either step leaves no key and no ID, and **Remove source** on the row clears both |
 | `machine_save_alerts` | **Edit dashboard** → the Machines tile's **Configure** → **Machine alerts**: under **Shared defaults** set RAM warning/critical to `90`/`98` and **Apply thresholds**; then in one machine's block clear **Use shared defaults**, choose its own limits and Apply; re-enable shared defaults and Apply | each saves on the click, before the tile's **Apply**; the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused with Rust's sentence beside the block and the draft is kept, saved choices survive reopening the app, and Settings → **Preferences** and Sources carry no limits at all |

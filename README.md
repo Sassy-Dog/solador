@@ -63,7 +63,7 @@ not failure*, and the code says so in as many words.
 ## What it shows
 
 The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
-duplicate and scope them, or add a view of any of the eleven sources below.
+duplicate and scope them, or add a view of any of the twelve sources below.
 **Needs attention** includes hidden sources. A tile's **View** menu opens its
 **Detail**, or its own **Full view**: the source's full panel holding only that
 tile's scope, under the tile's name; **Escape** returns to the overview. Both
@@ -95,6 +95,7 @@ carries one splits, and Detail and Full show every runner's labels.
 | **OpenAI** | Codex's plan limits and your organization's API spend this month, each only if you set it up |
 | **Usage** | Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
+| **Actions billing** | your GitHub organization's hosted Actions minutes and net spend this month, by SKU and by repo, against its Actions budget, and how far behind the report is |
 | **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
 | **Service Health** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
 | **OpenClaw** | an [OpenClaw](crates/openclaw/) agent farm, over a live WebSocket — the one panel that is event-driven rather than polled |
@@ -127,6 +128,7 @@ Add these in **Settings**, in any order, whenever you feel like it.
 | **Claude and Codex plan limits** | nothing to paste: Settings → Sources → Add source → **Anthropic** or **OpenAI**, pick **Subscription**, and Solador reads that tool's own saved sign-in (on a Mac, Claude Code's keychain item, which macOS may ask you to allow; otherwise `~/.claude/.credentials.json` or `~/.codex/auth.json`), and, for Claude, the plan's name from `~/.claude.json`, keeping that one field and nothing else from the file. It only reads: the sign-in is never copied, stored, refreshed or changed. Both plan endpoints are undocumented and may change. Off until you pick it and press Finish |
 | **Anthropic and OpenAI API spend** | an Admin API key, in the same steps. Anthropic's starts `sk-ant-admin`, and only a Console organization can create one. OpenAI's comes from your organization's settings. An ordinary API key is refused. Kept in your OS credential store |
 | **Azure Cost** | a daily cost export in blob storage (its storage account and container) and, optionally, a monthly budget. There is no credential to paste: it signs each read itself with the `az` CLI you're already signed in to. Added in steps and saved only at Finish |
+| **Actions billing** | a **billing token of its own** (not the GitHub account's) and the organization's login. The token is a fine-grained PAT whose resource owner is the organization, with Organization permissions → **Administration: Read** and nothing else, created by an organization admin. Added in steps and saved only at Finish; [how to create it](docs/github-setup.md#actions-billing-token) |
 | **Sentry Crons** | the same Sentry token as above — one credential, two panels. Sentry's steps ask which of the two you want, and the token and slug once |
 
 **On reaching other machines:** the cockpit speaks HTTP to a host and a port —
@@ -301,7 +303,8 @@ its panel say so, not crash.
 app/src-tauri/   Tauri shell: one poll task per panel, plus the settings surface
 app/ui/          Frontend — plain HTML/CSS/JS, no bundler
 crates/          The real work: viewmodel, store, github, usage, subscription,
-                 azurecost, servicestatus, openclaw, localhost, wire, agentclient
+                 azurecost, actionsbilling, servicestatus, openclaw, localhost, wire,
+                 agentclient
 agent/           The per-host metrics agent (workspace member, Linux CI job)
 tests/frontend/  Playwright suite for app/ui
 tests/fixtures/  Wire-contract fixtures both agent/ and crates/ assert against
@@ -325,7 +328,7 @@ palette.
 It ships, it's signed, and it runs all day — and it is still young.
 
 **Working today:** signed and notarized universal macOS builds, a signed Windows
-installer, an update check, and all eleven panels.
+installer, an update check, and all twelve panels.
 
 **Rough edges, stated plainly:**
 

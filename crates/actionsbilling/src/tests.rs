@@ -458,6 +458,9 @@ fn the_forbidden_sentence_names_the_permission_and_the_admin() {
     );
     assert!(msg.contains("Administration: read"), "{msg}");
     assert!(msg.contains("org admin"), "{msg}");
+    let msg = ActionsBillingError::Unauthorized.user_message();
+    assert!(msg.contains("Administration: read"), "{msg}");
+    assert!(msg.contains("org admin"), "{msg}");
     assert!(ActionsBillingError::Forbidden.is_auth_failure());
     assert!(ActionsBillingError::Unauthorized.is_auth_failure());
     assert!(!ActionsBillingError::NotFound.is_auth_failure());

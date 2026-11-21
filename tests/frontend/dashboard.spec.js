@@ -17,6 +17,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
     openai: "openai",
     usage: "usage",
     azure_cost: "azure",
+    actions_billing: "actions-billing",
     openclaw: "openclaw",
   };
   const fixtures = {};
@@ -258,7 +259,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
             // does. The payload itself is the unscoped fixture: Rust's tests
             // cover what a scope keeps.
             const panelSource = { cockpit:"hosts", repos:"ghWorkflows", runners:"ghRunners", containers:"containers",
-              services:"services", crons:"sentryCrons", anthropic:"anthropic", openai:"openai", usage:"usage", azure_cost:"azureCost", openclaw:"openclawAgents" };
+              services:"services", crons:"sentryCrons", anthropic:"anthropic", openai:"openai", usage:"usage", azure_cost:"azureCost", actions_billing:"actionsBilling", openclaw:"openclawAgents" };
             if (args?.tile !== undefined && Object.hasOwn(panelSource, command)) {
               const asked = layout.tiles.find(t => t.id === args.tile);
               if (!asked) throw "That tile is no longer on the overview.";
@@ -3278,11 +3279,11 @@ test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust
 });
 
 // The poll cadences moved from Settings into the Configure of the tile(s) they
-// feed (#614, #615). Nine sources carry them: Anthropic two (its Claude rollups
+// feed (#614, #615). Ten sources carry them: Anthropic two (its Claude rollups
 // and plan limits), Usage its metered providers; the plan-limit cadence is on
 // both AI tiles and GitHub's one on both its Repos and GitHub Runners tiles;
 // Machines carries none.
-const CADENCE_SOURCES = ["containers", "ghWorkflows", "ghRunners", "services", "anthropic", "openai", "usage", "azureCost", "sentryCrons"];
+const CADENCE_SOURCES = ["containers", "ghWorkflows", "ghRunners", "services", "anthropic", "openai", "usage", "azureCost", "actionsBilling", "sentryCrons"];
 const cadencesOf = (model, id) => model.sources.find(s => s.id === id).cadences;
 async function configureCadence(page, source, panel = null) {
   await page.locator('#dashboardOverview [data-action="edit"]').click();
@@ -3301,6 +3302,7 @@ test("each source's Configure shows its poll cadence with the floor, the reason 
   expect(cadencesOf(model, "ghWorkflows").map(c => c.id)).toEqual(["github"]);
   expect(cadencesOf(model, "ghRunners").map(c => c.id)).toEqual(["github"]);
   expect(cadencesOf(model, "services").map(c => c.id)).toEqual(["services"]);
+  expect(cadencesOf(model, "actionsBilling").map(c => c.id)).toEqual(["actions_billing"]);
   const cadences = CADENCE_SOURCES.flatMap(id => cadencesOf(model, id).map(c => [id, c]));
   expect(cadences.some(([, c]) => c.configured) && cadences.some(([, c]) => !c.configured),
     "the fixture needs both renderings").toBe(true);

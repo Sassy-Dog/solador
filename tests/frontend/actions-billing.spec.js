@@ -1,0 +1,245 @@
+import { test, expect } from "@playwright/test";
+import { gotoTileFull, lastArgs, tileIdFor } from "./tile-full.js";
+
+// The Actions billing panel paints what the `actions_billing` command decided
+// and nothing else: the thresholds, the money and the minutes are Rust's, and
+// every state here is a fixture Rust dumped (`--dump-actions-billing`), never a
+// payload written by hand. The few hand-built payloads below exist to prove the
+// renderer does not compute anything of its own.
+
+// Same CSP guard as the other panel suites: the bar's colour and width are
+// inline styles, and a dropped one would paint a full-width bar in no colour.
+test.beforeEach(async ({ page }) => {
+  page.cspErrors = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error" && /content security policy|refused to (apply|load)/i.test(msg.text())) {
+      page.cspErrors.push(msg.text());
+    }
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  expect(page.cspErrors, "no CSP violations while the page ran").toEqual([]);
+});
+
+const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
+
+async function gotoPanel(page, baseURL, name = "sample-actions-billing.json") {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const payload = await fixture(baseURL, name);
+  await gotoTileFull(page, baseURL, { source: "actionsBilling", cockpit, answers: { actions_billing: payload } });
+  return payload;
+}
+
+/** `#33d17a` as the browser reports a computed colour. */
+const rgb = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+};
+
+const bodyText = (page) => page.locator("#actionsBillingBody").innerText();
+
+test("the panel is headed by its tile's name and paints Rust's headline, minutes, trailing label, budget and breakdowns", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  await expect(page.locator("#actionsBillingPanel")).toBeVisible();
+  await expect(page.locator("#actionsBillingTitle")).toHaveText("Actions billing");
+  await expect(page.locator("#actionsBillingTrailing")).toHaveText(p.trailing);
+
+  await expect(page.locator("#actionsBillingBody .az-headline .value")).toHaveText(p.headline.value);
+  await expect(page.locator("#actionsBillingBody .az-headline .caption")).toHaveText(p.headline.caption);
+  expect(p.headline.value).toMatch(/^\$[\d,]+\.\d{2}$/);
+
+  const stats = page.locator("#actionsBillingBody .az-main > .pv-row");
+  await expect(stats.locator(".lbl")).toHaveText(p.stats.map((s) => s.label));
+  await expect(stats.locator(".val")).toHaveText(p.stats.map((s) => s.value));
+
+  const budget = page.locator('#actionsBillingBody [data-section="budget"]');
+  await expect(budget.locator(".lbl")).toHaveText(p.budget.label);
+  await expect(budget.locator(".val")).toHaveText(p.budget.value);
+
+  // Per SKU (minutes and net) and the top repos, capped by Rust.
+  const sections = page.locator("#actionsBillingBody .az-columns > .pv-section");
+  await expect(sections.locator(".lbl")).toHaveText(p.breakdowns.map((b) => b.title));
+  for (const [i, column] of p.breakdowns.entries()) {
+    const rows = sections.nth(i).locator(".pv-item");
+    await expect(rows.locator(".name")).toHaveText(column.rows.map((r) => r.name));
+    await expect(rows.locator(".val")).toHaveText(column.rows.map((r) => r.value));
+  }
+
+  // The report's own lag is a plain line in the body.
+  await expect(page.locator('#actionsBillingBody [data-section="data-through"]')).toHaveText(p.dataThrough.text);
+  expect(p.dataThrough.text).toMatch(/^usage through /);
+});
+
+test("the panel asks for its tile's reading, not the source's", async ({ page, baseURL }) => {
+  await gotoPanel(page, baseURL);
+  expect(await lastArgs(page, "actions_billing")).toEqual({ tile: tileIdFor("actionsBilling") });
+});
+
+test("the budget bar is amber at 0.9 and red at 1.0, in the colours Rust chose, at the width Rust chose", async ({ page, baseURL }) => {
+  const amber = await gotoPanel(page, baseURL);
+  expect(amber.budget.bar.fraction, "the default fixture sits in the amber step").toBeGreaterThanOrEqual(0.9);
+  expect(amber.budget.bar.fraction).toBeLessThan(1);
+  const bar = page.locator('#actionsBillingBody [data-section="budget"] .pbar > span');
+  await expect(bar).toHaveCount(1);
+  await expect(bar).toHaveCSS("background-color", rgb(amber.budget.bar.color));
+  expect(parseFloat(await bar.evaluate((el) => el.style.width))).toBeCloseTo(amber.budget.bar.fraction * 100, 1);
+
+  const red = await gotoPanel(page, baseURL, "sample-actions-billing-over-budget.json");
+  expect(red.budget.bar.color, "red is not amber").not.toBe(amber.budget.bar.color);
+  await expect(bar).toHaveCSS("background-color", rgb(red.budget.bar.color));
+  // Past the budget the width pins full; the colour is what says "past it".
+  expect(await bar.evaluate((el) => el.style.width)).toBe("100%");
+  // The two colours are the ones Rust's `progress_bar` names for those steps.
+  expect(amber.budget.bar.color).toBe("#e0a03a");
+  expect(red.budget.bar.color).toBe("#e0614f");
+});
+
+test("the budget's label says whether it stops jobs", async ({ page, baseURL }) => {
+  const stops = await gotoPanel(page, baseURL);
+  expect(stops.budget.label).toMatch(/STOPS JOBS/);
+  await expect(page.locator('#actionsBillingBody [data-section="budget"] .lbl')).toHaveText(stops.budget.label);
+  const continues = await gotoPanel(page, baseURL, "sample-actions-billing-over-budget.json");
+  expect(continues.budget.label).toMatch(/JOBS CONTINUE/);
+  await expect(page.locator('#actionsBillingBody [data-section="budget"] .lbl')).toHaveText(continues.budget.label);
+});
+
+test("no budget says so and draws no bar, never a 0% one", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL, "sample-actions-billing-no-budget.json");
+  expect(p.budget).toBeNull();
+  await expect(page.locator('#actionsBillingBody [data-section="budget-note"]')).toHaveText("no Actions budget set");
+  await expect(page.locator("#actionsBillingBody .pbar")).toHaveCount(0);
+  await expect(page.locator('#actionsBillingBody [data-section="budget"]')).toHaveCount(0);
+  // The usage is still there: no budget is not no data.
+  await expect(page.locator("#actionsBillingBody .az-headline .value")).toHaveText(p.headline.value);
+});
+
+test("a budget with no measured fraction is a label and figures, not an empty track", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  await page.evaluate(
+    (vm) => window.__SOLADOR_ACTIONS_BILLING_TEST__.render({ ...vm, budget: { ...vm.budget, value: "— / $45.00", bar: null } }),
+    p
+  );
+  await expect(page.locator('#actionsBillingBody [data-section="budget"] .val')).toHaveText("— / $45.00");
+  await expect(page.locator("#actionsBillingBody .pbar")).toHaveCount(0);
+});
+
+test("a month with no Actions usage says so in words, not 0 or $0.00", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL, "sample-actions-billing-empty.json");
+  await expect(page.locator("#actionsBillingBody .pv-message")).toHaveText(p.message.text);
+  expect(p.message.text).toBe("no Actions usage this month");
+  await expect(page.locator("#actionsBillingBody .az-headline")).toHaveCount(0);
+  await expect(page.locator("#actionsBillingTrailing")).toHaveText("");
+  const text = await bodyText(page);
+  expect(text).not.toContain("$0.00");
+  expect(text).not.toMatch(/\b0 min\b/);
+});
+
+test("not configured shows the setup sentence naming Settings → Sources, and a failed read is red and says what the token needs", async ({ page, baseURL }) => {
+  const unconfigured = await gotoPanel(page, baseURL, "sample-actions-billing-unconfigured.json");
+  await expect(page.locator("#actionsBillingBody .pv-message")).toHaveText(unconfigured.message.text);
+  expect(unconfigured.message.text).toContain("Settings → Sources");
+  await expect(page.locator("#actionsBillingBody .pv-message")).toHaveCSS("color", rgb(unconfigured.message.color));
+  await expect(page.locator("#actionsBillingBody .az-headline")).toHaveCount(0);
+
+  const failed = await gotoPanel(page, baseURL, "sample-actions-billing-error.json");
+  // The two states must not be conflated, and the discriminator is a colour
+  // Rust chose.
+  expect(failed.message.color).not.toBe(unconfigured.message.color);
+  await expect(page.locator("#actionsBillingBody .pv-message")).toHaveText(failed.message.text);
+  await expect(page.locator("#actionsBillingBody .pv-message")).toHaveCSS("color", rgb(failed.message.color));
+  expect(failed.message.text).toContain("Administration: read");
+  expect(failed.message.text).toContain("org admin");
+});
+
+test("'usage through' is never in the status footer or the freshness clock, healthy or stale", async ({ page, baseURL }) => {
+  const live = await gotoPanel(page, baseURL);
+  expect(live.footer, "a healthy tile warns about nothing").toBeNull();
+  expect(live.freshness, "and has no clock to show").toBeNull();
+  await expect(page.locator("#actionsBillingStale")).toBeHidden();
+  await expect(page.locator("#actionsBillingFreshness")).toBeHidden();
+  await expect(page.locator("#actionsBillingBody")).toContainText("usage through");
+
+  const stale = await gotoPanel(page, baseURL, "sample-actions-billing-stale.json");
+  // The poller is late: both header lines speak, and neither is the report's lag.
+  await expect(page.locator("#actionsBillingStale")).toHaveText(stale.footer.text);
+  await expect(page.locator("#actionsBillingFreshness")).toHaveText(stale.freshness.text);
+  expect(JSON.stringify(stale.footer)).not.toContain("usage through");
+  expect(JSON.stringify(stale.freshness)).not.toContain("usage through");
+  await expect(page.locator("#actionsBillingStale")).not.toContainText("usage through");
+  await expect(page.locator("#actionsBillingFreshness")).not.toContainText("usage through");
+  // The lag line is the same in both: it is about the report, not the poller.
+  expect(stale.dataThrough).toEqual(live.dataThrough);
+  await expect(page.locator("#actionsBillingBody")).toContainText("usage through");
+});
+
+test("a stale reading keeps its figures, dims the headline and dates it in the header", async ({ page, baseURL }) => {
+  const live = await fixture(baseURL, "sample-actions-billing.json");
+  const stale = await gotoPanel(page, baseURL, "sample-actions-billing-stale.json");
+  expect(stale.headline.value).toBe(live.headline.value);
+  expect(stale.headline.valueColor).not.toBe(live.headline.valueColor);
+  await expect(page.locator("#actionsBillingBody .az-headline .value")).toHaveCSS("color", rgb(stale.headline.valueColor));
+  await expect(page.locator("#actionsBillingFreshness")).toHaveCSS("color", rgb(stale.freshness.color));
+});
+
+test("the renderer computes no thresholds and formats no money", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  // A fraction and colour no threshold of 0.9 or 1.0 would produce, and figures
+  // no formatter would produce: they must reach the page exactly as sent.
+  await page.evaluate(
+    (vm) =>
+      window.__SOLADOR_ACTIONS_BILLING_TEST__.render({
+        ...vm,
+        headline: { ...vm.headline, value: "12.5 dollars" },
+        budget: { ...vm.budget, value: "abc / xyz", bar: { fraction: 0.99, color: "#123456" } },
+      }),
+    p
+  );
+  await expect(page.locator("#actionsBillingBody .az-headline .value")).toHaveText("12.5 dollars");
+  await expect(page.locator('#actionsBillingBody [data-section="budget"] .val')).toHaveText("abc / xyz");
+  const bar = page.locator("#actionsBillingBody .pbar > span");
+  await expect(bar).toHaveCSS("background-color", "rgb(18, 52, 86)");
+  expect(await bar.evaluate((el) => el.style.width)).toBe("99%");
+});
+
+test("repository names are text, never markup", async ({ page, baseURL }) => {
+  const p = await gotoPanel(page, baseURL);
+  const hostile = '<img src=x onerror="window.__PWNED__=1">';
+  await page.evaluate(
+    ([vm, name]) =>
+      window.__SOLADOR_ACTIONS_BILLING_TEST__.render({
+        ...vm,
+        breakdowns: [{ ...vm.breakdowns[1], rows: [{ ...vm.breakdowns[1].rows[0], name }] }],
+      }),
+    [p, hostile]
+  );
+  await expect(page.locator("#actionsBillingBody .pv-item .name")).toHaveText(hostile);
+  await expect(page.locator("#actionsBillingBody img")).toHaveCount(0);
+  expect(await page.evaluate(() => window.__PWNED__)).toBeUndefined();
+});
+
+test("a warning costs the card no height, however long it is", async ({ page, baseURL }) => {
+  const healthy = await gotoPanel(page, baseURL);
+  const panel = page.locator("#actionsBillingPanel");
+  const header = page.locator("#actionsBillingPanel .panel-hdr");
+  await expect(panel).toBeVisible();
+  await expect(header).toBeVisible();
+  const before = await panel.boundingBox();
+  const headerBefore = await header.boundingBox();
+
+  const long = "⚠ usage: " + "a very long failure sentence ".repeat(20) + "· last ok 6h ago";
+  await page.evaluate(
+    ([vm, text]) => window.__SOLADOR_ACTIONS_BILLING_TEST__.render({ ...vm, footer: { text, color: "#e0a03a" } }),
+    [healthy, long]
+  );
+  const warning = page.locator("#actionsBillingStale");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveText(long);
+  await expect(warning).toHaveAttribute("title", long);
+
+  const headerAfter = await header.boundingBox();
+  expect(headerAfter.height, "one header line, never two").toBeCloseTo(headerBefore.height, 1);
+  const after = await panel.boundingBox();
+  expect(after.height).toBeCloseTo(before.height, 1);
+  expect(after.width).toBeCloseTo(before.width, 1);
+});

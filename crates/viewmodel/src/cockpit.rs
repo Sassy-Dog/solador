@@ -34,6 +34,7 @@ pub enum PanelKind {
     Usage,
     OpenclawAgents,
     AzureCost,
+    ActionsBilling,
     Services,
     SentryCrons,
     Anthropic,
@@ -43,7 +44,7 @@ pub enum PanelKind {
 impl PanelKind {
     /// Every kind, in the original `CaseIterable` declaration order — with the
     /// panels that have no counterpart appended in the order they were added.
-    pub const ALL: [PanelKind; 11] = [
+    pub const ALL: [PanelKind; 12] = [
         PanelKind::Hosts,
         PanelKind::GhRunners,
         PanelKind::Containers,
@@ -51,6 +52,7 @@ impl PanelKind {
         PanelKind::Usage,
         PanelKind::OpenclawAgents,
         PanelKind::AzureCost,
+        PanelKind::ActionsBilling,
         PanelKind::Services,
         PanelKind::SentryCrons,
         PanelKind::Anthropic,
@@ -68,6 +70,7 @@ impl PanelKind {
             PanelKind::Usage => "usage",
             PanelKind::OpenclawAgents => "openclawAgents",
             PanelKind::AzureCost => "azureCost",
+            PanelKind::ActionsBilling => "actionsBilling",
             PanelKind::Services => "services",
             PanelKind::SentryCrons => "sentryCrons",
             PanelKind::Anthropic => "anthropic",
@@ -86,6 +89,7 @@ impl PanelKind {
             PanelKind::Usage => "Usage",
             PanelKind::OpenclawAgents => "OpenClaw",
             PanelKind::AzureCost => "Azure Cost",
+            PanelKind::ActionsBilling => "Actions billing",
             PanelKind::Services => "Services",
             // "Sentry Crons", not "Crons": the Services panel beside it answers
             // "is the vendor up?" and this one answers "is our own job green?",
@@ -142,7 +146,9 @@ impl PanelKind {
             PanelKind::GhWorkflows => 478.0,
             PanelKind::GhRunners => 400.0,
             PanelKind::Containers => 400.0,
-            PanelKind::AzureCost => 400.0,
+            // Same shape as Azure Cost: a headline, a budget bar and
+            // `name … minutes · $net` rows, so the same one-column width.
+            PanelKind::AzureCost | PanelKind::ActionsBilling => 400.0,
             PanelKind::OpenclawAgents => 240.0,
             PanelKind::Usage | PanelKind::Anthropic | PanelKind::OpenAi => 340.0,
             // Five rows of `vendor · status word · dot`. The binding

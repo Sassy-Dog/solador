@@ -91,6 +91,30 @@ An organization can be watched by exactly one account — if you add it to a
 second, Solador refuses and tells you which account already has it, rather than
 polling the same org twice.
 
+## Actions billing token
+
+The **Actions billing** tile reads your organization's Actions minutes, net spend
+and Actions budget. GitHub only serves those to an organization admin, so it
+uses **its own token**, separate from the account token above. The account token
+never gains this permission, and every permission listed in step 1 is unchanged.
+
+An organization admin creates it:
+
+1. **GitHub → Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token**.
+2. Set **Resource owner** to the organization whose billing you want to read.
+   The organization needs GitHub's enhanced billing platform.
+3. Under **Organization permissions**, grant read-only **Administration**
+   (**Administration: Read**), and nothing else. Leave every repository
+   permission at **No access**.
+4. Generate the token and copy it; it is shown only once.
+
+Then in Solador: **Settings → Sources → Add source → Actions billing**. Type the
+organization's login (not a URL) and paste the token into **Billing token**, then
+choose **Finish**. Nothing is saved before that, and an empty organization or
+token is refused in its own words. The token is stored in your OS credential
+store under its own item, and Remove source forgets it.
+
 ## Troubleshooting
 
 ### Repos panel shows no data, or 401
@@ -110,6 +134,19 @@ Solador.
 ### An organization won't add
 It is already watched by another account. The message names which one, and
 nothing is saved until you take it out of the list.
+
+### Actions billing says the credential was rejected
+The token needs **Administration: Read** on the organization, and it must be
+owned by an organization admin: a token from a non-admin, one whose resource
+owner is you rather than the organization, or your account token pasted by
+mistake is refused. Create a new one as above and replace it from the source's
+steps. A **not found** message means the organization login is wrong or it is
+not on GitHub's enhanced billing platform.
+
+### Actions billing says "usage through" a few hours ago
+That is GitHub's report lagging, not Solador. It is shown as a plain line and
+is not a warning: the tile only warns when a read fails or the figures are
+older than the poll cadence expects.
 
 ### Rate limiting
 Authenticated requests get **5,000/hour per token**. The Repos panel spends

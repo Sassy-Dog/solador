@@ -75,14 +75,16 @@ impl ActionsBillingError {
 
     /// Operator-facing sentence. Never built from `to_string()`.
     ///
-    /// The 403 and 404 arms keep the hint only this crate has: a token that
-    /// authenticates but cannot read billing is the live failure, and "update
-    /// it in Settings" alone would send the operator to paste the same token.
+    /// The credential and 404 arms keep the hint only this crate has: a token
+    /// that authenticates but cannot read billing is the live failure, and
+    /// "update it in Settings" alone would send the operator to paste the same
+    /// token. A 401 gets it too: the tile's setup help names a dedicated
+    /// billing token, and a pasted account token is rejected here, not refused.
     #[must_use]
     pub fn user_message(&self) -> String {
         let stock = self.fault().message(VENDOR);
         match self {
-            ActionsBillingError::Forbidden => {
+            ActionsBillingError::Forbidden | ActionsBillingError::Unauthorized => {
                 format!("{stock} — it needs Administration: read, and an org admin")
             }
             ActionsBillingError::NotFound => {
