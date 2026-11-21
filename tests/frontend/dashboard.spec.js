@@ -4154,3 +4154,41 @@ for (const [fixtureName, deciding] of [
     ).toEqual({ tile: 400, fits: true });
   });
 }
+
+// The `--spike` fixture's SPIKE row must show its whole value (`<minutes> ·
+// <multiple>×`) in the overview at the tile's `min_width` (400); the words that
+// explain it live in the detail. `text-overflow: ellipsis` reacts to
+// `scrollWidth > clientWidth`, which is what is measured, as azure.spec.js's fit().
+test("the Actions billing spike row's value is not truncated at the tile's min_width", async ({ page, baseURL }) => {
+  const [spike] = (await (await fetch(`${baseURL}/sample-actions-billing-spike.json`)).json()).alerts;
+  expect(spike.value).toMatch(/×$/);
+  await openDashboard(page, baseURL, false, (view) => {
+    for (const t of [view.layout.tiles.find(t => t.source === "ghRunners"), view.tiles.find(t => t.source === "ghRunners")]) {
+      t.source = "actionsBilling";
+      t.title = "Actions billing";
+      delete t.runnerView;
+    }
+    // Rust's own row for the spike: its label and value, in the budget row's slot.
+    const row = view.sources.find(s => s.id === "actionsBilling").rows.find(r => r.id === "budget");
+    Object.assign(row, { id: spike.id, label: spike.label, value: spike.value, color: spike.color });
+  });
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await expect(tile(page, "ghRunners").locator(".db-item-name", { hasText: spike.label })).toHaveCount(1);
+  // One atomic read per poll: the 1 s poll may replace the tile, so each attempt
+  // pins the live node to 400px and measures the value in the same evaluation.
+  await expect.poll(
+    () =>
+      page.evaluate(({ label }) => {
+        const t = document.querySelector('[data-tile="overview-ghRunners"]');
+        Object.assign(t.style, { width: "400px", maxWidth: "400px", minWidth: "0", justifySelf: "start" });
+        const item = [...t.querySelectorAll(".db-item")].find((i) => i.querySelector(".db-item-name")?.textContent === label);
+        const val = item?.querySelector(".db-value");
+        return {
+          tile: Math.round(t.getBoundingClientRect().width),
+          shown: val?.textContent,
+          fits: !!val && val.scrollWidth <= val.clientWidth,
+        };
+      }, { label: spike.label }),
+    { message: "the spike value is cut off by an ellipsis at a 400px tile" },
+  ).toEqual({ tile: 400, shown: spike.value, fits: true });
+});

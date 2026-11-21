@@ -175,7 +175,10 @@
   report gives it, case-insensitively after trimming. Each tripped rule is a
   **red row** (`SPIKE · <repo>`, `MACOS ON SELF-HOSTED · <repo>`) that flags the
   tile and feeds Needs Attention through `dashboard::source_rows`, as the budget
-  bar does; **no OS banner** is sent (`deliver_banners` is untouched). The rules
+  bar does. A spike's value carries the figures only so the overview row is not
+  ellipsised (`<minutes> · <multiple>×`, or `<minutes> · from 0` when the 7 days
+  before held none); its detail names the day and the 7-day average. **No OS banner** is sent
+  (`deliver_banners` is untouched). The rules
   are judged when the view is built, from the retained fold and the settings of
   that moment, so a save re-flags the tile without waiting for a poll. When the
   7-day window reaches into the previous month, that month is read too, as its
