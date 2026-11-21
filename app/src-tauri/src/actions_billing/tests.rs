@@ -592,7 +592,9 @@ fn a_spike_is_one_red_row_with_its_figures() {
     let row = rows(&p)[0];
     assert_eq!(row["value"], "1,500 min \u{b7} 5.0\u{d7}");
     assert_eq!(row["color"], color::hex(color::RED));
-    assert!(row["detail"].as_str().unwrap().contains("11-14"));
+    let detail = row["detail"].as_str().unwrap();
+    assert!(detail.contains("11-14"));
+    assert!(detail.contains("against a 7-day average of"));
 }
 
 #[test]
@@ -730,7 +732,9 @@ fn a_spike_with_no_minutes_in_the_7_days_before_says_from_0() {
     assert_eq!(labels(&p), ["SPIKE \u{b7} repo-a"]);
     let row = rows(&p)[0];
     assert_eq!(row["value"], "6,000 min \u{b7} from 0");
-    assert!(row["detail"].as_str().unwrap().contains("11-03"));
+    let detail = row["detail"].as_str().unwrap();
+    assert!(detail.contains("11-03"));
+    assert!(detail.contains("against a 7-day average of 0 min"));
 }
 
 #[test]
