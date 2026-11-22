@@ -461,15 +461,15 @@ fn compact_minutes(value: f64) -> String {
     if !value.is_finite() {
         return UNKNOWN.to_owned();
     }
-    if value < 0.0 {
+    // The threshold is judged on the whole number `minutes()` prints (ties to
+    // even), so below it the value is that same figure as the detail's.
+    if value.round_ties_even().abs() < 10_000.0 {
         return minutes(value);
     }
     // Saturating cast: a figure past `u64` is not a minute count anyone sees.
-    let whole = (value + 0.5).floor() as u64;
-    if whole < 10_000 {
-        return format!("{} min", group_thousands(&whole.to_string()));
-    }
-    format!("{} min", compact_whole(whole))
+    let whole = (value.abs() + 0.5).floor() as u64;
+    let sign = if value < 0.0 { "-" } else { "" };
+    format!("{sign}{} min", compact_whole(whole))
 }
 
 /// `4.3×` up to 999.9, then `1.0k×`, `7.1k×`, `123k×`. A non-finite figure is
@@ -478,10 +478,10 @@ fn multiple_text(multiple: f64) -> String {
     if !multiple.is_finite() {
         return UNKNOWN.to_owned();
     }
-    let tenths = (multiple * 10.0 + 0.5).floor();
-    if tenths < 10_000.0 {
-        let tenths = tenths.max(0.0) as u64;
-        return format!("{}.{}\u{d7}", tenths / 10, tenths % 10);
+    // Judged on the figure `{:.1}` prints, so below 1,000 it is that figure.
+    let printed = format!("{multiple:.1}");
+    if printed.parse::<f64>().is_ok_and(|p| p < 1000.0) {
+        return format!("{printed}\u{d7}");
     }
     format!("{}\u{d7}", compact_whole((multiple + 0.5).floor() as u64))
 }

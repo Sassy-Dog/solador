@@ -180,9 +180,11 @@
   before held none); a macOS row's is `<minutes> on <MM-DD>`. **Large figures
   compact** so the value fits the overview's 18-character slot: minutes print
   exactly up to 9,999, then `12.3k min`, `100k min`, `1.2M min`; a multiple
-  prints to a tenth up to 999.9, then `1.0k×`, `7.1k×`, `123k×`. Each figure is
-  rounded half up from the whole number in integer arithmetic, so a boundary is
-  judged on what would be printed. Every row's detail leads with the exact
+  prints to a tenth up to 999.9, then `1.0k×`, `7.1k×`, `123k×`. Figures below
+  those thresholds print exactly as `minutes()` and `{:.1}` always did (the
+  threshold is judged on that printed figure, so the value agrees with the
+  detail); only the compaction step rounds half up, on the whole number in
+  integer arithmetic. Every row's detail leads with the exact
   minute count (`1,500 min on 11-14 against a 7-day average of 300 min`;
   `<minutes> of hosted macOS on a repo listed as self-hosted only`), so the
   hover title and the Full view keep it. `OVERVIEW_VALUE_SLOT_CH` in

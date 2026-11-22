@@ -1040,17 +1040,37 @@ fn every_alert_value_fits_the_overview_slot() {
 #[test]
 fn the_css_slot_is_still_the_width_the_values_are_sized_for() {
     let css = include_str!("../../../ui/dashboard.css").replace("\r\n", "\n");
-    let selector = "#dashboardOverview .db-item > .db-value {";
-    // The rule is stated twice (`flex: none` earlier, the width at the end).
-    let widths: Vec<&str> = css
-        .match_indices(selector)
-        .map(|(at, _)| &css[at..at + css[at..].find('}').unwrap()])
-        .filter(|block| block.contains("width:"))
-        .collect();
+    // The rule is stated twice (`flex: none` earlier, the width at the end). A
+    // whole trimmed line, so `max-width:18ch;` does not stand in for it.
+    let states_slot = |css: &str| {
+        css.match_indices("#dashboardOverview .db-item > .db-value {")
+            .map(|(at, _)| &css[at..at + css[at..].find('}').unwrap()])
+            .any(|block| {
+                block
+                    .lines()
+                    .any(|l| l.trim() == format!("width:{OVERVIEW_VALUE_SLOT_CH}ch;"))
+            })
+    };
     assert!(
-        widths
-            .iter()
-            .any(|block| block.contains(&format!("width:{OVERVIEW_VALUE_SLOT_CH}ch;"))),
+        states_slot(&css),
         "the overview value slot is no longer {OVERVIEW_VALUE_SLOT_CH}ch"
     );
+    // Negative control: `max-width:18ch;` is not the declaration.
+    let doctored = css.replace("\n  width:18ch;", "\n  max-width:18ch;");
+    assert_ne!(doctored, css);
+    assert!(!states_slot(&doctored));
+}
+
+#[test]
+fn values_below_the_thresholds_agree_with_the_detail() {
+    assert_eq!(multiple_text(4.35), "4.3\u{d7}");
+    let day = NaiveDate::from_ymd_opt(2023, 11, 14).unwrap();
+    assert_eq!(
+        spike_value(1_500.5, Some(2.0)),
+        format!("{} \u{b7} 2.0\u{d7}", minutes(1_500.5))
+    );
+    assert!(spike_detail(1_500.5, day, 300.0).starts_with(&minutes(1_500.5)));
+    for m in [0.5, 1_500.5, 2_500.5, 9_998.5, 9_999.4] {
+        assert_eq!(compact_minutes(m), minutes(m), "{m}");
+    }
 }
