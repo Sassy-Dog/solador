@@ -427,9 +427,92 @@ fn short_day(day: NaiveDate) -> String {
     format!("{:02}-{:02}", day.month(), day.day())
 }
 
-/// `4.3×`.
+/// The overview's value slot, in characters: `#dashboardOverview .db-item >
+/// .db-value { width:18ch }` in `app/ui/dashboard.css` (the body font is
+/// monospace, so one character is one `ch`). Every alert row's value must fit.
+#[cfg(test)]
+const OVERVIEW_VALUE_SLOT_CH: usize = 18;
+
+/// A whole figure from 1,000 up as `12.3k` / `123k` / `1.2M`, each step rounded
+/// half up in integer arithmetic (a float `{:.1}` would round 99.95 the other
+/// way) so a boundary is judged on what would be printed.
+fn compact_whole(n: u64) -> String {
+    if n < 1_000_000 {
+        let tenths = n.saturating_add(50) / 100;
+        if tenths < 1000 {
+            return format!("{}.{}k", tenths / 10, tenths % 10);
+        }
+        let k = n.saturating_add(500) / 1000;
+        if k < 1000 {
+            return format!("{k}k");
+        }
+    }
+    let tenths = n.saturating_add(50_000) / 100_000;
+    if tenths < 1000 {
+        return format!("{}.{}M", tenths / 10, tenths % 10);
+    }
+    format!("{}M", n.saturating_add(500_000) / 1_000_000)
+}
+
+/// `1234.4` -> `1,234 min` up to 9,999, then `12.3k min`, `100k min`,
+/// `1.2M min`: the form that fits the overview's value slot. The exact figure
+/// goes in the row's detail. A non-finite figure is not a number.
+fn compact_minutes(value: f64) -> String {
+    if !value.is_finite() {
+        return UNKNOWN.to_owned();
+    }
+    if value < 0.0 {
+        return minutes(value);
+    }
+    // Saturating cast: a figure past `u64` is not a minute count anyone sees.
+    let whole = (value + 0.5).floor() as u64;
+    if whole < 10_000 {
+        return format!("{} min", group_thousands(&whole.to_string()));
+    }
+    format!("{} min", compact_whole(whole))
+}
+
+/// `4.3×` up to 999.9, then `1.0k×`, `7.1k×`, `123k×`. A non-finite figure is
+/// not a number.
 fn multiple_text(multiple: f64) -> String {
-    format!("{multiple:.1}\u{d7}")
+    if !multiple.is_finite() {
+        return UNKNOWN.to_owned();
+    }
+    let tenths = (multiple * 10.0 + 0.5).floor();
+    if tenths < 10_000.0 {
+        let tenths = tenths.max(0.0) as u64;
+        return format!("{}.{}\u{d7}", tenths / 10, tenths % 10);
+    }
+    format!("{}\u{d7}", compact_whole((multiple + 0.5).floor() as u64))
+}
+
+/// A spike row's value: `1,500 min · 5.0×`, or `· from 0` with no baseline.
+fn spike_value(minutes: f64, multiple: Option<f64>) -> String {
+    let ratio = multiple.map_or_else(|| "from 0".to_owned(), multiple_text);
+    format!("{} \u{b7} {ratio}", compact_minutes(minutes))
+}
+
+/// A spike row's detail: the exact figures, whatever the value compacted.
+fn spike_detail(minutes_on_day: f64, day: NaiveDate, baseline_avg: f64) -> String {
+    format!(
+        "{} on {} against a 7-day average of {}",
+        minutes(minutes_on_day),
+        short_day(day),
+        minutes(baseline_avg)
+    )
+}
+
+/// A macOS-on-self-hosted row's value: `12 min on 11-14`.
+fn macos_value(minutes_on_day: f64, day: NaiveDate) -> String {
+    format!("{} on {}", compact_minutes(minutes_on_day), short_day(day))
+}
+
+/// A macOS-on-self-hosted row's detail, leading with the exact minute count.
+fn macos_detail(minutes_on_day: f64) -> String {
+    format!(
+        "{} of hosted macOS on a repo listed as self-hosted only",
+        minutes(minutes_on_day)
+    )
 }
 
 fn alert_row(id: String, label: String, value: String, detail: String, tint: u32) -> Value {
@@ -477,18 +560,11 @@ fn alert_rows(
         },
     );
     for flag in &spikes.flags {
-        let ratio = flag
-            .multiple
-            .map_or_else(|| "from 0".to_owned(), multiple_text);
         rows.push(alert_row(
             format!("spike:{}:{}", flag.repository, flag.day),
             format!("SPIKE \u{b7} {}", flag.repository),
-            format!("{} \u{b7} {ratio}", minutes(flag.minutes)),
-            format!(
-                "on {} against a 7-day average of {}",
-                short_day(flag.day),
-                minutes(flag.baseline_avg)
-            ),
+            spike_value(flag.minutes, flag.multiple),
+            spike_detail(flag.minutes, flag.day, flag.baseline_avg),
             color::RED,
         ));
     }
@@ -510,8 +586,8 @@ fn alert_rows(
         rows.push(alert_row(
             format!("macos:{}:{}", flag.repository, flag.day),
             format!("MACOS ON SELF-HOSTED \u{b7} {}", flag.repository),
-            format!("{} on {}", minutes(flag.minutes), short_day(flag.day)),
-            "hosted macOS minutes on a repo listed as self-hosted only".to_owned(),
+            macos_value(flag.minutes, flag.day),
+            macos_detail(flag.minutes),
             color::RED,
         ));
     }

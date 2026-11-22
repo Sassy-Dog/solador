@@ -4159,9 +4159,15 @@ for (const [fixtureName, deciding] of [
 // <multiple>×`) in the overview at the tile's `min_width` (400); the words that
 // explain it live in the detail. `text-overflow: ellipsis` reacts to
 // `scrollWidth > clientWidth`, which is what is measured, as azure.spec.js's fit().
-test("the Actions billing spike row's value is not truncated at the tile's min_width", async ({ page, baseURL }) => {
-  const [spike] = (await (await fetch(`${baseURL}/sample-actions-billing-spike.json`)).json()).alerts;
-  expect(spike.value).toMatch(/×$/);
+// The widest value the compaction scheme produces is 18 characters
+// (`9,999 min · 999.9×`, #786); the slot is 18ch, so it must not ellipsise either.
+const WIDEST_ALERT_VALUE = "9,999 min · 999.9×";
+for (const form of ["the fixture's value", "the widest value"]) {
+test(`the Actions billing spike row's value is not truncated at the tile's min_width (${form})`, async ({ page, baseURL }) => {
+  const [fixture] = (await (await fetch(`${baseURL}/sample-actions-billing-spike.json`)).json()).alerts;
+  expect(fixture.value).toMatch(/×$/);
+  const spike = form === "the widest value" ? { ...fixture, value: WIDEST_ALERT_VALUE } : fixture;
+  expect([...spike.value].length).toBeLessThanOrEqual(18);
   await openDashboard(page, baseURL, false, (view) => {
     for (const t of [view.layout.tiles.find(t => t.source === "ghRunners"), view.tiles.find(t => t.source === "ghRunners")]) {
       t.source = "actionsBilling";
@@ -4192,3 +4198,4 @@ test("the Actions billing spike row's value is not truncated at the tile's min_w
     { message: "the spike value is cut off by an ellipsis at a 400px tile" },
   ).toEqual({ tile: 400, shown: spike.value, fits: true });
 });
+}

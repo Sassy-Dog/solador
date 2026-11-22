@@ -1736,7 +1736,10 @@ behind one never reaches another's warning or chip.
   "budgetNote": null, // {"text": "no Actions budget set"} when there is none: no `budget`, no bar
   "dataThrough": {"text": "usage through Nov 14 19:00 UTC", "color": …},
   "alerts": [{"id": "spike:gadget-api:2023-11-14", "label": "SPIKE · gadget-api",
-              "value": "1,500 min · 5.0×", "detail": …, "color": …}],
+              "value": "1,500 min · 5.0×",
+              "detail": "1,500 min on 11-14 against a 7-day average of 300 min", "color": …}],
+                     //   the value compacts large figures to fit the overview's 18ch slot (`12.3k min ·
+                     //   1.0k×`); the detail always leads with the exact minutes
                      //   Billing alerts (#770): a tripped spike or macOS-on-self-hosted rule is a red row
                      //   and flags the tile; a rule that could not be judged (the previous month's
                      //   read failed) is a muted `—` row that flags nothing; none tripped, `[]`

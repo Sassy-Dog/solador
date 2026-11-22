@@ -177,7 +177,17 @@
   tile and feeds Needs Attention through `dashboard::source_rows`, as the budget
   bar does. A spike's value carries the figures only so the overview row is not
   ellipsised (`<minutes> · <multiple>×`, or `<minutes> · from 0` when the 7 days
-  before held none); its detail names the day and the 7-day average. **No OS banner** is sent
+  before held none); a macOS row's is `<minutes> on <MM-DD>`. **Large figures
+  compact** so the value fits the overview's 18-character slot: minutes print
+  exactly up to 9,999, then `12.3k min`, `100k min`, `1.2M min`; a multiple
+  prints to a tenth up to 999.9, then `1.0k×`, `7.1k×`, `123k×`. Each figure is
+  rounded half up from the whole number in integer arithmetic, so a boundary is
+  judged on what would be printed. Every row's detail leads with the exact
+  minute count (`1,500 min on 11-14 against a 7-day average of 300 min`;
+  `<minutes> of hosted macOS on a repo listed as self-hosted only`), so the
+  hover title and the Full view keep it. `OVERVIEW_VALUE_SLOT_CH` in
+  `actions_billing.rs` tests every value against the slot, and a second test
+  fails if `dashboard.css` narrows it. **No OS banner** is sent
   (`deliver_banners` is untouched). The rules
   are judged when the view is built, from the retained fold and the settings of
   that moment, so a save re-flags the tile without waiting for a poll. When the
