@@ -8458,8 +8458,8 @@ mod tests {
     /// Neither Billing alerts rule delivers an OS banner (#770). The three
     /// banner paths feed `deliver_banners` from the GitHub approval notices, the
     /// service status notices and the update check; the rule rows are payload
-    /// only. Pinned here: the tripped fixtures are red rows with no notice
-    /// anywhere in the payload; the pin covers `main.rs`'s non-test source
+    /// only. Pinned here: the tripped fixtures carry alert rows and no
+    /// top-level notice key in the payload; the pin covers `main.rs`'s non-test source
     /// (one `.notification()`, inside `deliver_banners`, and three named
     /// `deliver_banners(` call sites); and the scan covers the
     /// `poll_actions_billing` body and the `actions_billing.rs` view module,
@@ -8502,7 +8502,8 @@ mod tests {
             errors.iter().any(|e| e.contains(".notification() calls")),
             "{errors:?}"
         );
-        // The billing path itself reaches no banner, by any name or wrapper.
+        // The billing path itself names no `deliver_*` function and no
+        // `notification()`: the poll body and the view module, scanned by text.
         let start = source.find("async fn poll_actions_billing").unwrap();
         let poll = &source[start..start + source[start..].find("\n}\n").unwrap()];
         let view = include_str!("actions_billing.rs").replace("\r\n", "\n");
@@ -8510,6 +8511,9 @@ mod tests {
         // Negative control: a banner call from the view module fails the scan.
         let doctored =
             format!("{view}\nfn x(app: &App) {{ crate::deliver_banners(app, \"b\", &[]); }}\n");
+        assert!(!billing_path_errors(poll, &doctored).is_empty());
+        // Negative control for the other arm: a `notification()` in the view.
+        let doctored = format!("{view}\nfn x(h: &H) {{ h.notification(); }}\n");
         assert!(!billing_path_errors(poll, &doctored).is_empty());
     }
 

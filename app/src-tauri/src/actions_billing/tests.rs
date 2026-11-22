@@ -594,7 +594,8 @@ fn a_spike_is_one_red_row_with_its_figures() {
     assert_eq!(row["color"], color::hex(color::RED));
     let detail = row["detail"].as_str().unwrap();
     assert!(detail.contains("11-14"));
-    assert!(detail.contains("against a 7-day average of"));
+    assert!(detail.contains("against a 7-day average of 300 min"));
+    assert!(detail.starts_with("1,500 min on"));
 }
 
 #[test]
@@ -610,6 +611,14 @@ fn macos_on_a_listed_repo_is_a_red_row_matched_case_insensitively() {
     );
     assert_eq!(rows(&p)[0]["value"], "12 min on 11-14");
     assert_eq!(rows(&p)[1]["value"], "4 min on 11-13");
+    assert_eq!(
+        rows(&p)[0]["detail"],
+        "12 min of hosted macOS on a repo listed as self-hosted only"
+    );
+    assert_eq!(
+        rows(&p)[1]["detail"],
+        "4 min of hosted macOS on a repo listed as self-hosted only"
+    );
     assert!(rows(&p)
         .iter()
         .all(|r| r["color"] == color::hex(color::RED)));
@@ -734,6 +743,7 @@ fn a_spike_with_no_minutes_in_the_7_days_before_says_from_0() {
     assert_eq!(row["value"], "6,000 min \u{b7} from 0");
     let detail = row["detail"].as_str().unwrap();
     assert!(detail.contains("11-03"));
+    assert!(detail.starts_with("6,000 min on 11-03"));
     assert!(detail.contains("against a 7-day average of 0 min"));
 }
 
@@ -921,4 +931,146 @@ fn the_trend_adds_no_overview_row_and_the_fixtures_raise_no_rule() {
     // Rows are what the overview tile is made of; the trend is not one.
     assert!(rows(&payload(Fixture::Measured)).is_empty());
     assert!(rows(&payload(Fixture::FirstDay)).is_empty());
+}
+// MARK: - Compact alert values (#786)
+
+#[test]
+fn minutes_compact_from_10000_at_every_boundary() {
+    for (value, want) in [
+        (0.0, "0 min"),
+        (9_999.0, "9,999 min"),
+        (9_999.6, "10.0k min"),
+        (10_000.0, "10.0k min"),
+        (12_345.0, "12.3k min"),
+        (99_949.0, "99.9k min"),
+        (99_950.0, "100k min"),
+        (999_499.0, "999k min"),
+        (999_500.0, "1.0M min"),
+        (1_234_567.0, "1.2M min"),
+        (f64::NAN, "\u{2014}"),
+        (f64::INFINITY, "\u{2014}"),
+    ] {
+        assert_eq!(compact_minutes(value), want, "{value}");
+    }
+}
+
+#[test]
+fn multiples_compact_from_1000_at_every_boundary() {
+    for (value, want) in [
+        (1.04, "1.0\u{d7}"),
+        (5.0, "5.0\u{d7}"),
+        (999.94, "999.9\u{d7}"),
+        (999.96, "1.0k\u{d7}"),
+        (7_142.86, "7.1k\u{d7}"),
+        (123_456.0, "123k\u{d7}"),
+        (f64::NAN, "\u{2014}"),
+        (f64::INFINITY, "\u{2014}"),
+    ] {
+        assert_eq!(multiple_text(value), want, "{value}");
+    }
+}
+
+#[test]
+fn the_widest_forms_and_the_exact_details() {
+    assert_eq!(
+        spike_value(9_999.0, Some(999.9)),
+        "9,999 min \u{b7} 999.9\u{d7}"
+    );
+    assert_eq!(
+        spike_value(99_949.0, Some(99_949.0)),
+        "99.9k min \u{b7} 99.9k\u{d7}"
+    );
+    assert_eq!(spike_value(9_999.0, None), "9,999 min \u{b7} from 0");
+    assert_eq!(spike_value(10_000.0, None), "10.0k min \u{b7} from 0");
+    let day = NaiveDate::from_ymd_opt(2023, 11, 14).unwrap();
+    assert_eq!(macos_value(10_000.0, day), "10.0k min on 11-14");
+    assert_eq!(
+        spike_detail(12_345.0, day, 300.0),
+        "12,345 min on 11-14 against a 7-day average of 300 min"
+    );
+    assert_eq!(
+        macos_detail(12_345.0),
+        "12,345 min of hosted macOS on a repo listed as self-hosted only"
+    );
+}
+
+/// Every value the formatters can produce fits the overview's 18-character
+/// slot. Counted with `chars()`: `\u{b7}` and `\u{d7}` are two bytes each.
+#[test]
+fn every_alert_value_fits_the_overview_slot() {
+    let day = NaiveDate::from_ymd_opt(2023, 11, 14).unwrap();
+    let fits = |value: String| {
+        assert!(
+            value.chars().count() <= OVERVIEW_VALUE_SLOT_CH,
+            "{value} is wider than {OVERVIEW_VALUE_SLOT_CH}ch"
+        );
+    };
+    let mut minutes: Vec<f64> = (0..=12_000).map(f64::from).collect();
+    minutes.extend((0..=9_999_999u32).step_by(7).map(f64::from));
+    minutes.extend([
+        9_999.4,
+        9_999.6,
+        99_949.0,
+        99_950.0,
+        999_499.0,
+        999_500.0,
+        9_999_999.0,
+    ]);
+    for m in minutes {
+        fits(spike_value(m, None));
+        fits(macos_value(m, day));
+        fits(spike_value(m, Some(999.9)));
+        fits(spike_value(m, Some(99_949.0)));
+        fits(spike_value(m, Some(999_999.0)));
+    }
+    let mut multiples: Vec<f64> = (0..=20_000).map(|n| 1.0 + f64::from(n) * 0.05).collect();
+    multiples.extend((1_000..=999_999u32).step_by(13).map(f64::from));
+    multiples.extend([
+        999.94, 999.96, 99_949.0, 99_950.0, 999_499.0, 999_500.0, 999_999.0,
+    ]);
+    for x in multiples {
+        for m in [1_500.0, 9_999.0, 9_999.6, 99_949.0, 999_499.0, 9_999_999.0] {
+            fits(spike_value(m, Some(x)));
+        }
+    }
+}
+
+/// The slot the test above mirrors: narrowing `width:18ch` in the stylesheet
+/// fails here rather than clipping a value in the overview.
+#[test]
+fn the_css_slot_is_still_the_width_the_values_are_sized_for() {
+    let css = include_str!("../../../ui/dashboard.css").replace("\r\n", "\n");
+    // The rule is stated twice (`flex: none` earlier, the width at the end). A
+    // whole trimmed line, so `max-width:18ch;` does not stand in for it.
+    let states_slot = |css: &str| {
+        css.match_indices("#dashboardOverview .db-item > .db-value {")
+            .map(|(at, _)| &css[at..at + css[at..].find('}').unwrap()])
+            .any(|block| {
+                block
+                    .lines()
+                    .any(|l| l.trim() == format!("width:{OVERVIEW_VALUE_SLOT_CH}ch;"))
+            })
+    };
+    assert!(
+        states_slot(&css),
+        "the overview value slot is no longer {OVERVIEW_VALUE_SLOT_CH}ch"
+    );
+    // Negative control: `max-width:18ch;` is not the declaration.
+    let doctored = css.replace("\n  width:18ch;", "\n  max-width:18ch;");
+    assert_ne!(doctored, css);
+    assert!(!states_slot(&doctored));
+}
+
+#[test]
+fn values_below_the_thresholds_agree_with_the_detail() {
+    assert_eq!(multiple_text(4.35), "4.3\u{d7}");
+    let day = NaiveDate::from_ymd_opt(2023, 11, 14).unwrap();
+    assert_eq!(
+        spike_value(1_500.5, Some(2.0)),
+        format!("{} \u{b7} 2.0\u{d7}", minutes(1_500.5))
+    );
+    assert!(spike_detail(1_500.5, day, 300.0).starts_with(&minutes(1_500.5)));
+    for m in [0.5, 1_500.5, 2_500.5, 9_998.5, 9_999.4] {
+        assert_eq!(compact_minutes(m), minutes(m), "{m}");
+    }
 }
