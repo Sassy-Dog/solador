@@ -38,8 +38,7 @@ credential on disk in plaintext, or into a log line, or into an error string
 shown in the UI, is a vulnerability. The Azure blob client deliberately strips
 URLs out of transport errors for exactly this reason: a SAS token is a URL
 query string, and error messages get pasted into issues. The one credential
-Solador reads that it did not store is another tool's own sign-in, for the
-the AI Usage tile's plan limits: off until picked and finished in that
+Solador reads that it did not store is another tool's own sign-in, for the AI Usage tile's plan limits: off until picked and finished in that
 source's steps, read for one
 request per poll, never copied, written or refreshed (`docs/SECRETS.md`,
 "Borrowed sign-ins"). A path that makes either one leave that request, or be

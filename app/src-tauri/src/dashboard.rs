@@ -1176,7 +1176,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         // sentence from (`tile_scope::ai_header`): per-row lines, each vendor's
         // key state, and the rollups' own message. Rides on the source because
         // only a tile knows its scope.
-        source["ai"] = json!({"lines":payload["lines"],"vendors":payload["vendors"],"rollupsMessage":payload["rollupsMessage"]});
+        source["ai"] = json!({"lines":payload["lines"],"rollupsMessage":payload["rollupsMessage"]});
     }
     if id == "hosts" {
         // The shared limits editor (#612): shared by every Machines tile, so
@@ -1620,7 +1620,8 @@ pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<Stri
     // (`manage` with a non-empty message). Everything else is carried: the
     // scope's own sentences (`configure`) and the stock "No readings are
     // available yet.", which no panel paints for a payload with no message.
-    let (sentence, action) = empty_state(tile, &source, true);
+    let narrowed = ai_narrowed_source(tile, &source);
+    let (sentence, action) = empty_state(tile, narrowed.as_ref().unwrap_or(&source), true);
     let panel_paints =
         action.is_none() || (action == Some("manage") && !string(&source, "message").is_empty());
     (!panel_paints).then(|| sentence.to_owned())
@@ -1660,6 +1661,13 @@ fn empty_state<'a>(
 ) -> (&'a str, Option<&'static str>) {
     if source["loading"] == true && list(source, "rows").is_empty() {
         ("Waiting for the first reading…", None)
+    } else if source["aiNarrowed"] == true
+        && matching_empty
+        && !string(source, "message").is_empty()
+    {
+        // An AI Usage tile whose own vendor has nothing to show says why, in the
+        // words its Full view uses, rather than "no resources match".
+        (string(source, "message"), Some("manage"))
     } else if tile.scope.starts_with("item:") && matching_empty {
         (
             "This resource has no current reading. Review its source or choose another scope.",
@@ -1686,6 +1694,22 @@ fn empty_state<'a>(
     } else {
         (string(source, "message"), Some("manage"))
     }
+}
+
+/// `source` with an AI Usage tile's own `loading` and `message`, when its scope
+/// narrows it (`tile_scope::ai_header`): the one function the Full view and the
+/// overview's empty text both ask, so they cannot say different things. `None`
+/// for every other tile, and for `all` and `attention`.
+fn ai_narrowed_source(tile: &DashboardTile, source: &Value) -> Option<Value> {
+    if tile.source != "aiUsage" {
+        return None;
+    }
+    let header = crate::tile_scope::ai_header(&source["ai"], &tile.scope)?;
+    let mut narrowed = source.clone();
+    narrowed["loading"] = json!(header.loading);
+    narrowed["message"] = json!(header.message["text"].as_str().unwrap_or_default());
+    narrowed["aiNarrowed"] = json!(true);
+    Some(narrowed)
 }
 
 /// The warnings a tile's card carries. The source's, except an AI Usage tile
@@ -1791,7 +1815,12 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .find(|s| s["value"] == tile.scope)
         .map(|s| string(s, "label").to_owned())
         .unwrap_or_else(|| "Resource no longer available".into());
-    let (empty, empty_action) = empty_state(tile, source, matching.is_empty());
+    let narrowed = ai_narrowed_source(tile, source);
+    let (empty, empty_action) = empty_state(
+        tile,
+        narrowed.as_ref().unwrap_or(source),
+        matching.is_empty(),
+    );
     let footer = if grouped {
         let noun = if shown.len() == 1 { "group" } else { "groups" };
         format!(
@@ -3944,10 +3973,72 @@ mod tests {
             );
         }
         let item = warnings("item:openai-api");
+        // Its own row's segment is there, and only its own.
+        assert!(item.contains("openai-api"), "{item}");
         assert!(
-            !item.contains("codex-plan") && !item.contains("anthropic"),
+            !item.contains("codex-plan") && !item.contains("anthropic") && !item.contains("claude"),
             "{item}"
         );
+        // And it keeps the amber of the status line it was built from.
+        let t = DashboardTile::new("t", "aiUsage", "AI Usage", "item:openai-api");
+        let view = tile_view(&t, &source);
+        assert!(!list(&view, "warnings").is_empty());
+        for w in list(&view, "warnings") {
+            assert_eq!(w["color"], color::hex(color::AMBER));
+        }
+    }
+
+    /// The overview tile's empty text is its Full view's message, narrowed to
+    /// the tile's own vendor: never another vendor's key failure and never
+    /// another vendor's wait.
+    #[test]
+    fn an_ai_usage_tiles_empty_text_is_its_own_vendors() {
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let empty = |state: &UsageState, scope: &str| -> String {
+            let payload =
+                crate::usage::ai_usage_view(state, crate::plan_usage::PlanInputs::OFF, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            string(&tile_view(&t, &source), "empty").to_owned()
+        };
+        let openai_off = crate::settings::not_set_up_message(crate::settings::OPENAI_TITLE);
+        let anthropic_off = crate::settings::not_set_up_message(crate::settings::ANTHROPIC_TITLE);
+
+        // Anthropic's key unreadable, OpenAI's absent.
+        let mut state = UsageState::new();
+        state
+            .anthropic_api_mut()
+            .unreadable("keychain locked".into());
+        state.openai_api_mut().unconfigure();
+        for scope in ["openai", "item:openai-api", "item:codex-plan"] {
+            let text = empty(&state, scope);
+            assert_eq!(text, openai_off, "{scope}");
+        }
+        assert_eq!(empty(&state, "anthropic"), "keychain locked");
+
+        // Anthropic's key unread, OpenAI's absent: OpenAI's tile is not waiting.
+        let mut state = UsageState::new();
+        state.openai_api_mut().unconfigure();
+        let text = empty(&state, "openai");
+        assert_ne!(text, "Waiting for the first reading\u{2026}");
+        assert_eq!(text, openai_off);
+        assert_eq!(
+            empty(&state, "anthropic"),
+            "Waiting for the first reading\u{2026}"
+        );
+
+        // Mirror.
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unreadable("keychain locked".into());
+        assert_eq!(empty(&state, "claude"), anthropic_off);
+        assert_eq!(empty(&state, "openai"), "keychain locked");
+        // The whole tile keeps its own sentence.
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        assert_eq!(empty(&state, "all"), crate::settings::none_added_message());
     }
 
     /// Every AI row carries its vendor's scope, and the fixed scopes the picker

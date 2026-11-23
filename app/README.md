@@ -1709,20 +1709,24 @@ vendor's failure from reading as the other's.
   "freshness": null,    // the plans' and spend clocks, attributed. Claude's rollups
                         // contribute none: they are on the `ClaudeRollups` cadence,
                         // and `footer` already measures it
-  "loading": false,     // the OR of every enabled part's
+  "loading": false,     // the OR of every enabled part's, and true while a key is
+                        //   still unread (an unread key counts, though it has no
+                        //   section yet)
   "lines": [            // always the five row ids in body order (claude-plan,
                         //   codex-plan, anthropic-api, openai-api, claude-today):
-                        //   {"id", "warning", "clock", "loading"}; `footer`,
+                        //   {"id", "on", "warning", "clock", "loading",
+                        //   "undecided", "error"}; `on`: the part is set up;
+                        //   `undecided`/`error`: how far a pass has got with the
+                        //   row's own key (the two API rows). `footer`,
                         //   `freshness` and `loading` above are these merged. A
-                        //   tile narrowed to one vendor rebuilds its own from its
-                        //   rows alone, so no other vendor's line reaches it
-    {"id": "claude-plan", "warning": null, "clock": null, "loading": false}, …
-  ],
-  "vendors": [          // {"id": "anthropic"|"openai", "on": bool, "undecided":
-                        //   bool, "error": string|null}: whether a part of the
-                        //   vendor is on and how far a pass has got with its key
+                        //   tile narrowed by any scope but `all` and `attention`
+                        //   rebuilds its own from its rows alone and carries only
+                        //   their `lines`, so no other vendor's text reaches it
+    {"id": "claude-plan", "on": true, "warning": null, "clock": null,
+     "loading": false, "undecided": false, "error": null}, …
   ],
   "rollupsMessage": null // the rollups' own state line, apart from the setup sentence
+                        //   (dropped from a narrowed tile's payload)
 }
 
 // azure_cost

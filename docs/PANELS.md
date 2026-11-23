@@ -126,12 +126,22 @@
   (`item:<id>`). The row ids are unchanged from the two tiles this one replaced,
   so a saved `item:` scope keeps working (`dashboard::vendor_of` maps each row to
   its vendor scope). A tile that does not keep `claude-today` also drops the
-  header's Claude Code figure. A narrowed tile also speaks only for its own
-  rows in the header: its warning and clock lines carry only those rows' ids,
-  it is held loading only by those rows (a vendor's unread key holds only tiles
-  that include that vendor), and the setup sentence or a key's failure shown
-  with no part on is about the tile's own vendors alone, on the Full view and
-  in the overview's warnings alike.
+  header's Claude Code figure. `all` and `attention` keep
+  the whole-tile header and the whole-tile sentence. Every other scope looks only
+  at its **relevant set** (`anthropic`: the Anthropic vendor, meaning its plan,
+  key and logs; `claude` and `item:claude-today`: the logs; `item:claude-plan`,
+  `item:codex-plan`: that plan; `item:anthropic-api`, `item:openai-api`: that key;
+  `openai`: the OpenAI vendor; `plans`: both plans; an unknown `item:`: nothing,
+  so no message and not loading). Its warning and clock lines carry only the
+  relevant rows' ids; it is loading when a relevant row is or a relevant key is
+  unread; and, when no relevant row has anything to show, its message is the
+  loading line if a relevant key is unread, else the first relevant key's
+  failure, else `Anthropic isn’t set up — …` / `OpenAI isn’t set up — …` for
+  each vendor with a relevant part off (a key read and absent; `plans` with both
+  plan parts off names both, in body order), else none. It never says the
+  whole-tile "No AI usage yet" sentence and never names a vendor outside its
+  relevant set, and the overview tile's empty text is that same message and
+  loading (one function, `tile_scope::ai_header`), as are its warnings.
   *Migration* (`StoreData::merge_ai_tiles`, after `split_usage_tiles`). The
   Anthropic and OpenAI tiles an earlier build saved become `aiUsage`, and none is
   left behind, since a leftover kind would make every later save fail

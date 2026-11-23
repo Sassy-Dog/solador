@@ -344,14 +344,22 @@
   so that arm is what keeps a vendor-scoped tile from showing the other vendor.
   The merged `footer`, `freshness` and `loading` are all-rows values, so the
   payload also carries `lines` (always the five row ids in body order, each
-  `{id, warning, clock, loading}`), `vendors` (`{id, on, undecided, error}` for
-  `anthropic` and `openai`) and `rollupsMessage`. A narrowed tile rebuilds
-  `footer`, `freshness`, `loading` and the setup `message` from the rows its
-  scope speaks for (`dashboard::ai_scope_rows`, `tile_scope::ai_header`), with
-  the same `merged_footer`/`merged_freshness`, and the overview's per-tile
-  `warnings` come from the same function; an `all` tile is unchanged. A line
-  with no firing segment is absent, never another vendor's text.
-  Its setup sentence waits on every vendor's key (`ProviderState::key_read`,
+  `{id, on, warning, clock, loading, undecided, error}`: `on` is the part being
+  set up, `undecided`/`error` the row's own key read) and `rollupsMessage`. A
+  tile narrowed by any scope but `all` and `attention` rebuilds `footer`,
+  `freshness`, `loading` and `message` from the rows its scope speaks for
+  (`dashboard::ai_scope_rows`, `tile_scope::ai_header`), with the same
+  `merged_footer`/`merged_freshness`; its payload keeps only those rows'
+  `lines` and drops `rollupsMessage`. The rule, per scope: loading is the OR of
+  the relevant rows' loading (an unread key holds its API row loading); the
+  message, when no relevant row has a part on, is the loading line if a
+  relevant key is unread, else the first relevant key's failure, else
+  `not_set_up_message` for each vendor with a relevant part off, else none. The
+  overview's per-tile `warnings` and its empty text (`ai_narrowed_source`, into
+  `empty_state`) come from the same function, so the two cannot disagree; `all`
+  and `attention` tiles are unchanged. A line with no firing segment is absent,
+  never another vendor's text.
+  The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
   `nothing_added_message`): any key undecided is loading, else the first key
   error in body order speaks, else `settings::none_added_message`. Cadences are
   unchanged on disk: `claude_rollups`, `plan_usage` and `usage_providers` now

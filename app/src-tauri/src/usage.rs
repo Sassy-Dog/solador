@@ -394,7 +394,7 @@ impl<S> ProviderState<S> {
 
 /// How far a pass has got with one provider's key: not read yet, or the reason
 /// it could not be. A key that was read and is simply absent is neither.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeyRead {
     pub undecided: bool,
     pub error: Option<String>,
@@ -559,7 +559,7 @@ fn provider_row(label: impl Into<String>, value: Option<String>) -> Value {
 /// to know that they are — the Azure panel's equivalent line is muted for setup
 /// and red for a failure, and one `{text, color}` shape across both keeps that
 /// judgement on this side of the boundary in every case rather than most of them.
-fn state_message(text: &str) -> Value {
+pub(crate) fn state_message(text: &str) -> Value {
     json!({ "text": text, "color": color::hex(color::MUTED) })
 }
 
@@ -1067,7 +1067,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     } else {
         Rollups::off()
     };
-    let mut apis_out: Vec<Value> = Vec::new();
+    let mut apis: Vec<Value> = Vec::new();
     let claude =
         crate::plan_usage::view(Provider::Claude, state.plan(Provider::Claude), inputs, now);
     let codex = crate::plan_usage::view(Provider::Codex, state.plan(Provider::Codex), inputs, now);
@@ -1115,15 +1115,19 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     let mut lines = vec![
         ai_line(
             crate::plan_usage::CLAUDE_ID,
+            inputs.claude,
             first(&claude.warnings),
             first(&claude.clocks),
             claude.loading,
+            KeyRead::default(),
         ),
         ai_line(
             crate::plan_usage::CODEX_ID,
+            inputs.codex,
             first(&codex.warnings),
             first(&codex.clocks),
             codex.loading,
+            KeyRead::default(),
         ),
     ];
     for (id, key, view) in [
@@ -1132,14 +1136,15 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     ] {
         // A key not read yet holds the row loading although it has no section.
         let loading = key.is_loading() || key.is_undecided();
-        let (warning, clock, section) = match view {
-            Some(v) => (v.warning, v.freshness, Some(v.section)),
-            None => (Value::Null, Value::Null, None),
+        let on = view.is_some();
+        let (warning, clock) = match view {
+            Some(v) => {
+                apis.push(v.section);
+                (v.warning, v.freshness)
+            }
+            None => (Value::Null, Value::Null),
         };
-        lines.push(ai_line(id, warning, clock, loading));
-        if let Some(section) = section {
-            apis_push(&mut apis_out, section);
-        }
+        lines.push(ai_line(id, on, warning, clock, loading, key.key_read()));
     }
     let rollups_warning = if logs_on {
         attributed_status_footer(
@@ -1154,20 +1159,19 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     };
     lines.push(ai_line(
         crate::dashboard::CLAUDE_TODAY_ID,
+        logs_on,
         rollups_warning,
         Value::Null,
         claude_loading,
+        KeyRead::default(),
     ));
     let warnings: Vec<Value> = lines.iter().map(|l| l["warning"].clone()).collect();
     let clocks: Vec<Value> = lines.iter().map(|l| l["clock"].clone()).collect();
     let loading = lines.iter().any(|l| l["loading"] == true);
-    let apis = apis_out;
 
     let plans: Vec<Value> = claude.sections.into_iter().chain(codex.sections).collect();
     // The setup sentence is for no part at all; a rollups line or a plan or
     // spend figure is something to show instead.
-    let anthropic_on = logs_on || inputs.claude || apis.iter().any(|a| a["id"] == ANTHROPIC_API_ID);
-    let openai_on = inputs.codex || apis.iter().any(|a| a["id"] == OPENAI_API_ID);
     let any_part = logs_on || inputs.claude || inputs.codex || !apis.is_empty();
     let rollups_message = message.clone();
     let message = if any_part {
@@ -1175,14 +1179,6 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     } else {
         nothing_added_message(&[state.anthropic_api.key_read(), state.openai_api.key_read()])
     };
-    // What a vendor-scoped tile needs to speak for its own vendor only: whether
-    // a part of the vendor is on, and how far a pass has got with its key.
-    let vendor = |id: &str, on: bool, key: KeyRead| json!({"id": id, "on": on, "undecided": key.undecided, "error": key.error});
-    let vendors = json!([
-        vendor("anthropic", anthropic_on, state.anthropic_api.key_read()),
-        vendor("openai", openai_on, state.openai_api.key_read()),
-    ]);
-
     json!({
         "id": kind.id(),
         "title": kind.title(),
@@ -1201,24 +1197,24 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         "projects": projects,
         "footer": merged_footer(&warnings),
         "freshness": merged_freshness(&clocks),
-        // Per row, in body order, always all five: `{id, warning, clock,
-        // loading}`. `footer`, `freshness` and `loading` are these merged.
+        // Per row, in body order, always all five: `{id, on, warning, clock,
+        // loading, undecided, error}` (`on`: the part is set up; `undecided` and
+        // `error`: how far a pass has got with the row's own key, meaningful for
+        // the two API rows). `footer`, `freshness` and `loading` are these
+        // merged; a narrowed tile rebuilds its own from its rows.
         "lines": lines,
-        "vendors": vendors,
         "plans": plans,
         "apis": apis,
         "loading": loading,
     })
 }
 
-/// One row's header contributions: its warning segment, its clock segment (both
-/// `Null` when it has none) and whether it is still waiting on a read.
-fn ai_line(id: &str, warning: Value, clock: Value, loading: bool) -> Value {
-    json!({"id": id, "warning": warning, "clock": clock, "loading": loading})
-}
-
-fn apis_push(apis: &mut Vec<Value>, section: Value) {
-    apis.push(section);
+/// One row's header contributions: whether its part is on, its warning and
+/// clock segments (both `Null` when it has none), whether it is still waiting
+/// on a read, and how far a pass has got with its own key.
+fn ai_line(id: &str, on: bool, warning: Value, clock: Value, loading: bool, key: KeyRead) -> Value {
+    json!({"id": id, "on": on, "warning": warning, "clock": clock, "loading": loading,
+        "undecided": key.undecided, "error": key.error})
 }
 
 // MARK: - Fixtures

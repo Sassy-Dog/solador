@@ -375,9 +375,10 @@ test("the panel asks for its tile's reading, not the source's", async ({ page, b
   expect(await lastArgs(page, "ai_usage")).toEqual({ tile: tileIdFor("aiUsage") });
 });
 
-// A vendor-scoped tile's Full view is the payload Rust scoped to it: Codex's
-// rows only. Nothing of Claude's may be painted around them, not the rollups'
-// heading or windows, and not the Claude Code header figure.
+// A paint-only check, on a payload built by hand: given Codex's rows alone and
+// no Claude header figure, the renderer paints nothing of Claude's around them
+// (no rollups heading or windows, no Claude Code figure). What Rust sends a
+// scoped tile is not tested here; it is tested in `tile_scope.rs`.
 test("a Codex-only scoped payload paints no Claude heading, window rows or Claude Code figure", async ({ page, baseURL }) => {
   const full = await gotoAiUsage(page, baseURL);
   const codex = full.plans.find((plan) => plan.id === "codex-plan");
