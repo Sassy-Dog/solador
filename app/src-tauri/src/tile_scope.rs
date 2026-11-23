@@ -197,7 +197,7 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     // and so is what the payload carries of them: `lines` is cut to those rows
     // and `rollupsMessage` is gone, so a narrowed tile's IPC payload holds no
     // other vendor's warning, clock or key failure.
-    if let Some(header) = ai_header(payload, scope) {
+    let narrowed = if let Some(header) = ai_header(payload, scope) {
         let rows = crate::dashboard::ai_scope_rows(scope);
         if let Some(map) = payload.as_object_mut() {
             map.insert("footer".into(), header.footer);
@@ -209,7 +209,10 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
         if let Some(lines) = array_mut(payload, "lines") {
             lines.retain(|l| rows.contains(&str_of(l, "id")));
         }
-    }
+        true
+    } else {
+        false
+    };
     // The rollups, their projects and their heading are the `claude-today`
     // row's, kept or dropped together. Matched exactly: `claude-plan` also
     // starts with `claude-`, and a plans-only tile once kept the projects.
@@ -227,8 +230,13 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     // keep the row must not still name this machine's Claude usage.
     clear_text(payload, "trailing");
     clear_text(payload, "claudeToday");
-    // `message` speaks for the rollups, which this tile left out. With nothing
-    // else on the panel it stays, or a Full view that keeps no row is blank.
+    // A narrowed tile's `message` was rebuilt above and already speaks only for
+    // its own rows. Otherwise (`attention`) it is the whole tile's and speaks for
+    // the rollups, which this tile left out: with nothing else on the panel it
+    // stays, or a Full view that keeps no row is blank.
+    if narrowed {
+        return;
+    }
     let shows_a_block = ["plans", "apis"]
         .into_iter()
         .any(|key| array_mut(payload, key).is_some_and(|rows| !rows.is_empty()));
@@ -247,12 +255,14 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
 /// never at another vendor's: its segments are the rows' own, merged with the
 /// same helpers as the whole tile's, so wording, order and colour match; it is
 /// loading when one of those rows is (an unread key holds its API row loading);
-/// and, when none of those rows has a part on to show, its message is, in
-/// order: the loading line if a relevant key is unread, else the first relevant
-/// key's failure, else `settings::not_set_up_message` for each vendor with a
-/// relevant part off (read, absent), else none. With a part on it speaks for the
-/// rollups (`rollupsMessage`) only when it keeps `claude-today`. It never says
-/// the whole-tile "No AI usage yet" sentence.
+/// and its message is, in order: (1) the loading line if a relevant key is
+/// unread, else (2) the first relevant key's failure, in body order, else (3)
+/// the rollups' own line (`rollupsMessage`, such as "reading logs\u{2026}") when
+/// the Claude Code logs are relevant and on but have no data yet, else (4)
+/// `settings::not_set_up_message` for each vendor with a relevant part off, all
+/// of them off, else (5) none. A relevant key's wait or failure therefore wins
+/// over the rollups' line. It never says the whole-tile "No AI usage yet"
+/// sentence, and `all` and `attention` are unchanged.
 pub(crate) struct AiHeader {
     pub footer: Value,
     pub freshness: Value,
@@ -271,22 +281,19 @@ pub(crate) fn ai_header(inputs: &Value, scope: &str) -> Option<AiHeader> {
         .filter(|l| rows.contains(&str_of(l, "id")))
         .collect();
     let segments = |key: &str| -> Vec<Value> { mine.iter().map(|l| l[key].clone()).collect() };
+    let rollups_on = mine
+        .iter()
+        .any(|l| l["on"] == true && str_of(l, "id") == CLAUDE_TODAY_ID);
     let message = if mine.is_empty() {
         Value::Null
-    } else if mine.iter().any(|l| l["on"] == true) {
-        // Something to show: only the rollups have a line of their own.
-        if mine
-            .iter()
-            .any(|l| l["on"] == true && str_of(l, "id") == CLAUDE_TODAY_ID)
-        {
-            inputs["rollupsMessage"].clone()
-        } else {
-            Value::Null
-        }
     } else if mine.iter().any(|l| l["undecided"] == true) {
         crate::usage::state_message(crate::usage::PROVIDERS_LOADING_MESSAGE)
     } else if let Some(reason) = mine.iter().find_map(|l| l["error"].as_str()) {
         crate::usage::state_message(reason)
+    } else if rollups_on && !inputs["rollupsMessage"].is_null() {
+        inputs["rollupsMessage"].clone()
+    } else if mine.iter().any(|l| l["on"] == true) {
+        Value::Null
     } else {
         // Every relevant part is off and its key, if it has one, was read and is
         // absent: name only the vendors of those parts, in body order.
@@ -1126,6 +1133,155 @@ mod tests {
         // A stored key is content, not a message.
         let p = ai_state(false, false, false, Key::Stored, Key::Absent);
         assert!(scoped(&p, "anthropic")["message"].is_null());
+    }
+
+    /// The Full view says a narrowed tile's sentence once: in `message`, which the
+    /// panel paints, and not again as `tileEmpty` (#656). Whatever the sentence
+    /// is: not set up, a read still in flight, or a key that could not be read.
+    #[test]
+    fn a_narrowed_tiles_sentence_is_said_once_never_as_tile_empty_too() {
+        let cases: [(Value, &[&str], String); 6] = [
+            // Anthropic on, OpenAI off.
+            (
+                ai_state(true, false, false, Key::Absent, Key::Absent),
+                &["openai", "item:openai-api", "item:codex-plan"],
+                OPENAI_OFF.into(),
+            ),
+            // Mirror: OpenAI on, Anthropic off.
+            (
+                ai_state(false, true, false, Key::Absent, Key::Absent),
+                &[
+                    "anthropic",
+                    "claude",
+                    "item:claude-plan",
+                    "item:anthropic-api",
+                ],
+                ANTHROPIC_OFF.into(),
+            ),
+            // The other vendor on and this key unread.
+            (
+                ai_state(true, false, false, Key::Absent, Key::Unread),
+                &["openai", "item:openai-api"],
+                crate::usage::PROVIDERS_LOADING_MESSAGE.into(),
+            ),
+            (
+                ai_state(false, true, false, Key::Unread, Key::Absent),
+                &["anthropic", "item:anthropic-api"],
+                crate::usage::PROVIDERS_LOADING_MESSAGE.into(),
+            ),
+            // This key unreadable.
+            (
+                ai_state(true, false, false, Key::Absent, Key::Unreadable),
+                &["openai", "item:openai-api"],
+                "keychain locked".into(),
+            ),
+            (
+                ai_state(false, true, false, Key::Unreadable, Key::Absent),
+                &["anthropic", "item:anthropic-api"],
+                "keychain locked".into(),
+            ),
+        ];
+        for (p, scopes, sentence) in cases {
+            for scope in scopes {
+                let out = scoped(&p, scope);
+                assert_eq!(text(&out), sentence, "{scope} message");
+                assert!(
+                    out.get("tileEmpty").is_none(),
+                    "{scope}: the sentence is also painted as tileEmpty"
+                );
+            }
+        }
+    }
+
+    /// Parts that are on but have nothing to say yet, and the order the message
+    /// checks run in: an unread or unreadable key of the tile leads even when a
+    /// part is on, and the rollups' own line comes after the keys.
+    #[test]
+    fn a_narrowed_tiles_message_checks_run_in_order() {
+        // (a) Claude Code logs on, no summary yet: the rollups' own line.
+        let p = ai_state(false, false, true, Key::Absent, Key::Absent);
+        for scope in ["anthropic", "claude", "item:claude-today"] {
+            assert_eq!(
+                text(&scoped(&p, scope)),
+                crate::usage::LOADING_MESSAGE,
+                "{scope}"
+            );
+        }
+        // Not about the other vendor: its tiles say it is not set up.
+        assert_eq!(text(&scoped(&p, "openai")), OPENAI_OFF);
+        // (b) A part on with its key unread or unreadable: the key leads.
+        let p = ai_state(true, false, false, Key::Unread, Key::Absent);
+        assert_eq!(
+            text(&scoped(&p, "anthropic")),
+            crate::usage::PROVIDERS_LOADING_MESSAGE
+        );
+        assert_eq!(scoped(&p, "anthropic")["loading"], true);
+        let p = ai_state(true, false, false, Key::Unreadable, Key::Absent);
+        assert_eq!(text(&scoped(&p, "anthropic")), "keychain locked");
+        // The plan row alone has no key, so it is not held by it.
+        assert!(scoped(&p, "item:claude-plan")["message"].is_null());
+        // (c) Logs on with no summary and the key unreadable: the key's reason.
+        let p = ai_state(false, false, true, Key::Unreadable, Key::Absent);
+        assert_eq!(text(&scoped(&p, "anthropic")), "keychain locked");
+        let p = ai_state(false, false, true, Key::Unread, Key::Absent);
+        assert_eq!(
+            text(&scoped(&p, "anthropic")),
+            crate::usage::PROVIDERS_LOADING_MESSAGE
+        );
+        // A scope naming nothing says nothing and waits for nothing, however
+        // many keys are unread.
+        let p = ai_state(false, false, false, Key::Unread, Key::Unread);
+        let gone = scoped(&p, "item:gone");
+        assert!(gone["message"].is_null());
+        assert_eq!(gone["loading"], false);
+    }
+
+    /// A stored key whose read failed is a warning in the header, not the
+    /// tile's message: the row is on and shows its figure.
+    #[test]
+    fn a_failed_read_of_a_stored_key_is_not_the_tiles_message() {
+        use crate::plan_usage::PlanInputs;
+        let mut state = crate::usage::UsageState::new();
+        state.anthropic_api_mut().begin();
+        state
+            .anthropic_api_mut()
+            .failed("Anthropic rejected it".into());
+        state.openai_api_mut().unconfigure();
+        let p = crate::usage::ai_usage_view(&state, PlanInputs::OFF, AI_NOW);
+        let out = scoped(&p, "anthropic");
+        assert!(out["message"].is_null());
+        assert!(header_text(&out, "footer").contains("anthropic-api"));
+    }
+
+    /// The header figure on real narrowed payloads: only a tile that keeps the
+    /// Claude Code row names it.
+    #[test]
+    fn a_narrowed_payload_names_claude_code_only_when_it_keeps_the_row() {
+        let p = every_line_firing();
+        for (scope, names) in [
+            ("anthropic", true),
+            ("claude", true),
+            ("item:claude-today", true),
+            ("openai", false),
+            ("plans", false),
+            ("item:claude-plan", false),
+            ("item:anthropic-api", false),
+            ("item:codex-plan", false),
+            ("item:openai-api", false),
+            ("item:gone", false),
+        ] {
+            let out = scoped(&p, scope);
+            let (trailing, today) = (
+                out["trailing"].as_str().unwrap(),
+                out["claudeToday"].as_str().unwrap(),
+            );
+            if names {
+                assert_eq!(trailing, "Claude Code \u{b7} 1.2M today", "{scope}");
+                assert_eq!(today, "1.2M today", "{scope}");
+            } else {
+                assert_eq!((trailing, today), ("", ""), "{scope}");
+            }
+        }
     }
 
     /// `store` writes the AI Usage kind and title by literal, because it cannot

@@ -1213,8 +1213,12 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
 /// clock segments (both `Null` when it has none), whether it is still waiting
 /// on a read, and how far a pass has got with its own key.
 fn ai_line(id: &str, on: bool, warning: Value, clock: Value, loading: bool, key: KeyRead) -> Value {
+    // A key's failure is the row's message only while the row has no section: a
+    // stored key whose read failed is on, shows its figure and warns in the
+    // header, so its reason is not repeated as a message.
+    let error = if on { None } else { key.error };
     json!({"id": id, "on": on, "warning": warning, "clock": clock, "loading": loading,
-        "undecided": key.undecided, "error": key.error})
+        "undecided": key.undecided, "error": error})
 }
 
 // MARK: - Fixtures

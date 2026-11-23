@@ -134,14 +134,19 @@
   `openai`: the OpenAI vendor; `plans`: both plans; an unknown `item:`: nothing,
   so no message and not loading). Its warning and clock lines carry only the
   relevant rows' ids; it is loading when a relevant row is or a relevant key is
-  unread; and, when no relevant row has anything to show, its message is the
-  loading line if a relevant key is unread, else the first relevant key's
-  failure, else `Anthropic isn’t set up — …` / `OpenAI isn’t set up — …` for
-  each vendor with a relevant part off (a key read and absent; `plans` with both
-  plan parts off names both, in body order), else none. It never says the
+  unread; and its message is, in order: (1) the loading line if a relevant key is
+  unread, else (2) the first relevant key's failure, in body order, else (3) the
+  rollups' own line (`reading logs…`, the no-logs line) when the Claude Code
+  logs are relevant and on but have no data yet, else (4) `Anthropic isn’t set
+  up — …` / `OpenAI isn’t set up — …` for each vendor with a relevant part off,
+  all of them off (a key read and absent; `plans` with both plan parts off names
+  both, in body order), else (5) none. A relevant key's wait or failure
+  therefore wins over the rollups' line. It never says the
   whole-tile "No AI usage yet" sentence and never names a vendor outside its
   relevant set, and the overview tile's empty text is that same message and
-  loading (one function, `tile_scope::ai_header`), as are its warnings.
+  loading (one function, `tile_scope::ai_header`), as are its warnings. The Full
+  view says that sentence once: it is the payload's `message`, and `tileEmpty`
+  is not set when the narrowed `message` is what the panel paints.
   *Migration* (`StoreData::merge_ai_tiles`, after `split_usage_tiles`). The
   Anthropic and OpenAI tiles an earlier build saved become `aiUsage`, and none is
   left behind, since a leftover kind would make every later save fail

@@ -1172,10 +1172,10 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
         "defaultTile":default_tile(id, title)});
     if id == "aiUsage" {
-        // What a vendor-scoped tile rebuilds its header lines, loading and setup
-        // sentence from (`tile_scope::ai_header`): per-row lines, each vendor's
-        // key state, and the rollups' own message. Rides on the source because
-        // only a tile knows its scope.
+        // What a narrowed tile (any scope but `all` and `attention`) rebuilds its
+        // header lines, loading and message from (`tile_scope::ai_header`): the
+        // per-row `lines`, whose entries carry each key's state, and the rollups'
+        // own message. Rides on the source because only a tile knows its scope.
         source["ai"] = json!({"lines":payload["lines"],"rollupsMessage":payload["rollupsMessage"]});
     }
     if id == "hosts" {
@@ -1622,8 +1622,11 @@ pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<Stri
     // available yet.", which no panel paints for a payload with no message.
     let narrowed = ai_narrowed_source(tile, &source);
     let (sentence, action) = empty_state(tile, narrowed.as_ref().unwrap_or(&source), true);
+    // The message the panel paints is the narrowed one for a narrowed AI Usage
+    // tile, so its sentence is not said a second time as `tileEmpty`.
+    let painted = narrowed.as_ref().unwrap_or(&source);
     let panel_paints =
-        action.is_none() || (action == Some("manage") && !string(&source, "message").is_empty());
+        action.is_none() || (action == Some("manage") && !string(painted, "message").is_empty());
     (!panel_paints).then(|| sentence.to_owned())
 }
 
@@ -1706,6 +1709,9 @@ fn ai_narrowed_source(tile: &DashboardTile, source: &Value) -> Option<Value> {
     }
     let header = crate::tile_scope::ai_header(&source["ai"], &tile.scope)?;
     let mut narrowed = source.clone();
+    // Only the tile's own rows, so another vendor's rows never choose its
+    // loading text or action in `empty_state`.
+    narrowed["rows"] = json!(matching_rows(tile, source));
     narrowed["loading"] = json!(header.loading);
     narrowed["message"] = json!(header.message["text"].as_str().unwrap_or_default());
     narrowed["aiNarrowed"] = json!(true);
@@ -4039,6 +4045,91 @@ mod tests {
         state.anthropic_api_mut().unconfigure();
         state.openai_api_mut().unconfigure();
         assert_eq!(empty(&state, "all"), crate::settings::none_added_message());
+    }
+
+    /// An overview tile's empty text depends on its own vendor only: another
+    /// vendor's rows neither pick its loading text nor its action. And the same
+    /// holds for every narrowing scope, not only the vendor ones.
+    #[test]
+    fn an_ai_usage_tiles_empty_text_ignores_the_other_vendors_rows() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let empty = |state: &UsageState, inputs: PlanInputs, scope: &str| -> (String, Value) {
+            let payload = crate::usage::ai_usage_view(state, inputs, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            let view = tile_view(&t, &source);
+            (
+                string(&view, "empty").to_owned(),
+                view["emptyAction"].clone(),
+            )
+        };
+        let waiting = "Waiting for the first reading\u{2026}";
+        // OpenAI's key unread and Codex off. Claude's plan on or off must not
+        // change what OpenAI's tile says.
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        let claude_on = PlanInputs {
+            claude: true,
+            ..PlanInputs::OFF
+        };
+        let off = empty(&state, PlanInputs::OFF, "openai");
+        let on = empty(&state, claude_on, "openai");
+        assert_eq!(off, on, "Claude's plan changes OpenAI's tile");
+        assert_eq!(on.0, waiting);
+        assert_eq!(empty(&state, claude_on, "item:openai-api").0, waiting);
+        // Mirror: Anthropic's key unread, Codex on.
+        let mut state = UsageState::new();
+        state.openai_api_mut().unconfigure();
+        let codex_on = PlanInputs {
+            codex: true,
+            ..PlanInputs::OFF
+        };
+        assert_eq!(empty(&state, codex_on, "anthropic").0, waiting);
+        assert_eq!(empty(&state, PlanInputs::OFF, "anthropic").0, waiting);
+    }
+
+    /// Every narrowing scope's empty text is its own message: the plans, one
+    /// row of either vendor, and the Claude Code row.
+    #[test]
+    fn every_narrowing_ai_scope_says_its_own_vendors_sentence_on_the_overview() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let empty = |state: &UsageState, inputs: PlanInputs, scope: &str| -> String {
+            let payload = crate::usage::ai_usage_view(state, inputs, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            string(&tile_view(&t, &source), "empty").to_owned()
+        };
+        let off = |v: &str| crate::settings::not_set_up_message(v);
+        let (a, o) = (
+            off(crate::settings::ANTHROPIC_TITLE),
+            off(crate::settings::OPENAI_TITLE),
+        );
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        let none = PlanInputs::OFF;
+        assert_eq!(empty(&state, none, "plans"), format!("{a} {o}"));
+        assert_eq!(empty(&state, none, "item:claude-plan"), a);
+        assert_eq!(empty(&state, none, "item:anthropic-api"), a);
+        assert_eq!(empty(&state, none, "item:claude-today"), a);
+        assert_eq!(empty(&state, none, "item:codex-plan"), o);
+        // With the other vendor on, still only its own.
+        let codex_on = PlanInputs {
+            codex: true,
+            ..none
+        };
+        assert_eq!(empty(&state, codex_on, "item:claude-plan"), a);
+        assert_eq!(empty(&state, codex_on, "item:claude-today"), a);
+        let claude_on = PlanInputs {
+            claude: true,
+            ..none
+        };
+        assert_eq!(empty(&state, claude_on, "item:codex-plan"), o);
+        assert_eq!(empty(&state, claude_on, "item:openai-api"), o);
     }
 
     /// Every AI row carries its vendor's scope, and the fixed scopes the picker

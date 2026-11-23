@@ -352,9 +352,12 @@
   `merged_footer`/`merged_freshness`; its payload keeps only those rows'
   `lines` and drops `rollupsMessage`. The rule, per scope: loading is the OR of
   the relevant rows' loading (an unread key holds its API row loading); the
-  message, when no relevant row has a part on, is the loading line if a
-  relevant key is unread, else the first relevant key's failure, else
-  `not_set_up_message` for each vendor with a relevant part off, else none. The
+  message is, in order: (1) the loading line if a relevant key is unread, else
+  (2) the first relevant key's failure, in body order, else (3) the rollups' own
+  line (`reading logs…`, the no-logs line) when the Claude Code logs are
+  relevant and on but have no data yet, else (4) `not_set_up_message` for each
+  vendor with a relevant part off, all of them off, else (5) none, so a relevant
+  key's wait or failure wins over the rollups' line. The
   overview's per-tile `warnings` and its empty text (`ai_narrowed_source`, into
   `empty_state`) come from the same function, so the two cannot disagree; `all`
   and `attention` tiles are unchanged. A line with no firing segment is absent,
