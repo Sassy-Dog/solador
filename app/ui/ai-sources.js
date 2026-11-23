@@ -1,12 +1,11 @@
-// The Anthropic and OpenAI panels: each vendor's plan limits, drawn with the
-// Machines tile's meters (`meter.js`), and on Anthropic this machine's Claude
-// Code token rollups. Same discipline as every other panel here: each string,
-// colour and figure arrives from Rust (`usage::anthropic_view`,
-// `usage::openai_view`), and this file does layout, wiring, and nothing else.
+// The AI Usage panel: each vendor's plan limits, drawn with the Machines tile's
+// meters (`meter.js`), each vendor's API spend, and this machine's Claude Code
+// token rollups. Same discipline as every other panel here: each string, colour
+// and figure arrives from Rust (`usage::ai_usage_view`), and this file does
+// layout, wiring, and nothing else.
 //
-// One renderer, because the two panels are one shape: OpenAI's payload simply
-// carries no rollups. Each has its own section, command, timer and `loading`,
-// so one still filling in never speeds up the other.
+// One panel, one command, one timer and one `loading`: the Anthropic and OpenAI
+// sources both feed it, and a part that is not set up contributes nothing.
 //
 // Nothing below uses `innerHTML`. Project names come from directory paths on
 // this machine and a webview parses markup, so rows are built with createElement
@@ -121,32 +120,36 @@ function rollupsNode(payload) {
 }
 
 /**
- * The organization's spend from an Admin key. The note says how far the figure
- * reaches, which is not when it was read: Anthropic's lag by hours.
+ * One vendor's organization spend from an Admin key. The label names the vendor
+ * (Rust's), and the note says how far the figure reaches, which is not when it
+ * was read: Anthropic's lag by hours.
  */
 function apiNode(api) {
   const el = node("div", "pv-section");
   el.dataset.section = "api";
+  el.dataset.api = api.id;
   el.appendChild(node("hr", "pv-divider"));
   el.appendChild(valueRow(api));
   if (api.note) el.appendChild(node("div", "pv-note", api.note));
   return el;
 }
 
-/** What the source costs: the plan and the API spend, whichever are set up. A
- *  part that is not set up says nothing. */
+/** What the vendors cost: the plans, then the API spend, whichever are set up.
+ *  A part that is not set up says nothing. */
 function plansNode(payload) {
   const el = node("div", "ai-plans");
   for (const plan of payload.plans || []) el.appendChild(planNode(plan));
-  if (payload.api) el.appendChild(apiNode(payload.api));
+  for (const api of payload.apis || []) el.appendChild(apiNode(api));
   return el.childElementCount ? el : null;
 }
 
 /**
- * Mounts one panel. `id` is the source's, and names the command, the section's
- * element ids and the fixture alike, so the two panels cannot drift apart.
+ * Mounts the panel. `source` is the dashboard's id for it, which names its
+ * element ids (`#aiUsageBody`); `command` is the Rust command it reads and
+ * `fixture` the dumped payload the offline path falls back to.
  */
-function mount(id) {
+function mount({ source, command, fixture }) {
+  const id = source;
   function render(payload) {
     $a(`${id}Title`).textContent = window.soladorDashboard?.tileHeading?.(id) || payload.title;
     $a(`${id}Trailing`).textContent = payload.trailing || "";
@@ -175,7 +178,7 @@ function mount(id) {
     if (!panelWanted(id)) return false;
     try {
       // Offline (no Tauri), the dumped-fixture path every other panel uses.
-      const payload = await callRust(id, window.soladorDashboard?.tileArgs?.(id) ?? {}, `sample-${id}.json`);
+      const payload = await callRust(command, window.soladorDashboard?.tileArgs?.(id) ?? {}, fixture);
       if (payload) render(payload);
       return Boolean(payload && payload.loading);
     } catch {
@@ -214,6 +217,8 @@ function mount(id) {
 
 // Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
-window.__SOLADOR_AI_TEST__ = { anthropic: mount("anthropic"), openai: mount("openai") };
+window.__SOLADOR_AI_TEST__ = {
+  aiUsage: mount({ source: "aiUsage", command: "ai_usage", fixture: "sample-ai-usage.json" }),
+};
 
 })();

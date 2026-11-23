@@ -1,18 +1,18 @@
-//! Three panels share this state. **Usage** is the metered Neon, Sentry and
-//! Vercel sections. **Anthropic** and **OpenAI** show whichever parts of their
-//! source the operator added: a subscription's limit windows, API spend, and,
-//! for Anthropic, this machine's Claude Code rollups.
+//! Two panels share this state. **Usage** is the metered Neon, Sentry and
+//! Vercel sections. **AI Usage** shows whichever parts of the Anthropic and
+//! OpenAI sources the operator added: each subscription's limit windows, each
+//! vendor's API spend, and this machine's Claude Code rollups.
 //!
 //! Those readings are never merged: the rollups are this machine's consumption
 //! from local logs, the plan meters a subscription's utilisation of its own
 //! limits ([`crate::plan_usage`]), and API spend is what an organization was
 //! charged. The plans lead, because a percentage of a limit is the figure an
-//! operator acts on; API spend follows; the rollups come last under their own
-//! `machineHeading`.
+//! operator acts on (Claude's, then Codex's); API spend follows (Anthropic's,
+//! then OpenAI's); the rollups come last under their own `machineHeading`.
 //!
 //! **A part that is not set up says nothing.** The operator chose to leave it
 //! out, so it gets no row, no warning and no setup line. A panel's only setup
-//! sentence is for the source having no part at all.
+//! sentence is for there being no part of any AI source at all.
 //!
 //! Port of `ClaudeUsagePanel`. The data
 //! layer beneath it is [`usage`]; this module is the view side, and it holds to
@@ -86,7 +86,7 @@ use viewmodel::freshness::Freshness;
 
 use crate::panel::{
     attributed_freshness_payload, attributed_status_footer, merged_footer, merged_freshness,
-    progress_bar, status_footer, Configured,
+    progress_bar, Configured,
 };
 use crate::plan_usage::{PlanInputs, PlanSource};
 use subscription::Provider;
@@ -180,8 +180,10 @@ const VERCEL_ID: &str = "vercel";
 /// line and its row on the tile.
 pub const ANTHROPIC_API_ID: &str = "anthropic-api";
 pub const OPENAI_API_ID: &str = "openai-api";
-/// Month to date, like every other cost figure in the app.
-pub const API_SPEND_LABEL: &str = "API spend (MTD)";
+/// Month to date, like every other cost figure in the app. The vendor is in the
+/// label because one panel holds both vendors' spend.
+pub const ANTHROPIC_API_LABEL: &str = "Anthropic API spend (MTD)";
+pub const OPENAI_API_LABEL: &str = "OpenAI API spend (MTD)";
 
 // MARK: - Formatting
 //
@@ -364,8 +366,10 @@ impl<S> ProviderState<S> {
     /// that was never configured still gets no section — a hiccup must not
     /// conjure one for a provider nobody set up — but one no pass has settled
     /// keeps the reason, or the panel would wait on it for as long as the
-    /// keychain stays locked. Its section needs `is_present`, so the reason
-    /// shows only in the sentence a panel with no section paints.
+    /// keychain stays locked. Its section needs `is_present`, so it never has
+    /// one, and each panel says the reason its own way: Usage paints it in the
+    /// sentence it shows with no section (`no_section_message`); AI Usage paints
+    /// it as the row's `\u{26a0}` warning (`ai_usage_view`) and no message.
     pub fn unreadable(&mut self, error: String) {
         if !self.configured.is_absent() {
             self.last_error = Some(error);
@@ -378,9 +382,27 @@ impl<S> ProviderState<S> {
     pub fn is_undecided(&self) -> bool {
         self.configured.is_unknown() && self.last_error.is_none()
     }
+
+    /// What a pass has found out about this provider's key, for a panel that
+    /// waits on several before it says none is set up ([`nothing_added_message`]).
+    #[must_use]
+    pub fn key_read(&self) -> KeyRead {
+        KeyRead {
+            undecided: self.is_undecided(),
+            error: self.last_error.clone(),
+        }
+    }
 }
 
-/// Everything the Usage, Anthropic and OpenAI panels render from.
+/// How far a pass has got with one provider's key: not read yet, or the reason
+/// it could not be. A key that was read and is simply absent is neither.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KeyRead {
+    pub undecided: bool,
+    pub error: Option<String>,
+}
+
+/// Everything the Usage and AI Usage panels render from.
 #[derive(Debug, Default)]
 pub struct UsageState {
     claude: Option<UsageSummary>,
@@ -539,7 +561,7 @@ fn provider_row(label: impl Into<String>, value: Option<String>) -> Value {
 /// to know that they are — the Azure panel's equivalent line is muted for setup
 /// and red for a failure, and one `{text, color}` shape across both keeps that
 /// judgement on this side of the boundary in every case rather than most of them.
-fn state_message(text: &str) -> Value {
+pub(crate) fn state_message(text: &str) -> Value {
     json!({ "text": text, "color": color::hex(color::MUTED) })
 }
 
@@ -894,7 +916,7 @@ pub fn view(
     })
 }
 
-/// What this machine's rollups contribute to the Anthropic panel.
+/// What this machine's rollups contribute to the AI Usage panel.
 struct Rollups {
     /// The state line when there is nothing to list, or `Null`.
     message: Value,
@@ -964,9 +986,12 @@ impl Rollups {
     }
 }
 
-/// One vendor's API spend for its panel, once a pass has found its Admin key.
+/// One vendor's API spend for the AI Usage panel, once a pass has found its
+/// Admin key. `label` names the vendor, because both vendors' figures share one
+/// panel.
 fn api_section(
     id: &str,
+    label: &str,
     state: &ProviderState<ApiSpendSummary>,
     cadence_secs: u64,
     now: u64,
@@ -975,7 +1000,7 @@ fn api_section(
         return None;
     }
     let summary = state.summary.as_ref();
-    let mut section = provider_row(API_SPEND_LABEL, usd(summary.and_then(ApiSpendSummary::usd)));
+    let mut section = provider_row(label, usd(summary.and_then(ApiSpendSummary::usd)));
     section["id"] = json!(id);
     // How far the figure reaches, which is not when it was read: Anthropic's
     // lag by hours. The header's clock answers the other question.
@@ -998,32 +1023,42 @@ fn api_section(
     })
 }
 
-/// The sentence for a source with no part to show. Only an `Absent` key may
-/// paint the setup instruction: an unread one may well be stored, and an
-/// unreadable one says why instead.
-fn nothing_added_message(title: &str, api: &ProviderState<ApiSpendSummary>) -> Value {
-    if api.is_undecided() {
+/// The sentence for a panel with no part to show. Only an `Absent` key may paint
+/// the setup instruction, so it waits on **every** vendor's key: an unread one
+/// may well be stored, and an unreadable one is not known to be absent.
+///
+/// In order: any key still unread gives the loading line; any key that could not
+/// be read gives no message at all, because its failure is said once, as its own
+/// `⚠` line in the header (the Full view never says a sentence twice, #656);
+/// otherwise every key was read and is absent, and the setup sentence is true.
+pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
+    if reads.iter().any(|read| read.undecided) {
         return state_message(PROVIDERS_LOADING_MESSAGE);
     }
-    if let Some(reason) = api.last_error.as_deref() {
-        return state_message(reason);
+    if reads.iter().any(|read| read.error.is_some()) {
+        return Value::Null;
     }
-    state_message(&crate::settings::not_set_up_message(title))
+    state_message(&crate::settings::none_added_message())
 }
 
-/// The Anthropic panel's payload: Claude's plan limits, API spend, and this
-/// machine's Claude Code rollups, each only if the operator added it.
+/// The AI Usage panel's payload: Claude's and Codex's plan limits, the
+/// Anthropic and OpenAI API spend, and this machine's Claude Code rollups, each
+/// only if the operator added it.
+///
+/// The body reads plans (Claude, then Codex), API spend (`apis`, Anthropic then
+/// OpenAI, always present and empty when neither is on), then the rollups, and
+/// the header's warning and clock lines read in that same order.
 ///
 /// `inputs` is read at render time rather than captured by the poller: taking a
 /// part off must hide it now, not after the next poll has dropped it.
 ///
-/// Claude's plan clock is dated against `inputs.cadence_secs` and API spend's
+/// Each plan's clock is dated against `inputs.cadence_secs` and API spend's
 /// against `inputs.spend_cadence_secs`. The rollups contribute no clock, only a
 /// warning: they are on the much faster `PanelInterval::ClaudeRollups` cadence,
 /// and the warning already measures it.
 #[must_use]
-pub fn anthropic_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value {
-    let kind = PanelKind::Anthropic;
+pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value {
+    let kind = PanelKind::AiUsage;
     let logs_on = inputs.claude_local_logs;
     let Rollups {
         message,
@@ -1035,56 +1070,141 @@ pub fn anthropic_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value
     } else {
         Rollups::off()
     };
-    let plan = crate::plan_usage::view(Provider::Claude, state.plan(Provider::Claude), inputs, now);
-    let api = api_section(
+    let mut apis: Vec<Value> = Vec::new();
+    let claude =
+        crate::plan_usage::view(Provider::Claude, state.plan(Provider::Claude), inputs, now);
+    let codex = crate::plan_usage::view(Provider::Codex, state.plan(Provider::Codex), inputs, now);
+    let anthropic = api_section(
         ANTHROPIC_API_ID,
+        ANTHROPIC_API_LABEL,
         &state.anthropic_api,
         inputs.spend_cadence_secs,
         now,
     );
+    let openai = api_section(
+        OPENAI_API_ID,
+        OPENAI_API_LABEL,
+        &state.openai_api,
+        inputs.spend_cadence_secs,
+        now,
+    );
 
-    // "" rather than a fabricated 0: with no summary there is no claim to make
-    // about today, and the original's `trailingLabel` returns the empty string
-    // there. The tile's Claude Code line is built from this, so "" is also how
-    // local usage being off removes it.
-    let trailing = state
+    // The figure on the Claude Code row, "" rather than a fabricated 0: with no
+    // summary there is no claim to make about today, and the original's
+    // `trailingLabel` returns the empty string there. "" is also how local usage
+    // being off removes the row.
+    let claude_today = state
         .claude
         .as_ref()
         .filter(|_| logs_on)
         .map_or_else(String::new, |summary| {
             format!("{} today", tokens(summary.today.total_tokens()))
         });
+    // A tile covering several vendors must not show an unlabelled Claude figure.
+    let trailing = if claude_today.is_empty() {
+        String::new()
+    } else {
+        format!("Claude Code \u{00b7} {claude_today}")
+    };
 
-    // The panel's one warning line starts with Claude's own, so the header reads
-    // in the body's order. It is unattributed: Claude is the panel's own subject,
-    // and `⚠ claude: no ~/.claude/projects` would name a section that is not one.
-    let mut warnings = Vec::new();
-    if logs_on {
-        warnings.push(status_footer(
+    // Header lines in body order: plans, API spend, then the rollups last under
+    // their own row id (`claude-today`), so a warning about the logs does not
+    // read as one about Claude's plan. Each is kept with its row id in `lines`.
+    // `footer` is the merged all-rows warning line every AI Usage tile carries;
+    // a tile scoped to one vendor rebuilds only `freshness`, `loading` and
+    // `message` from its own rows (`tile_scope::ai_header`).
+    let first = |v: &[Value]| v.first().cloned().unwrap_or(Value::Null);
+    let claude_loading = logs_on && state.claude_loading;
+    let mut lines = vec![
+        ai_line(
+            crate::plan_usage::CLAUDE_ID,
+            inputs.claude,
+            first(&claude.warnings),
+            first(&claude.clocks),
+            claude.loading,
+            KeyRead::default(),
+        ),
+        ai_line(
+            crate::plan_usage::CODEX_ID,
+            inputs.codex,
+            first(&codex.warnings),
+            first(&codex.clocks),
+            codex.loading,
+            KeyRead::default(),
+        ),
+    ];
+    for (id, key, view) in [
+        (ANTHROPIC_API_ID, &state.anthropic_api, anthropic),
+        (OPENAI_API_ID, &state.openai_api, openai),
+    ] {
+        // A key not read yet holds the row loading although it has no section.
+        let loading = key.is_loading() || key.is_undecided();
+        let on = view.is_some();
+        let read = key.key_read();
+        let (warning, clock) = match view {
+            Some(v) => {
+                apis.push(v.section);
+                (v.warning, v.freshness)
+            }
+            // A key the credential store would not hand over has no section,
+            // so nothing else would say so: it warns under its own row id, in
+            // the shape a section's own warning has. A key merely unread warns
+            // of nothing; it is loading.
+            None => (
+                attributed_status_footer(
+                    id,
+                    None,
+                    read.error.as_deref(),
+                    now,
+                    provider_stale_after_secs(inputs.spend_cadence_secs),
+                ),
+                Value::Null,
+            ),
+        };
+        lines.push(ai_line(id, on, warning, clock, loading, read));
+    }
+    let rollups_warning = if logs_on {
+        attributed_status_footer(
+            crate::dashboard::CLAUDE_TODAY_ID,
             state.claude_succeeded,
             state.claude_error.as_deref(),
             now,
             state.claude_stale_after_secs(),
-        ));
-    }
-    warnings.extend(plan.warnings);
-    let mut clocks = plan.clocks;
-    let api = api.map(|view| {
-        warnings.push(view.warning);
-        clocks.push(view.freshness);
-        view.section
-    });
-    let message = if logs_on || inputs.claude || api.is_some() {
+        )
+    } else {
+        Value::Null
+    };
+    lines.push(ai_line(
+        crate::dashboard::CLAUDE_TODAY_ID,
+        logs_on,
+        rollups_warning,
+        Value::Null,
+        claude_loading,
+        KeyRead::default(),
+    ));
+    let warnings: Vec<Value> = lines.iter().map(|l| l["warning"].clone()).collect();
+    let clocks: Vec<Value> = lines.iter().map(|l| l["clock"].clone()).collect();
+    let loading = lines.iter().any(|l| l["loading"] == true);
+
+    let plans: Vec<Value> = claude.sections.into_iter().chain(codex.sections).collect();
+    // The setup sentence is for no part at all; a rollups line or a plan or
+    // spend figure is something to show instead.
+    let any_part = logs_on || inputs.claude || inputs.codex || !apis.is_empty();
+    let rollups_message = message.clone();
+    let message = if any_part {
         message
     } else {
-        nothing_added_message(kind.title(), &state.anthropic_api)
+        nothing_added_message(&[state.anthropic_api.key_read(), state.openai_api.key_read()])
     };
-
     json!({
         "id": kind.id(),
         "title": kind.title(),
         "trailing": trailing,
+        "claudeToday": claude_today,
         "message": message,
+        // The rollups' own state line, apart from the setup sentence, for a
+        // tile scoped to Claude Code to rebuild `message` from.
+        "rollupsMessage": rollups_message,
         // The heading over this machine's own rollups, which sit under the
         // plan meters: the two answer different questions (what this machine
         // burned, and how much of the subscription is used), so the panel
@@ -1094,52 +1214,33 @@ pub fn anthropic_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value
         "projects": projects,
         "footer": merged_footer(&warnings),
         "freshness": merged_freshness(&clocks),
-        "plans": plan.sections,
-        "api": api,
-        "loading": (logs_on && state.claude_loading)
-            || plan.loading
-            || state.anthropic_api.is_loading()
-            || state.anthropic_api.is_undecided(),
+        // Per row, in body order, always all five: `{id, on, warning, clock,
+        // loading, undecided, unreadable}`. `on`: the part is set up. `undecided`:
+        // the row's key is not read yet. `unreadable`: the credential store would
+        // not answer for it, so it has no section and its failure is its warning
+        // (both are `false` for a row with no key). `footer`, `freshness` and
+        // `loading` are these merged; a narrowed tile rebuilds only `freshness`,
+        // `loading` and `message` from its own rows, and keeps `footer` whole.
+        "lines": lines,
+        "plans": plans,
+        "apis": apis,
+        "loading": loading,
     })
 }
 
-/// The OpenAI panel's payload: Codex's plan limits and API spend, each only if
-/// the operator added it.
-#[must_use]
-pub fn openai_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value {
-    let kind = PanelKind::OpenAi;
-    let plan = crate::plan_usage::view(Provider::Codex, state.plan(Provider::Codex), inputs, now);
-    let mut warnings = plan.warnings;
-    let mut clocks = plan.clocks;
-    let api = api_section(
-        OPENAI_API_ID,
-        &state.openai_api,
-        inputs.spend_cadence_secs,
-        now,
-    )
-    .map(|view| {
-        warnings.push(view.warning);
-        clocks.push(view.freshness);
-        view.section
-    });
-    let message = if inputs.codex || api.is_some() {
-        Value::Null
-    } else {
-        nothing_added_message(kind.title(), &state.openai_api)
-    };
-    json!({
-        "id": kind.id(),
-        "title": kind.title(),
-        "trailing": "",
-        "message": message,
-        "footer": merged_footer(&warnings),
-        "freshness": merged_freshness(&clocks),
-        "plans": plan.sections,
-        "api": api,
-        "loading": plan.loading
-            || state.openai_api.is_loading()
-            || state.openai_api.is_undecided(),
-    })
+/// One row's header contributions: whether its part is on, its warning and
+/// clock segments (both `Null` when it has none), whether it is still waiting
+/// on a read, and how far a pass has got with its own key.
+///
+/// `warning` is the row's `⚠` segment and is part of the merged `footer` every
+/// AI Usage tile carries; `clock` and `loading` are what a narrowed tile rebuilds
+/// its own `freshness` and `loading` from. `undecided` (its key is not read yet)
+/// and `unreadable` (the credential store would not answer, so the row has no
+/// section and its failure is its warning) say how far a pass has got with the
+/// row's own key; they are `false` for a row with no key.
+fn ai_line(id: &str, on: bool, warning: Value, clock: Value, loading: bool, key: KeyRead) -> Value {
+    json!({"id": id, "on": on, "warning": warning, "clock": clock, "loading": loading,
+        "undecided": key.undecided, "unreadable": !on && key.error.is_some()})
 }
 
 // MARK: - Fixtures
@@ -1536,15 +1637,15 @@ mod tests {
         state
     }
 
-    /// The Anthropic panel with only local usage set up.
-    fn anthropic(state: &UsageState) -> Value {
-        anthropic_view(state, LOGS_ONLY, NOW)
+    /// The AI Usage panel with only local usage set up.
+    fn ai(state: &UsageState) -> Value {
+        ai_usage_view(state, LOGS_ONLY, NOW)
     }
 
-    /// The Anthropic panel with its plan on, so a test of the rollups' own
+    /// The AI Usage panel with both plans on, so a test of the rollups' own
     /// empty states reads them where the panel shows them.
-    fn anthropic_on(state: &UsageState) -> Value {
-        anthropic_view(state, FIXTURE_PLANS, NOW)
+    fn ai_on(state: &UsageState) -> Value {
+        ai_usage_view(state, FIXTURE_PLANS, NOW)
     }
 
     fn section<'a>(payload: &'a Value, id: &str) -> Option<&'a Value> {
@@ -1608,35 +1709,39 @@ mod tests {
 
     // MARK: plan block
 
-    /// Off is no plan section; on, the measured fixture's plan renders as its
-    /// own section, and the token rollups are untouched either way.
+    /// Off is no plan section; on, the measured fixture's plans render as their
+    /// own sections, Claude's then Codex's, and the token rollups are untouched
+    /// either way.
     #[test]
     fn the_plan_block_is_its_own_reading_beside_the_rollups() {
-        let off = anthropic(&measured());
+        let off = ai(&measured());
         assert_eq!(off["plans"], json!([]));
 
-        let on = anthropic_on(&measured());
+        let on = ai_on(&measured());
         let ids: Vec<&str> = on["plans"]
             .as_array()
             .unwrap()
             .iter()
             .map(|s| s["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, [crate::plan_usage::CLAUDE_ID]);
+        assert_eq!(
+            ids,
+            [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
+        );
         assert_eq!(on["plans"][0]["label"], "Claude · Ultra");
         assert_eq!(on["windows"], off["windows"], "the rollups do not move");
         assert_eq!(on["windows"][0]["label"], "LAST 5H");
         assert_eq!(on["machineHeading"], MACHINE_HEADING);
     }
 
-    /// The measured fixture's plans are the edges the panels must get right: an
+    /// The measured fixture's plans are the edges the panel must get right: an
     /// Ultra plan has no 5-hour window and so no `5h` meter, its Fable week is
     /// burning fast enough to run out before the reset, and a Codex session
     /// opened 20 minutes ago is too young to project.
     #[test]
     fn the_measured_plans_are_an_ultra_week_running_out_and_a_young_session() {
-        let anthropic = anthropic_on(&measured());
-        let claude = &anthropic["plans"][0];
+        let payload = ai_on(&measured());
+        let claude = &payload["plans"][0];
         let labels: Vec<&str> = claude["metrics"]
             .as_array()
             .unwrap()
@@ -1649,8 +1754,7 @@ mod tests {
         assert_eq!(claude["valueColor"], color::hex(color::AMBER));
         assert_eq!(claude["metrics"][1]["color"], color::hex(color::AMBER));
 
-        let openai = openai_view(&measured(), FIXTURE_PLANS, NOW);
-        let codex = &openai["plans"][0];
+        let codex = &payload["plans"][1];
         assert_eq!(codex["label"], "Codex · Plus");
         assert_eq!(codex["metrics"][0]["label"], "5h");
         assert!(codex["metrics"][0]["pace"].is_null());
@@ -1666,27 +1770,26 @@ mod tests {
     #[test]
     fn the_plan_edges_fixture_is_a_budget_and_a_dash() {
         let state = fixture_state(Fixture::PlanEdges, NOW, NOW);
-        let v = anthropic_on(&state);
+        let v = ai_on(&state);
         let claude = &v["plans"][0];
         assert_eq!(claude["label"], "Claude");
         assert_eq!(claude["value"], "62% of budget");
         assert_eq!(claude["metrics"][0]["label"], "Budget");
         assert_eq!(claude["metrics"][0]["value"], "$312 / $500 · 62%");
         assert_eq!(claude["metrics"][0]["span"], "full");
-        let openai = openai_view(&state, FIXTURE_PLANS, NOW);
-        let codex = &openai["plans"][0];
+        let codex = &v["plans"][1];
         assert_eq!(codex["value"], viewmodel::plan_usage::NO_READING_VALUE);
         assert_eq!(codex["metrics"], json!([]));
-        assert!(openai["footer"]["text"]
+        assert!(v["footer"]["text"]
             .as_str()
             .unwrap()
             .contains("codex-plan: "));
     }
 
-    /// A plan's failure reads in the header in body order: after Claude's own
-    /// line, which is the panel's subject and leads.
+    /// The header reads in body order: the plans lead and the Claude Code logs
+    /// come last, under their own row id.
     #[test]
-    fn a_plan_warning_follows_the_rollups_warning() {
+    fn a_plan_warning_leads_and_the_rollups_warning_is_last() {
         let mut state = fixture_state(Fixture::Empty, NOW, NOW);
         state
             .plan_mut(Provider::Claude)
@@ -1696,15 +1799,14 @@ mod tests {
             claude: true,
             ..LOGS_ONLY
         };
-        let payload = anthropic_view(&state, inputs, NOW);
+        let payload = ai_usage_view(&state, inputs, NOW);
         let text = payload["footer"]["text"].as_str().unwrap();
-        assert!(
-            text.starts_with(&format!("⚠ {NO_LOG_ROOT_MESSAGE}")),
-            "{text}"
-        );
-        assert!(
-            text.contains("claude-plan: Claude Code's sign-in"),
-            "{text}"
+        assert_eq!(
+            text,
+            format!(
+                "⚠ claude-plan: Claude Code's sign-in has expired \
+                 ⚠ claude-today: {NO_LOG_ROOT_MESSAGE}"
+            )
         );
     }
 
@@ -1713,21 +1815,36 @@ mod tests {
         let mut state = fixture_state(Fixture::Measured, NOW, NOW);
         state.plan_mut(Provider::Claude).reset();
         state.plan_mut(Provider::Codex).reset();
-        let on = PlanInputs {
+        let both = PlanInputs {
             claude: true,
             codex: true,
             ..PlanInputs::OFF
         };
-        assert_eq!(anthropic_view(&state, on, NOW)["loading"], true);
-        assert_eq!(openai_view(&state, on, NOW)["loading"], true);
-        assert_eq!(anthropic(&state)["loading"], false);
-        assert_eq!(openai_view(&state, PlanInputs::OFF, NOW)["loading"], false);
+        assert_eq!(ai_usage_view(&state, both, NOW)["loading"], true);
+        // Either part alone is enough: the panel is loading if any part is.
+        for one in [
+            PlanInputs {
+                claude: true,
+                ..PlanInputs::OFF
+            },
+            PlanInputs {
+                codex: true,
+                ..PlanInputs::OFF
+            },
+        ] {
+            assert_eq!(ai_usage_view(&state, one, NOW)["loading"], true);
+        }
+        assert_eq!(ai(&state)["loading"], false);
+        assert_eq!(
+            ai_usage_view(&state, PlanInputs::OFF, NOW)["loading"],
+            false
+        );
     }
 
     // MARK: each panel's own data
 
-    /// The three views share one poller and nothing else: a failure in one must
-    /// not reach another's chip or warning, and a figure must not cross over.
+    /// Usage and AI Usage share one poller and nothing else: a failure in one
+    /// must not reach the other's chip or warning.
     #[test]
     fn each_view_warns_only_about_its_own_reading() {
         let mut state = fixture_state(Fixture::Empty, NOW, NOW);
@@ -1750,18 +1867,49 @@ mod tests {
         assert!(!line.contains(NO_LOG_ROOT_MESSAGE), "{line}");
         assert!(!line.contains("codex-plan"), "{line}");
 
-        let anthropic = anthropic_view(&state, on, NOW);
-        let line = anthropic["footer"]["text"].as_str().unwrap();
-        assert_eq!(line, format!("⚠ {NO_LOG_ROOT_MESSAGE}"));
-
-        let openai = openai_view(&state, on, NOW);
-        let line = openai["footer"]["text"].as_str().unwrap();
+        let ai = ai_usage_view(&state, on, NOW);
+        let line = ai["footer"]["text"].as_str().unwrap();
         assert!(line.contains("codex-plan: Codex's sign-in"), "{line}");
         assert!(!line.contains("neon"), "{line}");
     }
 
-    /// A stale plan's clock stays on its own tile; Usage's clock is the metered
-    /// providers' alone.
+    /// Each vendor warns under its own row id, so a line about one is never read
+    /// as about another, and they come in body order with Claude Code last.
+    #[test]
+    fn each_vendor_warns_under_its_own_row_id_in_body_order() {
+        let mut state = fixture_state(Fixture::Empty, NOW, NOW);
+        state
+            .plan_mut(Provider::Claude)
+            .state
+            .failed("Claude Code's sign-in has expired".into());
+        state
+            .plan_mut(Provider::Codex)
+            .state
+            .failed("Codex's sign-in has expired".into());
+        state
+            .anthropic_api
+            .failed("Anthropic rejected it".to_owned());
+        state.openai_api.failed("OpenAI rejected it".to_owned());
+        let on = PlanInputs {
+            claude: true,
+            codex: true,
+            ..LOGS_ONLY
+        };
+        let payload = ai_usage_view(&state, on, NOW);
+        assert_eq!(
+            payload["footer"]["text"],
+            format!(
+                "⚠ claude-plan: Claude Code's sign-in has expired \
+                 ⚠ codex-plan: Codex's sign-in has expired \
+                 ⚠ anthropic-api: Anthropic rejected it \
+                 ⚠ openai-api: OpenAI rejected it \
+                 ⚠ claude-today: {NO_LOG_ROOT_MESSAGE}"
+            )
+        );
+    }
+
+    /// A stale plan's clock stays on the AI Usage tile; Usage's clock is the
+    /// metered providers' alone. Each clock names its row, in body order.
     #[test]
     fn each_view_dates_only_its_own_reading() {
         let state = fixture_state(Fixture::Measured, NOW, NOW - 7 * 3_600);
@@ -1769,23 +1917,30 @@ mod tests {
         let usage = line(view(&state, QUOTA, RATES, CADENCE, NOW));
         assert!(usage.contains("neon"), "{usage}");
         assert!(!usage.contains("plan"), "{usage}");
-        let anthropic = line(anthropic_on(&state));
-        assert!(anthropic.contains("claude-plan"), "{anthropic}");
-        assert!(!anthropic.contains("codex-plan"), "{anthropic}");
-        assert!(!anthropic.contains("neon"), "{anthropic}");
-        let openai = line(openai_view(&state, FIXTURE_PLANS, NOW));
-        assert!(openai.contains("codex-plan"), "{openai}");
-        assert!(!openai.contains("claude-plan"), "{openai}");
+        assert!(!usage.contains("-api"), "{usage}");
+        let ai = line(ai_on(&state));
+        assert!(!ai.contains("neon"), "{ai}");
+        let at: Vec<usize> = ["claude-plan", "codex-plan", "anthropic-api", "openai-api"]
+            .iter()
+            .map(|id| ai.find(id).unwrap_or_else(|| panic!("{id} in {ai}")))
+            .collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "{ai}");
     }
 
-    /// Claude's tokens are the Anthropic panel's trailing figure. On Usage they
-    /// would be a figure about something else.
+    /// The tile covers several vendors, so its header figure names Claude Code
+    /// rather than leaving an unlabelled token count. `claudeToday` is the bare
+    /// figure the overview's own Claude Code row labels itself.
     #[test]
-    fn only_the_anthropic_panel_says_todays_tokens() {
+    fn the_header_figure_names_claude_code() {
         let state = measured();
-        assert_eq!(anthropic(&state)["trailing"], "1.2M today");
-        assert_eq!(openai_view(&state, FIXTURE_PLANS, NOW)["trailing"], "");
+        let payload = ai(&state);
+        assert_eq!(payload["trailing"], "Claude Code · 1.2M today");
+        assert_eq!(payload["claudeToday"], "1.2M today");
         assert_eq!(view(&state, QUOTA, RATES, CADENCE, NOW)["trailing"], "");
+        // With the logs off there is no figure at all, never an unlabelled one.
+        let off = ai_usage_view(&state, SUBSCRIPTION_ONLY, NOW);
+        assert_eq!(off["trailing"], "");
+        assert_eq!(off["claudeToday"], "");
     }
 
     /// Usage carries the metered providers and no plan or rollup key at all, so
@@ -1794,29 +1949,40 @@ mod tests {
     fn usage_carries_no_plan_or_rollup_key() {
         let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW);
         assert_eq!(payload["id"], "usage");
-        for key in ["plans", "api", "windows", "projects", "machineHeading"] {
+        for key in [
+            "plans",
+            "apis",
+            "windows",
+            "projects",
+            "machineHeading",
+            "claudeToday",
+        ] {
             assert!(payload.get(key).is_none(), "{key}");
         }
     }
 
-    /// OpenAI's source has no provider, and Anthropic's none of Codex's.
+    /// Both plans appear, Claude's then Codex's, and the panel carries no
+    /// metered provider section.
     #[test]
-    fn each_ai_view_carries_only_its_own_plan() {
-        let anthropic = anthropic_on(&measured());
-        assert_eq!(anthropic["id"], "anthropic");
-        assert_eq!(anthropic["title"], "Anthropic");
-        assert_eq!(anthropic["plans"].as_array().unwrap().len(), 1);
-        assert!(anthropic.get("providers").is_none());
-        let openai = openai_view(&measured(), FIXTURE_PLANS, NOW);
-        assert_eq!(openai["id"], "openai");
-        assert_eq!(openai["title"], "OpenAI");
-        assert_eq!(openai["plans"].as_array().unwrap().len(), 1);
-        assert_eq!(openai["plans"][0]["id"], crate::plan_usage::CODEX_ID);
-        assert!(openai.get("providers").is_none());
-        assert!(openai.get("windows").is_none());
+    fn the_ai_usage_view_carries_both_plans_in_order() {
+        let payload = ai_on(&measured());
+        assert_eq!(payload["id"], "aiUsage");
+        assert_eq!(payload["title"], "AI Usage");
+        let ids: Vec<&str> = payload["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
+        );
+        assert!(payload.get("providers").is_none());
+        assert!(payload.get("api").is_none(), "the single block is gone");
     }
 
-    // MARK: each panel's empty state
+    // MARK: the empty states
 
     /// A part that is not set up says nothing at all: the operator chose it.
     #[test]
@@ -1824,19 +1990,22 @@ mod tests {
         let mut state = measured();
         state.apply_claude(None, NOW, Some(NO_LOG_ROOT_MESSAGE.to_owned()));
         state.anthropic_api.unconfigure();
-        let payload = anthropic_view(&state, SUBSCRIPTION_ONLY, NOW);
+        state.openai_api.unconfigure();
+        let payload = ai_usage_view(&state, SUBSCRIPTION_ONLY, NOW);
         assert_eq!(payload["plans"].as_array().unwrap().len(), 1);
         assert!(payload["message"].is_null());
         assert!(payload["footer"].is_null(), "the logs may not warn");
-        assert!(payload["api"].is_null());
+        assert_eq!(payload["apis"], json!([]));
     }
 
-    /// The Claude Code line is `trailing`: with local usage off there is no row
-    /// for the tile to build, and nothing retained can reach the card.
+    /// The Claude Code row is built from `claudeToday`: with local usage off
+    /// there is no row for the tile to build, and nothing retained can reach the
+    /// card.
     #[test]
     fn local_usage_off_shows_nothing_from_the_logs() {
-        let payload = anthropic_view(&measured(), SUBSCRIPTION_ONLY, NOW);
+        let payload = ai_usage_view(&measured(), SUBSCRIPTION_ONLY, NOW);
         assert_eq!(payload["trailing"], "");
+        assert_eq!(payload["claudeToday"], "");
         assert!(payload["machineHeading"].is_null());
         assert_eq!(payload["windows"], json!([]));
         assert!(payload["projects"].is_null());
@@ -1847,7 +2016,8 @@ mod tests {
     fn local_usage_off_is_not_waiting_on_a_walk() {
         let mut state = UsageState::new();
         state.anthropic_api.unconfigure();
-        let payload = anthropic_view(&state, SUBSCRIPTION_ONLY, NOW);
+        state.openai_api.unconfigure();
+        let payload = ai_usage_view(&state, SUBSCRIPTION_ONLY, NOW);
         assert_ne!(payload["message"]["text"], LOADING_MESSAGE);
         state.plan_mut(Provider::Claude).state.succeeded(
             subscription::PlanUsage::default(),
@@ -1855,7 +2025,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            anthropic_view(&state, SUBSCRIPTION_ONLY, NOW)["loading"],
+            ai_usage_view(&state, SUBSCRIPTION_ONLY, NOW)["loading"],
             false
         );
     }
@@ -1865,71 +2035,192 @@ mod tests {
     fn clearing_the_rollups_starts_again_from_a_first_walk() {
         let mut state = measured();
         state.clear_claude();
-        let payload = anthropic(&state);
+        let payload = ai(&state);
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_eq!(payload["trailing"], "");
     }
 
+    /// One sentence, for the whole tile, once no part of any AI source is on and
+    /// every key has been read.
     #[test]
-    fn a_source_with_nothing_added_says_where_to_add_it() {
+    fn a_tile_with_nothing_added_says_where_to_add_it() {
         let state = nothing_added();
+        let text = ai_usage_view(&state, PlanInputs::OFF, NOW)["message"]["text"].clone();
         assert_eq!(
-            anthropic_view(&state, PlanInputs::OFF, NOW)["message"]["text"],
-            "Anthropic isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source"
+            text,
+            "No AI usage yet \u{2014} add Anthropic or OpenAI in Settings \u{2192} Sources \u{2192} Add source"
         );
-        assert_eq!(
-            openai_view(&state, PlanInputs::OFF, NOW)["message"]["text"],
-            "OpenAI isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source"
-        );
+        assert_eq!(text, crate::settings::none_added_message());
+    }
+
+    /// Any part on, of any vendor, means there is something to show instead.
+    #[test]
+    fn any_part_on_means_no_setup_sentence() {
+        let setup = crate::settings::none_added_message();
+        let plan = |claude, codex| PlanInputs {
+            claude,
+            codex,
+            ..PlanInputs::OFF
+        };
+        let mut anthropic_spend = nothing_added();
+        anthropic_spend
+            .anthropic_api
+            .succeeded(spend(1.0), NOW, None);
+        let mut openai_spend = nothing_added();
+        openai_spend.openai_api.succeeded(spend(1.0), NOW, None);
+        for (state, inputs) in [
+            (nothing_added(), LOGS_ONLY),
+            (nothing_added(), plan(true, false)),
+            (nothing_added(), plan(false, true)),
+            (anthropic_spend, PlanInputs::OFF),
+            (openai_spend, PlanInputs::OFF),
+        ] {
+            let payload = ai_usage_view(&state, inputs, NOW);
+            assert_ne!(payload["message"]["text"], setup);
+        }
     }
 
     /// Only `Absent` may paint a setup instruction: before the first pass an
-    /// Admin key may well be stored.
+    /// Admin key may well be stored, and so the panel waits on **every** key.
     #[test]
-    fn no_setup_line_until_the_key_has_been_read() {
+    fn the_setup_sentence_waits_for_every_key() {
         let state = UsageState::new();
-        for payload in [
-            anthropic_view(&state, PlanInputs::OFF, NOW),
-            openai_view(&state, PlanInputs::OFF, NOW),
-        ] {
-            assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
+
+        for settled in ["anthropic", "openai"] {
+            let mut state = UsageState::new();
+            if settled == "anthropic" {
+                state.anthropic_api.unconfigure();
+            } else {
+                state.openai_api.unconfigure();
+            }
+            let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+            assert_eq!(
+                payload["message"]["text"], PROVIDERS_LOADING_MESSAGE,
+                "{settled} is settled but the other key is not"
+            );
             assert_eq!(payload["loading"], true);
         }
     }
 
-    /// A locked keychain is not "not set up", so the card says why instead.
+    /// A locked keychain is not "not set up", and it has no section to warn in,
+    /// so it warns under its row's id and says nothing as the message: the
+    /// failure is said once.
     #[test]
-    fn an_unreadable_key_says_so_rather_than_offering_setup() {
+    fn an_unreadable_key_warns_once_rather_than_offering_setup() {
         let mut state = UsageState::new();
         state.anthropic_api.unreadable("keychain locked".to_owned());
-        let payload = anthropic_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(payload["message"]["text"], "keychain locked");
+        state.openai_api.unconfigure();
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(payload["message"].is_null());
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ anthropic-api: keychain locked"
+        );
         assert_eq!(payload["loading"], false);
+
+        let mut state = UsageState::new();
+        state.anthropic_api.unconfigure();
+        state.openai_api.unreadable("keychain locked".to_owned());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(payload["message"].is_null());
+        assert_eq!(payload["footer"]["text"], "⚠ openai-api: keychain locked");
+
+        // Both unreadable: each warns, in body order.
+        let mut state = UsageState::new();
+        state.anthropic_api.unreadable("first".to_owned());
+        state.openai_api.unreadable("second".to_owned());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ anthropic-api: first ⚠ openai-api: second"
+        );
+
+        // A key still unread is loading and warns of nothing, but a failure
+        // that was already said still does.
+        let state = UsageState::new();
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert!(payload["footer"].is_null());
+    }
+
+    /// Which check leads: a key still unread keeps the tile loading, whatever
+    /// another key's failure, and the failed key's reason is its warning.
+    #[test]
+    fn an_unread_key_outranks_another_keys_failure() {
+        let mut state = UsageState::new();
+        state.anthropic_api.unreadable("keychain locked".to_owned());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ anthropic-api: keychain locked"
+        );
+        // The mirror: OpenAI's failure, Anthropic's key unread.
+        let mut state = UsageState::new();
+        state.openai_api.unreadable("keychain locked".to_owned());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
+        assert_eq!(payload["footer"]["text"], "⚠ openai-api: keychain locked");
     }
 
     /// A walk still running is not a verdict: the rollups may yet have rows.
     #[test]
-    fn anthropic_keeps_saying_it_is_reading_until_the_walk_lands() {
-        let payload = anthropic(&UsageState::new());
+    fn ai_usage_keeps_saying_it_is_reading_until_the_walk_lands() {
+        let payload = ai(&UsageState::new());
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
     }
 
     // MARK: API spend
+
+    fn api<'a>(payload: &'a Value, id: &str) -> &'a Value {
+        payload["apis"]
+            .as_array()
+            .expect("apis is always a list")
+            .iter()
+            .find(|a| a["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {}", payload["apis"]))
+    }
 
     #[test]
     fn api_spend_is_its_own_block_with_its_own_id_and_figure() {
         let mut state = nothing_added();
         state.anthropic_api.succeeded(spend(412.8), NOW, None);
         state.openai_api.succeeded(spend(1.5), NOW, None);
-        let anthropic = anthropic_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(anthropic["api"]["id"], ANTHROPIC_API_ID);
-        assert_eq!(anthropic["api"]["label"], API_SPEND_LABEL);
-        assert_eq!(anthropic["api"]["value"], "$412.80");
-        assert!(anthropic["message"].is_null());
-        let openai = openai_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(openai["api"]["id"], OPENAI_API_ID);
-        assert_eq!(openai["api"]["value"], "$1.50");
-        assert!(openai["message"].is_null());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let ids: Vec<&str> = payload["apis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [ANTHROPIC_API_ID, OPENAI_API_ID]);
+        let anthropic = api(&payload, ANTHROPIC_API_ID);
+        assert_eq!(anthropic["label"], "Anthropic API spend (MTD)");
+        assert_eq!(anthropic["value"], "$412.80");
+        let openai = api(&payload, OPENAI_API_ID);
+        assert_eq!(openai["label"], "OpenAI API spend (MTD)");
+        assert_eq!(openai["value"], "$1.50");
+        assert!(payload["message"].is_null());
+    }
+
+    /// `apis` is always a list, so a consumer never branches on a missing key,
+    /// and a vendor with no key contributes nothing to it.
+    #[test]
+    fn apis_is_always_present_and_holds_only_the_vendors_that_are_on() {
+        assert_eq!(
+            ai_usage_view(&nothing_added(), PlanInputs::OFF, NOW)["apis"],
+            json!([])
+        );
+        let mut state = nothing_added();
+        state.openai_api.succeeded(spend(1.5), NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["apis"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["apis"][0]["id"], OPENAI_API_ID);
     }
 
     /// Unknown is not zero, and a real zero is not unknown.
@@ -1939,14 +2230,13 @@ mod tests {
         state
             .anthropic_api
             .succeeded(ApiSpendSummary::Unmeasured, NOW, None);
-        let unknown = anthropic_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(unknown["api"]["value"], "\u{2014}");
-        assert_eq!(unknown["api"]["valueColor"], color::hex(color::MUTED));
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let unknown = api(&payload, ANTHROPIC_API_ID);
+        assert_eq!(unknown["value"], "\u{2014}");
+        assert_eq!(unknown["valueColor"], color::hex(color::MUTED));
         state.anthropic_api.succeeded(spend(0.0), NOW, None);
-        assert_eq!(
-            anthropic_view(&state, PlanInputs::OFF, NOW)["api"]["value"],
-            "$0.00"
-        );
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(api(&payload, ANTHROPIC_API_ID)["value"], "$0.00");
     }
 
     /// Anthropic's figures lag by hours, so the block says how far they reach.
@@ -1962,10 +2252,8 @@ mod tests {
             NOW,
             None,
         );
-        assert_eq!(
-            anthropic_view(&state, PlanInputs::OFF, NOW)["api"]["note"],
-            "counted 3h ago"
-        );
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(api(&payload, ANTHROPIC_API_ID)["note"], "counted 3h ago");
     }
 
     #[test]
@@ -1975,20 +2263,18 @@ mod tests {
         state
             .anthropic_api
             .failed("Anthropic rejected it".to_owned());
-        let payload = anthropic_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(payload["api"]["value"], "$9.00");
-        assert!(payload["footer"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("anthropic-api"));
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(api(&payload, ANTHROPIC_API_ID)["value"], "$9.00");
+        let text = payload["footer"]["text"].as_str().unwrap();
+        assert!(text.contains("anthropic-api"), "{text}");
+        assert!(!text.contains("openai-api"), "{text}");
     }
 
     #[test]
     fn a_spend_clock_is_dated_against_the_providers_cadence() {
         let mut state = nothing_added();
         state.openai_api.succeeded(spend(1.0), NOW - 7200, None);
-        let inputs = PlanInputs::OFF;
-        let payload = openai_view(&state, inputs, NOW);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         assert!(payload["freshness"]["text"]
             .as_str()
             .unwrap()
@@ -1996,13 +2282,13 @@ mod tests {
     }
 
     #[test]
-    fn openai_with_only_spend_added_has_no_setup_line() {
-        let payload = openai_view(&measured(), PlanInputs::OFF, NOW);
+    fn ai_usage_with_only_spend_added_has_no_setup_line() {
+        let payload = ai_usage_view(&measured(), PlanInputs::OFF, NOW);
         assert!(payload["message"].is_null());
         assert_eq!(payload["plans"], json!([]));
+        assert_eq!(payload["apis"].as_array().unwrap().len(), 2);
         assert_eq!(payload["loading"], false);
     }
-
     /// Unknown stays unknown. Before a pass has read the keychain, the panel
     /// has nothing to say about how it is configured, so it must not tell a
     /// configured operator to set up.
@@ -2116,7 +2402,7 @@ mod tests {
             if let Some(secs) = cadence {
                 state.set_claude_cadence_secs(secs);
             }
-            anthropic(&state)["footer"].clone()
+            ai(&state)["footer"].clone()
         };
         for cadence in [None, Some(60)] {
             assert!(footer(cadence, 150).is_null(), "{cadence:?} at the edge");
@@ -2132,7 +2418,7 @@ mod tests {
 
     #[test]
     fn before_the_first_walk_the_panel_says_it_is_reading() {
-        let payload = anthropic(&UsageState::new());
+        let payload = ai(&UsageState::new());
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_eq!(payload["loading"], true);
         assert_eq!(payload["trailing"], "");
@@ -2215,14 +2501,16 @@ mod tests {
     /// from an empty week, which *is* a measurement.
     #[test]
     fn a_missing_log_root_says_no_usage_data_and_names_itself_in_the_footer() {
-        let payload = anthropic_on(&fixture_state(Fixture::Empty, NOW, NOW));
+        let payload = ai_on(&fixture_state(Fixture::Empty, NOW, NOW));
         assert_eq!(payload["message"]["text"], NO_DATA_MESSAGE);
         // No `· last ok 0s ago`. There is no log root, so no walk has ever
         // succeeded, and the suffix used to be a reassurance about a reading
         // that never happened — restated on every pass, forever.
+        // Under its own row id: the rollups are the `claude-today` row, and a
+        // line about them must not read as one about Claude's plan.
         assert_eq!(
             payload["footer"]["text"],
-            format!("⚠ {NO_LOG_ROOT_MESSAGE}")
+            format!("⚠ claude-today: {NO_LOG_ROOT_MESSAGE}")
         );
     }
 
@@ -2230,17 +2518,18 @@ mod tests {
     fn a_measured_but_empty_week_says_so_rather_than_rendering_zero_rows() {
         let mut state = UsageState::new();
         state.apply_claude(Some(UsageSummary::default()), NOW, None);
-        let payload = anthropic_on(&state);
+        let payload = ai_on(&state);
         assert_eq!(payload["message"]["text"], EMPTY_MESSAGE);
         assert!(payload["windows"].as_array().unwrap().is_empty());
-        // The trailing label still reports today's measured zero: the walk
-        // succeeded, so "0 today" is a fact, not a fabrication.
-        assert_eq!(payload["trailing"], "0 today");
+        // The figure still reports today's measured zero: the walk succeeded,
+        // so "0 today" is a fact, not a fabrication.
+        assert_eq!(payload["claudeToday"], "0 today");
+        assert_eq!(payload["trailing"], "Claude Code \u{b7} 0 today");
     }
 
     #[test]
     fn content_renders_both_windows_and_at_most_four_projects() {
-        let payload = anthropic(&measured());
+        let payload = ai(&measured());
         assert!(payload["message"].is_null());
 
         let windows = payload["windows"].as_array().unwrap();
@@ -2258,14 +2547,15 @@ mod tests {
         assert_eq!(rows[0]["value"], "2.1M");
         assert_eq!(rows[0]["dotColor"], color::hex(color::GREEN_DIM));
 
-        assert_eq!(payload["trailing"], "1.2M today");
+        assert_eq!(payload["claudeToday"], "1.2M today");
+        assert_eq!(payload["trailing"], "Claude Code \u{b7} 1.2M today");
     }
 
     /// The subscription publishes no ceiling, so the window rows carry no bar
     /// at all — not a null one, which would read as a feature half-wired.
     #[test]
     fn window_rows_carry_no_progress_bar() {
-        let payload = anthropic(&measured());
+        let payload = ai(&measured());
         for row in payload["windows"].as_array().unwrap() {
             assert!(row.get("bar").is_none(), "got {row}");
         }
@@ -2277,7 +2567,7 @@ mod tests {
         summary.projects_last_7d.clear();
         let mut state = UsageState::new();
         state.apply_claude(Some(summary), NOW, None);
-        assert!(anthropic(&state)["projects"].is_null());
+        assert!(ai(&state)["projects"].is_null());
     }
 
     // MARK: provider sections
@@ -2644,7 +2934,8 @@ mod tests {
 
     /// Each reading is still measured against **its own window**, the whole
     /// reason the window is an argument: 10 minutes is stale for Claude (150s)
-    /// and perfectly fine for the hourly providers, so only Anthropic warns.
+    /// and perfectly fine for the hourly providers, so only the Claude Code
+    /// rollups warn.
     #[test]
     fn each_panel_measures_its_reading_on_its_own_window() {
         let later = NOW + 600;
@@ -2654,8 +2945,8 @@ mod tests {
             assert!(section(&payload, id).expect(id)["footer"].is_null(), "{id}");
         }
         assert_eq!(
-            anthropic_view(&measured(), LOGS_ONLY, later)["footer"]["text"],
-            "⚠ stale · updated 10m ago"
+            ai_usage_view(&measured(), LOGS_ONLY, later)["footer"]["text"],
+            "⚠ claude-today: stale · updated 10m ago"
         );
     }
 
@@ -2811,7 +3102,7 @@ mod tests {
     #[test]
     fn the_fixtures_cover_every_rendering_the_panel_has() {
         let state = fixture_state(Fixture::Measured, NOW, NOW);
-        let rollups = anthropic(&state);
+        let rollups = ai(&state);
         assert!(rollups["message"].is_null(), "content, not a state line");
         assert_eq!(rollups["windows"].as_array().unwrap().len(), 2);
         assert!(!rollups["projects"]["rows"].as_array().unwrap().is_empty());
@@ -2877,7 +3168,7 @@ mod tests {
         );
 
         let state = fixture_state(Fixture::Empty, NOW, NOW);
-        let empty = anthropic_on(&state);
+        let empty = ai_on(&state);
         assert_eq!(empty["message"]["text"], NO_DATA_MESSAGE);
         assert_eq!(empty["trailing"], "");
         let empty = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);

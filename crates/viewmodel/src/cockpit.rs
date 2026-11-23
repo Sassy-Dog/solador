@@ -37,14 +37,13 @@ pub enum PanelKind {
     ActionsBilling,
     Services,
     SentryCrons,
-    Anthropic,
-    OpenAi,
+    AiUsage,
 }
 
 impl PanelKind {
     /// Every kind, in the original `CaseIterable` declaration order — with the
     /// panels that have no counterpart appended in the order they were added.
-    pub const ALL: [PanelKind; 12] = [
+    pub const ALL: [PanelKind; 11] = [
         PanelKind::Hosts,
         PanelKind::GhRunners,
         PanelKind::Containers,
@@ -54,8 +53,7 @@ impl PanelKind {
         PanelKind::AzureCost,
         PanelKind::Services,
         PanelKind::SentryCrons,
-        PanelKind::Anthropic,
-        PanelKind::OpenAi,
+        PanelKind::AiUsage,
         PanelKind::ActionsBilling,
     ];
 
@@ -73,8 +71,7 @@ impl PanelKind {
             PanelKind::ActionsBilling => "actionsBilling",
             PanelKind::Services => "services",
             PanelKind::SentryCrons => "sentryCrons",
-            PanelKind::Anthropic => "anthropic",
-            PanelKind::OpenAi => "openai",
+            PanelKind::AiUsage => "aiUsage",
         }
     }
 
@@ -84,8 +81,8 @@ impl PanelKind {
             PanelKind::GhRunners => "GitHub Runners",
             PanelKind::Containers => "Containers / VMs",
             PanelKind::GhWorkflows => "GitHub Repos",
-            // The cloud providers' billing. Claude and Codex have their own
-            // panels, under the vendor's name, as their sources do in Settings.
+            // The cloud providers' billing. Every AI vendor (Claude, Codex, the
+            // Anthropic and OpenAI APIs) shares the one AI Usage panel instead.
             PanelKind::Usage => "Usage",
             PanelKind::OpenclawAgents => "OpenClaw",
             PanelKind::AzureCost => "Azure Cost",
@@ -95,8 +92,7 @@ impl PanelKind {
             // "is the vendor up?" and this one answers "is our own job green?",
             // and naming the source is what keeps the two apart at a glance.
             PanelKind::SentryCrons => "Sentry Crons",
-            PanelKind::Anthropic => "Anthropic",
-            PanelKind::OpenAi => "OpenAI",
+            PanelKind::AiUsage => "AI Usage",
         }
     }
 
@@ -150,7 +146,7 @@ impl PanelKind {
             // `name … minutes · $net` rows, so the same one-column width.
             PanelKind::AzureCost | PanelKind::ActionsBilling => 400.0,
             PanelKind::OpenclawAgents => 240.0,
-            PanelKind::Usage | PanelKind::Anthropic | PanelKind::OpenAi => 340.0,
+            PanelKind::Usage | PanelKind::AiUsage => 340.0,
             // Five rows of `vendor · status word · dot`. The binding
             // constraint is "Services Degraded" beside the longest vendor
             // name. 240 rather than the ~220 that measures, for the same

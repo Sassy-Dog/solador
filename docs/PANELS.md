@@ -73,44 +73,112 @@
   that raises attention, and a group holding one leads with it (value
   `1 missing`, red) rather than a load figure, which moves to the line under
   it. Individual rows keep their state colours.
-- **Anthropic** — Claude's **plan limits** lead it, **opt-in and off in a fresh
-  store** (15 min by default, see `docs/APP-INTERNALS.md`, **Authentication**).
-  The plan is one row named by its provider and plan (`Claude · Ultra`; the name
-  is the one the tool itself displays, never mapped from a tier code) carrying
-  one meter per limit: `5h`, `Week`, a per-model weekly such as `Week · Fable`,
-  or, for an Enterprise seat with no windows, a `Budget` (`$312 / $500 · 62%`;
-  spend beside windows is `Extra usage`). The meters are the Machines tile's
-  CPU/RAM meters (`app/ui/meter.js`, 70/90%). A meter exists only for a window
-  the reply carries: a verified Ultra account has no 5-hour window, so it has no
-  `5h` meter. Each window also gets a **pace**: the average burn since the
-  window opened, judged at the reading's own time (never at render), shown as
-  a tick on the track once a tenth of the window has passed and hidden once the
-  reading is stale. The row's verdict is the tightest one: `limit reached`
-  (red, the only plan state that raises attention), else the earliest run-out
-  (`out in ~1d 1h`, amber), else the busiest window's reset, and `reset since
-  read` when every window rolled over after its read; never blank. A spend cap
-  has no pace: the reply states no reset for it. Below the plan, under `THIS
-  MACHINE`, Claude Code's token rollups for this machine (`LAST 5H`, `LAST 7D`,
-  top projects; their own `PanelInterval::ClaudeRollups`, #615), which the
-  tile folds into one `Claude Code · 1.2M today` row. The plan endpoint is
-  undocumented, and degrades like any best-effort read: the plan row reads `—`
-  with no meters and the header names the reason. Beside the plan, `API spend
-  (MTD)` from an Admin key, on `PanelInterval::UsageProviders`, with a note
-  saying how far the figure reaches (`counted 3h ago`), which is not when it was
-  read: Anthropic's lag by hours. Each of the three is a part of the source, set
-  up on its own, and **a part that is not set up says nothing**: no row, no
-  warning, no setup line, no walk of the logs, and no `Claude Code` row on the
-  tile. Only a source with no part at all paints a sentence (`Anthropic isn’t set
-  up — add it in Settings → Sources → Add source`), and only once the key read
-  is `Absent`; before that it stays loading. Plans are their own block
-  (`crates/subscription`, `app/src-tauri/src/plan_usage.rs`,
-  `crates/viewmodel/src/plan_usage.rs`): a plan is not an account, and its
-  figures never merge into the rollups.
-- **OpenAI** — Codex's plan limits, read and drawn exactly as Claude's are
-  (`Codex · Plus`), on the same `PanelInterval::PlanUsage` cadence, which is one
-  setting shown on both tiles, and `API spend (MTD)` from an Admin key. Codex has
-  no local logs, so those are its two parts, with the same rule for a part that
-  is not set up.
+- **AI Usage** — every AI vendor in one tile (`aiUsage`, command `ai_usage`,
+  `usage::ai_usage_view`). The **Anthropic** and **OpenAI** sources in Settings
+  both feed it, each with its own Admin key, so a part is set up in the source
+  that owns it and a source adds the one tile, never two. The body reads, in this
+  order: the **plan limits** (Claude's, then Codex's), the **API spend** (`apis`,
+  Anthropic's then OpenAI's), then this machine's Claude Code rollups last.
+  Plans are **opt-in and off in a fresh store** (15 min by default, see
+  `docs/APP-INTERNALS.md`, **Authentication**).
+  A plan is one row named by its provider and plan (`Claude · Ultra`,
+  `Codex · Plus`; the name is the one the tool itself displays, never mapped from
+  a tier code) carrying one meter per limit: `5h`, `Week`, a per-model weekly
+  such as `Week · Fable`, or, for an Enterprise seat with no windows, a `Budget`
+  (`$312 / $500 · 62%`; spend beside windows is `Extra usage`). The meters are the
+  Machines tile's CPU/RAM meters (`app/ui/meter.js`, 70/90%). A meter exists only
+  for a window the reply carries: a verified Ultra account has no 5-hour window,
+  so it has no `5h` meter. Each window also gets a **pace**: the average burn
+  since the window opened, judged at the reading's own time (never at render),
+  shown as a tick on the track once a tenth of the window has passed and hidden
+  once the reading is stale. The row's verdict is the tightest one: `limit
+  reached` (red, the only plan state that raises attention, and the chip reads
+  `AI Usage · N`), else the earliest run-out (`out in ~1d 1h`, amber), else the
+  busiest window's reset, and `reset since read` when every window rolled over
+  after its read; never blank. A spend cap has no pace: the reply states no reset
+  for it. Under `THIS MACHINE`, Claude Code's token rollups (`LAST 5H`, `LAST
+  7D`, top projects; their own `PanelInterval::ClaudeRollups`, #615), which the
+  tile folds into one `Claude Code` row. The header's figure is labelled, because
+  the tile covers several vendors: `trailing` is `Claude Code · 1.2M today` and
+  `claudeToday` carries the bare `1.2M today` for that row. The plan endpoints
+  are undocumented, and degrade like any best-effort read: the plan row reads `—`
+  with no meters and the header names the reason. **API spend** is each vendor's
+  `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` from its Admin key, on
+  `PanelInterval::UsageProviders`, with a note saying how far the figure reaches
+  (`counted 3h ago`), which is not when it was read: Anthropic's lag by hours.
+  `apis` is always a list, empty when neither key is there. The header's warning
+  and clock lines read in body order and each names its row's own id
+  (`claude-plan`, `codex-plan`, `anthropic-api`, `openai-api`, and the rollups'
+  `claude-today`, last), so a line about one vendor is never read as another's.
+  `loading` is the OR of every enabled part's. **A part that is not set up says
+  nothing**: no row, no warning, no setup line, no walk of the logs, and no
+  `Claude Code` row on the tile. Only **no part at all** paints the one sentence
+  (`No AI usage yet — add Anthropic or OpenAI in Settings → Sources → Add
+  source`, built from `settings::AI_SOURCE_TITLES`), and only once **every** key
+  read is `Absent`: any key still unread keeps the tile loading, and otherwise a
+  key that could not be read says why, first in body order, instead of the setup
+  sentence. Plans are their own block (`crates/subscription`,
+  `app/src-tauri/src/plan_usage.rs`, `crates/viewmodel/src/plan_usage.rs`): a plan
+  is not an account, and its figures never merge into the rollups.
+  *Scopes.* Besides `all` and `attention`, a tile can be narrowed to `plans` (both
+  plans), `claude` (the Claude Code row and its rollups), `anthropic` or `openai`
+  (that vendor's plan, spend and, for Anthropic, the Claude Code row), or one row
+  (`item:<id>`). The row ids are unchanged from the two tiles this one replaced,
+  so a saved `item:` scope keeps working (`dashboard::vendor_of` maps each row to
+  its vendor scope). A tile that does not keep `claude-today` also drops the
+  header's Claude Code figure. **A tile's scope picks only which
+  figures it shows.** Every `⚠` warning from a configured AI source (both plans,
+  both keys, the Claude Code logs, and a key the credential store would not
+  read) shows on every AI Usage tile, overview card and Full view alike, in body
+  order and labelled with its row id (`claude-plan`, `codex-plan`,
+  `anthropic-api`, `openai-api`, `claude-today`). A key whose read failed has no
+  section, so it warns as `⚠ anthropic-api: <reason>`; a key merely unread warns
+  of nothing, it is loading. Only the freshness clock, `loading` and the
+  "isn’t set up" sentence follow the scope (an overview card's clock entry is the
+  kept rows' clocks, the line its Full view paints). `all` and `attention` keep
+  the whole-tile values. Any `⚠` line or freshness clock, from any row, lights
+  the Needs Attention chip: amber "AI Usage · check readings", or red "AI Usage ·
+  N" when a plan row is red. A key the credential store would not read counts as a
+  `⚠` line. **A tile's Detail is source-level**, as every other source's is: it
+  paints the source's whole `warnings` (every row's `⚠` lines and freshness
+  clocks), whatever the tile's scope. So a narrowed tile whose card shows nothing
+  can still be where the chip points, and its Detail says why: an `anthropic`
+  tile, with only the Codex plan's clock late, has an empty card, the amber chip
+  points at that tile, and its Detail shows `codex-plan: as of …`. Every other scope looks at its **relevant set**
+  (`anthropic`: the Anthropic vendor, meaning its plan, key and logs; `claude`
+  and `item:claude-today`: the logs; `item:claude-plan`, `item:codex-plan`: that
+  plan; `item:anthropic-api`, `item:openai-api`: that key; `openai`: the OpenAI
+  vendor; `plans`: both plans; an unknown `item:`: nothing, so no message and not
+  loading). Its `freshness` carries only the relevant rows' clocks; it is
+  loading when a relevant row is or a relevant key is unread; and its message is, in order: (1) the
+  loading line if a relevant key is unread, else (2) the rollups' own line
+  (`reading logs…`, the no-logs line) when the Claude Code logs are relevant and
+  on but have no data yet (both are said even beside a kept plan with content),
+  else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
+  `OpenAI isn’t set up — …` for each vendor with a relevant part off (every
+  relevant key read and absent; `plans` with both plan parts off names both, in
+  body order), else (4) none. A key's failure is said once, as its `⚠` line,
+  never also as a message, so a key the credential store would not read gives
+  no message and no "isn’t set up" (only an `Absent` key may paint a setup
+  sentence). The whole-tile "No AI usage yet" sentence is never used on a
+  narrowed tile, and the overview tile's empty text is that same message and
+  loading (one function, `tile_scope::ai_header`). The Full view says its
+  sentence once: it is the payload's `message`, and `tileEmpty` is not set when
+  the narrowed `message` is what the panel paints.
+  *Migration* (`StoreData::merge_ai_tiles`, after `split_usage_tiles`). The
+  Anthropic and OpenAI tiles an earlier build saved become `aiUsage`, and none is
+  left behind, since a leftover kind would make every later save fail
+  `validate`. The first `anthropic` and first `openai` tile of the same scope
+  (`all`, or `attention`) collapse into one: the earlier in layout order survives
+  with its id, place and view settings, hidden only if both were. `anthropic` +
+  `plans` becomes `item:claude-plan` (so it does not widen to Codex's plan);
+  `claude` and every `item:*` scope are kept. **A lone `all` or `attention`
+  vendor tile widens on purpose**: it now also shows the other vendor's
+  configured parts, which is the "one tile" request, and it stops `with_source_tile`
+  from counting a narrowed tile as the AI Usage tile and withholding the offer.
+  Only the default titles (`Anthropic`, `OpenAI`) are renamed, and only on
+  `all`/`attention` tiles. One-way: an older build does not know `aiUsage` and
+  refuses every save, so downgrade is not supported.
 - **Usage** — Neon, Sentry + Vercel (hourly by default, `PanelInterval::UsageProviders`).
   Vercel reads the FOCUS billing export: month-to-date spend and what falls
   beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES (MTD)`

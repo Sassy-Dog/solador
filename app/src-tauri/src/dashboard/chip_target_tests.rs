@@ -120,3 +120,39 @@ fn view_never_targets_a_hidden_tile_and_the_chip_still_stands() {
     assert_eq!(hidden["target"]["trouble"]["add"]["source"], "ghWorkflows");
     assert!(list(&hidden["target"]["trouble"], "tiles").is_empty());
 }
+
+/// A narrowed tile's Detail is source-level (it paints the source's whole
+/// `warnings`), so a chip may point at a narrowed tile whose card shows nothing.
+/// An `anthropic` tile with only the Codex plan's clock late: no `\u{26a0}`, an
+/// empty card, the chip targets the tile, and the source's warnings (what Detail
+/// paints) carry the codex-plan clock.
+#[test]
+fn a_narrowed_tile_with_an_empty_card_is_still_the_chips_target() {
+    use crate::usage::{fixture_state, Fixture};
+    let now = 1_700_000_000;
+    let mut state = fixture_state(Fixture::Measured, now, now);
+    // Late, but short of the warning's window (twice the cadence).
+    state
+        .plan_mut(subscription::Provider::Codex)
+        .state
+        .last_updated = Some(now - 1_200);
+    let payload = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, now);
+    assert!(payload["footer"].is_null(), "no \u{26a0} line");
+    let source = source_view("aiUsage", "AI Usage", &payload);
+    let anthropic = DashboardTile::new("anth", "aiUsage", "Anthropic", "anthropic");
+
+    // The card shows nothing of the Codex plan's clock.
+    let card = tile_view(&anthropic, &source);
+    assert!(list(&card, "warnings").is_empty(), "the card is empty");
+    // The chip still points at the tile.
+    assert_eq!(chip_target(&source, &[&anthropic]), json!({"tile": "anth"}));
+    // What Detail paints, the source's warnings, says why.
+    let detail: Vec<&str> = list(&source, "warnings")
+        .iter()
+        .map(|w| string(w, "text"))
+        .collect();
+    assert!(
+        detail.iter().any(|t| t.contains("codex-plan")),
+        "the source's warnings carry the codex-plan clock"
+    );
+}

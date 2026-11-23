@@ -37,7 +37,7 @@
 
      `.card`, `.panel` and `.group` keep their literal 10, and so do the
      `gap:10px 24px` grids on `#containersBody`/`#reposBody`/`#usageBody`/
-     `#anthropicBody`/`#openaiBody`/`#azureBody` and the block wrappers inside
+     `#aiUsageBody`/`#azureBody` and the block wrappers inside
      them (`.ai-plans`, `.ai-rollups`, `.az-main`). Every one of those spaces SECTIONS,
      COLUMNS or a card's frame apart, which is a different axis asking a
      different question — and now a fixed one, so pointing them at a preference
@@ -562,7 +562,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 /* "THIS MACHINE": the line between the plan meters above and this machine's
    own token counts below. Ruled only when the plans are above it. */
 .pv-heading { font-size:9px; }
-#anthropicPanel:not([data-cols="2"]) .ai-plans + .ai-rollups > .pv-heading {
+#aiUsagePanel:not([data-cols="2"]) .ai-plans + .ai-rollups > .pv-heading {
   border-top:1px solid var(--line); padding-top:10px;
 }
 .pv-message { font-size:11px; color:var(--muted); margin:0; }
@@ -610,20 +610,20 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 #usageBody > .pv-section:first-child > .pv-divider { display:none; }
 #usagePanel[data-cols="2"] #usageBody > .pv-section:nth-child(2) > .pv-divider { display:none; }
 
-/* An AI source's Full view: its plan, and on Anthropic this machine's rollups
-   BESIDE it at `--panel-cols: 2`, two grid items. */
-#anthropicBody, #openaiBody {
+/* The AI Usage Full view: the plans and API spend, and this machine's rollups
+   BESIDE them at `--panel-cols: 2`, two grid items. */
+#aiUsageBody {
   display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
   gap:10px 24px; align-items:start;
 }
 .ai-plans, .ai-rollups { display:flex; flex-direction:column; gap:10px; min-width:0; }
-:is(#anthropicBody, #openaiBody) > .pv-message { grid-column: 1 / -1; }
+#aiUsageBody > .pv-message { grid-column: 1 / -1; }
 /* A plan section opens with its own rule. The first has nothing above it to
    separate from, so its rule is dropped. A setup line above it keeps the rule. */
 .ai-plans > .pv-section:first-child > .pv-divider { display:none; }
 /* One block takes both tracks rather than sitting in the first with an empty one
    beside it. `:last-child`, not `:only-child`: a message may precede it. */
-:is(#anthropicBody, #openaiBody) > :is(.ai-plans, .ai-rollups):last-child:not(.ai-plans + .ai-rollups) {
+#aiUsageBody > :is(.ai-plans, .ai-rollups):last-child:not(.ai-plans + .ai-rollups) {
   grid-column: 1 / -1;
 }
 
@@ -915,7 +915,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   align-content:start;
 }
 .panel-body > * { flex-shrink:0; }
-#usageBody, #anthropicBody, #openaiBody, #azureBody, #actionsBillingBody, #openclawBody { min-height:300px; }
+#usageBody, #aiUsageBody, #azureBody, #actionsBillingBody, #openclawBody { min-height:300px; }
 #reposHealth { height:15px; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #reposHealth[hidden] { display:block !important; visibility:hidden; }
 .svc-state { width:18ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }

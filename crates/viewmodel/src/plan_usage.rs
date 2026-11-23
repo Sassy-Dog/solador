@@ -1,4 +1,4 @@
-//! Every word, colour and figure of the Anthropic and OpenAI panels' **plan** rows: a Claude
+//! Every word, colour and figure of the AI Usage panel's **plan** rows: a Claude
 //! or Codex subscription's own limits, as `crates/subscription` reads them.
 //!
 //! The types here mirror that crate's without depending on it. It carries an

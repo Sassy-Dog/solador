@@ -30,15 +30,14 @@ pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the 
 /// words: neither is a vendor's failure (#656).
 pub const TILE_READ_FAILED: &str = "Could not read this tile\u{2019}s data for the Full view.";
 
-pub const SOURCES: [(&str, &str); 12] = [
+pub const SOURCES: [(&str, &str); 11] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
     ("ghRunners", "GitHub Runners"),
     ("services", "Service Health"),
     ("sentryCrons", "Sentry Crons"),
     ("containers", "Containers / VMs"),
-    ("anthropic", "Anthropic"),
-    ("openai", "OpenAI"),
+    ("aiUsage", "AI Usage"),
     ("usage", "Usage"),
     ("azureCost", "Azure Cost"),
     ("actionsBilling", "Actions billing"),
@@ -259,9 +258,12 @@ fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
             ("WINDOWS", "Windows runners"),
         ]),
         "sentryCrons" => choices.push(("active", "Active issues")),
-        "anthropic" => {
-            choices.extend([("claude", "Claude Code"), ("plans", "Subscription plan")]);
-        }
+        "aiUsage" => choices.extend([
+            ("plans", "Subscription plans"),
+            ("claude", "Claude Code"),
+            ("anthropic", "Anthropic"),
+            ("openai", "OpenAI"),
+        ]),
         _ => (),
     }
     choices
@@ -286,9 +288,57 @@ fn tint(v: &Value) -> Value {
         json!(color::hex(color::MUTED))
     }
 }
-/// The Anthropic tile's one row for this machine's Claude Code rollups. Its Full
+/// The AI Usage tile's one row for this machine's Claude Code rollups. Its Full
 /// view keeps the panel's token counts, projects and heading with it.
 pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
+
+/// The AI Usage rows, in body order.
+pub(crate) const AI_ROW_IDS: [&str; 5] = [
+    crate::plan_usage::CLAUDE_ID,
+    crate::plan_usage::CODEX_ID,
+    crate::usage::ANTHROPIC_API_ID,
+    crate::usage::OPENAI_API_ID,
+    CLAUDE_TODAY_ID,
+];
+
+/// The rows an AI Usage scope speaks for, which decide whose header lines,
+/// loading and setup sentence a tile carries. Derived from the scope and not
+/// from the rows that exist, because a row that is not there yet (a key still
+/// unread) is exactly what holds a tile loading. `attention` and `all` speak
+/// for every row; an unknown `item:` speaks for none.
+pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
+    let vendor = |v: &str| {
+        AI_ROW_IDS
+            .into_iter()
+            .filter(|id| vendor_of(id) == Some(v))
+            .collect()
+    };
+    match scope {
+        "plans" => vec![AI_ROW_IDS[0], AI_ROW_IDS[1]],
+        "claude" => vec![CLAUDE_TODAY_ID],
+        "anthropic" => vendor("anthropic"),
+        "openai" => vendor("openai"),
+        other => match other.strip_prefix("item:") {
+            Some(id) => AI_ROW_IDS.into_iter().filter(|row| *row == id).collect(),
+            None => AI_ROW_IDS.to_vec(),
+        },
+    }
+}
+
+/// The vendor scope (`anthropic` or `openai`) an AI Usage row answers to, beside
+/// the block scopes `plans` and `claude`. The ids are the payload's
+/// (`plan_usage::CLAUDE_ID`, `usage::ANTHROPIC_API_ID` and their OpenAI
+/// counterparts); a row id this does not know (a saved `item:` for a source no
+/// longer there) belongs to no vendor.
+pub(crate) fn vendor_of(row_id: &str) -> Option<&'static str> {
+    use crate::plan_usage::{CLAUDE_ID, CODEX_ID};
+    use crate::usage::{ANTHROPIC_API_ID, OPENAI_API_ID};
+    match row_id {
+        CLAUDE_ID | ANTHROPIC_API_ID | CLAUDE_TODAY_ID => Some("anthropic"),
+        CODEX_ID | OPENAI_API_ID => Some("openai"),
+        _ => None,
+    }
+}
 
 fn row(id: &str, label: &str, value: &str, color: Value, attention: bool) -> Value {
     json!({"id": id, "label": label, "value": value, "color": color, "valueColor": color, "attention": attention, "detail": "", "scopes": [], "metrics": [], "url": null})
@@ -601,22 +651,32 @@ fn count(header: &str, one: &str, many: &str, value: &Value) -> Value {
     json!({"label": word, "header": header, "value": value, "fraction": null})
 }
 
-/// API spend's row, while the source has it. It has no scope of its own: `all`
-/// shows it, `item:` picks it, and `plans` and `claude` are the other blocks.
-fn api_row(p: &Value) -> Option<Value> {
-    let api = &p["api"];
-    if api.is_null() {
-        return None;
+/// One row per vendor whose API spend is on, in the payload's order. Each has
+/// only its vendor's scope: `all` shows it, `item:` picks it, and `plans` and
+/// `claude` are the other blocks.
+fn api_rows(p: &Value) -> Vec<Value> {
+    list(p, "apis")
+        .iter()
+        .map(|api| {
+            let mut r = row(
+                string(api, "id"),
+                string(api, "label"),
+                string(api, "value"),
+                tint(&api["valueColor"]),
+                false,
+            );
+            r["detail"] = json!(string(api, "note"));
+            add_vendor_scope(&mut r);
+            r
+        })
+        .collect()
+}
+
+/// Adds the row's vendor scope, when its id has one.
+fn add_vendor_scope(r: &mut Value) {
+    if let Some(vendor) = vendor_of(string(r, "id")) {
+        add_scope(r, vendor);
     }
-    let mut r = row(
-        string(api, "id"),
-        string(api, "label"),
-        string(api, "value"),
-        tint(&api["valueColor"]),
-        false,
-    );
-    r["detail"] = json!(string(api, "note"));
-    Some(r)
 }
 
 /// One row per plan, carrying the Machines tile's meters. Its id is the plan
@@ -638,6 +698,7 @@ fn plan_rows(p: &Value) -> Vec<Value> {
             r["detail"] = json!(string(plan, "detail"));
             r["metrics"] = plan["metrics"].clone();
             add_scope(&mut r, "plans");
+            add_vendor_scope(&mut r);
             r
         })
         .collect()
@@ -847,30 +908,28 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 })
             })
             .collect(),
-        "anthropic" => {
-            // The plan leads, as it does on the panel: a share of a limit is
-            // the figure an operator acts on.
+        "aiUsage" => {
+            // The plans lead, as they do on the panel: a share of a limit is
+            // the figure an operator acts on. API spend follows.
             let mut rows = plan_rows(p);
-            rows.extend(api_row(p));
-            // This machine's rollups are one line on the tile; the panel keeps
-            // the 5-hour and 7-day counts and the projects under its "This
-            // machine" heading.
-            if !string(p, "trailing").is_empty() {
+            rows.extend(api_rows(p));
+            // This machine's rollups are one line on the tile; the panel
+            // keeps the 5-hour and 7-day counts and the projects under its
+            // "This machine" heading. The figure is the bare `claudeToday`:
+            // the row is labelled Claude Code, so `trailing`'s own prefix
+            // would say it twice.
+            if !string(p, "claudeToday").is_empty() {
                 let mut r = row(
                     CLAUDE_TODAY_ID,
                     "Claude Code",
-                    string(p, "trailing"),
+                    string(p, "claudeToday"),
                     json!(color::hex(color::MUTED)),
                     false,
                 );
                 add_scope(&mut r, "claude");
+                add_vendor_scope(&mut r);
                 rows.push(r);
             }
-            rows
-        }
-        "openai" => {
-            let mut rows = plan_rows(p);
-            rows.extend(api_row(p));
             rows
         }
         "usage" => {
@@ -1103,8 +1162,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "services" => "Connected providers and custom status pages",
         "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
-        "anthropic" => "Claude\u{2019}s plan limits, API spend and Claude Code logs",
-        "openai" => "Codex\u{2019}s plan limits and API spend",
+        "aiUsage" => "Claude and Codex plan limits, API spend and Claude Code logs",
         "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",
         "actionsBilling" => "Hosted Actions minutes, spend and budget for your GitHub organization",
@@ -1113,6 +1171,13 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     };
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
         "defaultTile":default_tile(id, title)});
+    if id == "aiUsage" {
+        // What a narrowed tile (any scope but `all` and `attention`) rebuilds its
+        // header lines, loading and message from (`tile_scope::ai_header`): the
+        // per-row `lines`, whose entries carry each key's state, and the rollups'
+        // own message. Rides on the source because only a tile knows its scope.
+        source["ai"] = json!({"lines":payload["lines"],"rollupsMessage":payload["rollupsMessage"],"footer":payload["footer"]});
+    }
     if id == "hosts" {
         // The shared limits editor (#612): shared by every Machines tile, so
         // it rides on the source, never on a tile.
@@ -1168,7 +1233,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
     }
     let has_fields = columns.len() > 1;
     columns.push(json!({"key":"value", "label":match id {
-        "sentryCrons" => "Broken for", "anthropic" | "openai" | "usage" | "azureCost" | "actionsBilling" => "Value", _ => "Status"
+        "sentryCrons" => "Broken for", "aiUsage" | "usage" | "azureCost" | "actionsBilling" => "Value", _ => "Status"
     }}));
     if !has_fields {
         columns.push(json!({"key":"context", "label":"Details"}));
@@ -1555,9 +1620,13 @@ pub(crate) fn scoped_empty(tile: &DashboardTile, payload: &Value) -> Option<Stri
     // (`manage` with a non-empty message). Everything else is carried: the
     // scope's own sentences (`configure`) and the stock "No readings are
     // available yet.", which no panel paints for a payload with no message.
-    let (sentence, action) = empty_state(tile, &source, true);
+    let narrowed = ai_narrowed_source(tile, &source);
+    let (sentence, action) = empty_state(tile, narrowed.as_ref().unwrap_or(&source), true);
+    // The message the panel paints is the narrowed one for a narrowed AI Usage
+    // tile, so its sentence is not said a second time as `tileEmpty`.
+    let painted = narrowed.as_ref().unwrap_or(&source);
     let panel_paints =
-        action.is_none() || (action == Some("manage") && !string(&source, "message").is_empty());
+        action.is_none() || (action == Some("manage") && !string(painted, "message").is_empty());
     (!panel_paints).then(|| sentence.to_owned())
 }
 
@@ -1595,6 +1664,13 @@ fn empty_state<'a>(
 ) -> (&'a str, Option<&'static str>) {
     if source["loading"] == true && list(source, "rows").is_empty() {
         ("Waiting for the first reading…", None)
+    } else if source["aiNarrowed"] == true
+        && matching_empty
+        && !string(source, "message").is_empty()
+    {
+        // An AI Usage tile whose own vendor has nothing to show says why, in the
+        // words its Full view uses, rather than "no resources match".
+        (string(source, "message"), Some("manage"))
     } else if tile.scope.starts_with("item:") && matching_empty {
         (
             "This resource has no current reading. Review its source or choose another scope.",
@@ -1621,6 +1697,46 @@ fn empty_state<'a>(
     } else {
         (string(source, "message"), Some("manage"))
     }
+}
+
+/// The warnings a tile's card carries: the source's. Except that an AI Usage
+/// tile narrowed by its scope (`tile_scope::ai_header`) has two entries built
+/// as `source_view` builds them: the source's `footer` (every configured
+/// source's `\u{26a0}` warning, tile-wide whatever the scope) and then its own
+/// `freshness`, the kept rows' clocks, the same line its Full view paints.
+fn tile_warnings(tile: &DashboardTile, source: &Value) -> Value {
+    if tile.source != "aiUsage" {
+        return source["warnings"].clone();
+    }
+    let Some(header) = crate::tile_scope::ai_header(&source["ai"], &tile.scope) else {
+        return source["warnings"].clone();
+    };
+    let mut warnings = Vec::new();
+    for line in [&source["ai"]["footer"], &header.freshness] {
+        if let Some(text) = line["text"].as_str().filter(|s| !s.is_empty()) {
+            warnings.push(json!({"text":text,"color":tint(&line["color"])}));
+        }
+    }
+    json!(warnings)
+}
+
+/// `source` with an AI Usage tile's own `loading` and `message`, when its scope
+/// narrows it (`tile_scope::ai_header`): the one function the Full view and the
+/// overview's empty text both ask, so they cannot say different things. `None`
+/// for every other tile, and for `all` and `attention`.
+fn ai_narrowed_source(tile: &DashboardTile, source: &Value) -> Option<Value> {
+    if tile.source != "aiUsage" {
+        return None;
+    }
+    let header = crate::tile_scope::ai_header(&source["ai"], &tile.scope)?;
+    let mut narrowed = source.clone();
+    // Only the tile's own rows, so another vendor's rows never choose its
+    // loading text or action in `empty_state`.
+    narrowed["rows"] = json!(matching_rows(tile, source));
+    narrowed["loading"] = json!(header.loading);
+    narrowed["message"] = json!(header.message["text"].as_str().unwrap_or_default());
+    narrowed["aiNarrowed"] = json!(true);
+    Some(narrowed)
 }
 
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
@@ -1704,7 +1820,12 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .find(|s| s["value"] == tile.scope)
         .map(|s| string(s, "label").to_owned())
         .unwrap_or_else(|| "Resource no longer available".into());
-    let (empty, empty_action) = empty_state(tile, source, matching.is_empty());
+    let narrowed = ai_narrowed_source(tile, source);
+    let (empty, empty_action) = empty_state(
+        tile,
+        narrowed.as_ref().unwrap_or(source),
+        matching.is_empty(),
+    );
     let footer = if grouped {
         let noun = if shown.len() == 1 { "group" } else { "groups" };
         format!(
@@ -1723,7 +1844,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
         .unwrap_or((Value::Null, Value::Null, Value::Null));
     json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,"cardCounts":card_counts,
-        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
+        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":tile_warnings(tile, source),"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
         "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
@@ -1908,7 +2029,11 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
 /// leads to a hidden tile or to a source-wide panel.
 ///
 /// `tiles` are the source's visible tiles, in overview order. A source whose
-/// trouble is only a warning has no row to miss, so any tile shows it.
+/// trouble is only a warning has no row to miss, so any tile shows it: its
+/// Detail paints the source's whole `warnings`, whatever the tile's scope. The
+/// chip may therefore target a narrowed tile (an AI Usage tile scoped to one
+/// vendor, say) whose own card shows nothing, because that tile's Detail says
+/// why.
 fn chip_target(source: &Value, tiles: &[&DashboardTile]) -> Value {
     let needing: Vec<&Value> = list(source, "rows")
         .iter()
@@ -2890,8 +3015,7 @@ mod tests {
                 "Service Health",
                 "Sentry Crons",
                 "Containers / VMs",
-                "Anthropic",
-                "OpenAI",
+                "AI Usage",
                 "Usage",
                 "Azure Cost",
                 "Actions billing",
@@ -3718,9 +3842,9 @@ mod tests {
         assert_eq!(strip, ["7 issues", "— ready", "2 PRs", "1 dep"]);
     }
 
-    /// A plan is one Usage row under its own scope, carrying its meters, and it
-    /// leads the tile. Only red needs attention: amber is a pace, a forecast.
-    /// The token windows are not rows; `claude-today` stands for them.
+    /// A plan is one AI Usage row under its own scope, carrying its meters, and
+    /// the plans lead the tile. Only red needs attention: amber is a pace, a
+    /// forecast. The token windows are not rows; `claude-today` stands for them.
     #[test]
     fn plans_are_usage_rows_with_meters_under_their_own_scope() {
         let red = color::hex(color::RED);
@@ -3729,7 +3853,8 @@ mod tests {
         let week = json!({"label": "Week", "value": "100%", "fraction": 1.0, "color": red,
             "pace": null, "note": "limit reached · resets in 1h 0m"});
         let payload = json!({
-            "trailing": "1.2M today",
+            "trailing": "Claude Code · 1.2M today",
+            "claudeToday": "1.2M today",
             "windows": [{"label": "LAST 5H", "value": "820k"}, {"label": "LAST 7D", "value": "4.3M"}],
             "plans": [
                 {"id": "claude-plan", "label": "Claude · Ultra", "value": "limit reached",
@@ -3738,10 +3863,14 @@ mod tests {
                 {"id": "codex-plan", "label": "Codex · Plus", "value": "out in ~1d 1h",
                  "valueColor": amber, "color": amber, "detail": "…", "metrics": []}
             ],
-            "api": {"id": "anthropic-api", "label": "API spend (MTD)", "value": "$412.80",
-                    "valueColor": muted, "note": "counted 3h ago"}
+            "apis": [
+                {"id": "anthropic-api", "label": "Anthropic API spend (MTD)", "value": "$412.80",
+                 "valueColor": muted, "note": "counted 3h ago"},
+                {"id": "openai-api", "label": "OpenAI API spend (MTD)", "value": "$1.50",
+                 "valueColor": muted, "note": null}
+            ]
         });
-        let source = source_view("anthropic", "Anthropic", &payload);
+        let source = source_view("aiUsage", "AI Usage", &payload);
         let rows = list(&source, "rows");
         let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
         assert_eq!(
@@ -3750,11 +3879,12 @@ mod tests {
                 "claude-plan",
                 "codex-plan",
                 "anthropic-api",
+                "openai-api",
                 CLAUDE_TODAY_ID
             ]
         );
         assert_eq!(rows[0]["label"], "Claude · Ultra");
-        assert_eq!(rows[0]["scopes"], json!(["plans"]));
+        assert_eq!(rows[0]["scopes"], json!(["plans", "anthropic"]));
         assert_eq!(rows[0]["attention"], true);
         assert_eq!(rows[0]["valueColor"], red);
         assert_eq!(
@@ -3762,54 +3892,379 @@ mod tests {
             "Week is at 100% until its reset in 1h 0m."
         );
         assert_eq!(rows[0]["metrics"], json!([week]));
+        assert_eq!(rows[1]["scopes"], json!(["plans", "openai"]));
         assert_eq!(rows[1]["attention"], false, "amber is a forecast");
         assert_eq!(rows[1]["color"], amber);
-        assert_eq!(rows[2]["label"], "API spend (MTD)");
+        assert_eq!(rows[2]["label"], "Anthropic API spend (MTD)");
         assert_eq!(rows[2]["value"], "$412.80");
         assert_eq!(rows[2]["detail"], "counted 3h ago");
         assert_eq!(rows[2]["attention"], false);
-        assert_eq!(rows[3]["label"], "Claude Code");
+        assert_eq!(rows[3]["label"], "OpenAI API spend (MTD)");
+        assert_eq!(rows[3]["value"], "$1.50");
+        assert_eq!(rows[4]["label"], "Claude Code");
+        // The bare figure: the row is labelled Claude Code, so the header's
+        // own "Claude Code · " prefix would say it twice.
+        assert_eq!(rows[4]["value"], "1.2M today");
         assert!(list(&source, "scopes")
             .iter()
             .any(|s| s["value"] == "plans"));
         assert_eq!(source["attentionCount"], 1);
     }
 
-    /// With local usage off the view publishes no `trailing`, so the tile has
+    /// With local usage off the view publishes no `claudeToday`, so the tile has
     /// no Claude Code line: the operator's own request.
     #[test]
-    fn no_trailing_is_no_claude_code_row() {
+    fn no_claude_figure_is_no_claude_code_row() {
         let source = source_view(
-            "anthropic",
-            "Anthropic",
-            &json!({"trailing": "", "plans": []}),
+            "aiUsage",
+            "AI Usage",
+            &json!({"trailing": "", "claudeToday": "", "plans": [], "apis": []}),
         );
         assert!(list(&source, "rows").is_empty());
     }
 
+    /// Both vendors' spend is a row each, an offered item, so a tile can be
+    /// narrowed to either alone.
     #[test]
-    fn openai_rows_are_its_plan_then_its_spend() {
+    fn each_vendors_spend_is_its_own_row_and_offered_item() {
         let payload = json!({
             "plans": [{"id": "codex-plan", "label": "Codex · Plus", "value": "ok", "metrics": []}],
-            "api": {"id": "openai-api", "label": "API spend (MTD)", "value": "$1.50"},
+            "apis": [
+                {"id": "anthropic-api", "label": "Anthropic API spend (MTD)", "value": "$9.00"},
+                {"id": "openai-api", "label": "OpenAI API spend (MTD)", "value": "$1.50"}
+            ],
         });
-        let source = source_view("openai", "OpenAI", &payload);
+        let source = source_view("aiUsage", "AI Usage", &payload);
         let rows = list(&source, "rows");
         let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
-        assert_eq!(ids, ["codex-plan", "openai-api"]);
-        // An offered item, so a tile can be narrowed to the spend alone.
-        assert!(list(&source, "scopes")
+        assert_eq!(ids, ["codex-plan", "anthropic-api", "openai-api"]);
+        for id in ["item:openai-api", "item:anthropic-api"] {
+            assert!(
+                list(&source, "scopes").iter().any(|s| s["value"] == id),
+                "{id}"
+            );
+        }
+    }
+
+    /// An AI Usage card's warnings: the `⚠` entry is the source's whatever the
+    /// scope (every configured source's warning, source-wide tint), and the
+    /// clock entry follows the scope, naming only the rows the tile keeps and
+    /// matching its Full view's `freshness`. `all` keeps the source's array.
+    #[test]
+    fn an_ai_usage_card_carries_every_warning_but_only_its_own_clock() {
+        use crate::usage::{fixture_state, Fixture};
+        let now = 1_700_000_000;
+        let mut state = fixture_state(Fixture::Measured, now - 3_600, now - 7 * 3_600);
+        state
+            .anthropic_api_mut()
+            .failed("Anthropic key rejected".into());
+        state.openai_api_mut().failed("OpenAI key rejected".into());
+        let payload = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, now);
+        let source = source_view("aiUsage", "AI Usage", &payload);
+        let want = source["warnings"].clone();
+        let warns = list(&source, "warnings");
+        assert_eq!(warns.len(), 2, "a warning line and a clock line");
+        assert!(string(&warns[0], "text").contains("anthropic-api"));
+        assert!(string(&warns[0], "text").contains("claude-today"));
+        let all_ids = ["claude-plan", "codex-plan", "anthropic-api", "openai-api"];
+        for id in all_ids {
+            assert!(
+                string(&warns[1], "text").contains(id),
+                "the source clock names {id}"
+            );
+        }
+        let all = tile_view(
+            &DashboardTile::new("t", "aiUsage", "AI Usage", "all"),
+            &source,
+        );
+        assert_eq!(all["warnings"], want);
+        // (scope, the rows whose clock it may name)
+        let cases: [(&str, &[&str]); 10] = [
+            ("openai", &["codex-plan", "openai-api"]),
+            ("item:codex-plan", &["codex-plan"]),
+            ("anthropic", &["claude-plan", "anthropic-api"]),
+            ("plans", &["claude-plan", "codex-plan"]),
+            ("item:openai-api", &["openai-api"]),
+            ("claude", &[]),
+            ("item:claude-plan", &["claude-plan"]),
+            ("item:anthropic-api", &["anthropic-api"]),
+            ("item:claude-today", &[]),
+            ("item:gone", &[]),
+        ];
+        for (scope, clocks) in cases {
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            let view = tile_view(&t, &source);
+            let got = list(&view, "warnings");
+            // The `⚠` entry: the source's, text and tint.
+            assert_eq!(got[0], warns[0], "{scope} warning entry");
+            // The clock entry is the Full view's `freshness`.
+            let full = crate::tile_scope::scope_payload(&t, payload.clone());
+            match full["freshness"]["text"].as_str() {
+                Some(text) => {
+                    assert_eq!(got.len(), 2, "{scope}");
+                    assert_eq!(string(&got[1], "text"), text, "{scope} clock");
+                    assert_eq!(got[1]["color"], full["freshness"]["color"], "{scope} tint");
+                    for id in clocks {
+                        assert!(text.contains(id), "{scope} clock names {id}");
+                    }
+                    for id in all_ids.iter().filter(|id| !clocks.contains(id)) {
+                        assert!(!text.contains(id), "{scope} clock must not name {id}");
+                    }
+                }
+                None => {
+                    assert!(clocks.is_empty(), "{scope} has no clock");
+                    assert_eq!(got.len(), 1, "{scope}");
+                }
+            }
+        }
+    }
+
+    /// A key the credential store would not read warns on every tile's card, in
+    /// the source-wide tint, and its reason is not also the tile's empty text.
+    /// It has a footer now, so it lights the amber Needs Attention chip and
+    /// nothing red, as any `⚠` line does.
+    #[test]
+    fn an_unreadable_key_warns_on_every_overview_card_once() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let mut state = UsageState::new();
+        state
+            .anthropic_api_mut()
+            .unreadable("keychain locked".into());
+        state.openai_api_mut().unconfigure();
+        for inputs in [
+            PlanInputs::OFF,
+            PlanInputs {
+                claude: true,
+                ..PlanInputs::OFF
+            },
+        ] {
+            let payload = crate::usage::ai_usage_view(&state, inputs, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            assert!(list(&source, "warnings").iter().any(|w| {
+                string(w, "text").contains("\u{26a0} anthropic-api: keychain locked")
+            }));
+            for scope in ["all", "anthropic", "openai", "item:codex-plan"] {
+                let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+                let view = tile_view(&t, &source);
+                assert_eq!(view["warnings"], source["warnings"], "{scope}");
+                let said = list(&view, "warnings")
+                    .iter()
+                    .map(|w| string(w, "text").matches("keychain locked").count())
+                    .sum::<usize>()
+                    + string(&view, "empty").matches("keychain locked").count();
+                assert_eq!(said, 1, "{scope}: the reason is said {said} times");
+            }
+            // The Needs Attention chip: amber, never red.
+            let mut layout = default_layout();
+            layout.tiles = vec![DashboardTile::new("t", "aiUsage", "AI Usage", "all")];
+            let overview = view(&layout, &[payload]);
+            let chip = list(&overview, "attention")
+                .iter()
+                .find(|c| c["source"] == "aiUsage")
+                .cloned()
+                .expect("an unreadable key lights a chip");
+            assert_eq!(chip["color"], color::hex(color::AMBER));
+            assert_eq!(chip["label"], "AI Usage \u{b7} check readings");
+        }
+    }
+
+    /// The overview tile's empty text is its Full view's message, narrowed to the
+    /// tile's own vendor: never another vendor's sentence and never another
+    /// vendor's wait. A key's failure is its warning, not the empty text.
+    #[test]
+    fn an_ai_usage_tiles_empty_text_is_its_own_vendors() {
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let empty = |state: &UsageState, scope: &str| -> String {
+            let payload =
+                crate::usage::ai_usage_view(state, crate::plan_usage::PlanInputs::OFF, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            string(&tile_view(&t, &source), "empty").to_owned()
+        };
+        let openai_off = crate::settings::not_set_up_message(crate::settings::OPENAI_TITLE);
+        let anthropic_off = crate::settings::not_set_up_message(crate::settings::ANTHROPIC_TITLE);
+
+        // Anthropic's key unreadable, OpenAI's absent.
+        let mut state = UsageState::new();
+        state
+            .anthropic_api_mut()
+            .unreadable("keychain locked".into());
+        state.openai_api_mut().unconfigure();
+        for scope in ["openai", "item:openai-api", "item:codex-plan"] {
+            assert_eq!(empty(&state, scope), openai_off, "{scope}");
+        }
+        assert!(!empty(&state, "anthropic").contains("keychain locked"));
+
+        // Anthropic's key unread, OpenAI's absent: OpenAI's tile is not waiting.
+        let mut state = UsageState::new();
+        state.openai_api_mut().unconfigure();
+        let text = empty(&state, "openai");
+        assert_ne!(text, "Waiting for the first reading\u{2026}");
+        assert_eq!(text, openai_off);
+        assert_eq!(
+            empty(&state, "anthropic"),
+            "Waiting for the first reading\u{2026}"
+        );
+
+        // Mirror.
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unreadable("keychain locked".into());
+        assert_eq!(empty(&state, "claude"), anthropic_off);
+        assert!(!empty(&state, "openai").contains("keychain locked"));
+        // The whole tile keeps its own sentence.
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        assert_eq!(empty(&state, "all"), crate::settings::none_added_message());
+    }
+
+    /// An overview tile's empty text depends on its own vendor only: another
+    /// vendor's rows neither pick its loading text nor its action. And the same
+    /// holds for every narrowing scope, not only the vendor ones.
+    #[test]
+    fn an_ai_usage_tiles_empty_text_ignores_the_other_vendors_rows() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let empty = |state: &UsageState, inputs: PlanInputs, scope: &str| -> (String, Value) {
+            let payload = crate::usage::ai_usage_view(state, inputs, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            let view = tile_view(&t, &source);
+            (
+                string(&view, "empty").to_owned(),
+                view["emptyAction"].clone(),
+            )
+        };
+        let waiting = "Waiting for the first reading\u{2026}";
+        // OpenAI's key unread and Codex off. Claude's plan on or off must not
+        // change what OpenAI's tile says.
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        let claude_on = PlanInputs {
+            claude: true,
+            ..PlanInputs::OFF
+        };
+        let off = empty(&state, PlanInputs::OFF, "openai");
+        let on = empty(&state, claude_on, "openai");
+        assert_eq!(off, on, "Claude's plan changes OpenAI's tile");
+        assert_eq!(on.0, waiting);
+        assert_eq!(empty(&state, claude_on, "item:openai-api").0, waiting);
+        // Mirror: Anthropic's key unread, Codex on.
+        let mut state = UsageState::new();
+        state.openai_api_mut().unconfigure();
+        let codex_on = PlanInputs {
+            codex: true,
+            ..PlanInputs::OFF
+        };
+        assert_eq!(empty(&state, codex_on, "anthropic").0, waiting);
+        assert_eq!(empty(&state, PlanInputs::OFF, "anthropic").0, waiting);
+    }
+
+    /// Every narrowing scope's empty text is its own message: the plans, one
+    /// row of either vendor, and the Claude Code row.
+    #[test]
+    fn every_narrowing_ai_scope_says_its_own_vendors_sentence_on_the_overview() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let empty = |state: &UsageState, inputs: PlanInputs, scope: &str| -> String {
+            let payload = crate::usage::ai_usage_view(state, inputs, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            string(&tile_view(&t, &source), "empty").to_owned()
+        };
+        let off = |v: &str| crate::settings::not_set_up_message(v);
+        let (a, o) = (
+            off(crate::settings::ANTHROPIC_TITLE),
+            off(crate::settings::OPENAI_TITLE),
+        );
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        let none = PlanInputs::OFF;
+        assert_eq!(empty(&state, none, "plans"), format!("{a} {o}"));
+        assert_eq!(empty(&state, none, "item:claude-plan"), a);
+        assert_eq!(empty(&state, none, "item:anthropic-api"), a);
+        assert_eq!(empty(&state, none, "item:claude-today"), a);
+        assert_eq!(empty(&state, none, "item:codex-plan"), o);
+        // With the other vendor on, still only its own.
+        let codex_on = PlanInputs {
+            codex: true,
+            ..none
+        };
+        assert_eq!(empty(&state, codex_on, "item:claude-plan"), a);
+        assert_eq!(empty(&state, codex_on, "item:claude-today"), a);
+        let claude_on = PlanInputs {
+            claude: true,
+            ..none
+        };
+        assert_eq!(empty(&state, claude_on, "item:codex-plan"), o);
+        assert_eq!(empty(&state, claude_on, "item:openai-api"), o);
+    }
+
+    /// Every AI row carries its vendor's scope, and the fixed scopes the picker
+    /// offers are exactly the ones a row can answer to.
+    #[test]
+    fn every_ai_row_carries_its_vendor_scope() {
+        let payload = json!({
+            "claudeToday": "1k today",
+            "plans": [
+                {"id": "claude-plan", "label": "Claude", "value": "ok", "metrics": []},
+                {"id": "codex-plan", "label": "Codex", "value": "ok", "metrics": []}
+            ],
+            "apis": [
+                {"id": "anthropic-api", "label": "A", "value": "$1"},
+                {"id": "openai-api", "label": "O", "value": "$1"}
+            ],
+        });
+        let source = source_view("aiUsage", "AI Usage", &payload);
+        let scopes: Vec<(String, Vec<String>)> = list(&source, "rows")
             .iter()
-            .any(|s| s["value"] == "item:openai-api"));
+            .map(|r| {
+                (
+                    string(r, "id").to_owned(),
+                    list(r, "scopes")
+                        .iter()
+                        .map(|s| s.as_str().unwrap().to_owned())
+                        .collect(),
+                )
+            })
+            .collect();
+        let want = [
+            ("claude-plan", &["plans", "anthropic"][..]),
+            ("codex-plan", &["plans", "openai"]),
+            ("anthropic-api", &["anthropic"]),
+            ("openai-api", &["openai"]),
+            ("claude-today", &["claude", "anthropic"]),
+        ];
+        assert_eq!(scopes.len(), want.len());
+        for ((id, got), (want_id, want_scopes)) in scopes.iter().zip(want) {
+            assert_eq!(id, want_id);
+            assert_eq!(got, want_scopes, "{id}");
+            // The vendor scope is the one `vendor_of` names.
+            assert_eq!(vendor_of(id), got.last().map(String::as_str), "{id}");
+        }
+        // Each scope a row carries is one the picker offers, so a saved scope
+        // always passes `validate`.
+        let fixed: Vec<&str> = fixed_scopes("aiUsage").iter().map(|(v, _)| *v).collect();
+        for (_, got) in &scopes {
+            for scope in got {
+                assert!(fixed.contains(&scope.as_str()), "{scope}");
+            }
+        }
+        assert_eq!(vendor_of("neon:Compute"), None);
     }
 
     /// A tile's hint is the catalog's one-line description of the source.
     #[test]
-    fn each_ai_tile_says_it_also_carries_api_spend() {
-        for id in ["anthropic", "openai"] {
-            let source = source_view(id, id, &json!({}));
-            assert!(string(&source, "hint").contains("API spend"), "{id}");
-        }
+    fn the_ai_tile_says_it_also_carries_api_spend() {
+        let source = source_view("aiUsage", "AI Usage", &json!({}));
+        assert!(string(&source, "hint").contains("API spend"));
     }
 
     /// The Actions billing budget row flags exactly as Azure's does: a bar that
@@ -4123,23 +4578,23 @@ mod tile_scope_ids_tests {
     #[test]
     fn a_hidden_tile_already_counts_as_having_one() {
         let mut layout = default_layout();
-        let mut hidden = DashboardTile::new("mine", "anthropic", "Mine", "all");
+        let mut hidden = DashboardTile::new("mine", "aiUsage", "Mine", "all");
         hidden.hidden = true;
         layout.tiles.push(hidden);
-        assert!(with_source_tile(&layout, "anthropic").is_none());
+        assert!(with_source_tile(&layout, "aiUsage").is_none());
     }
 
     #[test]
     fn an_added_tile_is_valid_titled_and_takes_a_free_id() {
         let mut layout = default_layout();
         layout.tiles.retain(|tile| tile.source != "hosts");
-        let taken = DashboardTile::new("added-anthropic-1", "usage", "Usage", "all");
+        let taken = DashboardTile::new("added-aiUsage-1", "usage", "Usage", "all");
         layout.tiles.push(taken);
 
-        let next = with_source_tile(&layout, "anthropic").unwrap();
+        let next = with_source_tile(&layout, "aiUsage").unwrap();
         let added = next.tiles.last().unwrap();
-        assert_eq!(added.title, "Anthropic");
-        assert_eq!(added.id, "added-anthropic-2");
+        assert_eq!(added.title, "AI Usage");
+        assert_eq!(added.id, "added-aiUsage-2");
         validate(&next).unwrap();
 
         let next = with_source_tile(&layout, "hosts").unwrap();

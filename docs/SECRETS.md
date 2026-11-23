@@ -25,8 +25,8 @@ Credential Manager on Windows), never in `store.json`.
 | Neon API key | Usage | organization-scoped |
 | Sentry auth token | Usage, Sentry Crons | `org:read` only |
 | Vercel API token | Usage | read |
-| Anthropic Admin API key (`sk-ant-admin…`) | Anthropic | Admin API, read here only for `GET /v1/organizations/analytics/cost`. Only a Console organization can create one. |
-| OpenAI Admin API key | OpenAI | read here only for `GET /v1/organization/costs` |
+| Anthropic Admin API key (`sk-ant-admin…`) | AI Usage (Anthropic source) | Admin API, read here only for `GET /v1/organizations/analytics/cost`. Only a Console organization can create one. |
+| OpenAI Admin API key | AI Usage (OpenAI source) | read here only for `GET /v1/organization/costs` |
 | OpenClaw bearer + device key | OpenClaw | gateway-dependent |
 
 An Admin API key can do far more than Solador asks of it, and neither vendor
@@ -35,7 +35,7 @@ vendor's own endpoint.
 
 ### Borrowed sign-ins (read, never stored)
 
-The **plan limits** on the Anthropic and OpenAI tiles are off until you pick
+The **plan limits** on the AI Usage tile are off until you pick
 **Subscription** in that source's steps (Settings → Sources → Add source) and
 press Finish. While one is on, each poll
 reads that tool's *own* saved sign-in, sends one read-only request, and drops

@@ -1,4 +1,4 @@
-//! The Anthropic and OpenAI panels' **plan** rows: a subscription's own limit
+//! The AI Usage panel's **plan** rows (Claude's, then Codex's): a subscription's own limit
 //! windows, read from the sign-in Claude Code or Codex already holds.
 //!
 //! Three things live here, and only the first is a decision:
@@ -381,7 +381,7 @@ pub fn next_wake(
     std::time::Duration::from_secs(soonest.clamp(1, cadence_secs.max(1)))
 }
 
-/// What the Anthropic and OpenAI panels read at render time.
+/// What the AI Usage panel reads at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanInputs {
     pub claude: bool,
@@ -413,7 +413,7 @@ impl PlanInputs {
     }
 }
 
-/// One provider's contribution to its panel.
+/// One provider's contribution to the AI Usage panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanView {
     /// The provider's section while it is on, or nothing.
@@ -426,8 +426,9 @@ pub struct PlanView {
     pub loading: bool,
 }
 
-/// One provider's plan block, at render time `now`. Each provider has its own
-/// tile, so nothing here may speak for the other.
+/// One provider's plan block, at render time `now`. The AI Usage panel puts
+/// both providers' blocks side by side, so nothing here may speak for the
+/// other: every line is attributed by the section's own id.
 #[must_use]
 pub fn view(provider: Provider, source: &PlanSource, inputs: PlanInputs, now: u64) -> PlanView {
     let mut plan = PlanView {

@@ -37,7 +37,7 @@ const callRaw = async (command, args, fixture) => {
 // it was asked for has gone (Escape, or another tile) is dropped as `null`,
 // which every renderer already treats as "paint nothing", and a reading asked
 // for a tile tells the dashboard that tile's first response has landed.
-const PANEL_READS = new Set(["cockpit", "repos", "runners", "containers", "services", "crons", "anthropic", "openai", "usage", "azure_cost", "actions_billing", "openclaw"]);
+const PANEL_READS = new Set(["cockpit", "repos", "runners", "containers", "services", "crons", "ai_usage", "usage", "azure_cost", "actions_billing", "openclaw"]);
 const callRust = async (command, args, fixture) => {
   const dashboard = PANEL_READS.has(command) ? window.soladorDashboard : null;
   const view = dashboard?.fullGeneration?.();
@@ -398,8 +398,7 @@ const PANEL_SECTIONS = {
   containers: "containersPanel",
   ghWorkflows: "reposPanel",
   ghRunners: "runnersPanel",
-  anthropic: "anthropicPanel",
-  openai: "openaiPanel",
+  aiUsage: "aiUsagePanel",
   usage: "usagePanel",
   azureCost: "azurePanel",
   actionsBilling: "actionsBillingPanel",

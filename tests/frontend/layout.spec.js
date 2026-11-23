@@ -961,13 +961,9 @@ const ROW_LISTS = [
   { source: "containers", command: "containers", file: "sample-containers.json", list: "#containersBody .cont-section", row: ".cont-row" },
   { source: "ghWorkflows", command: "repos", file: "sample-repos.json", list: "#reposBody .gh-col", row: ".gh-row:not(.gh-head)" },
   { source: "ghRunners", command: "runners", file: "sample-runners.json", list: "#runnersBody .gh-list", row: ".gh-row", tile: { runnerFullView: "list" } },
-  { source: "anthropic", command: "anthropic", file: "sample-anthropic.json", list: "#anthropicBody .pv-section", row: ".pv-row, .pv-item" },
-  // One plan and no other list, so the pair here is the plan's row and its
-  // meters, which keep their own margin on top of the spacing. `margin: 7`
-  // mirrors `margin-top: 7px` on `.db-host-stats` in `app/ui/dashboard.css`
-  // (the `:is(#dashboardOverview, #anthropicPanel, #openaiPanel)` rule); change
-  // them together.
-  { source: "openai", command: "openai", file: "sample-openai.json", list: "#openaiBody .pv-section", row: ".pv-row, .pv-item, .db-host-stats", margin: 7 },
+  // The project rows. A plan's row and its meters are another pair, measured
+  // below, because the meters keep their own margin on top of the spacing.
+  { source: "aiUsage", command: "ai_usage", file: "sample-ai-usage.json", list: "#aiUsageBody .pv-section", row: ".pv-row, .pv-item" },
   { source: "usage", command: "usage", file: "sample-usage.json", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
   { source: "azureCost", command: "azure_cost", file: "sample-azure.json", list: "#azureBody .pv-section", row: ".pv-item" },
   { source: "actionsBilling", command: "actions_billing", file: "sample-actions-billing.json", list: "#actionsBillingBody .pv-section", row: ".pv-item" },
@@ -1035,6 +1031,27 @@ for (const px of [0, 16]) {
       expect([...new Set(gaps)], `${entry.source} at rowGapPx:${px}`).toEqual([px + (entry.margin ?? 0)]);
     });
   }
+}
+
+// A plan's row and its meters: the meters keep their own `margin-top: 7px` on
+// top of the tile's spacing, which mirrors `.db-host-stats` in
+// `app/ui/dashboard.css` (the `:is(#dashboardOverview, #aiUsagePanel)` rule);
+// change them together.
+for (const px of [0, 16]) {
+  test(`an aiUsage tile's plan meters follow its row spacing (${px}px)`, async ({ page, baseURL }) => {
+    await gotoTileFull(page, baseURL, {
+      source: "aiUsage",
+      cockpit: await fixture(baseURL, "sample-cockpit.json"),
+      answers: { ai_usage: await fixture(baseURL, "sample-ai-usage.json") },
+      tileKeys: { "full-aiUsage": { rowGapPx: px } },
+    });
+    await expect(page.locator("#aiUsageBody .pv-section[data-plan]").first()).toBeVisible();
+    const entry = { list: "#aiUsageBody .pv-section[data-plan]", row: ".pv-row, .db-host-stats" };
+    await expect.poll(async () => (await measureRowGaps(page, entry)).length, {
+      message: "the plans rendered no row and meters to measure",
+    }).toBeGreaterThan(0);
+    expect([...new Set(await measureRowGaps(page, entry))], `plan meters at rowGapPx:${px}`).toEqual([px + 7]);
+  });
 }
 
 test("the Runners list has no trailing gap inside its reserved viewport", async ({ page, baseURL }) => {

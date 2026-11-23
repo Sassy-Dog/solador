@@ -53,9 +53,9 @@ to how `remote::plan` refuses is a change to the prompt.
 `--showcase` dumps — a working morning with exactly one tile out of true, held by
 `the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
 `site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
-from `tests/frontend/og-card.html`. The eleven `panel-*.png` are a tile's **Full
+from `tests/frontend/og-card.html`. The ten `panel-*.png` are a tile's **Full
 view** (View, then Full view) of the showcase readings. **Actions billing is the
-twelfth tile and has a card on the home page but no screenshot yet**: it has no
+eleventh tile and has a card on the home page but no screenshot yet**: it has no
 showcase fixture, and generating its image rewrites every committed PNG, so it
 is its own follow-up rather than a drive-by here. Full view lays a panel out
 in columns across the whole window, so the window is sized per panel in
@@ -64,12 +64,11 @@ crops each image into a box that keeps the 3-up aspect, 311:195, at every width
 (311x195 at 1280, about 330x207 at 800, about 328x206 at 390; `aspect-ratio`
 on the image, #699) with `object-fit: cover`, so the image's shape decides what the
 card shows, and every card shows the same crop at all three layouts. 908pt for
-Repos and Runners, 462pt for the panels that stack (Containers, Anthropic,
-Azure Cost, Crons, Services, OpenClaw), 452pt for Usage and 366pt for OpenAI,
-which are sized to the box's shape so that `cover` keeps their right-aligned
-values, and 900pt for Hosts. Every
+Repos and Runners, 462pt for the panels that stack (Containers, AI Usage,
+Azure Cost, Crons, Services, OpenClaw), 452pt for Usage, which is sized to the
+box's shape so that `cover` keeps its right-aligned values, and 900pt for Hosts. Every
 card is anchored top left. The limits are claimed on `/setup/` and in
-the README. The showcase Anthropic, OpenAI and Usage payloads are `usage::Fixture::Showcase`:
+the README. The showcase AI Usage and Usage payloads are `usage::Fixture::Showcase`:
 the measured fixture with every plan meter green and under pace (the showcase's
 one anomaly is a failing repo), plus a Vercel reading, which the e2e suite's
 `Measured` deliberately lacks. Containers keeps the remote host under this machine's
@@ -79,7 +78,7 @@ while Cards would put the second owner past the crop's right edge; the generator
 asserts every owner's name is inside the crop, and the overview keeps the
 default Cards, so the site shows both layouts. The generator asserts that Usage's
 Neon, Sentry and Vercel sections sit inside the crop with the panel's full
-width (a two-column Usage at 908pt fails it), and `site.spec.js` asserts every
+width (a two-column Usage at 908pt fails it) and that the AI Usage crop keeps both plans' sections, and `site.spec.js` asserts every
 image is anchored top left, which ties the CSS to that assumption. The Hosts alt names only the CPU section ("overall and
 per-core CPU sparklines"), because the CPU section is the one part of the card
 that the crop is certain to show. The generator asserts that the whole CPU

@@ -377,13 +377,12 @@ impl StoreData {
     }
 
     /// One saved Usage tile becomes the tiles that now hold what it showed:
-    /// Usage keeps the cloud providers, Anthropic takes Claude, OpenAI takes
-    /// Codex.
+    /// Usage keeps the cloud providers, and AI Usage takes Claude and Codex.
     ///
     /// One-shot by construction, like the function above: it rewrites every
     /// `claudeUsage` tile, and no source it writes is one it reads. That is why
     /// the id changed. Had it stayed, `all` would read the same before and
-    /// after, and a removed Anthropic tile would return on the next launch. A
+    /// after, and a removed AI Usage tile would return on the next launch. A
     /// marker in the store would not hold either, because an older build's save
     /// drops keys it does not know, and bumping [`STORE_VERSION`] stops older
     /// builds opening the file.
@@ -392,9 +391,11 @@ impl StoreData {
     /// copied field for field, so a hidden tile's additions stay hidden and
     /// unhiding loses nothing. Nothing is dropped to fit: the app refuses only
     /// growth past its tile limit, so a dashboard this pushes over can still
-    /// be saved. OpenAI is added only with Codex's plan on, because with it
-    /// off the old tile showed nothing from Codex, and Add a tile offers
-    /// OpenAI later.
+    /// be saved.
+    ///
+    /// It writes `aiUsage` directly, never the Anthropic and OpenAI tiles an
+    /// earlier build wrote here: those are [`Self::merge_ai_tiles`]'s, which
+    /// runs after it.
     ///
     /// One-way. An older build keeps these tiles through a save but shows none
     /// of them, and refuses every dashboard edit, because it knows none of
@@ -404,7 +405,6 @@ impl StoreData {
     /// out here because this crate cannot see that one; `tile_scope.rs` has the
     /// test that keeps them equal.
     pub fn split_usage_tiles(&mut self) {
-        let codex_plan_on = self.settings.codex_plan_usage_enabled;
         let Some(dashboard) = self.dashboard.as_mut() else {
             return;
         };
@@ -416,7 +416,7 @@ impl StoreData {
                 continue;
             }
             let saved_scope = std::mem::take(&mut tile.scope);
-            let (source, scope, added) = split_usage_scope(&saved_scope, codex_plan_on);
+            let (source, scope, added) = split_usage_scope(&saved_scope);
             tile.source = source.into();
             scope.clone_into(&mut tile.scope);
             if tile.title == "Usage" {
@@ -424,43 +424,128 @@ impl StoreData {
             }
             let moved = tile.clone();
             tiles.push(tile);
-            for (source, scope) in added.into_iter().flatten() {
+            if let Some((source, scope)) = added {
                 tiles.push(DashboardTile {
                     id: added_tile_id(&moved.id, source, &mut taken),
                     source: source.into(),
                     title: source_title(source).into(),
                     scope: scope.to_owned(),
-                    ..moved.clone()
+                    ..moved
                 });
             }
         }
         dashboard.tiles = tiles;
     }
+
+    /// The Anthropic and OpenAI tiles an earlier build saved become one AI
+    /// Usage tile (`aiUsage`), so no vendor tile is left behind. A leftover one
+    /// would make every later save fail: `dashboard::validate` refuses a kind it
+    /// does not know, and so does every source save that adds a tile.
+    ///
+    /// Runs after [`Self::split_usage_tiles`], which now writes `aiUsage`
+    /// itself. It reads only the two vendor kinds and writes only `aiUsage`, so
+    /// it is idempotent, and a removed AI Usage tile stays removed.
+    ///
+    /// - The first `anthropic` and the first `openai` tile of the same scope,
+    ///   `all` or `attention`, collapse into one. The earlier of the two in
+    ///   layout order survives with its id, place and every view setting; it is
+    ///   hidden only if both were. Its title stays if the operator chose one,
+    ///   else the dropped tile's chosen title is taken, else `AI Usage`.
+    /// - Any other vendor tile scoped `all` or `attention` becomes `aiUsage`
+    ///   with the same scope, and a default title (`Anthropic`, `OpenAI`)
+    ///   becomes `AI Usage`. This widens it deliberately: a lone vendor tile
+    ///   now also shows the other vendor's configured parts.
+    /// - `anthropic` + `plans` becomes `item:claude-plan`, so it does not widen
+    ///   to Codex's plan, which `plans` now also covers.
+    /// - Every other scope, `claude` and the `item:*` rows included, is kept as
+    ///   it is and keeps its title; `dashboard::validate` decides on one nobody
+    ///   recognises, as it does for any hand-edited scope.
+    ///
+    /// The tile count only shrinks.
+    ///
+    /// One-way, like the split: an older build does not know `aiUsage` and
+    /// refuses every dashboard save once this has run.
+    ///
+    /// `"aiUsage"` and `"AI Usage"` are the app's (`dashboard::SOURCES`),
+    /// spelled out here because this crate cannot see that one;
+    /// `tile_scope.rs` has the test that keeps them equal.
+    pub fn merge_ai_tiles(&mut self) {
+        let Some(dashboard) = self.dashboard.as_mut() else {
+            return;
+        };
+        let mut tiles = std::mem::take(&mut dashboard.tiles);
+        let mut dropped = BTreeSet::new();
+        for scope in ["all", "attention"] {
+            let first = |source: &str| {
+                tiles
+                    .iter()
+                    .position(|t| t.source == source && t.scope == scope)
+            };
+            let (Some(a), Some(o)) = (first("anthropic"), first("openai")) else {
+                continue;
+            };
+            let (keep, drop) = (a.min(o), a.max(o));
+            let chosen = |t: &DashboardTile| {
+                (t.title != vendor_default_title(&t.source)).then(|| t.title.clone())
+            };
+            let title = chosen(&tiles[keep])
+                .or_else(|| chosen(&tiles[drop]))
+                .unwrap_or_else(|| AI_USAGE_TITLE.to_owned());
+            let hidden = tiles[keep].hidden && tiles[drop].hidden;
+            tiles[keep].title = title;
+            tiles[keep].hidden = hidden;
+            dropped.insert(drop);
+        }
+        dashboard.tiles = tiles
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !dropped.contains(i))
+            .map(|(_, mut tile)| {
+                if matches!(tile.source.as_str(), "anthropic" | "openai") {
+                    if matches!(tile.scope.as_str(), "all" | "attention")
+                        && tile.title == vendor_default_title(&tile.source)
+                    {
+                        tile.title = AI_USAGE_TITLE.to_owned();
+                    }
+                    if tile.source == "anthropic" && tile.scope == "plans" {
+                        tile.scope = "item:claude-plan".to_owned();
+                    }
+                    tile.source = "aiUsage".to_owned();
+                }
+                tile
+            })
+            .collect();
+    }
+}
+
+const AI_USAGE_TITLE: &str = "AI Usage";
+
+/// The title an Anthropic or OpenAI tile had when nobody renamed it.
+fn vendor_default_title(source: &str) -> &'static str {
+    match source {
+        "anthropic" => "Anthropic",
+        _ => "OpenAI",
+    }
 }
 
 /// Where a saved Usage tile goes: its new source and scope, and what is added
 /// after it. A scope naming one row stays that row, never broadened to a whole
-/// source. OpenAI has no `plans` scope, and its only row is the plan, so `all`
-/// shows what the old scope showed of Codex.
-fn split_usage_scope(
-    scope: &str,
-    codex_plan_on: bool,
-) -> (&'static str, &str, [Option<(&'static str, &str)>; 2]) {
-    let openai = |scope| codex_plan_on.then_some(("openai", scope));
+/// source: AI Usage has `plans`, `claude` and every row id as scopes, so each
+/// old scope that named Claude or Codex reads the same there.
+fn split_usage_scope(scope: &str) -> (&'static str, &str, Option<(&'static str, &str)>) {
     match scope {
-        "all" | "attention" => ("usage", scope, [Some(("anthropic", scope)), openai(scope)]),
-        "providers" => ("usage", "all", [None, None]),
-        "plans" => ("anthropic", scope, [openai("all"), None]),
-        "claude" | "item:claude-plan" | "item:claude-today" => ("anthropic", scope, [None, None]),
-        "item:codex-plan" => ("openai", scope, [None, None]),
-        other => ("usage", other, [None, None]),
+        "all" | "attention" => ("usage", scope, Some(("aiUsage", scope))),
+        "providers" => ("usage", "all", None),
+        "plans" | "claude" | "item:claude-plan" | "item:claude-today" | "item:codex-plan" => {
+            ("aiUsage", scope, None)
+        }
+        other => ("usage", other, None),
     }
 }
 
 fn source_title(source: &str) -> &'static str {
     match source {
-        "anthropic" => "Anthropic",
-        "openai" => "OpenAI",
+        "aiUsage" => AI_USAGE_TITLE,
         _ => "Usage",
     }
 }
@@ -695,6 +780,10 @@ impl Store {
                 data.carry_usage_item_scopes_onto_plan_rows();
                 // Last, so it reads the rows that function just settled.
                 data.split_usage_tiles();
+                // After the split, which writes `aiUsage` itself: this one
+                // reads only the Anthropic and OpenAI tiles an earlier build
+                // saved, and leaves no vendor tile behind.
+                data.merge_ai_tiles();
                 Ok(Store { path, data })
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
