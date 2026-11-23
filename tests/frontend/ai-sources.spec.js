@@ -374,3 +374,31 @@ test("the panel asks for its tile's reading, not the source's", async ({ page, b
   await gotoAiUsage(page, baseURL);
   expect(await lastArgs(page, "ai_usage")).toEqual({ tile: tileIdFor("aiUsage") });
 });
+
+// A vendor-scoped tile's Full view is the payload Rust scoped to it: Codex's
+// rows only. Nothing of Claude's may be painted around them, not the rollups'
+// heading or windows, and not the Claude Code header figure.
+test("a Codex-only scoped payload paints no Claude heading, window rows or Claude Code figure", async ({ page, baseURL }) => {
+  const full = await gotoAiUsage(page, baseURL);
+  const codex = full.plans.find((plan) => plan.id === "codex-plan");
+  const openai = full.apis.find((api) => api.id === "openai-api");
+  await render(page, {
+    ...full,
+    plans: [codex],
+    apis: [openai],
+    windows: [],
+    machineHeading: null,
+    projects: null,
+    trailing: "",
+    claudeToday: "",
+    footer: null,
+    freshness: null,
+  });
+  await expect(page.locator("#aiUsageBody .pv-heading")).toHaveCount(0);
+  await expect(windowRows(page)).toHaveCount(0);
+  await expect(page.locator("#aiUsageBody .ai-rollups")).toHaveCount(0);
+  await expect(page.locator("#aiUsageTrailing")).toHaveText("");
+  await expect(page.locator("#aiUsageStale")).toBeHidden();
+  await expect(page.locator("#aiUsagePanel")).not.toContainText("Claude");
+  await expectPlan(page, codex);
+});

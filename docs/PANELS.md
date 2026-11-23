@@ -126,7 +126,12 @@
   (`item:<id>`). The row ids are unchanged from the two tiles this one replaced,
   so a saved `item:` scope keeps working (`dashboard::vendor_of` maps each row to
   its vendor scope). A tile that does not keep `claude-today` also drops the
-  header's Claude Code figure.
+  header's Claude Code figure. A narrowed tile also speaks only for its own
+  rows in the header: its warning and clock lines carry only those rows' ids,
+  it is held loading only by those rows (a vendor's unread key holds only tiles
+  that include that vendor), and the setup sentence or a key's failure shown
+  with no part on is about the tile's own vendors alone, on the Full view and
+  in the overview's warnings alike.
   *Migration* (`StoreData::merge_ai_tiles`, after `split_usage_tiles`). The
   Anthropic and OpenAI tiles an earlier build saved become `aiUsage`, and none is
   left behind, since a leftover kind would make every later save fail

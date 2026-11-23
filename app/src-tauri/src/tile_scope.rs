@@ -6,8 +6,11 @@
 //! gives that row. Only the rows are filtered. Every other key (`trailing`,
 //! `stats`, `chips`, `footer`, `freshness`, `message`, `health`, section header
 //! counts) is the source-wide total the scope note refers to and is left as is.
-//! The exceptions: AI Usage's `message` and `trailing`, which speak for the
-//! rollups, and the
+//! The exceptions: AI Usage's `message`, `trailing` and `claudeToday`, which
+//! speak for the rollups, and its `footer`, `freshness`, `loading` and setup
+//! `message`, which are rebuilt for the tile's scope from the payload's per-row
+//! `lines` and per-vendor `vendors` (`ai_header`), so a vendor-scoped tile never
+//! carries another vendor's warning, clock or wait; and the
 //! Repos owner groups (`owners`, `cardOrder`), rebuilt from the kept rows so
 //! each owner's header counts exactly the repos under it.
 //!
@@ -77,7 +80,7 @@ pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
             retain_rows(&mut payload, |v| str_of(v, "id").to_owned(), &kept);
         }
         "containers" => scope_containers(&mut payload, &kept),
-        "aiUsage" => scope_ai_usage(&mut payload, &kept),
+        "aiUsage" => scope_ai_usage(&mut payload, &kept, &tile.scope),
         "usage" => scope_groups(&mut payload, "providers", &kept),
         "azureCost" => scope_azure(&mut payload, &kept),
         "actionsBilling" => scope_actions_billing(&mut payload, &kept),
@@ -186,9 +189,18 @@ fn plan_id(plan: &Value) -> String {
 /// rollups by `claude-today`. The vendor scopes (`anthropic`, `openai`) and the
 /// block scopes (`plans`, `claude`) were already turned into ids by
 /// `source_rows`, so this never reads a scope.
-fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>) {
+fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     retain_in(payload, "plans", plan_id, kept);
     retain_in(payload, "apis", plan_id, kept);
+    // The header lines, loading and setup sentence are the scope's rows' alone.
+    if let Some(header) = ai_header(payload, scope) {
+        if let Some(map) = payload.as_object_mut() {
+            map.insert("footer".into(), header.footer);
+            map.insert("freshness".into(), header.freshness);
+            map.insert("loading".into(), Value::Bool(header.loading));
+            map.insert("message".into(), header.message);
+        }
+    }
     // The rollups, their projects and their heading are the `claude-today`
     // row's, kept or dropped together. Matched exactly: `claude-plan` also
     // starts with `claude-`, and a plans-only tile once kept the projects.
@@ -214,6 +226,64 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>) {
     if shows_a_block {
         clear(payload, "message");
     }
+}
+
+/// An AI Usage tile's header for its scope: the merged warning and clock lines
+/// of the scope's rows only, whether any of them is still loading, and the
+/// message. Built from the payload's per-row `lines`, each vendor's key state
+/// (`vendors`) and `rollupsMessage`, so wording, order and colour are the
+/// merge helpers' own and a vendor's segment never reaches another vendor's
+/// tile. `None` when the payload carries none of them (a setup or error state).
+pub(crate) struct AiHeader {
+    pub footer: Value,
+    pub freshness: Value,
+    pub loading: bool,
+    pub message: Value,
+}
+
+pub(crate) fn ai_header(inputs: &Value, scope: &str) -> Option<AiHeader> {
+    let lines = inputs["lines"].as_array()?;
+    let vendors = inputs["vendors"].as_array()?;
+    let rows = crate::dashboard::ai_scope_rows(scope);
+    let mine: Vec<&Value> = lines
+        .iter()
+        .filter(|l| rows.contains(&str_of(l, "id")))
+        .collect();
+    let segments = |key: &str| -> Vec<Value> { mine.iter().map(|l| l[key].clone()).collect() };
+    // The vendors the scope's rows belong to, in body order.
+    let scoped_vendors: Vec<&Value> = vendors
+        .iter()
+        .filter(|v| {
+            rows.iter()
+                .any(|r| crate::dashboard::vendor_of(r) == v["id"].as_str())
+        })
+        .collect();
+    let on = scoped_vendors.iter().any(|v| v["on"] == true);
+    let message = if scoped_vendors.is_empty() {
+        Value::Null
+    } else if !on {
+        // No part of the tile's vendors is on: the setup sentence, once every
+        // one of *their* keys has been read, and the reason for one that
+        // could not be.
+        let reads: Vec<crate::usage::KeyRead> = scoped_vendors
+            .iter()
+            .map(|v| crate::usage::KeyRead {
+                undecided: v["undecided"] == true,
+                error: v["error"].as_str().map(str::to_owned),
+            })
+            .collect();
+        crate::usage::nothing_added_message(&reads)
+    } else if rows.contains(&CLAUDE_TODAY_ID) {
+        inputs["rollupsMessage"].clone()
+    } else {
+        Value::Null
+    };
+    Some(AiHeader {
+        footer: crate::panel::merged_footer(&segments("warning")),
+        freshness: crate::panel::merged_freshness(&segments("clock")),
+        loading: mine.iter().any(|l| l["loading"] == true),
+        message,
+    })
 }
 
 /// Sets `container[key]` to `""` when the key is a string. Anything else, and
@@ -657,6 +727,155 @@ mod tests {
         let gone = scope_payload(&tile("aiUsage", "item:gone"), p);
         assert_eq!(gone["plans"], json!([]));
         assert_eq!(gone["apis"], json!([]));
+    }
+
+    const AI_NOW: u64 = 1_700_000_000;
+
+    /// Both vendors' plans, both vendors' spend and the Claude Code logs, every
+    /// one of them failing or stale, so each header segment exists and a leak
+    /// from one vendor to another's tile shows up as the wrong id in the text.
+    fn every_line_firing() -> Value {
+        use crate::usage::{fixture_state, Fixture};
+        let mut state = fixture_state(Fixture::Measured, AI_NOW - 3_600, AI_NOW - 7 * 3_600);
+        state
+            .plan_mut(subscription::Provider::Claude)
+            .state
+            .failed("Claude sign-in expired".into());
+        state
+            .plan_mut(subscription::Provider::Codex)
+            .state
+            .failed("Codex sign-in expired".into());
+        state
+            .anthropic_api_mut()
+            .failed("Anthropic key rejected".into());
+        state.openai_api_mut().failed("OpenAI key rejected".into());
+        crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, AI_NOW)
+    }
+
+    fn header_text(v: &Value, key: &str) -> String {
+        v[key]["text"].as_str().unwrap_or_default().to_owned()
+    }
+
+    /// A vendor-scoped tile's header lines are its own rows': never another
+    /// vendor's plan, spend or the Claude Code logs. `all` keeps every line.
+    #[test]
+    fn a_scoped_tile_carries_only_its_rows_header_lines() {
+        let p = every_line_firing();
+        let all = scope_payload(&tile("aiUsage", "all"), p.clone());
+        assert_eq!(all["footer"], p["footer"]);
+        assert_eq!(all["freshness"], p["freshness"]);
+        let text = header_text(&all, "footer");
+        for id in [
+            "claude-plan",
+            "codex-plan",
+            "anthropic-api",
+            "openai-api",
+            "claude-today",
+        ] {
+            assert!(text.contains(id), "all keeps {id}");
+        }
+
+        // (scope, ids its header may name, ids it must not)
+        let cases: [(&str, &[&str], &[&str]); 5] = [
+            (
+                "openai",
+                &["codex-plan", "openai-api"],
+                &["claude-plan", "anthropic-api", "claude-today"],
+            ),
+            (
+                "item:openai-api",
+                &["openai-api"],
+                &["codex-plan", "claude-plan", "anthropic-api", "claude-today"],
+            ),
+            (
+                "item:codex-plan",
+                &["codex-plan"],
+                &["openai-api", "claude-plan", "anthropic-api", "claude-today"],
+            ),
+            (
+                "anthropic",
+                &["claude-plan", "anthropic-api", "claude-today"],
+                &["codex-plan", "openai-api"],
+            ),
+            (
+                "claude",
+                &["claude-today"],
+                &["claude-plan", "codex-plan", "anthropic-api", "openai-api"],
+            ),
+        ];
+        for (scope, named, absent) in cases {
+            let out = scope_payload(&tile("aiUsage", scope), p.clone());
+            for key in ["footer", "freshness"] {
+                let text = header_text(&out, key);
+                for id in absent {
+                    assert!(!text.contains(id), "{scope} {key} must not name {id}");
+                }
+            }
+            let footer = header_text(&out, "footer");
+            for id in named {
+                assert!(footer.contains(id), "{scope} footer names {id}");
+            }
+        }
+    }
+
+    /// A tile whose rows have no warning and no clock has no line at all, never
+    /// another vendor's text.
+    #[test]
+    fn a_scoped_tile_with_nothing_to_say_has_no_header_line() {
+        use crate::usage::{fixture_state, Fixture};
+        let mut state = fixture_state(Fixture::Measured, AI_NOW, AI_NOW);
+        state
+            .anthropic_api_mut()
+            .failed("Anthropic key rejected".into());
+        let p = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, AI_NOW);
+        assert!(!header_text(&p, "footer").is_empty());
+        let out = scope_payload(&tile("aiUsage", "openai"), p);
+        assert!(out["footer"].is_null(), "{}", header_text(&out, "footer"));
+        assert!(out["freshness"].is_null());
+    }
+
+    /// `loading` and the setup sentence belong to the vendors the tile keeps. An
+    /// unread Anthropic key holds only tiles that include Anthropic, and its
+    /// failure is never an OpenAI tile's message.
+    #[test]
+    fn a_scoped_tile_waits_and_explains_only_for_its_own_vendors() {
+        use crate::plan_usage::PlanInputs;
+        let mut state = crate::usage::UsageState::new();
+        state.openai_api_mut().unconfigure();
+        let off = PlanInputs::OFF;
+        let p = crate::usage::ai_usage_view(&state, off, AI_NOW);
+        let openai = scope_payload(&tile("aiUsage", "openai"), p.clone());
+        assert_eq!(openai["loading"], false, "OpenAI's key is read and absent");
+        assert_eq!(
+            openai["message"]["text"],
+            crate::settings::none_added_message()
+        );
+        let anthropic = scope_payload(&tile("aiUsage", "anthropic"), p.clone());
+        assert_eq!(
+            anthropic["loading"], true,
+            "Anthropic's key is still unread"
+        );
+        assert_eq!(
+            anthropic["message"]["text"],
+            crate::usage::PROVIDERS_LOADING_MESSAGE
+        );
+        let item = scope_payload(&tile("aiUsage", "item:codex-plan"), p);
+        assert_eq!(item["loading"], false);
+
+        // An Anthropic failure to read speaks on Anthropic's tiles only.
+        let mut state = crate::usage::UsageState::new();
+        state
+            .anthropic_api_mut()
+            .unreadable("keychain locked".into());
+        state.openai_api_mut().unconfigure();
+        let p = crate::usage::ai_usage_view(&state, off, AI_NOW);
+        let openai = scope_payload(&tile("aiUsage", "openai"), p.clone());
+        assert_eq!(
+            openai["message"]["text"],
+            crate::settings::none_added_message()
+        );
+        let anthropic = scope_payload(&tile("aiUsage", "anthropic"), p);
+        assert_eq!(anthropic["message"]["text"], "keychain locked");
     }
 
     /// `store` writes the AI Usage kind and title by literal, because it cannot

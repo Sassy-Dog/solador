@@ -1028,7 +1028,7 @@ fn api_section(
 /// In order: any key still unread gives the loading line; otherwise the first
 /// key that could not be read gives its reason, in body order; otherwise every
 /// key was read and is absent, and the setup sentence is true.
-fn nothing_added_message(reads: &[KeyRead]) -> Value {
+pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
     if reads.iter().any(|read| read.undecided) {
         return state_message(PROVIDERS_LOADING_MESSAGE);
     }
@@ -1067,6 +1067,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     } else {
         Rollups::off()
     };
+    let mut apis_out: Vec<Value> = Vec::new();
     let claude =
         crate::plan_usage::view(Provider::Claude, state.plan(Provider::Claude), inputs, now);
     let codex = crate::plan_usage::view(Provider::Codex, state.plan(Provider::Codex), inputs, now);
@@ -1105,41 +1106,82 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
 
     // Header lines in body order: plans, API spend, then the rollups last under
     // their own row id (`claude-today`), so a warning about the logs does not
-    // read as one about Claude's plan.
-    let mut warnings = Vec::new();
-    let mut clocks = Vec::new();
-    warnings.extend(claude.warnings);
-    clocks.extend(claude.clocks);
-    warnings.extend(codex.warnings);
-    clocks.extend(codex.clocks);
-    let apis: Vec<Value> = [anthropic, openai]
-        .into_iter()
-        .flatten()
-        .map(|view| {
-            warnings.push(view.warning);
-            clocks.push(view.freshness);
-            view.section
-        })
-        .collect();
-    if logs_on {
-        warnings.push(attributed_status_footer(
+    // read as one about Claude's plan. Each is kept with its row id in `lines`,
+    // so a tile scoped to one vendor can rebuild the header from its own rows
+    // alone (`tile_scope::ai_header`); `footer` and `freshness` stay the merged
+    // all-rows lines an `all` tile paints.
+    let first = |v: &[Value]| v.first().cloned().unwrap_or(Value::Null);
+    let claude_loading = logs_on && state.claude_loading;
+    let mut lines = vec![
+        ai_line(
+            crate::plan_usage::CLAUDE_ID,
+            first(&claude.warnings),
+            first(&claude.clocks),
+            claude.loading,
+        ),
+        ai_line(
+            crate::plan_usage::CODEX_ID,
+            first(&codex.warnings),
+            first(&codex.clocks),
+            codex.loading,
+        ),
+    ];
+    for (id, key, view) in [
+        (ANTHROPIC_API_ID, &state.anthropic_api, anthropic),
+        (OPENAI_API_ID, &state.openai_api, openai),
+    ] {
+        // A key not read yet holds the row loading although it has no section.
+        let loading = key.is_loading() || key.is_undecided();
+        let (warning, clock, section) = match view {
+            Some(v) => (v.warning, v.freshness, Some(v.section)),
+            None => (Value::Null, Value::Null, None),
+        };
+        lines.push(ai_line(id, warning, clock, loading));
+        if let Some(section) = section {
+            apis_push(&mut apis_out, section);
+        }
+    }
+    let rollups_warning = if logs_on {
+        attributed_status_footer(
             crate::dashboard::CLAUDE_TODAY_ID,
             state.claude_succeeded,
             state.claude_error.as_deref(),
             now,
             state.claude_stale_after_secs(),
-        ));
-    }
+        )
+    } else {
+        Value::Null
+    };
+    lines.push(ai_line(
+        crate::dashboard::CLAUDE_TODAY_ID,
+        rollups_warning,
+        Value::Null,
+        claude_loading,
+    ));
+    let warnings: Vec<Value> = lines.iter().map(|l| l["warning"].clone()).collect();
+    let clocks: Vec<Value> = lines.iter().map(|l| l["clock"].clone()).collect();
+    let loading = lines.iter().any(|l| l["loading"] == true);
+    let apis = apis_out;
 
     let plans: Vec<Value> = claude.sections.into_iter().chain(codex.sections).collect();
     // The setup sentence is for no part at all; a rollups line or a plan or
     // spend figure is something to show instead.
+    let anthropic_on = logs_on || inputs.claude || apis.iter().any(|a| a["id"] == ANTHROPIC_API_ID);
+    let openai_on = inputs.codex || apis.iter().any(|a| a["id"] == OPENAI_API_ID);
     let any_part = logs_on || inputs.claude || inputs.codex || !apis.is_empty();
+    let rollups_message = message.clone();
     let message = if any_part {
         message
     } else {
         nothing_added_message(&[state.anthropic_api.key_read(), state.openai_api.key_read()])
     };
+    // What a vendor-scoped tile needs to speak for its own vendor only: whether
+    // a part of the vendor is on, and how far a pass has got with its key.
+    let vendor = |id: &str, on: bool, key: KeyRead| json!({"id": id, "on": on, "undecided": key.undecided, "error": key.error});
+    let vendors = json!([
+        vendor("anthropic", anthropic_on, state.anthropic_api.key_read()),
+        vendor("openai", openai_on, state.openai_api.key_read()),
+    ]);
 
     json!({
         "id": kind.id(),
@@ -1147,6 +1189,9 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         "trailing": trailing,
         "claudeToday": claude_today,
         "message": message,
+        // The rollups' own state line, apart from the setup sentence, for a
+        // tile scoped to Claude Code to rebuild `message` from.
+        "rollupsMessage": rollups_message,
         // The heading over this machine's own rollups, which sit under the
         // plan meters: the two answer different questions (what this machine
         // burned, and how much of the subscription is used), so the panel
@@ -1156,16 +1201,24 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         "projects": projects,
         "footer": merged_footer(&warnings),
         "freshness": merged_freshness(&clocks),
+        // Per row, in body order, always all five: `{id, warning, clock,
+        // loading}`. `footer`, `freshness` and `loading` are these merged.
+        "lines": lines,
+        "vendors": vendors,
         "plans": plans,
         "apis": apis,
-        "loading": (logs_on && state.claude_loading)
-            || claude.loading
-            || codex.loading
-            || state.anthropic_api.is_loading()
-            || state.anthropic_api.is_undecided()
-            || state.openai_api.is_loading()
-            || state.openai_api.is_undecided(),
+        "loading": loading,
     })
+}
+
+/// One row's header contributions: its warning segment, its clock segment (both
+/// `Null` when it has none) and whether it is still waiting on a read.
+fn ai_line(id: &str, warning: Value, clock: Value, loading: bool) -> Value {
+    json!({"id": id, "warning": warning, "clock": clock, "loading": loading})
+}
+
+fn apis_push(apis: &mut Vec<Value>, section: Value) {
+    apis.push(section);
 }
 
 // MARK: - Fixtures

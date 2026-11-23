@@ -292,6 +292,39 @@ fn tint(v: &Value) -> Value {
 /// view keeps the panel's token counts, projects and heading with it.
 pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
 
+/// The AI Usage rows, in body order.
+pub(crate) const AI_ROW_IDS: [&str; 5] = [
+    crate::plan_usage::CLAUDE_ID,
+    crate::plan_usage::CODEX_ID,
+    crate::usage::ANTHROPIC_API_ID,
+    crate::usage::OPENAI_API_ID,
+    CLAUDE_TODAY_ID,
+];
+
+/// The rows an AI Usage scope speaks for, which decide whose header lines,
+/// loading and setup sentence a tile carries. Derived from the scope and not
+/// from the rows that exist, because a row that is not there yet (a key still
+/// unread) is exactly what holds a tile loading. `attention` and `all` speak
+/// for every row; an unknown `item:` speaks for none.
+pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
+    let vendor = |v: &str| {
+        AI_ROW_IDS
+            .into_iter()
+            .filter(|id| vendor_of(id) == Some(v))
+            .collect()
+    };
+    match scope {
+        "plans" => vec![AI_ROW_IDS[0], AI_ROW_IDS[1]],
+        "claude" => vec![CLAUDE_TODAY_ID],
+        "anthropic" => vendor("anthropic"),
+        "openai" => vendor("openai"),
+        other => match other.strip_prefix("item:") {
+            Some(id) => AI_ROW_IDS.into_iter().filter(|row| *row == id).collect(),
+            None => AI_ROW_IDS.to_vec(),
+        },
+    }
+}
+
 /// The vendor scope (`anthropic` or `openai`) an AI Usage row answers to, beside
 /// the block scopes `plans` and `claude`. The ids are the payload's
 /// (`plan_usage::CLAUDE_ID`, `usage::ANTHROPIC_API_ID` and their OpenAI
@@ -1138,6 +1171,13 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     };
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
         "defaultTile":default_tile(id, title)});
+    if id == "aiUsage" {
+        // What a vendor-scoped tile rebuilds its header lines, loading and setup
+        // sentence from (`tile_scope::ai_header`): per-row lines, each vendor's
+        // key state, and the rollups' own message. Rides on the source because
+        // only a tile knows its scope.
+        source["ai"] = json!({"lines":payload["lines"],"vendors":payload["vendors"],"rollupsMessage":payload["rollupsMessage"]});
+    }
     if id == "hosts" {
         // The shared limits editor (#612): shared by every Machines tile, so
         // it rides on the source, never on a tile.
@@ -1648,6 +1688,28 @@ fn empty_state<'a>(
     }
 }
 
+/// The warnings a tile's card carries. The source's, except an AI Usage tile
+/// narrowed to a scope: it carries only its own rows' header lines (and its own
+/// key's failure), never another vendor's.
+fn tile_warnings(tile: &DashboardTile, source: &Value) -> Value {
+    if tile.source != "aiUsage" || !filters_rows(tile) {
+        return source["warnings"].clone();
+    }
+    let Some(header) = crate::tile_scope::ai_header(&source["ai"], &tile.scope) else {
+        return source["warnings"].clone();
+    };
+    let mut warnings = Vec::new();
+    for line in [&header.footer, &header.freshness] {
+        if let Some(text) = line["text"].as_str().filter(|s| !s.is_empty()) {
+            warnings.push(json!({"text":text,"color":tint(&line["color"])}));
+        }
+    }
+    if red(&header.message["color"]) {
+        warnings.push(header.message.clone());
+    }
+    json!(warnings)
+}
+
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     let mut matching = matching_rows(tile, source);
     if tile.source == "ghWorkflows" {
@@ -1748,7 +1810,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
         .unwrap_or((Value::Null, Value::Null, Value::Null));
     json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,"cardCounts":card_counts,
-        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
+        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":tile_warnings(tile, source),"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
         "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
@@ -3844,6 +3906,48 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    /// The overview's warnings on a vendor-scoped AI Usage tile are its own
+    /// rows': no Anthropic or Claude Code segment on an OpenAI tile.
+    #[test]
+    fn a_scoped_ai_usage_tile_carries_only_its_rows_warnings() {
+        use crate::usage::{fixture_state, Fixture};
+        let now = 1_700_000_000;
+        let mut state = fixture_state(Fixture::Measured, now - 3_600, now - 7 * 3_600);
+        state
+            .anthropic_api_mut()
+            .failed("Anthropic key rejected".into());
+        state.openai_api_mut().failed("OpenAI key rejected".into());
+        let payload = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, now);
+        let source = source_view("aiUsage", "AI Usage", &payload);
+        let warnings = |scope: &str| -> String {
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            let view = tile_view(&t, &source);
+            list(&view, "warnings")
+                .iter()
+                .map(|w| string(w, "text"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let all = warnings("all");
+        assert!(
+            all.contains("anthropic-api") && all.contains("claude-today"),
+            "{all}"
+        );
+        let openai = warnings("openai");
+        assert!(openai.contains("openai-api"), "{openai}");
+        for id in ["anthropic", "claude"] {
+            assert!(
+                !openai.contains(id),
+                "an openai tile must not name {id}: {openai}"
+            );
+        }
+        let item = warnings("item:openai-api");
+        assert!(
+            !item.contains("codex-plan") && !item.contains("anthropic"),
+            "{item}"
+        );
     }
 
     /// Every AI row carries its vendor's scope, and the fixed scopes the picker

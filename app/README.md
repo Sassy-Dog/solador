@@ -1709,7 +1709,20 @@ vendor's failure from reading as the other's.
   "freshness": null,    // the plans' and spend clocks, attributed. Claude's rollups
                         // contribute none: they are on the `ClaudeRollups` cadence,
                         // and `footer` already measures it
-  "loading": false      // the OR of every enabled part's
+  "loading": false,     // the OR of every enabled part's
+  "lines": [            // always the five row ids in body order (claude-plan,
+                        //   codex-plan, anthropic-api, openai-api, claude-today):
+                        //   {"id", "warning", "clock", "loading"}; `footer`,
+                        //   `freshness` and `loading` above are these merged. A
+                        //   tile narrowed to one vendor rebuilds its own from its
+                        //   rows alone, so no other vendor's line reaches it
+    {"id": "claude-plan", "warning": null, "clock": null, "loading": false}, …
+  ],
+  "vendors": [          // {"id": "anthropic"|"openai", "on": bool, "undecided":
+                        //   bool, "error": string|null}: whether a part of the
+                        //   vendor is on and how far a pass has got with its key
+  ],
+  "rollupsMessage": null // the rollups' own state line, apart from the setup sentence
 }
 
 // azure_cost
