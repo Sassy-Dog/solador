@@ -1663,8 +1663,11 @@ vendor's failure from reading as the other's.
                                          //    → Sources → Add source". A key that could
                                          //    not be read is never the message: it is
                                          //    the `footer`'s `⚠` line, said once. A
-                                         //    narrowed tile has its own (its vendor's
-                                         //    "isn't set up", or the loading line)
+                                         //    narrowed tile has its own: the loading
+                                         //    line (a relevant key unread), the
+                                         //    rollups' own line ("reading logs…"),
+                                         //    or, with no relevant part on, its
+                                         //    vendor's "isn't set up"
   "machineHeading": "THIS MACHINE",      // null when there are no rows under it
   "windows": [{"label": "LAST 5H", "value": "820k", "valueColor": "#33d17a"}, …],
   //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
@@ -1710,7 +1713,8 @@ vendor's failure from reading as the other's.
                         // the credential store would not read has no section and
                         // warns here as `⚠ anthropic-api: <reason>`. Every AI Usage
                         // tile carries this whole line, whatever its scope (a scope
-                        // picks figures only); a key merely unread warns of nothing
+                        // picks figures only); a key merely unread warns of nothing.
+                        // Like any `⚠` line it lights the amber Needs Attention chip
   "freshness": null,    // the plans' and spend clocks, attributed. Claude's rollups
                         // contribute none: they are on the `ClaudeRollups` cadence,
                         // and `footer` already measures it

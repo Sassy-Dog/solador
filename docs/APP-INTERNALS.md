@@ -345,8 +345,9 @@
   vendor's figures. **A scope picks figures only.** The payload's `footer`, the
   merged all-rows `⚠` line (both plans, both API rows, `claude-today`, each
   labelled with its row id, wording and colour as the `all` tile's), is on every
-  AI Usage tile, and the overview's per-tile `warnings` are the source's for
-  every scope. A key the credential store would not read has no section, so
+  AI Usage tile, and an overview card's `⚠` entry is the source's for every
+  scope; the card's clock entry is the kept rows' clocks, the same line its Full
+  view paints (`dashboard::tile_warnings`). A key the credential store would not read has no section, so
   `ai_usage_view` gives its row a `⚠ anthropic-api: <reason>` segment itself; a
   key merely unread warns of nothing. The payload also carries `lines` (always
   the five row ids in body order, each `{id, on, warning, clock, loading,
@@ -358,12 +359,14 @@
   `tile_scope::ai_header`), with the same `merged_freshness`; its payload keeps
   only those rows' `lines` and drops `rollupsMessage`. Per scope: loading is the
   OR of the relevant rows' loading (an unread key holds its API row loading);
-  the message, used only when the tile keeps no row with content, is, in order:
-  (1) the loading line if a relevant key is unread, else (2) the rollups' own
-  line (`reading logs…`, the no-logs line) when the Claude Code logs are
-  relevant and on but have no data yet, else (3) `not_set_up_message` for each
-  vendor with a relevant part off (all of them off, every relevant key read and
-  absent), else (4) none. A key's failure is said once, as its `⚠` line, never
+  the message is, in order: (1) the
+  loading line if a relevant key is unread, else (2) the rollups' own line
+  (`reading logs…`, the no-logs line) when the Claude Code logs are relevant and
+  on but have no data yet (both are said even beside a kept plan with content),
+  else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
+  `OpenAI isn’t set up — …` for each vendor with a relevant part off (every
+  relevant key read and absent; `plans` with both plan parts off names both, in
+  body order), else (4) none. A key's failure is said once, as its `⚠` line, never
   also as a message. The overview's empty text (`ai_narrowed_source`, into
   `empty_state`) comes from the same function as the Full view's `message`, so
   the two cannot disagree; `all` and `attention` tiles are unchanged.

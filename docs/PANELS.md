@@ -134,19 +134,22 @@
   `anthropic-api`, `openai-api`, `claude-today`). A key whose read failed has no
   section, so it warns as `⚠ anthropic-api: <reason>`; a key merely unread warns
   of nothing, it is loading. Only the freshness clock, `loading` and the
-  "isn’t set up" sentence follow the scope. `all` and `attention` keep the
-  whole-tile values. Every other scope looks at its **relevant set**
+  "isn’t set up" sentence follow the scope (an overview card's clock entry is the
+  kept rows' clocks, the line its Full view paints). `all` and `attention` keep
+  the whole-tile values. Any `⚠` line, a key the credential store would not read
+  included, lights the amber "AI Usage · check readings" Needs Attention chip;
+  only red plan rows raise a red one. Every other scope looks at its **relevant set**
   (`anthropic`: the Anthropic vendor, meaning its plan, key and logs; `claude`
   and `item:claude-today`: the logs; `item:claude-plan`, `item:codex-plan`: that
   plan; `item:anthropic-api`, `item:openai-api`: that key; `openai`: the OpenAI
   vendor; `plans`: both plans; an unknown `item:`: nothing, so no message and not
   loading). Its `freshness` carries only the relevant rows' clocks; it is
-  loading when a relevant row is or a relevant key is unread; and its message,
-  used only when the tile keeps no row with content, is, in order: (1) the
+  loading when a relevant row is or a relevant key is unread; and its message is, in order: (1) the
   loading line if a relevant key is unread, else (2) the rollups' own line
   (`reading logs…`, the no-logs line) when the Claude Code logs are relevant and
-  on but have no data yet, else (3) `Anthropic isn’t set up — …` / `OpenAI isn’t
-  set up — …` for each vendor with a relevant part off (all of them off and every
+  on but have no data yet (both are said even beside a kept plan with content),
+  else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
+  `OpenAI isn’t set up — …` for each vendor with a relevant part off (every
   relevant key read and absent; `plans` with both plan parts off names both, in
   body order), else (4) none. A key's failure is said once, as its `⚠` line,
   never also as a message, so a key the credential store would not read gives

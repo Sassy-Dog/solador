@@ -251,18 +251,20 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
 /// **A tile's scope picks only which figures it shows.** Every `\u{26a0}` warning
 /// from a configured AI source (both plans, both keys, the Claude Code logs,
 /// and a key the credential store would not read) shows on every AI Usage tile,
-/// labelled with its row id: the payload's `footer` and the overview's
-/// `warnings` are the whole tile's, whatever the scope. Only three things follow
+/// labelled with its row id: the payload's `footer` and an overview card's `\u{26a0}`
+/// entry are the whole tile's, whatever the scope. Only three things follow
 /// the scope's **relevant rows** (`ai_scope_rows`), never another vendor's:
 /// `freshness` (the kept rows' clocks, merged as the whole tile's are),
 /// `loading` (a relevant row loading, or a relevant key unread), and the body
 /// `message`, which is, in order: (1) the loading line if a relevant key is
 /// unread, else (2) the rollups' own line (`rollupsMessage`, such as "reading
-/// logs\u{2026}") when the Claude Code logs are relevant and on but have no data yet,
-/// else (3) `settings::not_set_up_message` for each vendor with a relevant part
-/// off, all of them off and every relevant key read, else (4) none. A key's
-/// failure is never the message: it is said once, as its warning. The
-/// whole-tile "No AI usage yet" sentence is never used here.
+/// logs\u{2026}") when the Claude Code logs are relevant and on but have no data yet
+/// (both are said even beside a kept plan with content), else, only when no
+/// relevant part is on, (3) `settings::not_set_up_message` for each vendor with
+/// a relevant part off (every relevant key read and absent), else (4) none. A
+/// key's failure is never the message: it is said once, as its warning. The
+/// whole-tile "No AI usage yet" sentence is never used here. An overview card
+/// takes its clock entry from `freshness`, so the card and the Full view match.
 pub(crate) struct AiHeader {
     pub freshness: Value,
     pub loading: bool,
@@ -859,6 +861,34 @@ mod tests {
             );
             assert!(out["freshness"].is_null(), "{scope} has no stale clock");
         }
+    }
+
+    /// A narrowed tile's `freshness` is its own rows' clocks, and it is not
+    /// empty: each scope names the kept rows whose clock fires.
+    #[test]
+    fn a_narrowed_tiles_freshness_names_the_kept_rows_that_are_stale() {
+        use crate::usage::{fixture_state, Fixture};
+        let state = fixture_state(Fixture::Measured, AI_NOW, AI_NOW - 7 * 3_600);
+        let p = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, AI_NOW);
+        let all_ids = ["claude-plan", "codex-plan", "anthropic-api", "openai-api"];
+        let cases: [(&str, &[&str]); 7] = [
+            ("openai", &["codex-plan", "openai-api"]),
+            ("anthropic", &["claude-plan", "anthropic-api"]),
+            ("plans", &["claude-plan", "codex-plan"]),
+            ("item:claude-plan", &["claude-plan"]),
+            ("item:codex-plan", &["codex-plan"]),
+            ("item:anthropic-api", &["anthropic-api"]),
+            ("item:openai-api", &["openai-api"]),
+        ];
+        for (scope, clocks) in cases {
+            let t = header_text(&scoped(&p, scope), "freshness");
+            assert!(!t.is_empty(), "{scope} has a clock to show");
+            for id in all_ids {
+                assert_eq!(t.contains(id), clocks.contains(&id), "{scope} {id}");
+            }
+        }
+        // The Claude Code row has no clock of its own.
+        assert!(scoped(&p, "claude")["freshness"].is_null());
     }
 
     /// Stale Claude Code logs warn on an OpenAI tile too.

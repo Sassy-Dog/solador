@@ -1176,7 +1176,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         // header lines, loading and message from (`tile_scope::ai_header`): the
         // per-row `lines`, whose entries carry each key's state, and the rollups'
         // own message. Rides on the source because only a tile knows its scope.
-        source["ai"] = json!({"lines":payload["lines"],"rollupsMessage":payload["rollupsMessage"]});
+        source["ai"] = json!({"lines":payload["lines"],"rollupsMessage":payload["rollupsMessage"],"footer":payload["footer"]});
     }
     if id == "hosts" {
         // The shared limits editor (#612): shared by every Machines tile, so
@@ -1699,6 +1699,27 @@ fn empty_state<'a>(
     }
 }
 
+/// The warnings a tile's card carries: the source's. Except that an AI Usage
+/// tile narrowed by its scope (`tile_scope::ai_header`) has two entries built
+/// as `source_view` builds them: the source's `footer` (every configured
+/// source's `\u{26a0}` warning, tile-wide whatever the scope) and then its own
+/// `freshness`, the kept rows' clocks, the same line its Full view paints.
+fn tile_warnings(tile: &DashboardTile, source: &Value) -> Value {
+    if tile.source != "aiUsage" {
+        return source["warnings"].clone();
+    }
+    let Some(header) = crate::tile_scope::ai_header(&source["ai"], &tile.scope) else {
+        return source["warnings"].clone();
+    };
+    let mut warnings = Vec::new();
+    for line in [&source["ai"]["footer"], &header.freshness] {
+        if let Some(text) = line["text"].as_str().filter(|s| !s.is_empty()) {
+            warnings.push(json!({"text":text,"color":tint(&line["color"])}));
+        }
+    }
+    json!(warnings)
+}
+
 /// `source` with an AI Usage tile's own `loading` and `message`, when its scope
 /// narrows it (`tile_scope::ai_header`): the one function the Full view and the
 /// overview's empty text both ask, so they cannot say different things. `None`
@@ -1823,7 +1844,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
         .unwrap_or((Value::Null, Value::Null, Value::Null));
     json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,"cardCounts":card_counts,
-        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
+        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":tile_warnings(tile, source),"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
         "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
@@ -3921,12 +3942,12 @@ mod tests {
         }
     }
 
-    /// The overview's warnings on an AI Usage tile are the source's, whatever its
-    /// scope: every configured source's warning, with the source-wide tint. A
-    /// failing Anthropic request and stale Claude Code logs show on an OpenAI
-    /// tile.
+    /// An AI Usage card's warnings: the `⚠` entry is the source's whatever the
+    /// scope (every configured source's warning, source-wide tint), and the
+    /// clock entry follows the scope, naming only the rows the tile keeps and
+    /// matching its Full view's `freshness`. `all` keeps the source's array.
     #[test]
-    fn every_ai_usage_tile_carries_the_source_wide_warnings() {
+    fn an_ai_usage_card_carries_every_warning_but_only_its_own_clock() {
         use crate::usage::{fixture_state, Fixture};
         let now = 1_700_000_000;
         let mut state = fixture_state(Fixture::Measured, now - 3_600, now - 7 * 3_600);
@@ -3937,46 +3958,63 @@ mod tests {
         let payload = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, now);
         let source = source_view("aiUsage", "AI Usage", &payload);
         let want = source["warnings"].clone();
-        assert!(!list(&source, "warnings").is_empty());
-        let texts = |v: &Value| -> String {
-            list(v, "warnings")
-                .iter()
-                .map(|w| string(w, "text"))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        };
-        assert!(texts(&source).contains("anthropic-api"));
-        assert!(texts(&source).contains("claude-today"));
-        for scope in [
-            "all",
-            "openai",
-            "anthropic",
-            "claude",
-            "plans",
-            "item:claude-plan",
-            "item:codex-plan",
-            "item:anthropic-api",
-            "item:openai-api",
-            "item:claude-today",
-            "item:gone",
-        ] {
+        let warns = list(&source, "warnings");
+        assert_eq!(warns.len(), 2, "a warning line and a clock line");
+        assert!(string(&warns[0], "text").contains("anthropic-api"));
+        assert!(string(&warns[0], "text").contains("claude-today"));
+        let all_ids = ["claude-plan", "codex-plan", "anthropic-api", "openai-api"];
+        for id in all_ids {
+            assert!(
+                string(&warns[1], "text").contains(id),
+                "the source clock names {id}"
+            );
+        }
+        let all = tile_view(
+            &DashboardTile::new("t", "aiUsage", "AI Usage", "all"),
+            &source,
+        );
+        assert_eq!(all["warnings"], want);
+        // (scope, the rows whose clock it may name)
+        let cases: [(&str, &[&str]); 6] = [
+            ("openai", &["codex-plan", "openai-api"]),
+            ("item:codex-plan", &["codex-plan"]),
+            ("anthropic", &["claude-plan", "anthropic-api"]),
+            ("plans", &["claude-plan", "codex-plan"]),
+            ("item:openai-api", &["openai-api"]),
+            ("claude", &[]),
+        ];
+        for (scope, clocks) in cases {
             let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
             let view = tile_view(&t, &source);
-            assert_eq!(view["warnings"], want, "{scope}");
-        }
-        // The tint is the source-wide one.
-        let t = DashboardTile::new("t", "aiUsage", "AI Usage", "item:openai-api");
-        let view = tile_view(&t, &source);
-        for (got, base) in list(&view, "warnings")
-            .iter()
-            .zip(list(&source, "warnings"))
-        {
-            assert_eq!(got["color"], base["color"]);
+            let got = list(&view, "warnings");
+            // The `⚠` entry: the source's, text and tint.
+            assert_eq!(got[0], warns[0], "{scope} warning entry");
+            // The clock entry is the Full view's `freshness`.
+            let full = crate::tile_scope::scope_payload(&t, payload.clone());
+            match full["freshness"]["text"].as_str() {
+                Some(text) => {
+                    assert_eq!(got.len(), 2, "{scope}");
+                    assert_eq!(string(&got[1], "text"), text, "{scope} clock");
+                    assert_eq!(got[1]["color"], full["freshness"]["color"], "{scope} tint");
+                    for id in clocks {
+                        assert!(text.contains(id), "{scope} clock names {id}");
+                    }
+                    for id in all_ids.iter().filter(|id| !clocks.contains(id)) {
+                        assert!(!text.contains(id), "{scope} clock must not name {id}");
+                    }
+                }
+                None => {
+                    assert!(clocks.is_empty(), "{scope} has no clock");
+                    assert_eq!(got.len(), 1, "{scope}");
+                }
+            }
         }
     }
 
     /// A key the credential store would not read warns on every tile's card, in
     /// the source-wide tint, and its reason is not also the tile's empty text.
+    /// It has a footer now, so it lights the amber Needs Attention chip and
+    /// nothing red, as any `⚠` line does.
     #[test]
     fn an_unreadable_key_warns_on_every_overview_card_once() {
         use crate::plan_usage::PlanInputs;
@@ -3996,9 +4034,9 @@ mod tests {
         ] {
             let payload = crate::usage::ai_usage_view(&state, inputs, now);
             let source = source_view("aiUsage", "AI Usage", &payload);
-            assert!(list(&source, "warnings")
-                .iter()
-                .any(|w| string(w, "text").contains("\u{26a0} anthropic-api: keychain locked")));
+            assert!(list(&source, "warnings").iter().any(|w| {
+                string(w, "text").contains("\u{26a0} anthropic-api: keychain locked")
+            }));
             for scope in ["all", "anthropic", "openai", "item:codex-plan"] {
                 let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
                 let view = tile_view(&t, &source);
@@ -4010,6 +4048,17 @@ mod tests {
                     + string(&view, "empty").matches("keychain locked").count();
                 assert_eq!(said, 1, "{scope}: the reason is said {said} times");
             }
+            // The Needs Attention chip: amber, never red.
+            let mut layout = default_layout();
+            layout.tiles = vec![DashboardTile::new("t", "aiUsage", "AI Usage", "all")];
+            let overview = view(&layout, &[payload]);
+            let chip = list(&overview, "attention")
+                .iter()
+                .find(|c| c["source"] == "aiUsage")
+                .cloned()
+                .expect("an unreadable key lights a chip");
+            assert_eq!(chip["color"], color::hex(color::AMBER));
+            assert_eq!(chip["label"], "AI Usage \u{b7} check readings");
         }
     }
 

@@ -366,8 +366,10 @@ impl<S> ProviderState<S> {
     /// that was never configured still gets no section — a hiccup must not
     /// conjure one for a provider nobody set up — but one no pass has settled
     /// keeps the reason, or the panel would wait on it for as long as the
-    /// keychain stays locked. Its section needs `is_present`, so the reason
-    /// shows only in the sentence a panel with no section paints.
+    /// keychain stays locked. Its section needs `is_present`, so it never has
+    /// one, and each panel says the reason its own way: Usage paints it in the
+    /// sentence it shows with no section (`no_section_message`); AI Usage paints
+    /// it as the row's `\u{26a0}` warning (`ai_usage_view`) and no message.
     pub fn unreadable(&mut self, error: String) {
         if !self.configured.is_absent() {
             self.last_error = Some(error);
@@ -1107,10 +1109,10 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
 
     // Header lines in body order: plans, API spend, then the rollups last under
     // their own row id (`claude-today`), so a warning about the logs does not
-    // read as one about Claude's plan. Each is kept with its row id in `lines`,
-    // so a tile scoped to one vendor can rebuild the header from its own rows
-    // alone (`tile_scope::ai_header`); `footer` and `freshness` stay the merged
-    // all-rows lines an `all` tile paints.
+    // read as one about Claude's plan. Each is kept with its row id in `lines`.
+    // `footer` is the merged all-rows warning line every AI Usage tile carries;
+    // a tile scoped to one vendor rebuilds only `freshness`, `loading` and
+    // `message` from its own rows (`tile_scope::ai_header`).
     let first = |v: &[Value]| v.first().cloned().unwrap_or(Value::Null);
     let claude_loading = logs_on && state.claude_loading;
     let mut lines = vec![
@@ -1213,10 +1215,12 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         "footer": merged_footer(&warnings),
         "freshness": merged_freshness(&clocks),
         // Per row, in body order, always all five: `{id, on, warning, clock,
-        // loading, undecided, error}` (`on`: the part is set up; `undecided` and
-        // `error`: how far a pass has got with the row's own key, meaningful for
-        // the two API rows). `footer`, `freshness` and `loading` are these
-        // merged; a narrowed tile rebuilds its own from its rows.
+        // loading, undecided, unreadable}`. `on`: the part is set up. `undecided`:
+        // the row's key is not read yet. `unreadable`: the credential store would
+        // not answer for it, so it has no section and its failure is its warning
+        // (both are `false` for a row with no key). `footer`, `freshness` and
+        // `loading` are these merged; a narrowed tile rebuilds only `freshness`,
+        // `loading` and `message` from its own rows, and keeps `footer` whole.
         "lines": lines,
         "plans": plans,
         "apis": apis,
@@ -2140,6 +2144,28 @@ mod tests {
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
         assert!(payload["footer"].is_null());
+    }
+
+    /// Which check leads: a key still unread keeps the tile loading, whatever
+    /// another key's failure, and the failed key's reason is its warning.
+    #[test]
+    fn an_unread_key_outranks_another_keys_failure() {
+        let mut state = UsageState::new();
+        state.anthropic_api.unreadable("keychain locked".to_owned());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ anthropic-api: keychain locked"
+        );
+        // The mirror: OpenAI's failure, Anthropic's key unread.
+        let mut state = UsageState::new();
+        state.openai_api.unreadable("keychain locked".to_owned());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
+        assert_eq!(payload["footer"]["text"], "⚠ openai-api: keychain locked");
     }
 
     /// A walk still running is not a verdict: the rollups may yet have rows.
