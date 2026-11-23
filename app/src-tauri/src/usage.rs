@@ -1276,6 +1276,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
             COPILOT_ORG_ID,
             &state.copilot_org,
             inputs.copilot_org,
+            true,
             copilot_section(
                 COPILOT_ORG_ID,
                 &state.copilot_org,
@@ -1288,6 +1289,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
             COPILOT_PERSONAL_ID,
             &state.copilot_personal,
             true,
+            false,
             copilot_section(
                 COPILOT_PERSONAL_ID,
                 &state.copilot_personal,
@@ -1376,14 +1378,23 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     // warnings under its own row id, as for the Admin keys, and it is never an
     // attention row.
     let mut copilot: Vec<Value> = Vec::new();
-    for (id, half, gated, view) in copilot_views {
+    for (id, half, gated, flagged, view) in copilot_views {
         let on = view.is_some();
-        let read = if gated {
+        // A ticked organization half with nothing read yet (the part was just
+        // ticked, or its figure was just dropped) is waiting on its pass, not
+        // off: the flag is what says it is on, and no pass has said otherwise.
+        let awaiting = flagged && gated && half.read.configured.is_absent();
+        let read = if awaiting {
+            KeyRead {
+                undecided: true,
+                error: None,
+            }
+        } else if gated {
             half.read.key_read()
         } else {
             KeyRead::default()
         };
-        let loading = gated && (half.read.is_loading() || half.read.is_undecided());
+        let loading = awaiting || (gated && (half.read.is_loading() || half.read.is_undecided()));
         let (warning, clock) = match view {
             Some(v) => {
                 copilot.push(v.section);
@@ -3725,6 +3736,41 @@ mod tests {
         );
     }
 
+    /// A ticked organization half that no pass has reached (just ticked, or its
+    /// figure just dropped) is waiting, not off; unticked, it is neither.
+    #[test]
+    fn a_ticked_org_half_not_yet_read_is_loading_not_off() {
+        let mut state = nothing_added();
+        state.copilot_org_mut().unconfigure();
+        let line = |payload: &Value| {
+            payload["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["id"] == COPILOT_ORG_ID)
+                .unwrap()
+                .clone()
+        };
+        let ticked = ai_usage_view(&state, COPILOT_ON, NOW);
+        let org = line(&ticked);
+        assert_eq!(org["on"], false);
+        assert_eq!(org["loading"], true);
+        assert_eq!(org["undecided"], true);
+        assert_eq!(ticked["loading"], true);
+        assert!(copilot_row(&ticked, COPILOT_ORG_ID).is_none());
+
+        let unticked = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(line(&unticked)["loading"], false);
+        assert_eq!(line(&unticked)["undecided"], false);
+        // The personal half, absent, is simply not set up.
+        let personal = ticked["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == COPILOT_PERSONAL_ID)
+            .unwrap();
+        assert_eq!(personal["loading"], false);
+    }
     /// Copilot is the stale clock's too: its freshness is dated against the
     /// metered cadence, under its own id.
     #[test]

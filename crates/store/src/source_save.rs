@@ -87,11 +87,9 @@ pub enum SourceWake {
     /// corrected export location unread until the next pass.
     Azure,
     /// The Actions billing loop, whose hourly rhythm would otherwise leave a
-    /// newly saved token or organization unread until the next pass.
-    ActionsBilling,
-    /// The Actions billing loop and the metered providers: the Actions billing
-    /// token is also the Copilot organization half's, which the metered loop
-    /// polls.
+    /// newly saved token or organization unread until the next pass, and the
+    /// metered providers: the same token and organization are Copilot's
+    /// organization half's, which the metered loop polls.
     ActionsBillingAndUsageProviders,
     /// The GitHub pass, whose identities are the accounts, and the Service
     /// Health pass, which derives its watched set from them.

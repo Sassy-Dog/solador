@@ -157,9 +157,10 @@
   *Scopes.* Besides `all` and `attention`, a tile can be narrowed to `plans` (both
   plans), `claude` (the Claude Code row and its rollups), `anthropic` or `openai`
   (that vendor's plan, spend and, for Anthropic, the Claude Code row), `copilot`
-  (both Copilot rows), or one row (`item:<id>`). The row ids are unchanged from the two tiles this one replaced,
-  so a saved `item:` scope keeps working (`dashboard::vendor_of` maps each row to
-  its vendor scope). A tile that does not keep `claude-today` also drops the
+  (both Copilot rows), or one row (`item:<id>`). The Anthropic and OpenAI row
+  ids are unchanged from the two tiles this one replaced, so a saved `item:`
+  scope keeps working; `copilot-org` and `copilot-personal` are new
+  (`dashboard::vendor_of` maps each row to its vendor scope). A tile that does not keep `claude-today` also drops the
   header's Claude Code figure. **A tile's scope picks only which
   figures it shows.** Every `⚠` warning from a configured AI source (both plans,
   both keys, each Copilot half, the Claude Code logs, and a key the credential

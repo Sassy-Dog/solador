@@ -103,8 +103,8 @@ per-host daemon, `scripts/` the build and guard shell scripts behind `./dev`,
 long-form docs. **Dependency edges that must not exist:** `agent/` never
 resolves `crates/updatefeed`, `crates/agentrelease`, `crates/hostsetup`,
 `crates/subscription`, `crates/actionsbilling`, `crates/copilotusage`,
-`crates/crashreport` (asserted by `scripts/agent-deps-guard.sh`). The per-crate descriptions are in
-`docs/PROJECT-STRUCTURE.md`. `.claude/` is untracked except
+`crates/crashreport` (asserted by `scripts/agent-deps-guard.sh`). The per-crate
+descriptions are in `docs/PROJECT-STRUCTURE.md`. `.claude/` is untracked except
 `.claude/sassy-dog/<name>.md` (see Security).
 
 ## Technology Stack

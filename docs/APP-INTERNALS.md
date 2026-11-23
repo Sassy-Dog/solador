@@ -335,7 +335,8 @@
   then Codex's `plan_usage::view` sections), `apis` (always a list: one
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found),
   `copilot` (always a list: a `Copilot · {login}` row per half that is set up,
-  with a `note` and `models`, and no meter), the rollups (`windows`, `projects`, `machineHeading`), `trailing`
+  with a `note` and `models`, and no meter), the rollups (`windows`,
+  `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
   Claude Code row paints), `message`, `footer`, `freshness` and `loading`. The
   row ids are `claude-plan`, `codex-plan`, `anthropic-api`, `openai-api`,
@@ -346,11 +347,12 @@
   `claude-today` is not kept. `scope_payload` ignores a kind it has no arm for,
   so that arm is what keeps a vendor-scoped tile from showing the other
   vendor's figures. **A scope picks figures only.** The payload's `footer`, the
-  merged all-rows `⚠` line (both plans, both API rows, both Copilot rows, `claude-today`, each
-  labelled with its row id, wording and colour as the `all` tile's), is on every
-  AI Usage tile, and an overview card's `⚠` entry is the source's for every
-  scope; the card's clock entry is the kept rows' clocks, the same line its Full
-  view paints (`dashboard::tile_warnings`). A key the credential store would not read has no section, so
+  merged all-rows `⚠` line (both plans, both API rows, both Copilot rows,
+  `claude-today`, each labelled with its row id, wording and colour as the
+  `all` tile's), is on every AI Usage tile, and an overview card's `⚠` entry is
+  the source's for every scope; the card's clock entry is the kept rows' clocks,
+  the same line its Full view paints (`dashboard::tile_warnings`). A key the
+  credential store would not read has no section, so
   `ai_usage_view` gives its row a `⚠ anthropic-api: <reason>` segment itself; a
   key merely unread warns of nothing. The payload also carries `lines` (always
   the seven row ids in body order, each `{id, on, warning, clock, loading,
