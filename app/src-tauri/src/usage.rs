@@ -3771,6 +3771,7 @@ mod tests {
             .unwrap();
         assert_eq!(personal["loading"], false);
     }
+
     /// Copilot is the stale clock's too: its freshness is dated against the
     /// metered cadence, under its own id.
     #[test]

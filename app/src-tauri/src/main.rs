@@ -5192,7 +5192,8 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
 
     fn unconfigure_spend(&self, spend: store::source_save::SpendFigure) {
         use store::source_save::SpendFigure;
-        // Read before the usage lock is taken, and dropped with it.
+        // Read and released before the usage lock is taken: the two locks are
+        // never held together.
         let copilot_org_on = self
             .0
             .store

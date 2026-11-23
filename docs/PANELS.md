@@ -127,7 +127,8 @@
   person bought themselves. Both halves ride `PanelInterval::UsageProviders`
   (there is no tenth cadence) and read the `ai_credit` usage report and, beside
   it, the `premium_request` one, pinned to API version `2026-03-10` in this crate
-  only. A row is `Copilot · {login}` with the billed USD as its value (`—` when
+  only. A row is `Copilot · {login}` (plain `Copilot` when no login is known, as after
+  Actions billing is removed) with the billed USD as its value (`—` when
   any item lacks its net amount, never a zero), a note of `N AI credits used · N
   included · N premium requests` that names only what was measured, and the top
   three models by credits underneath. The premium-request line is there only when

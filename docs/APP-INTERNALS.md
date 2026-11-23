@@ -334,7 +334,8 @@
   `--dump-ai-usage`), whose payload is `usage::ai_usage_view`: `plans` (Claude's
   then Codex's `plan_usage::view` sections), `apis` (always a list: one
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found),
-  `copilot` (always a list: a `Copilot · {login}` row per half that is set up,
+  `copilot` (always a list: a `Copilot · {login}` row (plain `Copilot` when no login is
+  known, as after Actions billing is removed) per half that is set up,
   with a `note` and `models`, and no meter), the rollups (`windows`,
   `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
