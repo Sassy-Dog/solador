@@ -369,7 +369,7 @@
   body order), else (4) none. A key's failure is said once, as its `⚠` line, never
   also as a message. The overview's empty text (`ai_narrowed_source`, into
   `empty_state`) comes from the same function as the Full view's `message`, so
-  the two cannot disagree; `all` and `attention` tiles are unchanged.
+  the two cannot disagree; `all` and `attention` tiles are unchanged. A tile's Detail stays source-level, as every source's is: `fillDetails` paints the source's whole `warnings`, so `chip_target` may point at a narrowed tile whose own card shows nothing and its Detail says why.
   The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
   `nothing_added_message`): any key undecided is loading, else any key the
   credential store would not read gives no message (its `⚠` line says why),

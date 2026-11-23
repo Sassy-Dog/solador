@@ -136,9 +136,15 @@
   of nothing, it is loading. Only the freshness clock, `loading` and the
   "isn’t set up" sentence follow the scope (an overview card's clock entry is the
   kept rows' clocks, the line its Full view paints). `all` and `attention` keep
-  the whole-tile values. Any `⚠` line, a key the credential store would not read
-  included, lights the amber "AI Usage · check readings" Needs Attention chip;
-  only red plan rows raise a red one. Every other scope looks at its **relevant set**
+  the whole-tile values. Any `⚠` line or freshness clock, from any row, lights
+  the Needs Attention chip: amber "AI Usage · check readings", or red "AI Usage ·
+  N" when a plan row is red. A key the credential store would not read counts as a
+  `⚠` line. **A tile's Detail is source-level**, as every other source's is: it
+  paints the source's whole `warnings` (every row's `⚠` lines and freshness
+  clocks), whatever the tile's scope. So a narrowed tile whose card shows nothing
+  can still be where the chip points, and its Detail says why: an `anthropic`
+  tile, with only the Codex plan's clock late, has an empty card, the amber chip
+  points at that tile, and its Detail shows `codex-plan: as of …`. Every other scope looks at its **relevant set**
   (`anthropic`: the Anthropic vendor, meaning its plan, key and logs; `claude`
   and `item:claude-today`: the logs; `item:claude-plan`, `item:codex-plan`: that
   plan; `item:anthropic-api`, `item:openai-api`: that key; `openai`: the OpenAI

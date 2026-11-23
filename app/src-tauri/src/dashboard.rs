@@ -2029,7 +2029,11 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
 /// leads to a hidden tile or to a source-wide panel.
 ///
 /// `tiles` are the source's visible tiles, in overview order. A source whose
-/// trouble is only a warning has no row to miss, so any tile shows it.
+/// trouble is only a warning has no row to miss, so any tile shows it: its
+/// Detail paints the source's whole `warnings`, whatever the tile's scope. The
+/// chip may therefore target a narrowed tile (an AI Usage tile scoped to one
+/// vendor, say) whose own card shows nothing, because that tile's Detail says
+/// why.
 fn chip_target(source: &Value, tiles: &[&DashboardTile]) -> Value {
     let needing: Vec<&Value> = list(source, "rows")
         .iter()
@@ -3975,13 +3979,17 @@ mod tests {
         );
         assert_eq!(all["warnings"], want);
         // (scope, the rows whose clock it may name)
-        let cases: [(&str, &[&str]); 6] = [
+        let cases: [(&str, &[&str]); 10] = [
             ("openai", &["codex-plan", "openai-api"]),
             ("item:codex-plan", &["codex-plan"]),
             ("anthropic", &["claude-plan", "anthropic-api"]),
             ("plans", &["claude-plan", "codex-plan"]),
             ("item:openai-api", &["openai-api"]),
             ("claude", &[]),
+            ("item:claude-plan", &["claude-plan"]),
+            ("item:anthropic-api", &["anthropic-api"]),
+            ("item:claude-today", &[]),
+            ("item:gone", &[]),
         ];
         for (scope, clocks) in cases {
             let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);

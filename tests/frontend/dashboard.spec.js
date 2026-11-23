@@ -80,7 +80,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               ...base,
               ...t,
               rows: shown,
-              warnings: source.warnings,
+              warnings: base.cardWarnings ?? source.warnings,
               scopeLabel,
               moreCount: base.ownerGroups ? 0 : Math.max(0, rows.length - limit),
               footer: `${shown.length} shown`,
@@ -767,6 +767,23 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   for (const label of new Set(plans.flatMap(r => r.metrics.map(m => m.label)))) {
     expect(headers.map(h => h.toLowerCase())).toContain(label.toLowerCase());
   }
+});
+
+// A tile's Detail is source-level: it paints the source's whole warnings,
+// whatever the tile's scope, so an `anthropic` tile whose card shows nothing is
+// still where the chip points and its Detail says why (the Codex plan's clock).
+test('a narrowed AI Usage tile\'s Detail paints the source\'s warnings, not its own card\'s', async ({page,baseURL}) => {
+  await openDashboard(page, baseURL, false, (view) => {
+    withAiUsageTile(view);
+    view.layout.tiles.find(t => t.id === 'overview-aiUsage').scope = 'anthropic';
+    view.sources.find(s => s.id === 'aiUsage').warnings = [{text: 'codex-plan: as of 20m ago', color: '#8090ac'}];
+    // Rust's card for this tile: nothing to say.
+    view.tiles.push({id: 'overview-aiUsage', source: 'aiUsage', cardWarnings: []});
+  });
+  await expect(tile(page, 'aiUsage')).toBeVisible();
+  await expect(tile(page, 'aiUsage').locator('.db-warnings')).not.toContainText('codex-plan');
+  await openDetail(page, 'aiUsage');
+  await expect(page.locator('#dashboardInspector')).toContainText('codex-plan: as of 20m ago');
 });
 
 test('a Machines tile can drop its Disk strip, and only Machines tiles offer it', async ({page,baseURL}) => {
