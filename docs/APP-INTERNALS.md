@@ -341,30 +341,36 @@
   scopes keep working; `tile_scope::scope_ai_usage` narrows `plans` and `apis`
   by id and drops the rollups block, `trailing` and `claudeToday` when
   `claude-today` is not kept. `scope_payload` ignores a kind it has no arm for,
-  so that arm is what keeps a vendor-scoped tile from showing the other vendor.
-  The merged `footer`, `freshness` and `loading` are all-rows values, so the
-  payload also carries `lines` (always the five row ids in body order, each
-  `{id, on, warning, clock, loading, undecided, error}`: `on` is the part being
-  set up, `undecided`/`error` the row's own key read) and `rollupsMessage`. A
-  tile narrowed by any scope but `all` and `attention` rebuilds `footer`,
-  `freshness`, `loading` and `message` from the rows its scope speaks for
-  (`dashboard::ai_scope_rows`, `tile_scope::ai_header`), with the same
-  `merged_footer`/`merged_freshness`; its payload keeps only those rows'
-  `lines` and drops `rollupsMessage`. The rule, per scope: loading is the OR of
-  the relevant rows' loading (an unread key holds its API row loading); the
-  message is, in order: (1) the loading line if a relevant key is unread, else
-  (2) the first relevant key's failure, in body order, else (3) the rollups' own
+  so that arm is what keeps a vendor-scoped tile from showing the other
+  vendor's figures. **A scope picks figures only.** The payload's `footer`, the
+  merged all-rows `⚠` line (both plans, both API rows, `claude-today`, each
+  labelled with its row id, wording and colour as the `all` tile's), is on every
+  AI Usage tile, and the overview's per-tile `warnings` are the source's for
+  every scope. A key the credential store would not read has no section, so
+  `ai_usage_view` gives its row a `⚠ anthropic-api: <reason>` segment itself; a
+  key merely unread warns of nothing. The payload also carries `lines` (always
+  the five row ids in body order, each `{id, on, warning, clock, loading,
+  undecided, unreadable}`: `on` is the part being set up; `warning` its `⚠`
+  segment, merged into `footer`; `clock` its freshness segment; `undecided` and
+  `unreadable` its own key's read) and `rollupsMessage`. A tile narrowed by any
+  scope but `all` and `attention` rebuilds only `freshness`, `loading` and
+  `message` from the rows its scope speaks for (`dashboard::ai_scope_rows`,
+  `tile_scope::ai_header`), with the same `merged_freshness`; its payload keeps
+  only those rows' `lines` and drops `rollupsMessage`. Per scope: loading is the
+  OR of the relevant rows' loading (an unread key holds its API row loading);
+  the message, used only when the tile keeps no row with content, is, in order:
+  (1) the loading line if a relevant key is unread, else (2) the rollups' own
   line (`reading logs…`, the no-logs line) when the Claude Code logs are
-  relevant and on but have no data yet, else (4) `not_set_up_message` for each
-  vendor with a relevant part off, all of them off, else (5) none, so a relevant
-  key's wait or failure wins over the rollups' line. The
-  overview's per-tile `warnings` and its empty text (`ai_narrowed_source`, into
-  `empty_state`) come from the same function, so the two cannot disagree; `all`
-  and `attention` tiles are unchanged. A line with no firing segment is absent,
-  never another vendor's text.
+  relevant and on but have no data yet, else (3) `not_set_up_message` for each
+  vendor with a relevant part off (all of them off, every relevant key read and
+  absent), else (4) none. A key's failure is said once, as its `⚠` line, never
+  also as a message. The overview's empty text (`ai_narrowed_source`, into
+  `empty_state`) comes from the same function as the Full view's `message`, so
+  the two cannot disagree; `all` and `attention` tiles are unchanged.
   The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
-  `nothing_added_message`): any key undecided is loading, else the first key
-  error in body order speaks, else `settings::none_added_message`. Cadences are
+  `nothing_added_message`): any key undecided is loading, else any key the
+  credential store would not read gives no message (its `⚠` line says why),
+  else every key was read and is absent and `settings::none_added_message`. Cadences are
   unchanged on disk: `claude_rollups`, `plan_usage` and `usage_providers` now
   each list `aiUsage` in `cadence::source_ids` (the last beside `usage`). The
   store migration is `StoreData::merge_ai_tiles` (`crates/store/src/lib.rs`),

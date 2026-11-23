@@ -126,27 +126,36 @@
   (`item:<id>`). The row ids are unchanged from the two tiles this one replaced,
   so a saved `item:` scope keeps working (`dashboard::vendor_of` maps each row to
   its vendor scope). A tile that does not keep `claude-today` also drops the
-  header's Claude Code figure. `all` and `attention` keep
-  the whole-tile header and the whole-tile sentence. Every other scope looks only
-  at its **relevant set** (`anthropic`: the Anthropic vendor, meaning its plan,
-  key and logs; `claude` and `item:claude-today`: the logs; `item:claude-plan`,
-  `item:codex-plan`: that plan; `item:anthropic-api`, `item:openai-api`: that key;
-  `openai`: the OpenAI vendor; `plans`: both plans; an unknown `item:`: nothing,
-  so no message and not loading). Its warning and clock lines carry only the
-  relevant rows' ids; it is loading when a relevant row is or a relevant key is
-  unread; and its message is, in order: (1) the loading line if a relevant key is
-  unread, else (2) the first relevant key's failure, in body order, else (3) the
-  rollups' own line (`reading logs…`, the no-logs line) when the Claude Code
-  logs are relevant and on but have no data yet, else (4) `Anthropic isn’t set
-  up — …` / `OpenAI isn’t set up — …` for each vendor with a relevant part off,
-  all of them off (a key read and absent; `plans` with both plan parts off names
-  both, in body order), else (5) none. A relevant key's wait or failure
-  therefore wins over the rollups' line. It never says the
-  whole-tile "No AI usage yet" sentence and never names a vendor outside its
-  relevant set, and the overview tile's empty text is that same message and
-  loading (one function, `tile_scope::ai_header`), as are its warnings. The Full
-  view says that sentence once: it is the payload's `message`, and `tileEmpty`
-  is not set when the narrowed `message` is what the panel paints.
+  header's Claude Code figure. **A tile's scope picks only which
+  figures it shows.** Every `⚠` warning from a configured AI source (both plans,
+  both keys, the Claude Code logs, and a key the credential store would not
+  read) shows on every AI Usage tile, overview card and Full view alike, in body
+  order and labelled with its row id (`claude-plan`, `codex-plan`,
+  `anthropic-api`, `openai-api`, `claude-today`). A key whose read failed has no
+  section, so it warns as `⚠ anthropic-api: <reason>`; a key merely unread warns
+  of nothing, it is loading. Only the freshness clock, `loading` and the
+  "isn’t set up" sentence follow the scope. `all` and `attention` keep the
+  whole-tile values. Every other scope looks at its **relevant set**
+  (`anthropic`: the Anthropic vendor, meaning its plan, key and logs; `claude`
+  and `item:claude-today`: the logs; `item:claude-plan`, `item:codex-plan`: that
+  plan; `item:anthropic-api`, `item:openai-api`: that key; `openai`: the OpenAI
+  vendor; `plans`: both plans; an unknown `item:`: nothing, so no message and not
+  loading). Its `freshness` carries only the relevant rows' clocks; it is
+  loading when a relevant row is or a relevant key is unread; and its message,
+  used only when the tile keeps no row with content, is, in order: (1) the
+  loading line if a relevant key is unread, else (2) the rollups' own line
+  (`reading logs…`, the no-logs line) when the Claude Code logs are relevant and
+  on but have no data yet, else (3) `Anthropic isn’t set up — …` / `OpenAI isn’t
+  set up — …` for each vendor with a relevant part off (all of them off and every
+  relevant key read and absent; `plans` with both plan parts off names both, in
+  body order), else (4) none. A key's failure is said once, as its `⚠` line,
+  never also as a message, so a key the credential store would not read gives
+  no message and no "isn’t set up" (only an `Absent` key may paint a setup
+  sentence). The whole-tile "No AI usage yet" sentence is never used on a
+  narrowed tile, and the overview tile's empty text is that same message and
+  loading (one function, `tile_scope::ai_header`). The Full view says its
+  sentence once: it is the payload's `message`, and `tileEmpty` is not set when
+  the narrowed `message` is what the panel paints.
   *Migration* (`StoreData::merge_ai_tiles`, after `split_usage_tiles`). The
   Anthropic and OpenAI tiles an earlier build saved become `aiUsage`, and none is
   left behind, since a leftover kind would make every later save fail

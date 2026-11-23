@@ -7,11 +7,12 @@
 //! `stats`, `chips`, `footer`, `freshness`, `message`, `health`, section header
 //! counts) is the source-wide total the scope note refers to and is left as is.
 //! The exceptions: AI Usage's `trailing` and `claudeToday`, which speak for the
-//! rollups and go when the tile does not keep `claude-today`; its `footer`,
-//! `freshness`, `loading` and `message`, which a narrowed tile (any scope but
-//! `all` and `attention`) has rebuilt from its own rows by `ai_header`, with
-//! `lines` cut to those rows and `rollupsMessage` removed, so it carries no
-//! other vendor's warning, clock, wait, setup sentence or key failure; and the
+//! rollups and go when the tile does not keep `claude-today`; its `freshness`,
+//! `loading` and `message`, which a narrowed tile (any scope but `all` and
+//! `attention`) has rebuilt from its own rows by `ai_header`, with `lines` cut to
+//! those rows and `rollupsMessage` removed. **A scope picks figures only:** its
+//! `footer`, every configured source's `\u{26a0}` warning, is left whole, and
+//! shows on every AI Usage tile; and the
 //! Repos owner groups (`owners`, `cardOrder`), rebuilt from the kept rows so
 //! each owner's header counts exactly the repos under it.
 //!
@@ -193,14 +194,13 @@ fn plan_id(plan: &Value) -> String {
 fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     retain_in(payload, "plans", plan_id, kept);
     retain_in(payload, "apis", plan_id, kept);
-    // The header lines, loading and setup sentence are the scope's rows' alone,
-    // and so is what the payload carries of them: `lines` is cut to those rows
-    // and `rollupsMessage` is gone, so a narrowed tile's IPC payload holds no
-    // other vendor's warning, clock or key failure.
+    // The scope picks figures only. `footer` (every row's warning) is left as the
+    // whole tile has it; `freshness`, `loading` and the body `message` are the
+    // scope's rows' alone, and so is what the payload carries per row: `lines` is
+    // cut to those rows and `rollupsMessage` is gone.
     let narrowed = if let Some(header) = ai_header(payload, scope) {
         let rows = crate::dashboard::ai_scope_rows(scope);
         if let Some(map) = payload.as_object_mut() {
-            map.insert("footer".into(), header.footer);
             map.insert("freshness".into(), header.freshness);
             map.insert("loading".into(), Value::Bool(header.loading));
             map.insert("message".into(), header.message);
@@ -230,10 +230,9 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     // keep the row must not still name this machine's Claude usage.
     clear_text(payload, "trailing");
     clear_text(payload, "claudeToday");
-    // A narrowed tile's `message` was rebuilt above and already speaks only for
-    // its own rows. Otherwise (`attention`) it is the whole tile's and speaks for
-    // the rollups, which this tile left out: with nothing else on the panel it
-    // stays, or a Full view that keeps no row is blank.
+    // A narrowed tile's `message` was rebuilt above. An `attention` tile keeps the
+    // whole tile's, which speaks for the rollups this tile left out: with nothing
+    // else on the panel it stays, or a Full view that keeps no row is blank.
     if narrowed {
         return;
     }
@@ -245,26 +244,26 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     }
 }
 
-/// An AI Usage tile's header for its scope: the merged warning and clock lines
-/// of the scope's rows only, whether any of them is still loading, and the
-/// message. `None` for `all` and `attention`, which keep the whole-tile header
-/// and the whole-tile sentence, and for a payload carrying no `lines` (a setup
-/// or error state).
+/// What a narrowed AI Usage tile rebuilds from its own rows. `None` for `all`
+/// and `attention`, which keep the whole-tile values, and for a payload carrying
+/// no `lines` (a setup or error state).
 ///
-/// Every other scope looks only at its **relevant rows** (`ai_scope_rows`) and
-/// never at another vendor's: its segments are the rows' own, merged with the
-/// same helpers as the whole tile's, so wording, order and colour match; it is
-/// loading when one of those rows is (an unread key holds its API row loading);
-/// and its message is, in order: (1) the loading line if a relevant key is
-/// unread, else (2) the first relevant key's failure, in body order, else (3)
-/// the rollups' own line (`rollupsMessage`, such as "reading logs\u{2026}") when
-/// the Claude Code logs are relevant and on but have no data yet, else (4)
-/// `settings::not_set_up_message` for each vendor with a relevant part off, all
-/// of them off, else (5) none. A relevant key's wait or failure therefore wins
-/// over the rollups' line. It never says the whole-tile "No AI usage yet"
-/// sentence, and `all` and `attention` are unchanged.
+/// **A tile's scope picks only which figures it shows.** Every `\u{26a0}` warning
+/// from a configured AI source (both plans, both keys, the Claude Code logs,
+/// and a key the credential store would not read) shows on every AI Usage tile,
+/// labelled with its row id: the payload's `footer` and the overview's
+/// `warnings` are the whole tile's, whatever the scope. Only three things follow
+/// the scope's **relevant rows** (`ai_scope_rows`), never another vendor's:
+/// `freshness` (the kept rows' clocks, merged as the whole tile's are),
+/// `loading` (a relevant row loading, or a relevant key unread), and the body
+/// `message`, which is, in order: (1) the loading line if a relevant key is
+/// unread, else (2) the rollups' own line (`rollupsMessage`, such as "reading
+/// logs\u{2026}") when the Claude Code logs are relevant and on but have no data yet,
+/// else (3) `settings::not_set_up_message` for each vendor with a relevant part
+/// off, all of them off and every relevant key read, else (4) none. A key's
+/// failure is never the message: it is said once, as its warning. The
+/// whole-tile "No AI usage yet" sentence is never used here.
 pub(crate) struct AiHeader {
-    pub footer: Value,
     pub freshness: Value,
     pub loading: bool,
     pub message: Value,
@@ -288,11 +287,14 @@ pub(crate) fn ai_header(inputs: &Value, scope: &str) -> Option<AiHeader> {
         Value::Null
     } else if mine.iter().any(|l| l["undecided"] == true) {
         crate::usage::state_message(crate::usage::PROVIDERS_LOADING_MESSAGE)
-    } else if let Some(reason) = mine.iter().find_map(|l| l["error"].as_str()) {
-        crate::usage::state_message(reason)
     } else if rollups_on && !inputs["rollupsMessage"].is_null() {
         inputs["rollupsMessage"].clone()
-    } else if mine.iter().any(|l| l["on"] == true) {
+    } else if mine
+        .iter()
+        .any(|l| l["on"] == true || l["unreadable"] == true)
+    {
+        // Something to show, or a key that is not known to be absent: its
+        // failure is its warning, not a sentence here.
         Value::Null
     } else {
         // Every relevant part is off and its key, if it has one, was read and is
@@ -319,7 +321,6 @@ pub(crate) fn ai_header(inputs: &Value, scope: &str) -> Option<AiHeader> {
         crate::usage::state_message(&sentences.join(" "))
     };
     Some(AiHeader {
-        footer: crate::panel::merged_footer(&segments("warning")),
         freshness: crate::panel::merged_freshness(&segments("clock")),
         loading: mine.iter().any(|l| l["loading"] == true),
         message,
@@ -732,9 +733,11 @@ mod tests {
         }
     }
 
-    /// `message` speaks for the rollups, so a tile showing another block with
-    /// the rollups scoped out drops it. A tile left with nothing keeps it, or
-    /// its Full view would be blank.
+    /// On a payload with no per-row `lines` (a setup or error state, or an
+    /// `attention` tile, which keeps the whole tile's message), `message` speaks
+    /// for the rollups: a tile showing another block with the rollups scoped
+    /// out drops it, and a tile left with nothing keeps it, or its Full view
+    /// would be blank. A narrowed tile rebuilds its own message instead.
     #[test]
     fn an_ai_usage_tile_keeps_the_rollups_line_only_when_it_has_nothing_else() {
         let p = json!({"message":{"text":"no usage data"},"windows":[],"plans":[],"apis":[]});
@@ -796,82 +799,135 @@ mod tests {
         v[key]["text"].as_str().unwrap_or_default().to_owned()
     }
 
-    /// A vendor-scoped tile's header lines are its own rows': never another
-    /// vendor's plan, spend or the Claude Code logs. `all` keeps every line.
+    /// A scope picks figures only: every row's warning is on every tile, with
+    /// the whole tile's wording and colour, and only the clocks are the scope's
+    /// rows'. `all` keeps everything.
     #[test]
-    fn a_scoped_tile_carries_only_its_rows_header_lines() {
+    fn a_scoped_tile_carries_every_warning_but_only_its_own_clocks() {
         let p = every_line_firing();
-        let all = scope_payload(&tile("aiUsage", "all"), p.clone());
-        assert_eq!(all["footer"], p["footer"]);
-        assert_eq!(all["freshness"], p["freshness"]);
-        let text = header_text(&all, "footer");
-        for id in [
+        let all_ids = [
             "claude-plan",
             "codex-plan",
             "anthropic-api",
             "openai-api",
             "claude-today",
-        ] {
-            assert!(text.contains(id), "all keeps {id}");
-        }
-
-        // (scope, ids its header may name, ids it must not)
-        let cases: [(&str, &[&str], &[&str]); 5] = [
-            (
-                "openai",
-                &["codex-plan", "openai-api"],
-                &["claude-plan", "anthropic-api", "claude-today"],
-            ),
-            (
-                "item:openai-api",
-                &["openai-api"],
-                &["codex-plan", "claude-plan", "anthropic-api", "claude-today"],
-            ),
-            (
-                "item:codex-plan",
-                &["codex-plan"],
-                &["openai-api", "claude-plan", "anthropic-api", "claude-today"],
-            ),
+        ];
+        // (scope, the ids whose clock it may carry)
+        let cases: [(&str, &[&str]); 5] = [
+            ("openai", &["codex-plan", "openai-api"]),
+            ("item:openai-api", &["openai-api"]),
+            ("item:codex-plan", &["codex-plan"]),
             (
                 "anthropic",
                 &["claude-plan", "anthropic-api", "claude-today"],
-                &["codex-plan", "openai-api"],
             ),
-            (
-                "claude",
-                &["claude-today"],
-                &["claude-plan", "codex-plan", "anthropic-api", "openai-api"],
-            ),
+            ("claude", &["claude-today"]),
         ];
-        for (scope, named, absent) in cases {
-            let out = scope_payload(&tile("aiUsage", scope), p.clone());
-            for key in ["footer", "freshness"] {
-                let text = header_text(&out, key);
-                for id in absent {
-                    assert!(!text.contains(id), "{scope} {key} must not name {id}");
-                }
-            }
+        for (scope, clocks) in cases {
+            let out = scoped(&p, scope);
+            assert_eq!(out["footer"], p["footer"], "{scope}");
             let footer = header_text(&out, "footer");
-            for id in named {
+            for id in all_ids {
                 assert!(footer.contains(id), "{scope} footer names {id}");
             }
+            let t = header_text(&out, "freshness");
+            for id in all_ids.iter().filter(|id| !clocks.contains(id)) {
+                assert!(!t.contains(id), "{scope} freshness must not name {id}");
+            }
         }
+        let all = scoped(&p, "all");
+        assert_eq!(all["footer"], p["footer"]);
+        assert_eq!(all["freshness"], p["freshness"]);
     }
 
-    /// A tile whose rows have no warning and no clock has no line at all, never
-    /// another vendor's text.
+    /// Another vendor's failing request still warns on this tile, and a tile with
+    /// no clock of its own has no freshness line.
     #[test]
-    fn a_scoped_tile_with_nothing_to_say_has_no_header_line() {
+    fn a_failing_vendor_warns_on_every_tile_but_dates_only_its_own() {
         use crate::usage::{fixture_state, Fixture};
         let mut state = fixture_state(Fixture::Measured, AI_NOW, AI_NOW);
         state
             .anthropic_api_mut()
             .failed("Anthropic key rejected".into());
         let p = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, AI_NOW);
-        assert!(!header_text(&p, "footer").is_empty());
-        let out = scope_payload(&tile("aiUsage", "openai"), p);
-        assert!(out["footer"].is_null(), "{}", header_text(&out, "footer"));
-        assert!(out["freshness"].is_null());
+        for scope in ["openai", "item:codex-plan", "plans", "item:openai-api"] {
+            let out = scoped(&p, scope);
+            assert!(
+                header_text(&out, "footer")
+                    .contains("\u{26a0} anthropic-api: Anthropic key rejected"),
+                "{scope}"
+            );
+            assert!(out["freshness"].is_null(), "{scope} has no stale clock");
+        }
+    }
+
+    /// Stale Claude Code logs warn on an OpenAI tile too.
+    #[test]
+    fn stale_claude_code_logs_warn_on_an_openai_tile() {
+        let p = every_line_firing();
+        let out = scoped(&p, "openai");
+        assert!(header_text(&out, "footer").contains("claude-today"));
+        assert!(!header_text(&out, "freshness").contains("claude"));
+    }
+
+    /// A key the credential store would not read has no section and so no
+    /// warning of its own; it warns under its row id on every tile, and its
+    /// reason is said exactly once: not again as the message or `tileEmpty`.
+    #[test]
+    fn an_unreadable_key_warns_on_every_tile_and_says_its_reason_once() {
+        let reason = "keychain locked";
+        let warn = "\u{26a0} anthropic-api: keychain locked";
+        for (p, label) in [
+            (
+                ai_state(true, false, false, Key::Unreadable, Key::Absent),
+                "a Claude plan showing",
+            ),
+            (
+                ai_state(false, false, false, Key::Unreadable, Key::Absent),
+                "nothing showing",
+            ),
+        ] {
+            for scope in [
+                "all",
+                "anthropic",
+                "openai",
+                "item:codex-plan",
+                "plans",
+                "item:anthropic-api",
+            ] {
+                let out = scoped(&p, scope);
+                assert!(
+                    header_text(&out, "footer").contains(warn),
+                    "{label} {scope}: footer"
+                );
+                let said = header_text(&out, "footer").matches(reason).count()
+                    + text(&out).matches(reason).count()
+                    + out["tileEmpty"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .matches(reason)
+                        .count();
+                assert_eq!(said, 1, "{label} {scope}: said {said} times");
+            }
+        }
+        // A key merely unread warns of nothing: it is loading.
+        let p = ai_state(false, false, false, Key::Unread, Key::Absent);
+        assert!(!header_text(&scoped(&p, "all"), "footer").contains("anthropic-api"));
+        assert!(!header_text(&scoped(&p, "openai"), "footer").contains("anthropic-api"));
+    }
+
+    /// The scoped parts stay scoped: an OpenAI tile is not held by Anthropic's
+    /// unread key, never says Anthropic is not set up, and dates only OpenAI.
+    #[test]
+    fn an_openai_tile_stays_scoped_for_loading_message_and_clocks() {
+        let p = ai_state(false, false, false, Key::Unread, Key::Absent);
+        let out = scoped(&p, "openai");
+        assert_eq!(out["loading"], false);
+        assert_eq!(text(&out), OPENAI_OFF);
+        assert!(!text(&out).contains("Anthropic"));
+        let p = every_line_firing();
+        let t = header_text(&scoped(&p, "openai"), "freshness");
+        assert!(!t.contains("claude") && !t.contains("anthropic"), "{t}");
     }
 
     /// How a test sets one vendor's Admin key before a pass has read it.
@@ -927,9 +983,9 @@ mod tests {
     const ANTHROPIC_OFF: &str = "Anthropic isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source";
     const OPENAI_OFF: &str = "OpenAI isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source";
 
-    /// Every scope: the ids it keeps, and its narrowed header and payload. The
-    /// state has every part on and every line firing, so a leak shows up as the
-    /// wrong id in the text.
+    /// Every scope: the ids it keeps, and what stays scoped (clocks, loading,
+    /// message, lines) beside what does not (every row's warning). The state has
+    /// every part on and every line firing.
     #[test]
     fn every_scope_keeps_its_rows_and_carries_only_their_header() {
         let p = every_line_firing();
@@ -983,18 +1039,16 @@ mod tests {
             let mut want: Vec<String> = ids.iter().map(|s| (*s).to_owned()).collect();
             want.sort();
             assert_eq!(kept, want, "{scope} keeps");
-            // The header names only those rows, and the payload carries only
-            // their lines.
-            for key in ["footer", "freshness"] {
-                let t = header_text(&out, key);
-                for id in all_ids.iter().filter(|id| !ids.contains(id)) {
-                    assert!(!t.contains(id), "{scope} {key} must not name {id}");
-                }
-            }
-            // Every kept row has a failing segment in this state.
+            // The scope picks figures only: every row's warning is on every
+            // tile, as the whole tile has it. Only the clocks are the rows'.
+            assert_eq!(out["footer"], p["footer"], "{scope} footer");
             let footer = header_text(&out, "footer");
-            for id in ids {
+            for id in all_ids {
                 assert!(footer.contains(id), "{scope} footer names {id}");
+            }
+            let clocks = header_text(&out, "freshness");
+            for id in all_ids.iter().filter(|id| !ids.contains(id)) {
+                assert!(!clocks.contains(id), "{scope} freshness must not name {id}");
             }
             let line_ids: Vec<&str> = out["lines"]
                 .as_array()
@@ -1119,17 +1173,19 @@ mod tests {
         assert_eq!(scoped(&p, "all")["loading"], true);
     }
 
-    /// A key that could not be read is that vendor's tiles' message only, first
-    /// in body order among the relevant keys.
+    /// A key failure is never a tile's message; it is its warning.
     #[test]
-    fn a_key_failure_speaks_only_on_its_own_vendors_tiles() {
+    fn a_key_failure_is_never_the_tiles_message() {
         let p = ai_state(false, false, false, Key::Unreadable, Key::Absent);
-        assert_eq!(text(&scoped(&p, "anthropic")), "keychain locked");
-        assert_eq!(text(&scoped(&p, "item:anthropic-api")), "keychain locked");
+        for scope in ["anthropic", "item:anthropic-api"] {
+            assert!(scoped(&p, scope)["message"].is_null(), "{scope}");
+        }
         assert_eq!(text(&scoped(&p, "openai")), OPENAI_OFF);
         let p = ai_state(false, false, false, Key::Absent, Key::Unreadable);
-        assert_eq!(text(&scoped(&p, "openai")), "keychain locked");
+        assert!(scoped(&p, "openai")["message"].is_null());
         assert_eq!(text(&scoped(&p, "anthropic")), ANTHROPIC_OFF);
+        // The whole tile: nothing on and a key unreadable says nothing either.
+        assert!(scoped(&p, "all")["message"].is_null());
         // A stored key is content, not a message.
         let p = ai_state(false, false, false, Key::Stored, Key::Absent);
         assert!(scoped(&p, "anthropic")["message"].is_null());
@@ -1169,33 +1225,40 @@ mod tests {
                 &["anthropic", "item:anthropic-api"],
                 crate::usage::PROVIDERS_LOADING_MESSAGE.into(),
             ),
-            // This key unreadable.
+            // This key unreadable: no message, its warning says why (once).
             (
                 ai_state(true, false, false, Key::Absent, Key::Unreadable),
                 &["openai", "item:openai-api"],
-                "keychain locked".into(),
+                String::new(),
             ),
             (
                 ai_state(false, true, false, Key::Unreadable, Key::Absent),
                 &["anthropic", "item:anthropic-api"],
-                "keychain locked".into(),
+                String::new(),
             ),
         ];
         for (p, scopes, sentence) in cases {
             for scope in scopes {
                 let out = scoped(&p, scope);
                 assert_eq!(text(&out), sentence, "{scope} message");
-                assert!(
-                    out.get("tileEmpty").is_none(),
-                    "{scope}: the sentence is also painted as tileEmpty"
-                );
+                if sentence.is_empty() {
+                    // No sentence: the tile's stock empty text is allowed, but
+                    // not the key's reason, which is its warning.
+                    let empty = out["tileEmpty"].as_str().unwrap_or_default();
+                    assert!(!empty.contains("keychain locked"), "{scope}");
+                } else {
+                    assert!(
+                        out.get("tileEmpty").is_none(),
+                        "{scope}: the sentence is also painted as tileEmpty"
+                    );
+                }
             }
         }
     }
 
     /// Parts that are on but have nothing to say yet, and the order the message
-    /// checks run in: an unread or unreadable key of the tile leads even when a
-    /// part is on, and the rollups' own line comes after the keys.
+    /// checks run in: an unread key of the tile leads even when a part is on, and
+    /// the rollups' own line comes after it.
     #[test]
     fn a_narrowed_tiles_message_checks_run_in_order() {
         // (a) Claude Code logs on, no summary yet: the rollups' own line.
@@ -1209,7 +1272,8 @@ mod tests {
         }
         // Not about the other vendor: its tiles say it is not set up.
         assert_eq!(text(&scoped(&p, "openai")), OPENAI_OFF);
-        // (b) A part on with its key unread or unreadable: the key leads.
+        // (b) A part on with its key unread: the key leads. Unreadable is a
+        // warning, not a message.
         let p = ai_state(true, false, false, Key::Unread, Key::Absent);
         assert_eq!(
             text(&scoped(&p, "anthropic")),
@@ -1217,12 +1281,15 @@ mod tests {
         );
         assert_eq!(scoped(&p, "anthropic")["loading"], true);
         let p = ai_state(true, false, false, Key::Unreadable, Key::Absent);
-        assert_eq!(text(&scoped(&p, "anthropic")), "keychain locked");
+        assert!(scoped(&p, "anthropic")["message"].is_null());
         // The plan row alone has no key, so it is not held by it.
         assert!(scoped(&p, "item:claude-plan")["message"].is_null());
-        // (c) Logs on with no summary and the key unreadable: the key's reason.
+        // (c) Logs on with no summary and the key unreadable: the rollups' line.
         let p = ai_state(false, false, true, Key::Unreadable, Key::Absent);
-        assert_eq!(text(&scoped(&p, "anthropic")), "keychain locked");
+        assert_eq!(
+            text(&scoped(&p, "anthropic")),
+            crate::usage::LOADING_MESSAGE
+        );
         let p = ai_state(false, false, true, Key::Unread, Key::Absent);
         assert_eq!(
             text(&scoped(&p, "anthropic")),

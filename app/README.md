@@ -1656,14 +1656,15 @@ vendor's failure from reading as the other's.
   "message": null,                       // the rollups' own state, or "reading logs…"
                                          //    / "no usage data" / "no Claude usage in
                                          //    the last 7 days"; "reading usage…" until
-                                         //    every vendor's key has been read; a key
-                                         //    that could not be read, first in body
-                                         //    order; or, with no part of any vendor set
-                                         //    up, "No AI usage yet — add Anthropic or
-                                         //    OpenAI in Settings → Sources → Add source".
-                                         //    A tile that does not keep the Claude Code
-                                         //    row drops it, so a tile speaks for what it
-                                         //    shows
+                                         //    every vendor's key has been read; or,
+                                         //    with no part of any vendor set up and
+                                         //    every key read and absent, "No AI usage
+                                         //    yet — add Anthropic or OpenAI in Settings
+                                         //    → Sources → Add source". A key that could
+                                         //    not be read is never the message: it is
+                                         //    the `footer`'s `⚠` line, said once. A
+                                         //    narrowed tile has its own (its vendor's
+                                         //    "isn't set up", or the loading line)
   "machineHeading": "THIS MACHINE",      // null when there are no rows under it
   "windows": [{"label": "LAST 5H", "value": "820k", "valueColor": "#33d17a"}, …],
   //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
@@ -1705,7 +1706,11 @@ vendor's failure from reading as the other's.
   //     keep or clear it, and removing one vendor's key hides only that vendor's.
   "footer": null,       // ONE line, in body order: each plan's, each spend's, then
                         // the rollups' last under `claude-today` (staleAfter 2.5
-                        // rollup cycles, never under 150s), each attributed
+                        // rollup cycles, never under 150s), each attributed. A key
+                        // the credential store would not read has no section and
+                        // warns here as `⚠ anthropic-api: <reason>`. Every AI Usage
+                        // tile carries this whole line, whatever its scope (a scope
+                        // picks figures only); a key merely unread warns of nothing
   "freshness": null,    // the plans' and spend clocks, attributed. Claude's rollups
                         // contribute none: they are on the `ClaudeRollups` cadence,
                         // and `footer` already measures it
@@ -1715,15 +1720,16 @@ vendor's failure from reading as the other's.
   "lines": [            // always the five row ids in body order (claude-plan,
                         //   codex-plan, anthropic-api, openai-api, claude-today):
                         //   {"id", "on", "warning", "clock", "loading",
-                        //   "undecided", "error"}; `on`: the part is set up;
-                        //   `undecided`/`error`: how far a pass has got with the
-                        //   row's own key (the two API rows). `footer`,
+                        //   "undecided", "unreadable"}; `on`: the part is set up;
+                        //   `undecided`/`unreadable`: how far a pass has got with
+                        //   the row's own key (the two API rows). `footer`,
                         //   `freshness` and `loading` above are these merged. A
                         //   tile narrowed by any scope but `all` and `attention`
-                        //   rebuilds its own from its rows alone and carries only
-                        //   their `lines`, so no other vendor's text reaches it
+                        //   rebuilds only `freshness`, `loading` and `message`
+                        //   from its own rows and carries only their `lines`;
+                        //   its `footer` stays whole
     {"id": "claude-plan", "on": true, "warning": null, "clock": null,
-     "loading": false, "undecided": false, "error": null}, …
+     "loading": false, "undecided": false, "unreadable": false}, …
   ],
   "rollupsMessage": null // the rollups' own state line, apart from the setup sentence
                         //   (dropped from a narrowed tile's payload)

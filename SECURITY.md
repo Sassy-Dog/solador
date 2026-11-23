@@ -41,8 +41,8 @@ query string, and error messages get pasted into issues. The one credential
 Solador reads that it did not store is another tool's own sign-in, for the
 AI Usage tile's plan limits: off until picked and finished in that source's
 steps, read for one request per poll, never copied, written or refreshed
-(`docs/SECRETS.md`, "Borrowed sign-ins"). A path that makes either one leave that request, or be
-modified, is a vulnerability too.
+(`docs/SECRETS.md`, "Borrowed sign-ins"). A path that makes either one
+leave that request, or be modified, is a vulnerability too.
 
 **The command line hands credentials in, never out.** `solador-app host …`
 gives the running app a host and its token over a local channel: on Unix a

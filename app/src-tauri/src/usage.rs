@@ -1023,17 +1023,18 @@ fn api_section(
 
 /// The sentence for a panel with no part to show. Only an `Absent` key may paint
 /// the setup instruction, so it waits on **every** vendor's key: an unread one
-/// may well be stored, and an unreadable one says why instead.
+/// may well be stored, and an unreadable one is not known to be absent.
 ///
-/// In order: any key still unread gives the loading line; otherwise the first
-/// key that could not be read gives its reason, in body order; otherwise every
-/// key was read and is absent, and the setup sentence is true.
+/// In order: any key still unread gives the loading line; any key that could not
+/// be read gives no message at all, because its failure is said once, as its own
+/// `⚠` line in the header (the Full view never says a sentence twice, #656);
+/// otherwise every key was read and is absent, and the setup sentence is true.
 pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
     if reads.iter().any(|read| read.undecided) {
         return state_message(PROVIDERS_LOADING_MESSAGE);
     }
-    if let Some(reason) = reads.iter().find_map(|read| read.error.as_deref()) {
-        return state_message(reason);
+    if reads.iter().any(|read| read.error.is_some()) {
+        return Value::Null;
     }
     state_message(&crate::settings::none_added_message())
 }
@@ -1137,14 +1138,28 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         // A key not read yet holds the row loading although it has no section.
         let loading = key.is_loading() || key.is_undecided();
         let on = view.is_some();
+        let read = key.key_read();
         let (warning, clock) = match view {
             Some(v) => {
                 apis.push(v.section);
                 (v.warning, v.freshness)
             }
-            None => (Value::Null, Value::Null),
+            // A key the credential store would not hand over has no section,
+            // so nothing else would say so: it warns under its own row id, in
+            // the shape a section's own warning has. A key merely unread warns
+            // of nothing; it is loading.
+            None => (
+                attributed_status_footer(
+                    id,
+                    None,
+                    read.error.as_deref(),
+                    now,
+                    provider_stale_after_secs(inputs.spend_cadence_secs),
+                ),
+                Value::Null,
+            ),
         };
-        lines.push(ai_line(id, on, warning, clock, loading, key.key_read()));
+        lines.push(ai_line(id, on, warning, clock, loading, read));
     }
     let rollups_warning = if logs_on {
         attributed_status_footer(
@@ -1212,13 +1227,16 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
 /// One row's header contributions: whether its part is on, its warning and
 /// clock segments (both `Null` when it has none), whether it is still waiting
 /// on a read, and how far a pass has got with its own key.
+///
+/// `warning` is the row's `⚠` segment and is part of the merged `footer` every
+/// AI Usage tile carries; `clock` and `loading` are what a narrowed tile rebuilds
+/// its own `freshness` and `loading` from. `undecided` (its key is not read yet)
+/// and `unreadable` (the credential store would not answer, so the row has no
+/// section and its failure is its warning) say how far a pass has got with the
+/// row's own key; they are `false` for a row with no key.
 fn ai_line(id: &str, on: bool, warning: Value, clock: Value, loading: bool, key: KeyRead) -> Value {
-    // A key's failure is the row's message only while the row has no section: a
-    // stored key whose read failed is on, shows its figure and warns in the
-    // header, so its reason is not repeated as a message.
-    let error = if on { None } else { key.error };
     json!({"id": id, "on": on, "warning": warning, "clock": clock, "loading": loading,
-        "undecided": key.undecided, "error": error})
+        "undecided": key.undecided, "unreadable": !on && key.error.is_some()})
 }
 
 // MARK: - Fixtures
@@ -2083,35 +2101,45 @@ mod tests {
         }
     }
 
-    /// A locked keychain is not "not set up", so the card says why instead, and
-    /// one key that could not be read speaks even when the other is absent.
+    /// A locked keychain is not "not set up", and it has no section to warn in,
+    /// so it warns under its row's id and says nothing as the message: the
+    /// failure is said once.
     #[test]
-    fn an_unreadable_key_says_so_rather_than_offering_setup() {
+    fn an_unreadable_key_warns_once_rather_than_offering_setup() {
         let mut state = UsageState::new();
         state.anthropic_api.unreadable("keychain locked".to_owned());
         state.openai_api.unconfigure();
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(payload["message"]["text"], "keychain locked");
+        assert!(payload["message"].is_null());
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ anthropic-api: keychain locked"
+        );
         assert_eq!(payload["loading"], false);
 
         let mut state = UsageState::new();
         state.anthropic_api.unconfigure();
         state.openai_api.unreadable("keychain locked".to_owned());
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(payload["message"]["text"], "keychain locked");
+        assert!(payload["message"].is_null());
+        assert_eq!(payload["footer"]["text"], "⚠ openai-api: keychain locked");
 
-        // Both unreadable: the first reason in body order.
+        // Both unreadable: each warns, in body order.
         let mut state = UsageState::new();
         state.anthropic_api.unreadable("first".to_owned());
         state.openai_api.unreadable("second".to_owned());
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
-        assert_eq!(payload["message"]["text"], "first");
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ anthropic-api: first ⚠ openai-api: second"
+        );
 
-        // A key still unread outranks a reason: the verdict is not in yet.
-        let mut state = UsageState::new();
-        state.anthropic_api.unreadable("keychain locked".to_owned());
+        // A key still unread is loading and warns of nothing, but a failure
+        // that was already said still does.
+        let state = UsageState::new();
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         assert_eq!(payload["message"]["text"], PROVIDERS_LOADING_MESSAGE);
+        assert!(payload["footer"].is_null());
     }
 
     /// A walk still running is not a verdict: the rollups may yet have rows.

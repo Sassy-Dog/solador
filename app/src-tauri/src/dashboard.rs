@@ -1718,28 +1718,6 @@ fn ai_narrowed_source(tile: &DashboardTile, source: &Value) -> Option<Value> {
     Some(narrowed)
 }
 
-/// The warnings a tile's card carries. The source's, except an AI Usage tile
-/// narrowed to a scope: it carries only its own rows' header lines (and its own
-/// key's failure), never another vendor's.
-fn tile_warnings(tile: &DashboardTile, source: &Value) -> Value {
-    if tile.source != "aiUsage" || !filters_rows(tile) {
-        return source["warnings"].clone();
-    }
-    let Some(header) = crate::tile_scope::ai_header(&source["ai"], &tile.scope) else {
-        return source["warnings"].clone();
-    };
-    let mut warnings = Vec::new();
-    for line in [&header.footer, &header.freshness] {
-        if let Some(text) = line["text"].as_str().filter(|s| !s.is_empty()) {
-            warnings.push(json!({"text":text,"color":tint(&line["color"])}));
-        }
-    }
-    if red(&header.message["color"]) {
-        warnings.push(header.message.clone());
-    }
-    json!(warnings)
-}
-
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     let mut matching = matching_rows(tile, source);
     if tile.source == "ghWorkflows" {
@@ -1845,7 +1823,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .map(|o| (json!(o.groups), json!(o.card_order), json!(o.card_columns)))
         .unwrap_or((Value::Null, Value::Null, Value::Null));
     json!({"ownerGroups":owner_groups,"cardOrder":card_order,"cardColumns":card_columns,"cardCounts":card_counts,
-        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":tile_warnings(tile, source),"moreLabel":more,"moreCount":hidden,"footer":footer,
+        "id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
         "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
         "coreRowSpan":tile.core_row_span,"hostOverflow":tile.host_overflow.as_str(),"rowGapPx":tile.row_gap_px,"detailView":tile.detail_view,"runnerFullView":tile.runner_full_view,"repoLayout":tile.repo_layout,
         "fullLoading":FULL_LOADING,"views":TILE_VIEWS.iter().map(|(id, label)| json!({"id":id,"label":label})).collect::<Vec<_>>(),"fullNote":full_note,
@@ -3943,10 +3921,12 @@ mod tests {
         }
     }
 
-    /// The overview's warnings on a vendor-scoped AI Usage tile are its own
-    /// rows': no Anthropic or Claude Code segment on an OpenAI tile.
+    /// The overview's warnings on an AI Usage tile are the source's, whatever its
+    /// scope: every configured source's warning, with the source-wide tint. A
+    /// failing Anthropic request and stale Claude Code logs show on an OpenAI
+    /// tile.
     #[test]
-    fn a_scoped_ai_usage_tile_carries_only_its_rows_warnings() {
+    fn every_ai_usage_tile_carries_the_source_wide_warnings() {
         use crate::usage::{fixture_state, Fixture};
         let now = 1_700_000_000;
         let mut state = fixture_state(Fixture::Measured, now - 3_600, now - 7 * 3_600);
@@ -3956,47 +3936,86 @@ mod tests {
         state.openai_api_mut().failed("OpenAI key rejected".into());
         let payload = crate::usage::ai_usage_view(&state, crate::usage::FIXTURE_PLANS, now);
         let source = source_view("aiUsage", "AI Usage", &payload);
-        let warnings = |scope: &str| -> String {
-            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
-            let view = tile_view(&t, &source);
-            list(&view, "warnings")
+        let want = source["warnings"].clone();
+        assert!(!list(&source, "warnings").is_empty());
+        let texts = |v: &Value| -> String {
+            list(v, "warnings")
                 .iter()
                 .map(|w| string(w, "text"))
                 .collect::<Vec<_>>()
                 .join(" | ")
         };
-        let all = warnings("all");
-        assert!(
-            all.contains("anthropic-api") && all.contains("claude-today"),
-            "{all}"
-        );
-        let openai = warnings("openai");
-        assert!(openai.contains("openai-api"), "{openai}");
-        for id in ["anthropic", "claude"] {
-            assert!(
-                !openai.contains(id),
-                "an openai tile must not name {id}: {openai}"
-            );
+        assert!(texts(&source).contains("anthropic-api"));
+        assert!(texts(&source).contains("claude-today"));
+        for scope in [
+            "all",
+            "openai",
+            "anthropic",
+            "claude",
+            "plans",
+            "item:claude-plan",
+            "item:codex-plan",
+            "item:anthropic-api",
+            "item:openai-api",
+            "item:claude-today",
+            "item:gone",
+        ] {
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            let view = tile_view(&t, &source);
+            assert_eq!(view["warnings"], want, "{scope}");
         }
-        let item = warnings("item:openai-api");
-        // Its own row's segment is there, and only its own.
-        assert!(item.contains("openai-api"), "{item}");
-        assert!(
-            !item.contains("codex-plan") && !item.contains("anthropic") && !item.contains("claude"),
-            "{item}"
-        );
-        // And it keeps the amber of the status line it was built from.
+        // The tint is the source-wide one.
         let t = DashboardTile::new("t", "aiUsage", "AI Usage", "item:openai-api");
         let view = tile_view(&t, &source);
-        assert!(!list(&view, "warnings").is_empty());
-        for w in list(&view, "warnings") {
-            assert_eq!(w["color"], color::hex(color::AMBER));
+        for (got, base) in list(&view, "warnings")
+            .iter()
+            .zip(list(&source, "warnings"))
+        {
+            assert_eq!(got["color"], base["color"]);
         }
     }
 
-    /// The overview tile's empty text is its Full view's message, narrowed to
-    /// the tile's own vendor: never another vendor's key failure and never
-    /// another vendor's wait.
+    /// A key the credential store would not read warns on every tile's card, in
+    /// the source-wide tint, and its reason is not also the tile's empty text.
+    #[test]
+    fn an_unreadable_key_warns_on_every_overview_card_once() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let mut state = UsageState::new();
+        state
+            .anthropic_api_mut()
+            .unreadable("keychain locked".into());
+        state.openai_api_mut().unconfigure();
+        for inputs in [
+            PlanInputs::OFF,
+            PlanInputs {
+                claude: true,
+                ..PlanInputs::OFF
+            },
+        ] {
+            let payload = crate::usage::ai_usage_view(&state, inputs, now);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            assert!(list(&source, "warnings")
+                .iter()
+                .any(|w| string(w, "text").contains("\u{26a0} anthropic-api: keychain locked")));
+            for scope in ["all", "anthropic", "openai", "item:codex-plan"] {
+                let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+                let view = tile_view(&t, &source);
+                assert_eq!(view["warnings"], source["warnings"], "{scope}");
+                let said = list(&view, "warnings")
+                    .iter()
+                    .map(|w| string(w, "text").matches("keychain locked").count())
+                    .sum::<usize>()
+                    + string(&view, "empty").matches("keychain locked").count();
+                assert_eq!(said, 1, "{scope}: the reason is said {said} times");
+            }
+        }
+    }
+
+    /// The overview tile's empty text is its Full view's message, narrowed to the
+    /// tile's own vendor: never another vendor's sentence and never another
+    /// vendor's wait. A key's failure is its warning, not the empty text.
     #[test]
     fn an_ai_usage_tiles_empty_text_is_its_own_vendors() {
         use crate::usage::UsageState;
@@ -4018,10 +4037,9 @@ mod tests {
             .unreadable("keychain locked".into());
         state.openai_api_mut().unconfigure();
         for scope in ["openai", "item:openai-api", "item:codex-plan"] {
-            let text = empty(&state, scope);
-            assert_eq!(text, openai_off, "{scope}");
+            assert_eq!(empty(&state, scope), openai_off, "{scope}");
         }
-        assert_eq!(empty(&state, "anthropic"), "keychain locked");
+        assert!(!empty(&state, "anthropic").contains("keychain locked"));
 
         // Anthropic's key unread, OpenAI's absent: OpenAI's tile is not waiting.
         let mut state = UsageState::new();
@@ -4039,7 +4057,7 @@ mod tests {
         state.anthropic_api_mut().unconfigure();
         state.openai_api_mut().unreadable("keychain locked".into());
         assert_eq!(empty(&state, "claude"), anthropic_off);
-        assert_eq!(empty(&state, "openai"), "keychain locked");
+        assert!(!empty(&state, "openai").contains("keychain locked"));
         // The whole tile keeps its own sentence.
         let mut state = UsageState::new();
         state.anthropic_api_mut().unconfigure();
