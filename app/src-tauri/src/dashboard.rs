@@ -263,6 +263,7 @@ fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
             ("claude", "Claude Code"),
             ("anthropic", "Anthropic"),
             ("openai", "OpenAI"),
+            ("copilot", "GitHub Copilot"),
         ]),
         _ => (),
     }
@@ -293,11 +294,13 @@ fn tint(v: &Value) -> Value {
 pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
 
 /// The AI Usage rows, in body order.
-pub(crate) const AI_ROW_IDS: [&str; 5] = [
+pub(crate) const AI_ROW_IDS: [&str; 7] = [
     crate::plan_usage::CLAUDE_ID,
     crate::plan_usage::CODEX_ID,
     crate::usage::ANTHROPIC_API_ID,
     crate::usage::OPENAI_API_ID,
+    crate::usage::COPILOT_ORG_ID,
+    crate::usage::COPILOT_PERSONAL_ID,
     CLAUDE_TODAY_ID,
 ];
 
@@ -318,6 +321,7 @@ pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
         "claude" => vec![CLAUDE_TODAY_ID],
         "anthropic" => vendor("anthropic"),
         "openai" => vendor("openai"),
+        "copilot" => vendor("copilot"),
         other => match other.strip_prefix("item:") {
             Some(id) => AI_ROW_IDS.into_iter().filter(|row| *row == id).collect(),
             None => AI_ROW_IDS.to_vec(),
@@ -325,17 +329,18 @@ pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
     }
 }
 
-/// The vendor scope (`anthropic` or `openai`) an AI Usage row answers to, beside
-/// the block scopes `plans` and `claude`. The ids are the payload's
-/// (`plan_usage::CLAUDE_ID`, `usage::ANTHROPIC_API_ID` and their OpenAI
-/// counterparts); a row id this does not know (a saved `item:` for a source no
-/// longer there) belongs to no vendor.
+/// The vendor scope (`anthropic`, `openai` or `copilot`) an AI Usage row answers
+/// to, beside the block scopes `plans` and `claude`. The ids are the payload's
+/// (`plan_usage::CLAUDE_ID`, `usage::ANTHROPIC_API_ID` and their OpenAI and
+/// Copilot counterparts); a row id this does not know (a saved `item:` for a
+/// source no longer there) belongs to no vendor.
 pub(crate) fn vendor_of(row_id: &str) -> Option<&'static str> {
     use crate::plan_usage::{CLAUDE_ID, CODEX_ID};
-    use crate::usage::{ANTHROPIC_API_ID, OPENAI_API_ID};
+    use crate::usage::{ANTHROPIC_API_ID, COPILOT_ORG_ID, COPILOT_PERSONAL_ID, OPENAI_API_ID};
     match row_id {
         CLAUDE_ID | ANTHROPIC_API_ID | CLAUDE_TODAY_ID => Some("anthropic"),
         CODEX_ID | OPENAI_API_ID => Some("openai"),
+        COPILOT_ORG_ID | COPILOT_PERSONAL_ID => Some("copilot"),
         _ => None,
     }
 }
@@ -672,6 +677,29 @@ fn api_rows(p: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// One row per Copilot half that is set up, in the payload's order (the
+/// organization, then the person). Only its vendor scope: `all` shows it, `item:`
+/// picks it. **Never an attention row**: Copilot has no figure to be red about,
+/// so it cannot raise the red chip, and a failed or stale read is a warning
+/// line, which lights the amber one.
+fn copilot_rows(p: &Value) -> Vec<Value> {
+    list(p, "copilot")
+        .iter()
+        .map(|half| {
+            let mut r = row(
+                string(half, "id"),
+                string(half, "label"),
+                string(half, "value"),
+                tint(&half["valueColor"]),
+                false,
+            );
+            r["detail"] = json!(string(half, "note"));
+            add_vendor_scope(&mut r);
+            r
+        })
+        .collect()
+}
+
 /// Adds the row's vendor scope, when its id has one.
 fn add_vendor_scope(r: &mut Value) {
     if let Some(vendor) = vendor_of(string(r, "id")) {
@@ -913,6 +941,7 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
             // the figure an operator acts on. API spend follows.
             let mut rows = plan_rows(p);
             rows.extend(api_rows(p));
+            rows.extend(copilot_rows(p));
             // This machine's rollups are one line on the tile; the panel
             // keeps the 5-hour and 7-day counts and the projects under its
             // "This machine" heading. The figure is the bare `claudeToday`:
@@ -1162,7 +1191,9 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "services" => "Connected providers and custom status pages",
         "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
-        "aiUsage" => "Claude and Codex plan limits, API spend and Claude Code logs",
+        "aiUsage" => {
+            "Claude and Codex plan limits, API spend, GitHub Copilot credits and Claude Code logs"
+        }
         "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",
         "actionsBilling" => "Hosted Actions minutes, spend and budget for your GitHub organization",
@@ -4070,6 +4101,54 @@ mod tests {
         }
     }
 
+    /// Copilot rows are never attention rows, so they cannot raise the red chip;
+    /// a Copilot `⚠` line shows on every AI Usage card whatever its scope, labelled
+    /// with its row id, and lights the amber chip like any warning.
+    #[test]
+    fn a_copilot_warning_shows_on_every_ai_card_and_lights_only_the_amber_chip() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        state.copilot_personal_mut().login = "example-user".into();
+        state
+            .copilot_personal_mut()
+            .read
+            .failed("GitHub rejected the credential".into());
+        let payload = crate::usage::ai_usage_view(&state, PlanInputs::OFF, now);
+        let source = source_view("aiUsage", "AI Usage", &payload);
+
+        let copilot: Vec<&Value> = list(&source, "rows")
+            .iter()
+            .filter(|r| string(r, "id").starts_with("copilot-"))
+            .collect();
+        assert_eq!(copilot.len(), 1, "the half that is set up is a row");
+        assert_eq!(copilot[0]["attention"], false);
+        assert_eq!(copilot[0]["scopes"], json!(["copilot"]));
+
+        assert!(list(&source, "warnings")
+            .iter()
+            .any(|w| string(w, "text").contains("\u{26a0} copilot-personal: GitHub rejected")));
+        for scope in ["all", "anthropic", "openai", "item:codex-plan", "copilot"] {
+            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+            let view = tile_view(&t, &source);
+            assert_eq!(view["warnings"], source["warnings"], "{scope}");
+        }
+
+        let mut layout = default_layout();
+        layout.tiles = vec![DashboardTile::new("t", "aiUsage", "AI Usage", "anthropic")];
+        let overview = view(&layout, &[payload]);
+        let chip = list(&overview, "attention")
+            .iter()
+            .find(|c| c["source"] == "aiUsage")
+            .cloned()
+            .expect("a Copilot warning lights a chip");
+        assert_eq!(chip["color"], color::hex(color::AMBER));
+        assert_eq!(chip["label"], "AI Usage \u{b7} check readings");
+    }
+
     /// The overview tile's empty text is its Full view's message, narrowed to the
     /// tile's own vendor: never another vendor's sentence and never another
     /// vendor's wait. A key's failure is its warning, not the empty text.
@@ -4119,6 +4198,7 @@ mod tests {
         let mut state = UsageState::new();
         state.anthropic_api_mut().unconfigure();
         state.openai_api_mut().unconfigure();
+        state.copilot_personal_mut().unconfigure();
         assert_eq!(empty(&state, "all"), crate::settings::none_added_message());
     }
 
@@ -4205,6 +4285,18 @@ mod tests {
         };
         assert_eq!(empty(&state, claude_on, "item:codex-plan"), o);
         assert_eq!(empty(&state, claude_on, "item:openai-api"), o);
+        // Copilot's own sentence, once its token has been read and is absent;
+        // until then its tile waits and no other vendor's does.
+        assert_eq!(
+            empty(&state, none, "copilot"),
+            "Waiting for the first reading\u{2026}"
+        );
+        assert_eq!(empty(&state, none, "item:claude-plan"), a);
+        state.copilot_personal_mut().unconfigure();
+        let c = off(crate::settings::COPILOT_TITLE);
+        assert_eq!(empty(&state, none, "copilot"), c);
+        assert_eq!(empty(&state, none, "item:copilot-personal"), c);
+        assert_eq!(empty(&state, none, "item:copilot-org"), c);
     }
 
     /// Every AI row carries its vendor's scope, and the fixed scopes the picker
@@ -4220,6 +4312,10 @@ mod tests {
             "apis": [
                 {"id": "anthropic-api", "label": "A", "value": "$1"},
                 {"id": "openai-api", "label": "O", "value": "$1"}
+            ],
+            "copilot": [
+                {"id": "copilot-org", "label": "C", "value": "$1"},
+                {"id": "copilot-personal", "label": "C", "value": "$1"}
             ],
         });
         let source = source_view("aiUsage", "AI Usage", &payload);
@@ -4240,6 +4336,8 @@ mod tests {
             ("codex-plan", &["plans", "openai"]),
             ("anthropic-api", &["anthropic"]),
             ("openai-api", &["openai"]),
+            ("copilot-org", &["copilot"]),
+            ("copilot-personal", &["copilot"]),
             ("claude-today", &["claude", "anthropic"]),
         ];
         assert_eq!(scopes.len(), want.len());

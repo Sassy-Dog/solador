@@ -390,8 +390,13 @@ pub struct PlanInputs {
     pub cadence_secs: u64,
     /// Whether this machine's Claude Code logs are read at all.
     pub claude_local_logs: bool,
-    /// `PanelInterval::UsageProviders`, what API spend's clock is dated against.
+    /// `PanelInterval::UsageProviders`, what API spend's and Copilot's clocks are
+    /// dated against.
     pub spend_cadence_secs: u64,
+    /// The Copilot source's organization half is on. Read at render time, so
+    /// unticking it hides the row on this frame; the half owns no key to go
+    /// missing.
+    pub copilot_org: bool,
 }
 
 impl PlanInputs {
@@ -402,6 +407,7 @@ impl PlanInputs {
         cadence_secs: 15 * 60,
         claude_local_logs: false,
         spend_cadence_secs: 60 * 60,
+        copilot_org: false,
     };
 
     #[must_use]

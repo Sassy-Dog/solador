@@ -325,32 +325,35 @@
   that provider back) and a generation counter, so a reading that lands after
   its toggle flipped is dropped rather than painted under the new setting. A
   provider that is off is never read and never woken.
-- **AI Usage is one tile over two sources.** The Anthropic and OpenAI sources
-  (Settings → Sources) each keep their own Admin key, because a source carries
-  one typed key (`store::source_save`), and both set `tile_source: "aiUsage"`, so
+- **AI Usage is one tile over three sources.** The Anthropic, OpenAI and GitHub
+  Copilot sources (Settings → Sources) each keep their own typed key (the first
+  two an Admin key, Copilot a personal token), because a source carries one typed
+  key (`store::source_save`), and all three set `tile_source: "aiUsage"`, so
   `with_source_tile` offers one AI Usage tile and never two. The tile is read by
   one command, `ai_usage` (fixture `sample-ai-usage.json`, dump flag
   `--dump-ai-usage`), whose payload is `usage::ai_usage_view`: `plans` (Claude's
   then Codex's `plan_usage::view` sections), `apis` (always a list: one
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found),
-  the rollups (`windows`, `projects`, `machineHeading`), `trailing`
+  `copilot` (always a list: a `Copilot · {login}` row per half that is set up,
+  with a `note` and `models`, and no meter), the rollups (`windows`, `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
   Claude Code row paints), `message`, `footer`, `freshness` and `loading`. The
-  row ids are `claude-plan`, `codex-plan`, `anthropic-api`, `openai-api` and
-  `claude-today`, unchanged from the two tiles this replaced, so saved `item:`
-  scopes keep working; `tile_scope::scope_ai_usage` narrows `plans` and `apis`
+  row ids are `claude-plan`, `codex-plan`, `anthropic-api`, `openai-api`,
+  `copilot-org`, `copilot-personal` and `claude-today` (the Anthropic and OpenAI
+  ones unchanged from the two tiles this replaced, so saved `item:` scopes keep
+  working); `tile_scope::scope_ai_usage` narrows `plans`, `apis` and `copilot`
   by id and drops the rollups block, `trailing` and `claudeToday` when
   `claude-today` is not kept. `scope_payload` ignores a kind it has no arm for,
   so that arm is what keeps a vendor-scoped tile from showing the other
   vendor's figures. **A scope picks figures only.** The payload's `footer`, the
-  merged all-rows `⚠` line (both plans, both API rows, `claude-today`, each
+  merged all-rows `⚠` line (both plans, both API rows, both Copilot rows, `claude-today`, each
   labelled with its row id, wording and colour as the `all` tile's), is on every
   AI Usage tile, and an overview card's `⚠` entry is the source's for every
   scope; the card's clock entry is the kept rows' clocks, the same line its Full
   view paints (`dashboard::tile_warnings`). A key the credential store would not read has no section, so
   `ai_usage_view` gives its row a `⚠ anthropic-api: <reason>` segment itself; a
   key merely unread warns of nothing. The payload also carries `lines` (always
-  the five row ids in body order, each `{id, on, warning, clock, loading,
+  the seven row ids in body order, each `{id, on, warning, clock, loading,
   undecided, unreadable}`: `on` is the part being set up; `warning` its `⚠`
   segment, merged into `footer`; `clock` its freshness segment; `undecided` and
   `unreadable` its own key's read) and `rollupsMessage`. A tile narrowed by any
@@ -364,12 +367,23 @@
   (`reading logs…`, the no-logs line) when the Claude Code logs are relevant and
   on but have no data yet (both are said even beside a kept plan with content),
   else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
-  `OpenAI isn’t set up — …` for each vendor with a relevant part off (every
-  relevant key read and absent; `plans` with both plan parts off names both, in
-  body order), else (4) none. A key's failure is said once, as its `⚠` line, never
-  also as a message. The overview's empty text (`ai_narrowed_source`, into
-  `empty_state`) comes from the same function as the Full view's `message`, so
-  the two cannot disagree; `all` and `attention` tiles are unchanged. A tile's Detail stays source-level, as every source's is: `fillDetails` paints the source's whole `warnings`, so `chip_target` may point at a narrowed tile whose own card shows nothing and its Detail says why.
+  `OpenAI isn’t set up — …` / `GitHub Copilot isn’t set up — …` for each vendor
+  with a relevant part off (every relevant key read and absent; `plans` with
+  both plan parts off names both, in body order), else (4) none. A key's failure
+  is said once, as its `⚠` line, never also as a message. The overview's empty
+  text (`ai_narrowed_source`, into `empty_state`) comes from the same function as
+  the Full view's `message`, so the two cannot disagree; `all` and `attention`
+  tiles are unchanged. A tile's Detail warnings stay source-level (its rows
+  follow the scope), as every source's are: `fillDetails` paints the source's
+  whole `warnings`, so `chip_target` may point at a narrowed tile whose own card
+  shows nothing and its Detail says why.
+  Copilot's two halves are `UsageState.copilot_{org,personal}`, each a
+  `CopilotState { login, read: ProviderState<CopilotUsage> }`: `note_login`
+  drops the figures when the login changes, the organization half is shown only
+  while `PlanInputs::copilot_org` (the flag, read at render time) is on, and the
+  personal half goes with its key (`unconfigure_spend`). Both are polled by
+  `poll_usage_providers` (`poll_copilot_org`, `poll_copilot_personal`), after the
+  two `poll_api_spend` calls.
   The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
   `nothing_added_message`): any key undecided is loading, else any key the
   credential store would not read gives no message (its `⚠` line says why),
@@ -393,7 +407,7 @@
   GitHub Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
   maps a panel to a list of sources), Service Health, AI Usage (three: the Claude
   rollups, the plan limits and the metered providers' cadence, which also reads
-  both vendors' API spend and is shared with Usage),
+  both vendors' API spend and Copilot's two halves, and is shared with Usage),
   Usage (the metered providers), Azure Cost, Actions billing and Sentry
   Crons — under **Poll cadence**, one control per cadence (a
   source carries a `cadences` list, so a tile fed by two polls shows both), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
@@ -519,6 +533,27 @@
   disagree on one name: its endpoint example and cookbook say a bucket's list is
   `results`, which the reader uses, and its published `UsageTimeBucket` schema
   says `result`.
+- **GitHub Copilot → organization and personal credits**: two halves, one
+  key. The **personal** half is a fine-grained PAT on the operator's own account
+  with the user permission Plan: read and nothing else
+  (`SecretKey::CopilotPersonalToken`, item `copilot_personal_token`; **that name
+  is permanent**), plus a username (`copilot_username`, a normal preference). The
+  **organization** half owns no credential: it reads the Actions billing token
+  (`actions_billing_token`) and organization fresh on every pass
+  (`poll_copilot_org`), and the source's `org` part carries a read-only
+  `Requires` precondition instead of a key, so ticking it is refused while
+  Actions billing is not set up or its token cannot be read, and unticking it
+  can never delete that token. Both go straight into
+  `copilotusage::CopilotUsageClient` (whose `Debug` redacts the token and whose
+  errors carry a kind and a status, never a URL, body or token) and appear in no
+  payload. `crates/copilotusage` is app-only (`scripts/agent-deps-guard.sh`).
+  The reads are `GET /organizations/{org}/settings/billing/{ai_credit,premium_request}/usage`
+  and the `/users/{username}/…` pair, `year` and `month`, with
+  `X-GitHub-Api-Version: 2026-03-10` (this crate only), month to date on
+  `PanelInterval::UsageProviders`. The reader was written from the documentation
+  and has not been run against a live token: the exact `product` and `sku`
+  strings are unconfirmed, so it does not branch on them (the endpoints are
+  already Copilot-only), and the manual smoke rows in `app/README.md` are owed.
 - **Repos / GitHub Runners → accounts**: one token **per account**, each its own
   credential-store item (`SecretKey::VendorToken`, keyed by the account's id). A
   GitHub account is added, changed and removed through the same save table as

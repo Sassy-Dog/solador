@@ -42,6 +42,7 @@ solador-usage = { path = "../../crates/usage" }
 solador-azurecost = { path = "../../crates/azurecost" }
 # The GitHub org billing reader behind the Actions billing tile; app-only.
 solador-actionsbilling = { path = "../../crates/actionsbilling" }
+solador-copilotusage = { path = "../../crates/copilotusage" }
 # The OpenClaw panel's gateway client: WS protocol v3, the Ed25519 device
 # identity, and the frame→snapshot reducer. Default features (`ws`) on, because
 # this crate is the one consumer that actually opens the socket.

@@ -1,0 +1,11 @@
+{
+  "timePeriod": {"year": 2026, "month": 11},
+  "organization": "example-org",
+  "usageItems": [
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-alpha", "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 500, "grossAmount": 5.0, "discountQuantity": 400, "discountAmount": 4.0, "netQuantity": 100, "netAmount": 1.0},
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-beta", "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 300, "grossAmount": 3.0, "discountQuantity": 300, "discountAmount": 3.0, "netQuantity": 0, "netAmount": 0.0},
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-gamma", "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 120, "grossAmount": 1.2, "discountQuantity": 0, "discountAmount": 0.0, "netQuantity": 120, "netAmount": 1.2},
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-delta", "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 80, "grossAmount": 0.8, "discountQuantity": 0, "discountAmount": 0.0, "netQuantity": 80, "netAmount": 0.8},
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-alpha", "unitType": "ai-credits", "pricePerUnit": 0.01, "grossQuantity": 100, "grossAmount": 1.0, "discountQuantity": 0, "discountAmount": 0.0, "netQuantity": 100, "netAmount": 1.0}
+  ]
+}

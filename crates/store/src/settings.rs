@@ -262,8 +262,8 @@ impl PanelInterval {
                     "every pass re-reads every session log under ~/.claude/projects, which grow with each conversation",
             },
             // `app/src-tauri/src/usage.rs`'s `PROVIDER_POLL_INTERVAL_SECS = 60 * 60`.
-            // Floor 300s: up to five vendor APIs (Neon, Sentry, Vercel and both
-            // vendors' cost APIs) on one pass,
+            // Floor 300s: up to seven vendor APIs (Neon, Sentry, Vercel, both
+            // vendors' cost APIs and Copilot's org and personal usage) on one pass,
             // each with a rate-limit budget. Consumption figures move on the
             // order of hours, so anything under 5 minutes spends quota to learn
             // nothing — the reasoning already written on that constant.
@@ -271,9 +271,9 @@ impl PanelInterval {
                 key: "usage_providers",
                 default_secs: 60 * 60,
                 floor_secs: 300,
-                label: "Metered usage — Neon, Sentry, Vercel, API spend",
+                label: "Metered usage — Neon, Sentry, Vercel, API spend, Copilot",
                 floor_reason:
-                    "up to five vendor APIs answer on one pass, each against a rate-limit budget, and consumption figures move on the order of hours",
+                    "up to seven vendor APIs answer on one pass (Copilot's two reads among them), each against a rate-limit budget, and consumption figures move on the order of hours",
             },
             // `crates/azurecost/src/lib.rs`'s `POLL_INTERVAL = 4 * 60 * 60`.
             // Floor 3600s, and this is the floor that exists to stop a spend
@@ -652,6 +652,16 @@ pub struct Settings {
     /// the GitHub account's.
     #[serde(default)]
     pub actions_billing_org: String,
+    /// The Copilot source's organization half is on: month-to-date AI credits
+    /// for [`Self::actions_billing_org`], read with the Actions billing token.
+    /// The half owns no credential of its own; the source refuses to turn it
+    /// on until Actions billing is set up (`source_save::Requires`).
+    #[serde(default)]
+    pub copilot_org_enabled: bool,
+    /// The username whose own Copilot plan the personal half reads (non-secret;
+    /// the token is a credential). Empty means unset.
+    #[serde(default)]
+    pub copilot_username: String,
     /// OpenClaw gateway URL (non-secret; the bearer token is a credential).
     pub openclaw_gateway_url: String,
     /// Fire an OS notification once when a tracked run transitions into the
@@ -865,6 +875,8 @@ impl Default for Settings {
             sentry_crons_enabled: false,
             vercel_team_id: String::new(),
             actions_billing_org: String::new(),
+            copilot_org_enabled: false,
+            copilot_username: String::new(),
             openclaw_gateway_url: String::new(),
             notify_on_approval_needed: true,
             notify_on_service_change: true,
@@ -969,6 +981,16 @@ mod tests {
         assert!(chosen.local_monitoring_enabled);
     }
 
+    /// Copilot is new, not one of the sources that used to be built in: a file
+    /// written before it reads as not added, even though the older sources it
+    /// sits beside read as on.
+    #[test]
+    fn a_store_file_without_the_copilot_keys_reads_as_not_added() {
+        let upgraded: Settings = serde_json::from_str("{}").expect("deserialize");
+        assert!(!upgraded.copilot_org_enabled);
+        assert!(upgraded.copilot_username.is_empty());
+    }
+
     /// A store file written before crash reporting existed — which is every
     /// store file in the wild — must read as opted **out**.
     ///
@@ -1069,6 +1091,8 @@ mod tests {
             sentry_crons_enabled: false,
             vercel_team_id: "team_fixture".into(),
             actions_billing_org: "org-fixture".into(),
+            copilot_org_enabled: true,
+            copilot_username: "user-fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             notify_on_approval_needed: false,
             notify_on_service_change: false,

@@ -2769,6 +2769,7 @@ fn stored_secrets(
         actions_billing: stored_key(SecretKey::ActionsBillingToken),
         anthropic_admin: stored_key(SecretKey::AnthropicAdminKey),
         openai_admin: stored_key(SecretKey::OpenAiAdminKey),
+        copilot_personal: stored_key(SecretKey::CopilotPersonalToken),
         openclaw: stored_key(SecretKey::OpenClawBearerToken),
         hosts: hosts
             .iter()
@@ -3547,6 +3548,119 @@ async fn poll_usage_providers(app: &Arc<App>) {
         },
     )
     .await;
+    poll_copilot_org(app).await;
+    poll_copilot_personal(app).await;
+}
+
+/// The message on the organization half's row when Actions billing, whose token
+/// and organization it reads, is not set up.
+const COPILOT_NEEDS_BILLING_MESSAGE: &str =
+    "Actions billing isn't set up \u{2014} Copilot's organization figures use its token and organization";
+
+/// Where a Copilot half sits in [`UsageState`].
+type CopilotSlot = fn(&mut UsageState) -> &mut usage::CopilotState;
+
+/// One Copilot read, for either half. The token lives for this call: it goes
+/// from the credential store to the request and is dropped.
+async fn read_copilot(
+    app: &Arc<App>,
+    slot: CopilotSlot,
+    token: &str,
+    billed: copilotusage::Billed<'_>,
+) {
+    // `new` returns `None` only for a blank token, which `Present` excludes.
+    let Some(client) = copilotusage::CopilotUsageClient::new(token) else {
+        return;
+    };
+    slot(&mut app.usage.lock().expect("usage state poisoned"))
+        .read
+        .begin();
+    let read = client.month_to_date(billed, github::now_utc()).await;
+    // The crate's errors are a kind and a status code, so this cannot carry the
+    // token, a URL or a body. Before the lock: `eprintln!` panics on a closed
+    // stderr.
+    if let Err(e) = &read.ai_credit {
+        eprintln!("Copilot usage: {}", e.user_message());
+    }
+    if let Err(e) = &read.premium_request {
+        eprintln!("Copilot premium requests: {}", e.user_message());
+    }
+    // Stamped as the read completes, so the footer's `last ok` is the last
+    // success and not the moment the pass began.
+    slot(&mut app.usage.lock().expect("usage state poisoned")).record(read, panel::now_unix());
+}
+
+/// Copilot's organization half: reads the **Actions billing** token and
+/// organization fresh each pass and keeps neither. A half that is not ticked
+/// says nothing; one that is, with Actions billing gone, reads an em dash and says so.
+async fn poll_copilot_org(app: &Arc<App>) {
+    let slot: CopilotSlot = UsageState::copilot_org_mut;
+    let (enabled, org) = {
+        let store = app.store.lock().expect("store poisoned");
+        let settings = store.settings();
+        (
+            settings.copilot_org_enabled,
+            settings.actions_billing_org.trim().to_owned(),
+        )
+    };
+    if !enabled {
+        slot(&mut app.usage.lock().expect("usage state poisoned")).unconfigure();
+        return;
+    }
+    let token = read_credential(&*app.credentials, SecretKey::ActionsBillingToken);
+    {
+        let mut state = app.usage.lock().expect("usage state poisoned");
+        let half = slot(&mut state);
+        half.note_enabled();
+        // Before the credential is acted on: another org's figures are never
+        // shown under this one.
+        half.note_login(&org);
+    }
+    match token {
+        Credential::Present(token) if !org.is_empty() => {
+            read_copilot(app, slot, &token, copilotusage::Billed::Org(&org)).await;
+        }
+        Credential::Present(_) | Credential::Absent => {
+            slot(&mut app.usage.lock().expect("usage state poisoned"))
+                .needs(COPILOT_NEEDS_BILLING_MESSAGE)
+        }
+        // A store that will not answer is not an absent token: the row keeps
+        // its figure and says why.
+        Credential::Unreadable => slot(&mut app.usage.lock().expect("usage state poisoned"))
+            .read
+            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+    }
+}
+
+/// Copilot's personal half: its own token, read fresh each pass. No key is no
+/// row; a key the credential store will not hand over is not "no key".
+async fn poll_copilot_personal(app: &Arc<App>) {
+    let slot: CopilotSlot = UsageState::copilot_personal_mut;
+    let username = app
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .copilot_username
+        .trim()
+        .to_owned();
+    match read_credential(&*app.credentials, SecretKey::CopilotPersonalToken) {
+        // A token with no username cannot be read for anyone: the save refuses
+        // that, so only a hand-edited store gets here, and it is not set up.
+        Credential::Absent => {
+            slot(&mut app.usage.lock().expect("usage state poisoned")).unconfigure()
+        }
+        Credential::Present(_) if username.is_empty() => {
+            slot(&mut app.usage.lock().expect("usage state poisoned")).unconfigure();
+        }
+        Credential::Unreadable => slot(&mut app.usage.lock().expect("usage state poisoned"))
+            .read
+            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+        Credential::Present(token) => {
+            slot(&mut app.usage.lock().expect("usage state poisoned")).note_login(&username);
+            read_copilot(app, slot, &token, copilotusage::Billed::User(&username)).await;
+        }
+    }
 }
 
 /// Walks Claude Code's log root, returning the summary and the shell's own
@@ -3687,13 +3801,14 @@ async fn usage_loop(app: Arc<App>) {
 /// The two plan opt-ins and their cadence, as the store holds them now.
 fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
     assert_store_not_held(store);
-    let (claude, codex, claude_local_logs) = {
+    let (claude, codex, claude_local_logs, copilot_org) = {
         let store = store.lock().expect("store poisoned");
         let settings = store.settings();
         (
             settings.claude_plan_usage_enabled,
             settings.codex_plan_usage_enabled,
             settings.claude_local_logs_enabled,
+            settings.copilot_org_enabled,
         )
     };
     plan_usage::PlanInputs {
@@ -3702,6 +3817,7 @@ fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
         cadence_secs: panel_interval(store, PanelInterval::PlanUsage).as_secs(),
         claude_local_logs,
         spend_cadence_secs: panel_interval(store, PanelInterval::UsageProviders).as_secs(),
+        copilot_org,
     }
 }
 
@@ -5059,11 +5175,16 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
     }
 
     fn unconfigure_spend(&self, spend: store::source_save::SpendFigure) {
-        let state: SpendState = match spend {
-            store::source_save::SpendFigure::Anthropic => UsageState::anthropic_api_mut,
-            store::source_save::SpendFigure::OpenAi => UsageState::openai_api_mut,
-        };
-        state(&mut self.0.usage.lock().expect("usage state poisoned")).unconfigure();
+        use store::source_save::SpendFigure;
+        let mut state = self.0.usage.lock().expect("usage state poisoned");
+        match spend {
+            SpendFigure::Anthropic => state.anthropic_api_mut().unconfigure(),
+            SpendFigure::OpenAi => state.openai_api_mut().unconfigure(),
+            // The organization half rides the Actions billing token, so it goes
+            // when that key does; the next pass then says why the row reads an em dash.
+            SpendFigure::CopilotOrg => state.copilot_org_mut().unconfigure(),
+            SpendFigure::CopilotPersonal => state.copilot_personal_mut().unconfigure(),
+        }
     }
 
     fn wake(&self, wake: store::source_save::SourceWake) {
@@ -5086,6 +5207,12 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
             // without this an operator who has just pasted a token waits to
             // find out whether it worked.
             SourceWake::ActionsBilling => self.0.actions_billing_wake.notify_one(),
+            // The same token also feeds Copilot's organization figures, which
+            // the metered loop reads.
+            SourceWake::ActionsBillingAndUsageProviders => {
+                self.0.actions_billing_wake.notify_one();
+                wake_usage(self.0, UsageWake::Providers);
+            }
             // Accounts are the GitHub pass's identities, so a save that does not
             // reach the loop leaves the panels fetching with the previous set
             // for a full GitHub cadence.
@@ -6923,6 +7050,7 @@ fn dump_settings() -> Value {
         actions_billing: settings::StoredKey::Absent,
         anthropic_admin: settings::StoredKey::Absent,
         openai_admin: settings::StoredKey::Absent,
+        copilot_personal: settings::StoredKey::Absent,
         openclaw: settings::StoredKey::Absent,
         hosts: [live.id].into_iter().collect(),
         account_keys: [(accounts[0].id, settings::StoredKey::Stored)]
@@ -9260,6 +9388,207 @@ mod tests {
         }
     }
 
+    // ---- GitHub Copilot ----
+
+    fn copilot_figure() -> usage::CopilotUsage {
+        usage::CopilotUsage {
+            credits: ::copilotusage::Usage {
+                used: Some(100.0),
+                included: Some(10.0),
+                billed_usd: Some(0.9),
+                top_models: vec![],
+            },
+            premium: None,
+        }
+    }
+
+    fn copilot_card(app: &App) -> Value {
+        usage::ai_usage_view(
+            &app.usage.lock().unwrap(),
+            plan_inputs(&app.store),
+            panel::now_unix(),
+        )
+    }
+
+    fn copilot_ids(card: &Value) -> Vec<String> {
+        card["copilot"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// The personal token goes, and its row goes with it on the same frame, not
+    /// when the next pass reaches it. The organization half is untouched: it owns
+    /// no key.
+    #[test]
+    fn removing_the_copilot_token_hides_its_row_on_the_same_frame() {
+        let (_dir, _rt, app) = test_app();
+        app.credentials
+            .set_secret(SecretKey::CopilotPersonalToken, "github_pat_x")
+            .unwrap();
+        {
+            app.store.lock().unwrap().settings_mut().copilot_username = "example-user".into();
+            let mut state = app.usage.lock().unwrap();
+            state.copilot_personal_mut().read.begin();
+            state
+                .copilot_personal_mut()
+                .read
+                .succeeded(copilot_figure(), panel::now_unix(), None);
+        }
+        assert_eq!(copilot_ids(&copilot_card(&app)), ["copilot-personal"]);
+
+        save_source_in(&app, "copilot", &parts(&[]), None, false).unwrap();
+
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::CopilotPersonalToken)
+                .unwrap(),
+            None
+        );
+        assert!(copilot_ids(&copilot_card(&app)).is_empty());
+    }
+
+    /// Removing Actions billing takes the organization figure with it on the same
+    /// frame, and the Copilot flag stays: the row then says why it has no figure.
+    #[test]
+    fn removing_actions_billing_hides_the_copilot_org_figure_on_the_same_frame() {
+        let (_dir, rt, app) = test_app();
+        let app = Arc::new(app);
+        let typed = vec![("org".to_owned(), "example-org".to_owned())];
+        save_source_with_in(
+            &app,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some("github_pat_billing_x"),
+            &typed,
+            false,
+        )
+        .unwrap();
+        save_source_in(&app, "copilot", &parts(&["org"]), None, false).unwrap();
+        {
+            let mut state = app.usage.lock().unwrap();
+            state.copilot_org_mut().note_login("example-org");
+            state.copilot_org_mut().read.begin();
+            state
+                .copilot_org_mut()
+                .read
+                .succeeded(copilot_figure(), panel::now_unix(), None);
+        }
+        assert_eq!(copilot_ids(&copilot_card(&app)), ["copilot-org"]);
+
+        save_source_in(&app, "actionsBilling", &parts(&[]), None, false).unwrap();
+        assert!(copilot_ids(&copilot_card(&app)).is_empty());
+        assert!(app.store.lock().unwrap().settings().copilot_org_enabled);
+
+        // The next pass says why, and the row reads a dash.
+        rt.block_on(poll_copilot_org(&app));
+        let card = copilot_card(&app);
+        assert_eq!(copilot_ids(&card), ["copilot-org"]);
+        assert_eq!(card["copilot"][0]["value"], "\u{2014}");
+        assert!(card["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("copilot-org: Actions billing isn't set up"));
+    }
+
+    /// The organization half never writes or deletes the billing token, and
+    /// unticking it hides its row on the same frame. No pass runs here: with a
+    /// token stored a pass would call GitHub, and no test does.
+    #[test]
+    fn unticking_copilot_org_hides_its_row_and_keeps_the_billing_token() {
+        let (_dir, _rt, app) = test_app();
+        let typed = vec![("org".to_owned(), "example-org".to_owned())];
+        save_source_with_in(
+            &app,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some("github_pat_billing_x"),
+            &typed,
+            false,
+        )
+        .unwrap();
+        save_source_in(&app, "copilot", &parts(&["org"]), None, false).unwrap();
+        {
+            let mut state = app.usage.lock().unwrap();
+            state.copilot_org_mut().note_login("example-org");
+            state.copilot_org_mut().read.begin();
+            state
+                .copilot_org_mut()
+                .read
+                .failed("GitHub is rate-limiting".into());
+        }
+        let card = copilot_card(&app);
+        assert_eq!(copilot_ids(&card), ["copilot-org"]);
+        assert!(card["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("copilot-org"));
+
+        save_source_in(&app, "copilot", &parts(&[]), None, false).unwrap();
+        assert_eq!(
+            app.credentials
+                .secret(SecretKey::ActionsBillingToken)
+                .unwrap()
+                .as_deref(),
+            Some("github_pat_billing_x")
+        );
+        let card = copilot_card(&app);
+        assert!(copilot_ids(&card).is_empty());
+        assert!(card["footer"].is_null());
+    }
+
+    /// Ticking the organization half without Actions billing is refused at
+    /// Finish, in Actions billing's words, and nothing is written.
+    #[test]
+    fn copilot_org_is_refused_while_actions_billing_is_not_set_up() {
+        let (_dir, _rt, app) = test_app();
+        let refusal = save_source_in(&app, "copilot", &parts(&["org"]), None, true).unwrap_err();
+        assert!(
+            refusal.starts_with("Set up Actions billing first"),
+            "{refusal}"
+        );
+        assert!(!app.store.lock().unwrap().settings().copilot_org_enabled);
+    }
+
+    /// A store that will not answer is not an absent token: the organization row
+    /// keeps what it has and warns under its own id.
+    #[test]
+    fn an_unreadable_billing_token_warns_under_copilot_org_and_is_not_absent() {
+        let (_dir, rt, app) = test_app_over(UnreadableCredentialStore);
+        let app = Arc::new(app);
+        app.store.lock().unwrap().settings_mut().copilot_org_enabled = true;
+        rt.block_on(poll_copilot_org(&app));
+        let card = copilot_card(&app);
+        assert!(card["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("copilot-org: {CREDENTIAL_UNREADABLE_MESSAGE}")));
+        assert!(card["message"].is_null());
+    }
+
+    /// A personal token with no stored value is not set up, and says nothing.
+    #[test]
+    fn the_personal_half_with_no_token_says_nothing() {
+        let (_dir, rt, app) = test_app();
+        let app = Arc::new(app);
+        rt.block_on(poll_copilot_personal(&app));
+        let card = copilot_card(&app);
+        assert!(copilot_ids(&card).is_empty());
+        assert!(card["footer"].is_null());
+        let line = card["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == "copilot-personal")
+            .unwrap();
+        assert_eq!(line["loading"], false, "the token was read and is absent");
+        assert_eq!(line["on"], false);
+    }
+
     /// A key the store refused is unsaved, and nothing else in the walk ran.
     #[test]
     fn a_key_the_store_refuses_answers_unsaved_and_changes_nothing_else() {
@@ -9463,6 +9792,8 @@ mod tests {
                     Some(std::future::ready(Ok(::usage::ApiSpendSummary::Unmeasured)))
                 }));
             }
+            // The pass reads Copilot's token too; this store never stored one.
+            rt.block_on(poll_copilot_personal(&app));
 
             // One tile holds both vendors, so what each vendor contributes to it
             // is checked per vendor, and its one setup sentence is checked once.

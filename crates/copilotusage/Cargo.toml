@@ -1,0 +1,30 @@
+[package]
+# Prefixed like `solador-actionsbilling`/`solador-usage` to stay clear of the
+# generic name on crates.io. The lib below keeps the short import name.
+name = "solador-copilotusage"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "copilotusage"
+
+[dependencies]
+# The stock message vocabulary (#354). A leaf crate with no dependencies of its
+# own, so this edge costs nothing.
+solador-fault = { path = "../fault" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Same HTTP stack (and TLS backend) as crates/actionsbilling, so the workspace
+# resolves one reqwest. No `json` feature: bodies are read as text and parsed
+# here, so a body that does not parse is classified, not a transport error.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Deliberately without `clock`: nothing here reads the wall clock, `now` is
+# always an argument.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Percent-encodes the login before it lands in a path segment (see `client.rs`).
+percent-encoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

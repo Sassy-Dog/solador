@@ -4370,6 +4370,7 @@ dependencies = [
  "solador-azurecost",
  "solador-buildversion",
  "solador-certpin",
+ "solador-copilotusage",
  "solador-crashreport",
  "solador-github",
  "solador-hostsetup",
@@ -4413,6 +4414,20 @@ version = "0.1.0"
 [[package]]
 name = "solador-certpin"
 version = "0.1.0"
+
+[[package]]
+name = "solador-copilotusage"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "solador-fault",
+ "tokio",
+ "wiremock",
+]
 
 [[package]]
 name = "solador-crashreport"

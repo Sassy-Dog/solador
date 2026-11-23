@@ -78,6 +78,11 @@ pub enum SecretKey {
     AnthropicAdminKey,
     /// OpenAI Admin API key, for the OpenAI source's API spend.
     OpenAiAdminKey,
+    /// Fine-grained GitHub PAT on the user's own account (user permission
+    /// Plan: read) behind the Copilot source's personal half. Its own item:
+    /// the org half reads [`SecretKey::ActionsBillingToken`] instead and never
+    /// writes it. **The account below is permanent once shipped.**
+    CopilotPersonalToken,
     /// Optional bearer token for the OpenClaw gateway.
     OpenClawBearerToken,
     /// The 32-byte Ed25519 seed behind this install's OpenClaw device identity.
@@ -108,6 +113,7 @@ impl SecretKey {
             SecretKey::ActionsBillingToken => "actions_billing_token".to_owned(),
             SecretKey::AnthropicAdminKey => "anthropic_admin_key".to_owned(),
             SecretKey::OpenAiAdminKey => "openai_admin_key".to_owned(),
+            SecretKey::CopilotPersonalToken => "copilot_personal_token".to_owned(),
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
             SecretKey::OpenClawDeviceKey => "openclaw_device_key".to_owned(),
         }
@@ -140,6 +146,7 @@ impl SecretKey {
             | SecretKey::ActionsBillingToken
             | SecretKey::AnthropicAdminKey
             | SecretKey::OpenAiAdminKey
+            | SecretKey::CopilotPersonalToken
             | SecretKey::OpenClawBearerToken => true,
             SecretKey::OpenClawDeviceKey => false,
         }
@@ -167,6 +174,7 @@ impl SecretKey {
                 | SecretKey::ActionsBillingToken
                 | SecretKey::AnthropicAdminKey
                 | SecretKey::OpenAiAdminKey
+                | SecretKey::CopilotPersonalToken
                 | SecretKey::OpenClawBearerToken => true,
                 SecretKey::HostToken(_)
                 | SecretKey::VendorToken(_)
@@ -181,6 +189,7 @@ impl SecretKey {
             SecretKey::ActionsBillingToken,
             SecretKey::AnthropicAdminKey,
             SecretKey::OpenAiAdminKey,
+            SecretKey::CopilotPersonalToken,
             SecretKey::OpenClawBearerToken,
         ];
         debug_assert!(keys.iter().all(is_static));
@@ -827,6 +836,9 @@ mod tests {
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
             SecretKey::ActionsBillingToken,
+            SecretKey::AnthropicAdminKey,
+            SecretKey::OpenAiAdminKey,
+            SecretKey::CopilotPersonalToken,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
         ];
@@ -858,6 +870,9 @@ mod tests {
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
             SecretKey::ActionsBillingToken,
+            SecretKey::AnthropicAdminKey,
+            SecretKey::OpenAiAdminKey,
+            SecretKey::CopilotPersonalToken,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
         ];
@@ -895,6 +910,7 @@ mod tests {
         assert!(SecretKey::ActionsBillingToken.consolidatable());
         assert!(SecretKey::AnthropicAdminKey.consolidatable());
         assert!(SecretKey::OpenAiAdminKey.consolidatable());
+        assert!(SecretKey::CopilotPersonalToken.consolidatable());
         assert!(SecretKey::OpenClawBearerToken.consolidatable());
     }
 
@@ -912,6 +928,7 @@ mod tests {
                 "actions_billing_token",
                 "anthropic_admin_key",
                 "openai_admin_key",
+                "copilot_personal_token",
                 "openclaw_bearer_token",
             ]
         );

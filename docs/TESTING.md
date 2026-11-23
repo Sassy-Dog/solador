@@ -49,7 +49,7 @@
   negative control `scripts/shellcheck-pin-guard-test.sh` (stub binaries), the secrets guard and
   its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
   `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
-  does not resolve `crates/updatefeed`, `crates/agentrelease`, `crates/hostsetup`, `crates/subscription` or `crates/actionsbilling`, and `scripts/tauri-cli-pin-guard.sh`
+  does not resolve `crates/updatefeed`, `crates/agentrelease`, `crates/hostsetup`, `crates/subscription`, `crates/actionsbilling` or `crates/copilotusage`, and `scripts/tauri-cli-pin-guard.sh`
   (#485: `TAURI_CLI_VERSION` and `Cargo.lock`'s `tauri` must share major.minor,
   text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh`, and
   `scripts/claude-dir-guard.sh` (nothing named `.claude` is tracked except

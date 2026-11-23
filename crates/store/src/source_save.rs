@@ -48,6 +48,8 @@ pub const AZURE_TITLE: &str = "Azure Cost";
 pub const ACTIONS_BILLING_TITLE: &str = "Actions billing";
 /// A GitHub account: the repos it fetches and the organizations it watches.
 pub const GITHUB_TITLE: &str = "GitHub";
+/// GitHub Copilot's AI credits, for an organization and for a person.
+pub const COPILOT_TITLE: &str = "GitHub Copilot";
 
 /// A provider whose own sign-in a plan opt-in reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,11 @@ pub enum PlanProvider {
 pub enum SpendFigure {
     Anthropic,
     OpenAi,
+    /// The Copilot organization half's figure. It rides the Actions billing
+    /// token, so it goes with *that* key.
+    CopilotOrg,
+    /// The Copilot personal half's figure, which goes with its own key.
+    CopilotPersonal,
 }
 
 /// The poll loop a save wakes. Every save also wakes the status pages, since
@@ -82,6 +89,10 @@ pub enum SourceWake {
     /// The Actions billing loop, whose hourly rhythm would otherwise leave a
     /// newly saved token or organization unread until the next pass.
     ActionsBilling,
+    /// The Actions billing loop and the metered providers: the Actions billing
+    /// token is also the Copilot organization half's, which the metered loop
+    /// polls.
+    ActionsBillingAndUsageProviders,
     /// The GitHub pass, whose identities are the accounts, and the Service
     /// Health pass, which derives its watched set from them.
     Accounts,
@@ -116,6 +127,22 @@ pub struct PartKey {
     pub unreadable: &'static str,
     /// The in-memory figure that goes with the key when it is removed.
     pub spend: Option<SpendFigure>,
+}
+
+/// A credential a part *reads* and never writes: another source's key, which
+/// the part needs before it can be ticked (Copilot's organization half reads
+/// the Actions billing token). It is checked among the refusals, before
+/// anything is written, and a stored value is dropped at once.
+#[derive(Debug, Clone, Copy)]
+pub struct Requires {
+    pub key: SecretKey,
+    /// The non-secret setting that must go with the key (its organization).
+    pub setting: fn(&Settings) -> &str,
+    /// Refuses a ticked part whose key is absent, or whose setting is blank.
+    pub missing: &'static str,
+    /// Refuses a ticked part whose key cannot be read, because a store that
+    /// won't answer can't say whether it is there.
+    pub unreadable: &'static str,
 }
 
 /// Writes one typed, non-secret value into the settings. `Err` is the sentence
@@ -167,6 +194,8 @@ pub struct SourcePart {
     pub id: &'static str,
     pub key: Option<PartKey>,
     pub plan: Option<PlanProvider>,
+    /// A credential this part only reads. See [`Requires`].
+    pub requires: Option<Requires>,
     /// The flag this part sets: on when ticked, off when not.
     flag: Option<fn(&mut Settings) -> &mut bool>,
     pub inputs: &'static [SourceInput],
@@ -181,6 +210,7 @@ impl SourcePart {
             id,
             key: None,
             plan: None,
+            requires: None,
             flag: None,
             inputs: &[],
             tile_source: None,
@@ -346,7 +376,7 @@ fn account_orgs(
 /// budget). A source with no key at all is a source whose reads are signed
 /// elsewhere; Azure Cost's are by the `az` CLI session, so its parts hold inputs
 /// and nothing else.
-pub const SOURCES: [SourceSpec; 10] = [
+pub const SOURCES: [SourceSpec; 11] = [
     SourceSpec {
         kind: "anthropic",
         title: ANTHROPIC_TITLE,
@@ -390,6 +420,49 @@ pub const SOURCES: [SourceSpec; 10] = [
             SourcePart {
                 plan: Some(PlanProvider::Codex),
                 ..SourcePart::new("subscription")
+            },
+        ],
+        wake: SourceWake::UsageProviders,
+        rows: None,
+    },
+    SourceSpec {
+        kind: "copilot",
+        title: COPILOT_TITLE,
+        tile_source: "aiUsage",
+        parts: &[
+            // Reads the Actions billing token and organization; owns no key, so
+            // unticking it can never delete that token.
+            SourcePart {
+                flag: Some(|settings| &mut settings.copilot_org_enabled),
+                requires: Some(Requires {
+                    key: SecretKey::ActionsBillingToken,
+                    setting: |settings| settings.actions_billing_org.as_str(),
+                    missing: "Set up Actions billing first \u{2014} Copilot's organization \
+                        figures use its token and organization.",
+                    unreadable: "Couldn't read the credential store, so Actions billing's token \
+                        can't be checked. Nothing changed.",
+                }),
+                ..SourcePart::new("org")
+            },
+            SourcePart {
+                key: Some(PartKey {
+                    secret: KeyAt::Item(SecretKey::CopilotPersonalToken),
+                    missing: "Enter a fine-grained token.",
+                    unreadable: "Couldn't read the credential store, so a stored token can't be \
+                        removed. Nothing changed.",
+                    spend: Some(SpendFigure::CopilotPersonal),
+                }),
+                inputs: &[SourceInput {
+                    id: "username",
+                    number: false,
+                    advanced: false,
+                    required: Some("Enter the GitHub username whose Copilot plan to read."),
+                    apply: Apply::Setting(|settings, value| {
+                        value.clone_into(&mut settings.copilot_username);
+                        Ok(())
+                    }),
+                }],
+                ..SourcePart::new("personal")
             },
         ],
         wake: SourceWake::UsageProviders,
@@ -584,7 +657,7 @@ pub const SOURCES: [SourceSpec; 10] = [
                 missing: "Enter a billing token.",
                 unreadable: "Couldn't read the credential store, so a stored billing token \
                     can't be removed. Nothing changed.",
-                spend: None,
+                spend: Some(SpendFigure::CopilotOrg),
             }),
             inputs: &[SourceInput {
                 id: "org",
@@ -598,7 +671,7 @@ pub const SOURCES: [SourceSpec; 10] = [
             }],
             ..SourcePart::new("billing")
         }],
-        wake: SourceWake::ActionsBilling,
+        wake: SourceWake::ActionsBillingAndUsageProviders,
         rows: None,
     },
     SourceSpec {
@@ -969,6 +1042,23 @@ pub fn save_source_with(
             return Err(key.missing.to_owned());
         }
     }
+    // A part that reads another source's key needs it stored, readable and
+    // with its setting. Present is dropped at once: the value is never held.
+    for part in spec.parts.iter().filter(|part| wants(part.id)) {
+        let Some(requires) = part.requires else {
+            continue;
+        };
+        let blank = {
+            let store = env.store().lock().expect("store poisoned");
+            (requires.setting)(store.settings()).trim().is_empty()
+        };
+        match read_credential(env.credentials(), requires.key) {
+            Credential::Unreadable => return Err(requires.unreadable.to_owned()),
+            Credential::Absent => return Err(requires.missing.to_owned()),
+            Credential::Present(_) if blank => return Err(requires.missing.to_owned()),
+            Credential::Present(_) => {}
+        }
+    }
     // Unticked means delete, and a store that won't answer can't say whether
     // there is anything to delete. "Removed" would be a guess.
     for (key, _, credential, _, ticked) in &keyed {
@@ -1320,6 +1410,7 @@ mod tests {
             [
                 "anthropic",
                 "openai",
+                "copilot",
                 "local",
                 "services",
                 "neon",
@@ -2208,7 +2299,10 @@ mod tests {
             .iter()
             .any(|tile| tile.source == "actionsBilling"));
         drop(store);
-        assert_eq!(*env.woken.borrow(), [SourceWake::ActionsBilling]);
+        assert_eq!(
+            *env.woken.borrow(),
+            [SourceWake::ActionsBillingAndUsageProviders]
+        );
     }
 
     #[test]
@@ -2284,7 +2378,7 @@ mod tests {
     }
 
     #[test]
-    fn only_azure_actions_billing_and_a_github_name_require_an_input() {
+    fn only_azure_actions_billing_copilot_and_a_github_name_require_an_input() {
         for spec in &SOURCES {
             let required: Vec<_> = spec
                 .parts
@@ -2297,6 +2391,8 @@ mod tests {
                 assert_eq!(required, ["account", "container", "budgetUsd"]);
             } else if spec.kind == "actionsBilling" {
                 assert_eq!(required, ["org"]);
+            } else if spec.kind == "copilot" {
+                assert_eq!(required, ["username"]);
             } else if spec.kind == "account" {
                 assert_eq!(required, ["name"]);
             } else {
@@ -2305,6 +2401,192 @@ mod tests {
         }
     }
 
+    // ---- GitHub Copilot ----
+
+    const NEEDS_BILLING: &str = "Set up Actions billing first \u{2014} Copilot's organization \
+        figures use its token and organization.";
+
+    fn set_up_actions_billing(env: &Fake) {
+        save_source_with(
+            env,
+            "actionsBilling",
+            None,
+            &parts(&["billing"]),
+            Some("billing_secret"),
+            &typed(&[("org", "acme")]),
+            false,
+        )
+        .unwrap();
+        env.woken.borrow_mut().clear();
+        env.credentials.written.borrow_mut().clear();
+    }
+
+    fn billing_token(env: &Fake) -> Option<String> {
+        env.credentials
+            .secret(SecretKey::ActionsBillingToken)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_copilot_source_types_one_key_and_never_touches_the_billing_token() {
+        let keyed: Vec<_> = SOURCES
+            .iter()
+            .find(|spec| spec.kind == "copilot")
+            .unwrap()
+            .parts
+            .iter()
+            .filter_map(|part| part.key)
+            .collect();
+        assert_eq!(keyed.len(), 1, "the personal part is the only keyed one");
+        assert!(matches!(
+            keyed[0].secret,
+            KeyAt::Item(SecretKey::CopilotPersonalToken)
+        ));
+
+        let env = Fake::new();
+        set_up_actions_billing(&env);
+        save_source_with(
+            &env,
+            "copilot",
+            None,
+            &parts(&["org", "personal"]),
+            Some(" copilot_secret "),
+            &typed(&[("username", " example-user ")]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            *env.credentials.written.borrow(),
+            [SecretKey::CopilotPersonalToken],
+            "only the personal token is written"
+        );
+        assert_eq!(billing_token(&env).as_deref(), Some("billing_secret"));
+        let store = env.store.lock().unwrap();
+        assert!(store.settings().copilot_org_enabled);
+        assert_eq!(store.settings().copilot_username, "example-user");
+        assert_eq!(store.settings().actions_billing_org, "acme");
+        assert!(store
+            .dashboard()
+            .unwrap()
+            .tiles
+            .iter()
+            .any(|tile| tile.source == "aiUsage"));
+        drop(store);
+        assert_eq!(*env.woken.borrow(), [SourceWake::UsageProviders]);
+    }
+
+    #[test]
+    fn ticking_org_without_actions_billing_is_refused_and_writes_nothing() {
+        let env = Fake::new();
+        let refusal =
+            save_source_with(&env, "copilot", None, &parts(&["org"]), None, &[], true).unwrap_err();
+        assert_eq!(refusal, NEEDS_BILLING);
+        let store = env.store.lock().unwrap();
+        assert!(!store.settings().copilot_org_enabled);
+        assert!(store.dashboard().is_none());
+        drop(store);
+        assert!(env.credentials.written.borrow().is_empty());
+        assert!(env.woken.borrow().is_empty());
+    }
+
+    #[test]
+    fn ticking_org_with_a_token_but_no_organization_is_refused() {
+        let env = Fake::new();
+        env.credentials
+            .set_secret(SecretKey::ActionsBillingToken, "billing_secret")
+            .unwrap();
+        let refusal = save_source_with(&env, "copilot", None, &parts(&["org"]), None, &[], false)
+            .unwrap_err();
+        assert_eq!(refusal, NEEDS_BILLING);
+    }
+
+    #[test]
+    fn an_unreadable_billing_token_refuses_org_in_its_own_words() {
+        let env = Fake::new();
+        set_up_actions_billing(&env);
+        env.credentials.fail_read.set(true);
+        let refusal = save_source_with(&env, "copilot", None, &parts(&["org"]), None, &[], false)
+            .unwrap_err();
+        assert!(refusal.contains("Actions billing's token can't be checked"));
+        assert_ne!(refusal, NEEDS_BILLING);
+        env.credentials.fail_read.set(false);
+        assert!(!env.store.lock().unwrap().settings().copilot_org_enabled);
+    }
+
+    #[test]
+    fn the_personal_part_needs_its_username() {
+        let env = Fake::new();
+        let refusal = save_source_with(
+            &env,
+            "copilot",
+            None,
+            &parts(&["personal"]),
+            Some("copilot_secret"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            refusal,
+            "Enter the GitHub username whose Copilot plan to read."
+        );
+        assert!(env.credentials.written.borrow().is_empty());
+    }
+
+    #[test]
+    fn removing_copilot_keeps_the_actions_billing_token_and_org() {
+        let env = Fake::new();
+        set_up_actions_billing(&env);
+        save_source_with(
+            &env,
+            "copilot",
+            None,
+            &parts(&["org", "personal"]),
+            Some("copilot_secret"),
+            &typed(&[("username", "example-user")]),
+            false,
+        )
+        .unwrap();
+        let status = save_source(&env, "copilot", &parts(&[]), None, true).unwrap();
+        assert_eq!(status, "GitHub Copilot removed.");
+        assert_eq!(billing_token(&env).as_deref(), Some("billing_secret"));
+        assert_eq!(
+            env.credentials
+                .secret(SecretKey::CopilotPersonalToken)
+                .unwrap(),
+            None
+        );
+        let store = env.store.lock().unwrap();
+        assert!(!store.settings().copilot_org_enabled);
+        assert!(store.settings().copilot_username.is_empty());
+        assert_eq!(store.settings().actions_billing_org, "acme");
+        drop(store);
+        assert_eq!(*env.spend_dropped.borrow(), [SpendFigure::CopilotPersonal]);
+    }
+
+    #[test]
+    fn removing_actions_billing_drops_the_copilot_org_figure_on_the_same_frame() {
+        let env = Fake::new();
+        set_up_actions_billing(&env);
+        save_source(&env, "actionsBilling", &parts(&[]), None, true).unwrap();
+        assert_eq!(*env.spend_dropped.borrow(), [SpendFigure::CopilotOrg]);
+        assert_eq!(
+            *env.woken.borrow(),
+            [SourceWake::ActionsBillingAndUsageProviders]
+        );
+    }
+
+    #[test]
+    fn unticking_org_deletes_nothing_and_drops_no_figure() {
+        // `org` owns no key, so the key path drops no spend figure; the flag
+        // alone hides the row.
+        let env = Fake::new();
+        set_up_actions_billing(&env);
+        save_source(&env, "copilot", &parts(&["org"]), None, false).unwrap();
+        save_source(&env, "copilot", &parts(&[]), None, false).unwrap();
+        assert!(env.spend_dropped.borrow().is_empty());
+        assert_eq!(billing_token(&env).as_deref(), Some("billing_secret"));
+    }
     fn token_of(env: &Fake, id: Uuid) -> Option<String> {
         env.credentials.secret(SecretKey::VendorToken(id)).unwrap()
     }

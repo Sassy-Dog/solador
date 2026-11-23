@@ -1,0 +1,6 @@
+{
+  "usageItems": [
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-alpha", "grossQuantity": 50, "discountQuantity": 50, "netAmount": 0.0},
+    {"product": "copilot", "sku": "copilot_ai_credit", "model": "model-beta", "grossQuantity": 20, "netAmount": 0.2}
+  ]
+}

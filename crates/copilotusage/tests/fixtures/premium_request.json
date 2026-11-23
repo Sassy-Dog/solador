@@ -1,0 +1,5 @@
+{
+  "usageItems": [
+    {"product": "copilot", "sku": "copilot_premium_request", "model": "model-alpha", "unitType": "requests", "pricePerUnit": 0.04, "grossQuantity": 40, "grossAmount": 1.6, "discountQuantity": 30, "discountAmount": 1.2, "netQuantity": 10, "netAmount": 0.4}
+  ]
+}

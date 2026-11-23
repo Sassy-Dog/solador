@@ -1,11 +1,11 @@
 // The AI Usage panel: each vendor's plan limits, drawn with the Machines tile's
-// meters (`meter.js`), each vendor's API spend, and this machine's Claude Code
-// token rollups. Same discipline as every other panel here: each string, colour
+// meters (`meter.js`), each vendor's API spend, GitHub Copilot's AI credits, and
+// this machine's Claude Code token rollups. Same discipline as every other panel here: each string, colour
 // and figure arrives from Rust (`usage::ai_usage_view`), and this file does
 // layout, wiring, and nothing else.
 //
-// One panel, one command, one timer and one `loading`: the Anthropic and OpenAI
-// sources both feed it, and a part that is not set up contributes nothing.
+// One panel, one command, one timer and one `loading`: the Anthropic, OpenAI and
+// GitHub Copilot sources all feed it, and a part that is not set up contributes nothing.
 //
 // Nothing below uses `innerHTML`. Project names come from directory paths on
 // this machine and a webview parses markup, so rows are built with createElement
@@ -134,12 +134,31 @@ function apiNode(api) {
   return el;
 }
 
-/** What the vendors cost: the plans, then the API spend, whichever are set up.
- *  A part that is not set up says nothing. */
+/**
+ * One GitHub Copilot half (the organization's, or the person's): its billed
+ * figure under Rust's label (`Copilot · login`), the note of what was used and
+ * included, and the top models, each a dot-and-name line with its credits. No
+ * meter: the API reports no pool for one to be a share of. Every string is
+ * Rust's, and an unmeasured figure arrives as the em dash.
+ */
+function copilotNode(half) {
+  const el = node("div", "pv-section");
+  el.dataset.section = "copilot";
+  el.dataset.copilot = half.id;
+  el.appendChild(node("hr", "pv-divider"));
+  el.appendChild(valueRow(half));
+  if (half.note) el.appendChild(node("div", "pv-note", half.note));
+  for (const model of half.models || []) el.appendChild(itemRow(model));
+  return el;
+}
+
+/** What the vendors cost: the plans, then the API spend, then Copilot, whichever
+ *  are set up. A part that is not set up says nothing. */
 function plansNode(payload) {
   const el = node("div", "ai-plans");
   for (const plan of payload.plans || []) el.appendChild(planNode(plan));
   for (const api of payload.apis || []) el.appendChild(apiNode(api));
+  for (const half of payload.copilot || []) el.appendChild(copilotNode(half));
   return el.childElementCount ? el : null;
 }
 

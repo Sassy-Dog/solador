@@ -102,8 +102,8 @@ per-host daemon, `scripts/` the build and guard shell scripts behind `./dev`,
 `tests/frontend` the Playwright suite, `site/` solador.app, `docs/` the
 long-form docs. **Dependency edges that must not exist:** `agent/` never
 resolves `crates/updatefeed`, `crates/agentrelease`, `crates/hostsetup`,
-`crates/subscription`, `crates/actionsbilling`, `crates/crashreport` (asserted by
-`scripts/agent-deps-guard.sh`). The per-crate descriptions are in
+`crates/subscription`, `crates/actionsbilling`, `crates/copilotusage`,
+`crates/crashreport` (asserted by `scripts/agent-deps-guard.sh`). The per-crate descriptions are in
 `docs/PROJECT-STRUCTURE.md`. `.claude/` is untracked except
 `.claude/sassy-dog/<name>.md` (see Security).
 
@@ -152,9 +152,13 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   Full view of Solador itself (#647).
 - **Every source is added; none is built in.** A fresh store has none, and a
   store written before the switches keeps what it had
-  (`on_before_sources_were_added`). Anthropic and OpenAI are two sources that
-  both feed the one AI Usage tile (`aiUsage`); each is added when any part
-  is on, which is derived, never stored. A part not set up says nothing.
+  (`on_before_sources_were_added`). Anthropic, OpenAI and GitHub Copilot are
+  three sources that all feed the one AI Usage tile (`aiUsage`); each is added
+  when any part is on (Copilot: its organization flag, or its personal key
+  stored), which is derived, never stored. A part not set up says nothing.
+  Copilot's organization half owns no key: it reads the Actions billing token
+  and organization, and its part is refused until those are set up
+  (`store::source_save::Requires`).
   `settings_save_source` applies a source's steps at Finish through
   `store::source_save`, and whatever can refuse runs before its first write.
   GitHub's steps are keyed by the account's row as well as by kind (`row`);
