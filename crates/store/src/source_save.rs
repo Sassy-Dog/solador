@@ -350,7 +350,7 @@ pub const SOURCES: [SourceSpec; 10] = [
     SourceSpec {
         kind: "anthropic",
         title: ANTHROPIC_TITLE,
-        tile_source: "anthropic",
+        tile_source: "aiUsage",
         parts: &[
             SourcePart {
                 key: Some(PartKey {
@@ -376,7 +376,7 @@ pub const SOURCES: [SourceSpec; 10] = [
     SourceSpec {
         kind: "openai",
         title: OPENAI_TITLE,
-        tile_source: "openai",
+        tile_source: "aiUsage",
         parts: &[
             SourcePart {
                 key: Some(PartKey {
@@ -1356,7 +1356,7 @@ mod tests {
             .unwrap()
             .tiles
             .iter()
-            .any(|tile| tile.source == "anthropic"));
+            .any(|tile| tile.source == "aiUsage"));
         drop(store);
         assert_eq!(*env.woken.borrow(), [SourceWake::UsageEverything]);
     }

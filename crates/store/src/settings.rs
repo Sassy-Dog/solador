@@ -108,7 +108,7 @@ pub enum PanelInterval {
     GitHub,
     /// The Services tile's third-party status pages.
     Services,
-    /// The Anthropic panel's Claude token rollups: a local walk of `~/.claude/projects`.
+    /// The AI Usage panel's Claude token rollups: a local walk of `~/.claude/projects`.
     ClaudeRollups,
     /// The metered providers: Neon, Sentry, Vercel and API spend.
     UsageProviders,
@@ -118,7 +118,7 @@ pub enum PanelInterval {
     ActionsBilling,
     /// The Sentry Crons panel.
     Crons,
-    /// The Anthropic and OpenAI panels' plan windows (`crates/subscription`).
+    /// The AI Usage panel's plan windows (`crates/subscription`).
     PlanUsage,
 }
 
@@ -257,7 +257,7 @@ impl PanelInterval {
                 key: "claude_rollups",
                 default_secs: DEFAULT_REFRESH_INTERVAL_SECS,
                 floor_secs: 30,
-                label: "Anthropic \u{2014} Claude token rollups",
+                label: "Claude Code \u{2014} token rollups",
                 floor_reason:
                     "every pass re-reads every session log under ~/.claude/projects, which grow with each conversation",
             },
@@ -331,7 +331,7 @@ impl PanelInterval {
                 key: "plan_usage",
                 default_secs: 15 * 60,
                 floor_secs: 300,
-                label: "Anthropic and OpenAI — plan limits",
+                label: "Claude and Codex — plan limits",
                 floor_reason:
                     "both plan endpoints are private and answer polling with rate limits, and a plan window moves over hours",
             },

@@ -9,8 +9,8 @@
 //! Rust's sentences; the webview paints them and decides nothing.
 //!
 //! A source carries a **list** of them, `cadences`, because one tile can be fed
-//! by more than one poll: the Anthropic tile shows local rollups, API spend and
-//! the plan's limit windows, which are separate reads with separate floors.
+//! by more than one poll: the AI Usage tile shows local rollups, API spend and
+//! the plans' limit windows, which are separate reads with separate floors.
 //! Folding them into one number would make one read's floor the other's.
 //!
 //! There is deliberately no control for the 1 Hz host poll or the 10s
@@ -27,19 +27,20 @@ use store::settings::{interval_label, PanelInterval, Settings};
 /// A list, because one poll can fill several kinds of tile: `github_loop`'s one
 /// pass is both the Repos tile and the GitHub Runners tile, one plan poll reads
 /// both Claude's and Codex's, and the metered pass also reads both vendors' API
-/// spend, so each group shares one cadence and each tile shows the same control
-/// with the same value.
+/// spend, which the AI Usage tile shows beside the Usage tile's own figures, so
+/// each group shares one cadence and each tile shows the same control with the
+/// same value.
 pub fn source_ids(panel: PanelInterval) -> &'static [&'static str] {
     match panel {
         PanelInterval::Containers => &["containers"],
         PanelInterval::GitHub => &["ghWorkflows", "ghRunners"],
         PanelInterval::Services => &["services"],
-        PanelInterval::ClaudeRollups => &["anthropic"],
-        PanelInterval::UsageProviders => &["usage", "anthropic", "openai"],
+        PanelInterval::ClaudeRollups => &["aiUsage"],
+        PanelInterval::UsageProviders => &["usage", "aiUsage"],
         PanelInterval::AzureCost => &["azureCost"],
         PanelInterval::ActionsBilling => &["actionsBilling"],
         PanelInterval::Crons => &["sentryCrons"],
-        PanelInterval::PlanUsage => &["anthropic", "openai"],
+        PanelInterval::PlanUsage => &["aiUsage"],
     }
 }
 
@@ -185,31 +186,43 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            ids("anthropic"),
+            ids("aiUsage"),
             ["claude_rollups", "usage_providers", "plan_usage"]
         );
-        assert_eq!(ids("openai"), ["usage_providers", "plan_usage"]);
         assert_eq!(ids("usage"), ["usage_providers"]);
     }
 
-    /// One poll reads both plans, so the Anthropic and OpenAI tiles share one
-    /// key and each names both tiles it moves.
+    /// One poll reads both plans, so the AI Usage tile carries one plan key and
+    /// names itself as the tile it moves. The metered pass is shared with the
+    /// Usage tile, and says so.
     #[test]
-    fn the_plan_cadence_is_one_key_on_both_ai_tiles() {
+    fn the_plan_cadence_is_one_key_on_the_ai_usage_tile() {
         let mut settings = Settings::default();
         settings.set_panel_interval_secs(PanelInterval::PlanUsage, 600);
         let mut all = payloads();
         attach(&mut all, &settings);
-        let section = |source: &str| {
+        let section = |source: &str, key: &str| {
             all.iter().find(|p| p["id"] == source).unwrap()["cadences"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|c| c["id"] == "plan_usage")
+                .find(|c| c["id"] == key)
                 .unwrap()
                 .clone()
         };
-        assert_eq!(section("anthropic"), section("openai"));
+        let plan = section("aiUsage", "plan_usage");
+        assert_eq!(plan["value"], 600);
+        assert!(plan["shared"]
+            .as_str()
+            .unwrap()
+            .contains("applies to every AI Usage tile and"));
+        // The metered pass moves the Usage tile and the AI Usage tile alike.
+        let metered = section("aiUsage", "usage_providers");
+        assert_eq!(metered, section("usage", "usage_providers"));
+        assert!(metered["shared"]
+            .as_str()
+            .unwrap()
+            .contains("every Usage tile and every AI Usage tile"));
     }
 
     /// One GitHub poll fills Repos and Runners, so both tiles carry the very

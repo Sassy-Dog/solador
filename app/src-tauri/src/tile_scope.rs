@@ -6,7 +6,8 @@
 //! gives that row. Only the rows are filtered. Every other key (`trailing`,
 //! `stats`, `chips`, `footer`, `freshness`, `message`, `health`, section header
 //! counts) is the source-wide total the scope note refers to and is left as is.
-//! The exceptions: Anthropic's `message`, which speaks for the rollups, and the
+//! The exceptions: AI Usage's `message` and `trailing`, which speak for the
+//! rollups, and the
 //! Repos owner groups (`owners`, `cardOrder`), rebuilt from the kept rows so
 //! each owner's header counts exactly the repos under it.
 //!
@@ -18,7 +19,6 @@
 //! exactly as it was.
 
 use crate::dashboard::{scoped_empty, scoped_row_ids, CLAUDE_TODAY_ID};
-use crate::usage::{ANTHROPIC_API_ID, OPENAI_API_ID};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use store::{DashboardLayout, DashboardTile};
@@ -77,8 +77,7 @@ pub(crate) fn scope_payload(tile: &DashboardTile, mut payload: Value) -> Value {
             retain_rows(&mut payload, |v| str_of(v, "id").to_owned(), &kept);
         }
         "containers" => scope_containers(&mut payload, &kept),
-        "anthropic" => scope_anthropic(&mut payload, &kept),
-        "openai" => scope_openai(&mut payload, &kept),
+        "aiUsage" => scope_ai_usage(&mut payload, &kept),
         "usage" => scope_groups(&mut payload, "providers", &kept),
         "azureCost" => scope_azure(&mut payload, &kept),
         "actionsBilling" => scope_actions_billing(&mut payload, &kept),
@@ -183,9 +182,13 @@ fn plan_id(plan: &Value) -> String {
     str_of(plan, "id").to_owned()
 }
 
-fn scope_anthropic(payload: &mut Value, kept: &BTreeSet<String>) {
+/// AI Usage keeps each plan and each API spend block by its row id, and the
+/// rollups by `claude-today`. The vendor scopes (`anthropic`, `openai`) and the
+/// block scopes (`plans`, `claude`) were already turned into ids by
+/// `source_rows`, so this never reads a scope.
+fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>) {
     retain_in(payload, "plans", plan_id, kept);
-    keep_api(payload, ANTHROPIC_API_ID, kept);
+    retain_in(payload, "apis", plan_id, kept);
     // The rollups, their projects and their heading are the `claude-today`
     // row's, kept or dropped together. Matched exactly: `claude-plan` also
     // starts with `claude-`, and a plans-only tile once kept the projects.
@@ -199,27 +202,25 @@ fn scope_anthropic(payload: &mut Value, kept: &BTreeSet<String>) {
         map.remove("projects");
         map.remove("machineHeading");
     }
+    // The header's Claude Code figure is the row's too: a tile that does not
+    // keep the row must not still name this machine's Claude usage.
+    clear_text(payload, "trailing");
+    clear_text(payload, "claudeToday");
     // `message` speaks for the rollups, which this tile left out. With nothing
     // else on the panel it stays, or a Full view that keeps no row is blank.
-    let shows_a_block =
-        array_mut(payload, "plans").is_some_and(|plans| !plans.is_empty()) || has_api(payload);
+    let shows_a_block = ["plans", "apis"]
+        .into_iter()
+        .any(|key| array_mut(payload, key).is_some_and(|rows| !rows.is_empty()));
     if shows_a_block {
         clear(payload, "message");
     }
 }
 
-fn scope_openai(payload: &mut Value, kept: &BTreeSet<String>) {
-    retain_in(payload, "plans", plan_id, kept);
-    keep_api(payload, OPENAI_API_ID, kept);
-}
-
-fn has_api(payload: &Value) -> bool {
-    !payload["api"].is_null()
-}
-
-fn keep_api(payload: &mut Value, id: &str, kept: &BTreeSet<String>) {
-    if !kept.contains(id) {
-        clear(payload, "api");
+/// Sets `container[key]` to `""` when the key is a string. Anything else, and
+/// an absent key, stays as it was (see the module note).
+fn clear_text(container: &mut Value, key: &str) {
+    if let Some(v) = field_mut(container, key).filter(|v| v.is_string()) {
+        *v = Value::String(String::new());
     }
 }
 
@@ -519,83 +520,180 @@ mod tests {
         assert_eq!(sections[0]["count"], 2);
     }
 
-    fn anthropic_payload() -> Value {
-        json!({"trailing":"1M","projects":[{"name":"p"}],
+    fn ai_usage_payload() -> Value {
+        json!({"trailing":"Claude Code · 1M today","claudeToday":"1M today",
+            "projects":[{"name":"p"}],
             "machineHeading":"THIS MACHINE",
-            "api":{"id":"anthropic-api","label":"API spend (MTD)","value":"$1.00"},
+            "apis":[
+                {"id":"anthropic-api","label":"Anthropic API spend (MTD)","value":"$1.00"},
+                {"id":"openai-api","label":"OpenAI API spend (MTD)","value":"$2.00"}],
             "windows":[{"label":"LAST 5H","value":"1"}],
-            "plans":[{"id":"claude-plan","label":"Claude · Ultra","value":"resets in 3d",
-                "metrics":[{"label":"Week","value":"10%","fraction":0.1}]}]})
+            "plans":[
+                {"id":"claude-plan","label":"Claude · Ultra","value":"resets in 3d",
+                    "metrics":[{"label":"Week","value":"10%","fraction":0.1}]},
+                {"id":"codex-plan","label":"Codex · Plus","value":"ok","metrics":[]}]})
+    }
+
+    /// The ids of a payload's plans and spend blocks, in order.
+    fn blocks(v: &Value) -> Vec<String> {
+        ["plans", "apis"]
+            .iter()
+            .flat_map(|key| v[*key].as_array().into_iter().flatten())
+            .map(|b| b["id"].as_str().unwrap().to_owned())
+            .collect()
     }
 
     /// The plan's real id, `claude-plan`, starts with `claude-`. Matching the
     /// rollups by that prefix once kept a plans-only tile's projects.
     #[test]
-    fn anthropic_plans_scope_drops_the_rollups() {
-        let p = anthropic_payload();
-        let out = scope_payload(&tile("anthropic", "plans"), p.clone());
+    fn plans_scope_keeps_both_plans_and_drops_the_rollups() {
+        let p = ai_usage_payload();
+        let out = scope_payload(&tile("aiUsage", "plans"), p.clone());
         assert_eq!(out["windows"], json!([]));
         assert!(out.get("projects").is_none());
         assert!(out.get("machineHeading").is_none());
         assert_eq!(out["plans"], p["plans"]);
-        let one = scope_payload(&tile("anthropic", "item:claude-plan"), p.clone());
-        assert_eq!(one["plans"], p["plans"]);
+        assert_eq!(out["apis"], json!([]));
+        let one = scope_payload(&tile("aiUsage", "item:claude-plan"), p.clone());
+        assert_eq!(blocks(&one), ["claude-plan"]);
         assert!(one.get("projects").is_none());
     }
 
     #[test]
-    fn anthropic_claude_scope_keeps_projects_and_drops_the_rest() {
-        let out = scope_payload(&tile("anthropic", "claude"), anthropic_payload());
+    fn claude_scope_keeps_projects_and_drops_the_rest() {
+        let out = scope_payload(&tile("aiUsage", "claude"), ai_usage_payload());
         assert_eq!(out["windows"].as_array().unwrap().len(), 1);
         assert_eq!(out["plans"], json!([]));
+        assert_eq!(out["apis"], json!([]));
         assert_eq!(out["projects"], json!([{"name":"p"}]));
         assert_eq!(out["machineHeading"], "THIS MACHINE");
-        assert!(out["api"].is_null());
+        // The row is kept, so the header still names Claude Code.
+        assert_eq!(out["trailing"], "Claude Code · 1M today");
+        assert_eq!(out["claudeToday"], "1M today");
     }
 
     #[test]
     fn one_api_row_keeps_its_block_and_nothing_else() {
-        let p = anthropic_payload();
-        let out = scope_payload(&tile("anthropic", "item:anthropic-api"), p.clone());
-        assert_eq!(out["api"], p["api"]);
+        let p = ai_usage_payload();
+        let out = scope_payload(&tile("aiUsage", "item:anthropic-api"), p.clone());
+        assert_eq!(out["apis"], json!([p["apis"][0].clone()]));
         assert_eq!(out["plans"], json!([]));
         assert_eq!(out["windows"], json!([]));
+        let out = scope_payload(&tile("aiUsage", "item:openai-api"), p.clone());
+        assert_eq!(out["apis"], json!([p["apis"][1].clone()]));
+    }
+
+    /// A vendor-scoped tile keeps only that vendor's blocks: its plan, its
+    /// spend, and for Anthropic the Claude Code rollups.
+    #[test]
+    fn a_vendor_scoped_tile_keeps_only_that_vendors_blocks() {
+        let p = ai_usage_payload();
+        let anthropic = scope_payload(&tile("aiUsage", "anthropic"), p.clone());
+        assert_eq!(blocks(&anthropic), ["claude-plan", "anthropic-api"]);
+        assert_eq!(anthropic["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(anthropic["projects"], json!([{"name":"p"}]));
+        assert_eq!(anthropic["trailing"], "Claude Code · 1M today");
+
+        let openai = scope_payload(&tile("aiUsage", "openai"), p.clone());
+        assert_eq!(blocks(&openai), ["codex-plan", "openai-api"]);
+        assert_eq!(openai["windows"], json!([]));
+        assert!(openai.get("projects").is_none());
+        assert!(openai.get("machineHeading").is_none());
+    }
+
+    /// A tile that does not keep `claude-today` must not still name this
+    /// machine's Claude usage in its header.
+    #[test]
+    fn a_tile_without_claude_today_drops_the_claude_header_figure() {
+        for scope in [
+            "plans",
+            "openai",
+            "item:claude-plan",
+            "item:anthropic-api",
+            "item:codex-plan",
+        ] {
+            let out = scope_payload(&tile("aiUsage", scope), ai_usage_payload());
+            assert_eq!(out["trailing"], "", "{scope}");
+            assert_eq!(out["claudeToday"], "", "{scope}");
+        }
+        for scope in ["claude", "anthropic", "item:claude-today"] {
+            let out = scope_payload(&tile("aiUsage", scope), ai_usage_payload());
+            assert_eq!(out["trailing"], "Claude Code · 1M today", "{scope}");
+        }
     }
 
     /// `message` speaks for the rollups, so a tile showing another block with
     /// the rollups scoped out drops it. A tile left with nothing keeps it, or
     /// its Full view would be blank.
     #[test]
-    fn an_anthropic_tile_keeps_the_rollups_line_only_when_it_has_nothing_else() {
-        let p = json!({"message":{"text":"no usage data"},"windows":[],"plans":[]});
+    fn an_ai_usage_tile_keeps_the_rollups_line_only_when_it_has_nothing_else() {
+        let p = json!({"message":{"text":"no usage data"},"windows":[],"plans":[],"apis":[]});
         for scope in ["claude", "item:claude-today"] {
-            let out = scope_payload(&tile("anthropic", scope), p.clone());
+            let out = scope_payload(&tile("aiUsage", scope), p.clone());
             assert_eq!(out["message"]["text"], "no usage data", "{scope}");
         }
         let with_plan = json!({"message":{"text":"no usage data"},"windows":[],
-            "plans":[{"id":"claude-plan","label":"Claude"}]});
-        let plans = scope_payload(&tile("anthropic", "plans"), with_plan);
+            "plans":[{"id":"claude-plan","label":"Claude"}],"apis":[]});
+        let plans = scope_payload(&tile("aiUsage", "plans"), with_plan);
         assert!(plans["message"].is_null());
+        // A spend block is a block too.
+        let with_spend = json!({"message":{"text":"no usage data"},"windows":[],
+            "plans":[],"apis":[{"id":"openai-api","label":"OpenAI"}]});
+        let spend = scope_payload(&tile("aiUsage", "openai"), with_spend);
+        assert!(spend["message"].is_null());
         // Clearing the line invents no key on a payload that has none.
-        let bare = scope_payload(&tile("anthropic", "plans"), json!({"plans": null}));
+        let bare = scope_payload(&tile("aiUsage", "plans"), json!({"plans": null}));
         assert!(bare.get("message").is_none());
     }
 
     /// One plan row picks its plan out of the payload, and leaves the source's
     /// own setup line where it is. A tile scoped to one provider row keeps that
-    /// row and its sibling goes.
+    /// row and its siblings go.
     #[test]
-    fn an_openai_tile_scopes_to_its_plan_row() {
-        let p = json!({"message":null,"plans":[{"id":"codex-plan","label":"Codex"}],
-            "api":{"id":"openai-api","label":"API spend (MTD)","value":"$1.00"}});
-        let out = scope_payload(&tile("openai", "item:codex-plan"), p.clone());
-        assert_eq!(out["plans"], p["plans"]);
-        assert!(out["api"].is_null());
-        let spend = scope_payload(&tile("openai", "item:openai-api"), p.clone());
-        assert_eq!(spend["plans"], json!([]));
-        assert_eq!(spend["api"], p["api"]);
-        let gone = scope_payload(&tile("openai", "item:gone"), p);
+    fn an_ai_usage_tile_scopes_to_the_codex_plan_row() {
+        let p = ai_usage_payload();
+        let out = scope_payload(&tile("aiUsage", "item:codex-plan"), p.clone());
+        assert_eq!(blocks(&out), ["codex-plan"]);
+        let gone = scope_payload(&tile("aiUsage", "item:gone"), p);
         assert_eq!(gone["plans"], json!([]));
+        assert_eq!(gone["apis"], json!([]));
+    }
+
+    /// `store` writes the AI Usage kind and title by literal, because it cannot
+    /// see this crate. They must be the ones `SOURCES` holds.
+    #[test]
+    fn the_store_spells_the_ai_usage_kind_and_title_as_sources_does() {
+        let mut data = store::StoreData {
+            dashboard: Some(DashboardLayout {
+                tiles: vec![
+                    DashboardTile {
+                        title: "Anthropic".into(),
+                        ..tile("anthropic", "all")
+                    },
+                    tile("claudeUsage", "all"),
+                ],
+                ..default_layout()
+            }),
+            ..store::StoreData::default()
+        };
+        data.split_usage_tiles();
+        data.merge_ai_tiles();
+        let ai: Vec<DashboardTile> = data
+            .dashboard
+            .expect("layout")
+            .tiles
+            .into_iter()
+            .filter(|t| t.source == "aiUsage")
+            .collect();
+        assert!(!ai.is_empty());
+        let (source, title) = crate::dashboard::SOURCES
+            .iter()
+            .find(|(id, _)| *id == "aiUsage")
+            .copied()
+            .expect("aiUsage is a source");
+        for tile in ai {
+            assert_eq!((tile.source.as_str(), tile.title.as_str()), (source, title));
+        }
     }
 
     #[test]
@@ -610,13 +708,14 @@ mod tests {
     }
 
     /// `store` writes the new tiles by literal source id, title and scope,
-    /// because it cannot see this crate. Every shape of saved Usage tile must
-    /// land on names the app knows, and pass the check every later save runs: a
-    /// bad scope or title here would refuse each edit to the dashboard from then
-    /// on, and no test in `store` could see it.
+    /// because it cannot see this crate. Every shape of saved tile must land on
+    /// names the app knows, and pass the check every later save runs: a bad
+    /// scope or title here would refuse each edit to the dashboard from then on,
+    /// and no test in `store` could see it. Covers the old one-source Usage
+    /// tile and the Anthropic and OpenAI tiles that replaced it.
     #[test]
     fn every_migrated_layout_passes_the_check_each_save_runs() {
-        let scopes = [
+        let usage_scopes = [
             "all",
             "attention",
             "providers",
@@ -628,34 +727,62 @@ mod tests {
             "item:neon:Compute",
             "item:vercel:Bandwidth",
         ];
-        for codex_plan in [false, true] {
-            let mut data = store::StoreData {
-                dashboard: Some(DashboardLayout {
-                    tiles: scopes
-                        .iter()
-                        .enumerate()
-                        .map(|(i, scope)| DashboardTile {
-                            id: format!("t{i}"),
-                            title: "Usage".into(),
-                            ..tile("claudeUsage", scope)
-                        })
-                        .collect(),
-                    ..default_layout()
-                }),
-                ..store::StoreData::default()
-            };
-            data.settings.codex_plan_usage_enabled = codex_plan;
-            data.split_usage_tiles();
-            let layout = data.dashboard.unwrap();
-            crate::dashboard::validate(&layout).unwrap();
-            for tile in &layout.tiles {
-                let title = crate::dashboard::SOURCES
-                    .iter()
-                    .find(|(id, _)| *id == tile.source)
-                    .unwrap_or_else(|| panic!("{} is not a source", tile.source))
-                    .1;
+        let vendor_scopes = [
+            "all",
+            "attention",
+            "plans",
+            "claude",
+            "item:claude-plan",
+            "item:claude-today",
+            "item:anthropic-api",
+            "item:codex-plan",
+            "item:openai-api",
+        ];
+        let mut tiles: Vec<DashboardTile> = usage_scopes
+            .iter()
+            .enumerate()
+            .map(|(i, scope)| DashboardTile {
+                id: format!("u{i}"),
+                title: "Usage".into(),
+                ..tile("claudeUsage", scope)
+            })
+            .collect();
+        for (source, title) in [("anthropic", "Anthropic"), ("openai", "OpenAI")] {
+            for (i, scope) in vendor_scopes.iter().enumerate() {
+                tiles.push(DashboardTile {
+                    id: format!("{source}{i}"),
+                    title: title.into(),
+                    ..tile(source, scope)
+                });
+            }
+        }
+        let mut data = store::StoreData {
+            dashboard: Some(DashboardLayout {
+                tiles,
+                ..default_layout()
+            }),
+            ..store::StoreData::default()
+        };
+        data.split_usage_tiles();
+        data.merge_ai_tiles();
+        let layout = data.dashboard.unwrap();
+        crate::dashboard::validate(&layout).unwrap();
+        for tile in &layout.tiles {
+            let title = crate::dashboard::SOURCES
+                .iter()
+                .find(|(id, _)| *id == tile.source)
+                .unwrap_or_else(|| panic!("{} is not a source", tile.source))
+                .1;
+            // A name the operator chose, or a narrowed tile's, stays; every
+            // other tile takes its source's.
+            if tile.title == "Usage" || tile.title == "AI Usage" {
                 assert_eq!(tile.title, title, "{}", tile.id);
             }
+            assert!(
+                !matches!(tile.source.as_str(), "anthropic" | "openai"),
+                "{} was left on a retired source",
+                tile.id
+            );
         }
     }
 
@@ -849,8 +976,8 @@ mod tests {
             ("ghWorkflows", "failing"),
             ("ghRunners", "LINUX"),
             ("containers", "item:hostA|db"),
-            ("anthropic", "claude"),
-            ("openai", "item:gone"),
+            ("aiUsage", "claude"),
+            ("aiUsage", "item:gone"),
             ("usage", "item:gone"),
             ("azureCost", "item:budget"),
             ("openclawAgents", "attention"),
@@ -882,7 +1009,8 @@ mod tests {
             let scoped = scope_payload(&tile(source, scope), absent.clone());
             assert_eq!(scoped, expect(&absent, true), "{source} {scope}: absent");
             let null = json!({"rows":null,"sections":null,"runtimes":null,"windows":null,
-                "plans":null,"providers":null,"stats":null});
+                "plans":null,"apis":null,"providers":null,"stats":null,
+                "trailing":null,"claudeToday":null});
             let scoped = scope_payload(&tile(source, scope), null.clone());
             assert_eq!(scoped, expect(&null, false), "{source} {scope}: null");
         }
@@ -953,20 +1081,21 @@ mod tests {
                 &[],
             ),
             (
-                "anthropic",
-                json!({"trailing":"1M","projects":[{"name":"p"}],
+                "aiUsage",
+                json!({"trailing":"Claude Code · 1M","claudeToday":"1M",
+                    "projects":[{"name":"p"}],
                     "windows":[{"label":"LAST 5H"},{"label":"LAST 7D"}],
                     "plans":[
-                        {"id":"claude-plan","label":"Claude · Ultra","metrics":[{"label":"Week"}]}]}),
+                        {"id":"claude-plan","label":"Claude · Ultra","metrics":[{"label":"Week"}]},
+                        {"id":"codex-plan","label":"Codex · Plus","metrics":[]}],
+                    "apis":[
+                        {"id":"anthropic-api","label":"Anthropic API spend (MTD)","value":"$1"},
+                        {"id":"openai-api","label":"OpenAI API spend (MTD)","value":"$2"}]}),
                 // The `claude-today` row stands for the whole rollup block, so
                 // its windows count as one entry.
-                Box::new(move |v| usize::from(item(v, "windows") > 0) + item(v, "plans")),
-                &[],
-            ),
-            (
-                "openai",
-                json!({"plans":[{"id":"codex-plan","label":"Codex · Plus","metrics":[]}]}),
-                Box::new(move |v| item(v, "plans")),
+                Box::new(move |v| {
+                    usize::from(item(v, "windows") > 0) + item(v, "plans") + item(v, "apis")
+                }),
                 &[],
             ),
             (

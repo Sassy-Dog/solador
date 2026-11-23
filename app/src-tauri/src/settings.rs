@@ -1003,14 +1003,19 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             target = editor("openclaw", None);
             ("OpenClaw source", &["openclaw"])
         }
-        // One source holds everything each vendor's tile reads.
-        "anthropic" => {
-            target = editor("anthropic", None);
-            ("Anthropic source", &["anthropic"])
-        }
-        "openai" => {
-            target = editor("openai", None);
-            ("OpenAI source", &["openai"])
+        // Two sources feed this one tile, each holding its own Admin key. A scope
+        // or row that names one vendor goes to that vendor's editor; `all`,
+        // `attention` and `plans` span both, so the operator chooses.
+        "aiUsage" => {
+            let vendor = match route.scope.as_str() {
+                "anthropic" | "claude" => Some("anthropic"),
+                "openai" => Some("openai"),
+                _ => resource.and_then(crate::dashboard::vendor_of),
+            };
+            if let Some(vendor) = vendor {
+                target = editor(vendor, None);
+            }
+            ("AI Usage sources", &["anthropic", "openai"])
         }
         "usage" => {
             if let Some((provider, _)) = resource.and_then(|id| id.split_once(':')) {
@@ -1055,6 +1060,26 @@ pub const SOURCES_LABEL: &str = "Sources";
 pub const ANTHROPIC_TITLE: &str = store::source_save::ANTHROPIC_TITLE;
 /// Everything read about Codex and the OpenAI API.
 pub const OPENAI_TITLE: &str = store::source_save::OPENAI_TITLE;
+/// The AI sources that feed the AI Usage tile, in the order its body lists them.
+/// The sentence below is built from this, so a source added to the tile is named
+/// by adding it here.
+pub const AI_SOURCE_TITLES: &[&str] = &[ANTHROPIC_TITLE, OPENAI_TITLE];
+
+/// The one sentence the AI Usage tile shows when no part of any AI source is on:
+/// "Anthropic or OpenAI", and "Anthropic, OpenAI or X" once there is an X.
+#[must_use]
+pub fn none_added_message() -> String {
+    let names = match AI_SOURCE_TITLES {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [init @ .., last] => format!("{} or {last}", init.join(", ")),
+    };
+    format!(
+        "No AI usage yet \u{2014} add {names} in \
+         {OPEN_LABEL} \u{2192} {SOURCES_LABEL} \u{2192} {ADD_SOURCE_LABEL}"
+    )
+}
+
 /// The one sentence a source with no part set up shows on its tile.
 #[must_use]
 pub fn not_set_up_message(title: &str) -> String {
@@ -1472,7 +1497,7 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         // Where the shared Refresh Interval went (#615), said once so an
         // operator who looks for it is told rather than left to wonder. Each
         // source polls on its own cadence, edited in its tile's Configure.
-        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, Anthropic, OpenAI, Usage, Containers, Azure Cost, Sentry Crons). Host metrics poll every second regardless — that cadence is the charts' time axis.",
+        "cadenceNote": "Poll cadences are set per source, in the Configure of the tile it feeds (GitHub Repos and Runners, Service Health, AI Usage, Usage, Containers, Azure Cost, Sentry Crons). Host metrics poll every second regardless — that cadence is the charts' time axis.",
         "crashReporting": crash_reporting_section(settings, crash),
     })
 }
@@ -1960,7 +1985,7 @@ fn anthropic_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]
                     "This machine\u{2019}s Claude Code usage, read from its local session logs. No account token is required.",
                 ),
             ],
-            "tile": tile_offer("anthropic", tile_sources),
+            "tile": tile_offer("aiUsage", tile_sources),
         },
     })
 }
@@ -1982,7 +2007,7 @@ fn openai_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
                     "Your Codex plan\u{2019}s limits",
                 ),
             ],
-            "tile": tile_offer("openai", tile_sources),
+            "tile": tile_offer("aiUsage", tile_sources),
         },
     })
 }
@@ -2047,7 +2072,7 @@ fn plan_usage_section(settings: &Settings) -> Value {
             settings.claude_plan_usage_enabled,
             "Read Claude Code's sign-in",
             "Claude Code",
-            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It also reads the plan's name from Claude Code's ~/.claude.json, keeping that one field and nothing else from the file. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the Anthropic panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
+            "Off by default. When on, Solador reads Claude Code's saved sign-in on each poll (on a Mac, the keychain item \u{201c}Claude Code-credentials\u{201d}; otherwise, or if the keychain has none, ~/.claude/.credentials.json), sends one read-only request for the plan's limits to Anthropic, and drops the token. It also reads the plan's name from Claude Code's ~/.claude.json, keeping that one field and nothing else from the file. It never stores, refreshes or changes the sign-in. On a Mac, macOS may ask once whether to allow the read; if it is refused, the AI Usage panel says so and nothing is asked again until you turn this off and on, or restart Solador. The endpoint is undocumented and may change.",
         ),
         "codex": entry(
             settings.codex_plan_usage_enabled,
@@ -2875,27 +2900,29 @@ mod tests {
             route("usage", "all", &data)["kinds"],
             json!(["neon", "sentry", "vercel"])
         );
-        // Each vendor's tile has one source, whatever its scope.
-        for scope in [
-            "all",
-            "attention",
-            "claude",
-            "plans",
-            "item:claude-plan",
-            "item:claude-today",
+        // A scope or row that names one vendor goes to that vendor's editor.
+        for (scope, vendor) in [
+            ("claude", "anthropic"),
+            ("anthropic", "anthropic"),
+            ("item:claude-plan", "anthropic"),
+            ("item:claude-today", "anthropic"),
+            ("item:anthropic-api", "anthropic"),
+            ("openai", "openai"),
+            ("item:codex-plan", "openai"),
+            ("item:openai-api", "openai"),
         ] {
             assert_eq!(
-                route("anthropic", scope, &data)["editor"]["kind"],
-                "anthropic",
+                route("aiUsage", scope, &data)["editor"]["kind"],
+                vendor,
                 "{scope}"
             );
         }
-        for scope in ["all", "attention", "item:codex-plan"] {
-            assert_eq!(
-                route("openai", scope, &data)["editor"]["kind"],
-                "openai",
-                "{scope}"
-            );
+        // Anything that spans both, or names nothing, offers the chooser.
+        for scope in ["all", "attention", "plans", "item:gone"] {
+            let routed = route("aiUsage", scope, &data);
+            assert!(routed["editor"].is_null(), "{scope}");
+            assert_eq!(routed["kinds"], json!(["anthropic", "openai"]), "{scope}");
+            assert_eq!(routed["heading"], "AI Usage sources", "{scope}");
         }
         assert_eq!(
             route("sentryCrons", "active", &data)["editor"]["kind"],
@@ -4067,19 +4094,19 @@ mod tests {
     #[test]
     fn a_walk_offers_a_tile_unless_one_exists() {
         let vm = empty_view();
-        let tile = catalog_entry(&vm, "anthropic")["walk"]["tile"].clone();
-        assert_eq!(tile["label"], "Add an Anthropic tile");
-        assert_eq!(tile["present"], false);
-        assert_eq!(
-            catalog_entry(&vm, "openai")["walk"]["tile"]["label"],
-            "Add an OpenAI tile"
-        );
+        // Both vendors feed the one AI Usage tile, so both offer that tile.
+        for kind in ["anthropic", "openai"] {
+            let tile = catalog_entry(&vm, kind)["walk"]["tile"].clone();
+            assert_eq!(tile["source"], "aiUsage", "{kind}");
+            assert_eq!(tile["label"], "Add an AI Usage tile", "{kind}");
+            assert_eq!(tile["present"], false, "{kind}");
+        }
         let local = catalog_entry(&vm, "local")["walk"]["tile"].clone();
         assert_eq!(local["source"], "hosts");
         assert_eq!(local["label"], "Add a Machines tile");
 
         let settings = Settings::default();
-        let tiles = ["anthropic".to_owned()];
+        let tiles = ["aiUsage".to_owned()];
         let vm = view(
             StoreSections {
                 tile_sources: &tiles,
@@ -4090,10 +4117,15 @@ mod tests {
             CrashFacts::default(),
             no_updates(),
         );
-        assert_eq!(
-            catalog_entry(&vm, "anthropic")["walk"]["tile"]["present"],
-            true
-        );
+        // One AI Usage tile satisfies both vendors: adding the second source
+        // never offers a second tile.
+        for kind in ["anthropic", "openai"] {
+            assert_eq!(
+                catalog_entry(&vm, kind)["walk"]["tile"]["present"],
+                true,
+                "{kind}"
+            );
+        }
     }
 
     /// The help says what is read, that nothing is stored or refreshed, and

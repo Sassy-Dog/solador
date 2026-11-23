@@ -105,7 +105,7 @@
 ├── app/
 │   ├── src-tauri/          # Tauri v2 shell: one poll task per host plus this
 │   │                       #   machine (src/local.rs); `cockpit`, `containers`,
-│   │                       #   `repos`/`runners`, `usage`, `anthropic`, `openai`,
+│   │                       #   `repos`/`runners`, `usage`, `ai_usage`,
 │   │                       #   `azure_cost`, `actions_billing`, `crons`, `openclaw` + `settings_*`
 │   │                       #   (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler

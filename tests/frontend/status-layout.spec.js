@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => { expect(page.statusErrors).toEqual([]); });
 
-const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', anthropic: 'anthropic', openai: 'openai', usage: 'usage', azure_cost: 'azure', actions_billing: 'actions-billing', openclaw: 'openclaw' };
+const files = { cockpit: 'cockpit', dashboard_view: 'dashboard', containers: 'containers', repos: 'repos', runners: 'runners', services: 'services', crons: 'crons', ai_usage: 'ai-usage', usage: 'usage', azure_cost: 'azure', actions_billing: 'actions-billing', openclaw: 'openclaw' };
 // `sources` replaces the overview's tiles with one `all`-scoped tile per source
 // (ids from tile-full.js), for a test that enters a tile's Full view.
 async function open(page, baseURL, sources = null) {
@@ -197,7 +197,7 @@ for (const [source, command, file] of PANEL_SOURCE_READS) {
     const before = await bounds(page, '.panel');
     // The open tile's panel is laid out; a hidden one would hold still trivially.
     expect(before.some(b => b.width > 0 && b.height > 0), "the tile's own panel is measured").toBe(true);
-    const variants = { empty:['containers','repos','runners','services','crons','anthropic','openai','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','anthropic','usage','azure'] };
+    const variants = { empty:['containers','repos','runners','services','crons','ai-usage','usage','azure','openclaw'], error:['crons','azure','openclaw'], stale:['crons','ai-usage','usage','azure'] };
     for (const suffix of ['empty', 'error', 'stale']) {
       const changed = structuredClone(frames);
       if (variants[suffix].includes(file)) changed[command] = await (await fetch(`${baseURL}/sample-${file}-${suffix}.json`)).json();

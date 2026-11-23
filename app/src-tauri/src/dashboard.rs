@@ -30,15 +30,14 @@ pub const COCKPIT_LOAD_FAILED: &str = "Could not load the machine cards for the 
 /// words: neither is a vendor's failure (#656).
 pub const TILE_READ_FAILED: &str = "Could not read this tile\u{2019}s data for the Full view.";
 
-pub const SOURCES: [(&str, &str); 12] = [
+pub const SOURCES: [(&str, &str); 11] = [
     ("hosts", "Machines"),
     ("ghWorkflows", "GitHub Repos"),
     ("ghRunners", "GitHub Runners"),
     ("services", "Service Health"),
     ("sentryCrons", "Sentry Crons"),
     ("containers", "Containers / VMs"),
-    ("anthropic", "Anthropic"),
-    ("openai", "OpenAI"),
+    ("aiUsage", "AI Usage"),
     ("usage", "Usage"),
     ("azureCost", "Azure Cost"),
     ("actionsBilling", "Actions billing"),
@@ -259,9 +258,12 @@ fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
             ("WINDOWS", "Windows runners"),
         ]),
         "sentryCrons" => choices.push(("active", "Active issues")),
-        "anthropic" => {
-            choices.extend([("claude", "Claude Code"), ("plans", "Subscription plan")]);
-        }
+        "aiUsage" => choices.extend([
+            ("plans", "Subscription plans"),
+            ("claude", "Claude Code"),
+            ("anthropic", "Anthropic"),
+            ("openai", "OpenAI"),
+        ]),
         _ => (),
     }
     choices
@@ -286,9 +288,24 @@ fn tint(v: &Value) -> Value {
         json!(color::hex(color::MUTED))
     }
 }
-/// The Anthropic tile's one row for this machine's Claude Code rollups. Its Full
+/// The AI Usage tile's one row for this machine's Claude Code rollups. Its Full
 /// view keeps the panel's token counts, projects and heading with it.
 pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
+
+/// The vendor scope (`anthropic` or `openai`) an AI Usage row answers to, beside
+/// the block scopes `plans` and `claude`. The ids are the payload's
+/// (`plan_usage::CLAUDE_ID`, `usage::ANTHROPIC_API_ID` and their OpenAI
+/// counterparts); a row id this does not know (a saved `item:` for a source no
+/// longer there) belongs to no vendor.
+pub(crate) fn vendor_of(row_id: &str) -> Option<&'static str> {
+    use crate::plan_usage::{CLAUDE_ID, CODEX_ID};
+    use crate::usage::{ANTHROPIC_API_ID, OPENAI_API_ID};
+    match row_id {
+        CLAUDE_ID | ANTHROPIC_API_ID | CLAUDE_TODAY_ID => Some("anthropic"),
+        CODEX_ID | OPENAI_API_ID => Some("openai"),
+        _ => None,
+    }
+}
 
 fn row(id: &str, label: &str, value: &str, color: Value, attention: bool) -> Value {
     json!({"id": id, "label": label, "value": value, "color": color, "valueColor": color, "attention": attention, "detail": "", "scopes": [], "metrics": [], "url": null})
@@ -601,22 +618,32 @@ fn count(header: &str, one: &str, many: &str, value: &Value) -> Value {
     json!({"label": word, "header": header, "value": value, "fraction": null})
 }
 
-/// API spend's row, while the source has it. It has no scope of its own: `all`
-/// shows it, `item:` picks it, and `plans` and `claude` are the other blocks.
-fn api_row(p: &Value) -> Option<Value> {
-    let api = &p["api"];
-    if api.is_null() {
-        return None;
+/// One row per vendor whose API spend is on, in the payload's order. Each has
+/// only its vendor's scope: `all` shows it, `item:` picks it, and `plans` and
+/// `claude` are the other blocks.
+fn api_rows(p: &Value) -> Vec<Value> {
+    list(p, "apis")
+        .iter()
+        .map(|api| {
+            let mut r = row(
+                string(api, "id"),
+                string(api, "label"),
+                string(api, "value"),
+                tint(&api["valueColor"]),
+                false,
+            );
+            r["detail"] = json!(string(api, "note"));
+            add_vendor_scope(&mut r);
+            r
+        })
+        .collect()
+}
+
+/// Adds the row's vendor scope, when its id has one.
+fn add_vendor_scope(r: &mut Value) {
+    if let Some(vendor) = vendor_of(string(r, "id")) {
+        add_scope(r, vendor);
     }
-    let mut r = row(
-        string(api, "id"),
-        string(api, "label"),
-        string(api, "value"),
-        tint(&api["valueColor"]),
-        false,
-    );
-    r["detail"] = json!(string(api, "note"));
-    Some(r)
 }
 
 /// One row per plan, carrying the Machines tile's meters. Its id is the plan
@@ -638,6 +665,7 @@ fn plan_rows(p: &Value) -> Vec<Value> {
             r["detail"] = json!(string(plan, "detail"));
             r["metrics"] = plan["metrics"].clone();
             add_scope(&mut r, "plans");
+            add_vendor_scope(&mut r);
             r
         })
         .collect()
@@ -847,30 +875,28 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 })
             })
             .collect(),
-        "anthropic" => {
-            // The plan leads, as it does on the panel: a share of a limit is
-            // the figure an operator acts on.
+        "aiUsage" => {
+            // The plans lead, as they do on the panel: a share of a limit is
+            // the figure an operator acts on. API spend follows.
             let mut rows = plan_rows(p);
-            rows.extend(api_row(p));
-            // This machine's rollups are one line on the tile; the panel keeps
-            // the 5-hour and 7-day counts and the projects under its "This
-            // machine" heading.
-            if !string(p, "trailing").is_empty() {
+            rows.extend(api_rows(p));
+            // This machine's rollups are one line on the tile; the panel
+            // keeps the 5-hour and 7-day counts and the projects under its
+            // "This machine" heading. The figure is the bare `claudeToday`:
+            // the row is labelled Claude Code, so `trailing`'s own prefix
+            // would say it twice.
+            if !string(p, "claudeToday").is_empty() {
                 let mut r = row(
                     CLAUDE_TODAY_ID,
                     "Claude Code",
-                    string(p, "trailing"),
+                    string(p, "claudeToday"),
                     json!(color::hex(color::MUTED)),
                     false,
                 );
                 add_scope(&mut r, "claude");
+                add_vendor_scope(&mut r);
                 rows.push(r);
             }
-            rows
-        }
-        "openai" => {
-            let mut rows = plan_rows(p);
-            rows.extend(api_row(p));
             rows
         }
         "usage" => {
@@ -1103,8 +1129,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "services" => "Connected providers and custom status pages",
         "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
-        "anthropic" => "Claude\u{2019}s plan limits, API spend and Claude Code logs",
-        "openai" => "Codex\u{2019}s plan limits and API spend",
+        "aiUsage" => "Claude and Codex plan limits, API spend and Claude Code logs",
         "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",
         "actionsBilling" => "Hosted Actions minutes, spend and budget for your GitHub organization",
@@ -1168,7 +1193,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
     }
     let has_fields = columns.len() > 1;
     columns.push(json!({"key":"value", "label":match id {
-        "sentryCrons" => "Broken for", "anthropic" | "openai" | "usage" | "azureCost" | "actionsBilling" => "Value", _ => "Status"
+        "sentryCrons" => "Broken for", "aiUsage" | "usage" | "azureCost" | "actionsBilling" => "Value", _ => "Status"
     }}));
     if !has_fields {
         columns.push(json!({"key":"context", "label":"Details"}));
@@ -2890,8 +2915,7 @@ mod tests {
                 "Service Health",
                 "Sentry Crons",
                 "Containers / VMs",
-                "Anthropic",
-                "OpenAI",
+                "AI Usage",
                 "Usage",
                 "Azure Cost",
                 "Actions billing",
@@ -3718,9 +3742,9 @@ mod tests {
         assert_eq!(strip, ["7 issues", "— ready", "2 PRs", "1 dep"]);
     }
 
-    /// A plan is one Usage row under its own scope, carrying its meters, and it
-    /// leads the tile. Only red needs attention: amber is a pace, a forecast.
-    /// The token windows are not rows; `claude-today` stands for them.
+    /// A plan is one AI Usage row under its own scope, carrying its meters, and
+    /// the plans lead the tile. Only red needs attention: amber is a pace, a
+    /// forecast. The token windows are not rows; `claude-today` stands for them.
     #[test]
     fn plans_are_usage_rows_with_meters_under_their_own_scope() {
         let red = color::hex(color::RED);
@@ -3729,7 +3753,8 @@ mod tests {
         let week = json!({"label": "Week", "value": "100%", "fraction": 1.0, "color": red,
             "pace": null, "note": "limit reached · resets in 1h 0m"});
         let payload = json!({
-            "trailing": "1.2M today",
+            "trailing": "Claude Code · 1.2M today",
+            "claudeToday": "1.2M today",
             "windows": [{"label": "LAST 5H", "value": "820k"}, {"label": "LAST 7D", "value": "4.3M"}],
             "plans": [
                 {"id": "claude-plan", "label": "Claude · Ultra", "value": "limit reached",
@@ -3738,10 +3763,14 @@ mod tests {
                 {"id": "codex-plan", "label": "Codex · Plus", "value": "out in ~1d 1h",
                  "valueColor": amber, "color": amber, "detail": "…", "metrics": []}
             ],
-            "api": {"id": "anthropic-api", "label": "API spend (MTD)", "value": "$412.80",
-                    "valueColor": muted, "note": "counted 3h ago"}
+            "apis": [
+                {"id": "anthropic-api", "label": "Anthropic API spend (MTD)", "value": "$412.80",
+                 "valueColor": muted, "note": "counted 3h ago"},
+                {"id": "openai-api", "label": "OpenAI API spend (MTD)", "value": "$1.50",
+                 "valueColor": muted, "note": null}
+            ]
         });
-        let source = source_view("anthropic", "Anthropic", &payload);
+        let source = source_view("aiUsage", "AI Usage", &payload);
         let rows = list(&source, "rows");
         let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
         assert_eq!(
@@ -3750,11 +3779,12 @@ mod tests {
                 "claude-plan",
                 "codex-plan",
                 "anthropic-api",
+                "openai-api",
                 CLAUDE_TODAY_ID
             ]
         );
         assert_eq!(rows[0]["label"], "Claude · Ultra");
-        assert_eq!(rows[0]["scopes"], json!(["plans"]));
+        assert_eq!(rows[0]["scopes"], json!(["plans", "anthropic"]));
         assert_eq!(rows[0]["attention"], true);
         assert_eq!(rows[0]["valueColor"], red);
         assert_eq!(
@@ -3762,54 +3792,118 @@ mod tests {
             "Week is at 100% until its reset in 1h 0m."
         );
         assert_eq!(rows[0]["metrics"], json!([week]));
+        assert_eq!(rows[1]["scopes"], json!(["plans", "openai"]));
         assert_eq!(rows[1]["attention"], false, "amber is a forecast");
         assert_eq!(rows[1]["color"], amber);
-        assert_eq!(rows[2]["label"], "API spend (MTD)");
+        assert_eq!(rows[2]["label"], "Anthropic API spend (MTD)");
         assert_eq!(rows[2]["value"], "$412.80");
         assert_eq!(rows[2]["detail"], "counted 3h ago");
         assert_eq!(rows[2]["attention"], false);
-        assert_eq!(rows[3]["label"], "Claude Code");
+        assert_eq!(rows[3]["label"], "OpenAI API spend (MTD)");
+        assert_eq!(rows[3]["value"], "$1.50");
+        assert_eq!(rows[4]["label"], "Claude Code");
+        // The bare figure: the row is labelled Claude Code, so the header's
+        // own "Claude Code · " prefix would say it twice.
+        assert_eq!(rows[4]["value"], "1.2M today");
         assert!(list(&source, "scopes")
             .iter()
             .any(|s| s["value"] == "plans"));
         assert_eq!(source["attentionCount"], 1);
     }
 
-    /// With local usage off the view publishes no `trailing`, so the tile has
+    /// With local usage off the view publishes no `claudeToday`, so the tile has
     /// no Claude Code line: the operator's own request.
     #[test]
-    fn no_trailing_is_no_claude_code_row() {
+    fn no_claude_figure_is_no_claude_code_row() {
         let source = source_view(
-            "anthropic",
-            "Anthropic",
-            &json!({"trailing": "", "plans": []}),
+            "aiUsage",
+            "AI Usage",
+            &json!({"trailing": "", "claudeToday": "", "plans": [], "apis": []}),
         );
         assert!(list(&source, "rows").is_empty());
     }
 
+    /// Both vendors' spend is a row each, an offered item, so a tile can be
+    /// narrowed to either alone.
     #[test]
-    fn openai_rows_are_its_plan_then_its_spend() {
+    fn each_vendors_spend_is_its_own_row_and_offered_item() {
         let payload = json!({
             "plans": [{"id": "codex-plan", "label": "Codex · Plus", "value": "ok", "metrics": []}],
-            "api": {"id": "openai-api", "label": "API spend (MTD)", "value": "$1.50"},
+            "apis": [
+                {"id": "anthropic-api", "label": "Anthropic API spend (MTD)", "value": "$9.00"},
+                {"id": "openai-api", "label": "OpenAI API spend (MTD)", "value": "$1.50"}
+            ],
         });
-        let source = source_view("openai", "OpenAI", &payload);
+        let source = source_view("aiUsage", "AI Usage", &payload);
         let rows = list(&source, "rows");
         let ids: Vec<&str> = rows.iter().map(|r| string(r, "id")).collect();
-        assert_eq!(ids, ["codex-plan", "openai-api"]);
-        // An offered item, so a tile can be narrowed to the spend alone.
-        assert!(list(&source, "scopes")
+        assert_eq!(ids, ["codex-plan", "anthropic-api", "openai-api"]);
+        for id in ["item:openai-api", "item:anthropic-api"] {
+            assert!(
+                list(&source, "scopes").iter().any(|s| s["value"] == id),
+                "{id}"
+            );
+        }
+    }
+
+    /// Every AI row carries its vendor's scope, and the fixed scopes the picker
+    /// offers are exactly the ones a row can answer to.
+    #[test]
+    fn every_ai_row_carries_its_vendor_scope() {
+        let payload = json!({
+            "claudeToday": "1k today",
+            "plans": [
+                {"id": "claude-plan", "label": "Claude", "value": "ok", "metrics": []},
+                {"id": "codex-plan", "label": "Codex", "value": "ok", "metrics": []}
+            ],
+            "apis": [
+                {"id": "anthropic-api", "label": "A", "value": "$1"},
+                {"id": "openai-api", "label": "O", "value": "$1"}
+            ],
+        });
+        let source = source_view("aiUsage", "AI Usage", &payload);
+        let scopes: Vec<(String, Vec<String>)> = list(&source, "rows")
             .iter()
-            .any(|s| s["value"] == "item:openai-api"));
+            .map(|r| {
+                (
+                    string(r, "id").to_owned(),
+                    list(r, "scopes")
+                        .iter()
+                        .map(|s| s.as_str().unwrap().to_owned())
+                        .collect(),
+                )
+            })
+            .collect();
+        let want = [
+            ("claude-plan", &["plans", "anthropic"][..]),
+            ("codex-plan", &["plans", "openai"]),
+            ("anthropic-api", &["anthropic"]),
+            ("openai-api", &["openai"]),
+            ("claude-today", &["claude", "anthropic"]),
+        ];
+        assert_eq!(scopes.len(), want.len());
+        for ((id, got), (want_id, want_scopes)) in scopes.iter().zip(want) {
+            assert_eq!(id, want_id);
+            assert_eq!(got, want_scopes, "{id}");
+            // The vendor scope is the one `vendor_of` names.
+            assert_eq!(vendor_of(id), got.last().map(String::as_str), "{id}");
+        }
+        // Each scope a row carries is one the picker offers, so a saved scope
+        // always passes `validate`.
+        let fixed: Vec<&str> = fixed_scopes("aiUsage").iter().map(|(v, _)| *v).collect();
+        for (_, got) in &scopes {
+            for scope in got {
+                assert!(fixed.contains(&scope.as_str()), "{scope}");
+            }
+        }
+        assert_eq!(vendor_of("neon:Compute"), None);
     }
 
     /// A tile's hint is the catalog's one-line description of the source.
     #[test]
-    fn each_ai_tile_says_it_also_carries_api_spend() {
-        for id in ["anthropic", "openai"] {
-            let source = source_view(id, id, &json!({}));
-            assert!(string(&source, "hint").contains("API spend"), "{id}");
-        }
+    fn the_ai_tile_says_it_also_carries_api_spend() {
+        let source = source_view("aiUsage", "AI Usage", &json!({}));
+        assert!(string(&source, "hint").contains("API spend"));
     }
 
     /// The Actions billing budget row flags exactly as Azure's does: a bar that
@@ -4123,23 +4217,23 @@ mod tile_scope_ids_tests {
     #[test]
     fn a_hidden_tile_already_counts_as_having_one() {
         let mut layout = default_layout();
-        let mut hidden = DashboardTile::new("mine", "anthropic", "Mine", "all");
+        let mut hidden = DashboardTile::new("mine", "aiUsage", "Mine", "all");
         hidden.hidden = true;
         layout.tiles.push(hidden);
-        assert!(with_source_tile(&layout, "anthropic").is_none());
+        assert!(with_source_tile(&layout, "aiUsage").is_none());
     }
 
     #[test]
     fn an_added_tile_is_valid_titled_and_takes_a_free_id() {
         let mut layout = default_layout();
         layout.tiles.retain(|tile| tile.source != "hosts");
-        let taken = DashboardTile::new("added-anthropic-1", "usage", "Usage", "all");
+        let taken = DashboardTile::new("added-aiUsage-1", "usage", "Usage", "all");
         layout.tiles.push(taken);
 
-        let next = with_source_tile(&layout, "anthropic").unwrap();
+        let next = with_source_tile(&layout, "aiUsage").unwrap();
         let added = next.tiles.last().unwrap();
-        assert_eq!(added.title, "Anthropic");
-        assert_eq!(added.id, "added-anthropic-2");
+        assert_eq!(added.title, "AI Usage");
+        assert_eq!(added.id, "added-aiUsage-2");
         validate(&next).unwrap();
 
         let next = with_source_tile(&layout, "hosts").unwrap();

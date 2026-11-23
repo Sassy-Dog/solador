@@ -1,5 +1,5 @@
 // The Usage panel: a Neon, Sentry and Vercel section for each provider that is
-// configured. The Anthropic and OpenAI panels are `ai-sources.js`. Same
+// configured. The AI Usage panel is `ai-sources.js`. Same
 // discipline as every other panel here: each string, colour and figure arrives
 // from Rust (`app/src-tauri/src/usage.rs`), and this file does layout, wiring,
 // and nothing else.

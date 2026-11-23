@@ -1846,7 +1846,7 @@ function withoutAzure(settings) {
 const READS = new Set([
   "cockpit", "dashboard_view", "settings_view", "settings_test_host",
   // The panels' own reads, which the overview polls under Settings.
-  "containers", "repos", "runners", "anthropic", "openai", "usage", "azure_cost", "actions_billing",
+  "containers", "repos", "runners", "ai_usage", "usage", "azure_cost", "actions_billing",
   "services", "crons", "openclaw",
   "settings_probe_status_vendor", "settings_probe_host_certificate",
   "settings_discover_repos", "settings_search_repos",

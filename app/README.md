@@ -613,7 +613,7 @@ does not fit it yet:
 | Crash reporting, updates | Settings | rule 3 |
 | The Actions billing spike multiple and floor, and the self-hosted repo list | Actions billing tile Configure (**Billing alerts**), marked shared, saved on the change (#770) | rule 4 |
 | CPU/RAM thresholds, per-machine overrides, the hidden-volume list | Machines tile Configure (**Machine alerts**, **Volumes shown**), marked shared; the Disk strip's and Detail's Hide / Unhide stay as shortcuts | rule 4 ([#612](https://github.com/Sassy-Dog/solador/issues/612)) |
-| Poll cadence of Containers, GitHub (Repos and Runners), Services, Anthropic (local logs; API spend; plan limits), OpenAI (API spend; plan limits), Usage (metered providers), Azure Cost, Actions billing and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
+| Poll cadence of Containers, GitHub (Repos and Runners), Services, AI Usage (local logs; API spend; plan limits), Usage (metered providers), Azure Cost, Actions billing and Sentry Crons | that source's tile Configure (**Poll cadence**), marked shared, with its floor and the reason for it ([#614](https://github.com/Sassy-Dog/solador/issues/614)) | rule 4 |
 | Refresh Interval (it drove GitHub, Services and the Claude rollups together) | **split, not moved** ([#615](https://github.com/Sassy-Dog/solador/issues/615)): neither rule 3 nor rule 4 as one setting, because it drove two unrelated loops and rule 4 would have made one tile's Configure move three other tiles. Each source now has its own cadence and its own floor, edited in its tile's Configure like the rest; GitHub's is one cadence on **both** the Repos and the GitHub Runners tile. A store that had chosen 30s or 5m is carried into all three on load. Settings → Preferences no longer has it, and says where the cadences went | rule 4 |
 | CPU core rows, Row spacing, host overflow, Detail / Full view Table-or-List | the tile's Configure → **Full view** / **Detail** page, per tile | rule 1 ([#647](https://github.com/Sassy-Dog/solador/issues/647)) |
 
@@ -634,6 +634,10 @@ Usage section and Sentry Crons, as it did (`sentry_usage_enabled` and
 **Sentry**, **Vercel**, **Azure Cost** and **Actions billing** open as steps, and a row (or a Usage tile's **Manage source**)
 reopens the same steps with its choices read back. Anthropic asks what to set
 up: **API key**, **Subscription**, **Local usage**. OpenAI asks the first two.
+Both feed the one **AI Usage** tile, so adding the second offers no second tile,
+and an AI Usage tile's **Manage source** opens the source its scope names (an
+`anthropic` or `openai` scope, or one row) or, for `all`, `attention` and `plans`,
+a chooser listing both.
 Each part picked gets one step, then **Ready** summarises what the source will
 show and offers its tile unless it has one (a hidden tile counts). A source with
 one part skips the question. Neon's one step asks for the organization API key
@@ -856,7 +860,7 @@ app/
 │   │                     #   presence, and every string it paints
 │   ├── src/github/       # the Repos + GitHub Runners panels, and the local
 │   │                     #   git scan behind their LOCAL/WT columns
-│   ├── src/usage.rs      # the Usage, Anthropic and OpenAI views: Neon + Sentry
+│   ├── src/usage.rs      # the Usage and AI Usage views: Neon + Sentry
 │   │                     #   + Vercel, Claude's rollups, one poller's state
 │   ├── src/plan_usage.rs # the plans: the opt-in gate, each provider's
 │   │                     #   schedule, and each plan's row and meters
@@ -878,7 +882,7 @@ app/
     ├── github.js         # the Repos + GitHub Runners panels
     ├── meter.js          # the one meter the Machines tile and the AI panels'
     │                     #   plans both paint
-    ├── ai-sources.js     # the Anthropic and OpenAI panels
+    ├── ai-sources.js     # the AI Usage panel
     ├── usage.js          # the Usage panel
     ├── azure.js          # the Azure Cost panel
     ├── actions-billing.js  # the Actions billing panel
@@ -1591,19 +1595,20 @@ container the runtimes reported, including the ones rules hid or collapsed (so
 cruft building up stays visible), while `· N missing` counts exactly what the
 rollup can no longer see.
 
-## The `usage`, `anthropic`, `openai`, `azure_cost` and `actions_billing` commands
+## The `usage`, `ai_usage`, `azure_cost` and `actions_billing` commands
 
 ```js
 await window.__TAURI__.core.invoke("usage");
-await window.__TAURI__.core.invoke("anthropic");
-await window.__TAURI__.core.invoke("openai");
+await window.__TAURI__.core.invoke("ai_usage");
 await window.__TAURI__.core.invoke("azure_cost");
 await window.__TAURI__.core.invoke("actions_billing");
 ```
 
-The first three read one poller's state and share nothing else: each carries
+The first two read one poller's state and share nothing else: each carries
 its own `footer`, `freshness`, `loading`, `trailing` and `message`, so a failure
-behind one never reaches another's warning or chip.
+behind one never reaches the other's warning or chip. `ai_usage` is one command
+for both AI vendors: its `apis` list and its attributed header lines keep one
+vendor's failure from reading as the other's.
 
 ```jsonc
 // usage
@@ -1641,23 +1646,30 @@ behind one never reaches another's warning or chip.
                     // a key is unread: `Unknown` never paints a setup sentence
 }
 
-// anthropic
+// ai_usage
 {
-  "id": "anthropic", "title": "Anthropic",
-  "trailing": "1.2M today",              // "" when no summary exists
+  "id": "aiUsage", "title": "AI Usage",
+  "trailing": "Claude Code · 1.2M today", // "" when no summary exists; labelled,
+                                         //    because the tile covers several vendors
+  "claudeToday": "1.2M today",           // the bare figure the overview's Claude
+                                         //    Code row paints; "" with local usage off
   "message": null,                       // the rollups' own state, or "reading logs…"
                                          //    / "no usage data" / "no Claude usage in
-                                         //    the last 7 days", or, with no part set
-                                         //    up, "Anthropic isn’t set up — add it in
-                                         //    Settings → Sources → Add source". A `plans`
-                                         //    tile drops it, so a tile speaks for what it
+                                         //    the last 7 days"; "reading usage…" until
+                                         //    every vendor's key has been read; a key
+                                         //    that could not be read, first in body
+                                         //    order; or, with no part of any vendor set
+                                         //    up, "No AI usage yet — add Anthropic or
+                                         //    OpenAI in Settings → Sources → Add source".
+                                         //    A tile that does not keep the Claude Code
+                                         //    row drops it, so a tile speaks for what it
                                          //    shows
   "machineHeading": "THIS MACHINE",      // null when there are no rows under it
   "windows": [{"label": "LAST 5H", "value": "820k", "valueColor": "#33d17a"}, …],
   //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
   //     they cannot be read as the plan meters' 5h / Week
   "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
-  "plans": [        // the plan while it is ON, painted FIRST
+  "plans": [        // each plan while it is ON, painted FIRST: Claude's, then Codex's
     {"id": "claude-plan",
      "label": "Claude · Ultra",          // the tool's own plan name, or "Claude"
      "value": "out in ~1d 1h",           // the tightest verdict: "limit reached"
@@ -1677,32 +1689,27 @@ behind one never reaches another's warning or chip.
       //     read: `fraction` and `pace` null, note "reset since read". An
       //     Enterprise seat: one {"label": "Budget", "value": "$312 / $500 · 62%",
       //     "span": "full", "pace": null, …}; beside windows it is "Extra usage".
-    ]}
+    ]},
     //   ^ before any reading: "reading…" while it loads, "—" (muted) after a
     //     failure, and `metrics: []`
+    {"id": "codex-plan", "label": "Codex · Plus", …}   // the same shape
   ],
-  "api": {"id": "anthropic-api", "label": "API spend (MTD)", "value": "$412.80",
-          "valueColor": "#f5e6cd", "note": "counted 3h ago"},
-  //   ^ null until a pass has found an Admin key; `value` is "—" (muted) with no
-  //     figure, and `note` is null when the vendor gave no date. The row's id is
-  //     also the header's attribution, so the tile can keep or clear it.
-  "footer": null,       // ONE line: Claude's own (staleAfter 2.5 rollup cycles,
-                        // never under 150s), then the plan's, attributed
-  "freshness": null,    // the plan's clock. Claude's rollups contribute none:
-                        // they are on the `ClaudeRollups` cadence, and `footer`
-                        // already measures it
-  "loading": false
-}
-
-// openai
-{
-  "id": "openai", "title": "OpenAI",
-  "trailing": "",
-  "message": null,      // or {"text": "OpenAI isn’t set up — add it in Settings →
-                        //    Sources → Add source", "color": …}
-  "plans": [{"id": "codex-plan", "label": "Codex · Plus", …}],
-  "api": null,          // as Anthropic's, with id "openai-api"
-  "footer": null, "freshness": null, "loading": false
+  "apis": [         // ALWAYS a list, empty when neither Admin key is there; Anthropic's
+                    //   then OpenAI's, each only once a pass has found its key
+    {"id": "anthropic-api", "label": "Anthropic API spend (MTD)", "value": "$412.80",
+     "valueColor": "#f5e6cd", "note": "counted 3h ago"},
+    {"id": "openai-api", "label": "OpenAI API spend (MTD)", "value": "$1.50", …}
+  ],
+  //   ^ `value` is "—" (muted) with no figure, and `note` is null when the vendor
+  //     gave no date. A row's id is also the header's attribution, so the tile can
+  //     keep or clear it, and removing one vendor's key hides only that vendor's.
+  "footer": null,       // ONE line, in body order: each plan's, each spend's, then
+                        // the rollups' last under `claude-today` (staleAfter 2.5
+                        // rollup cycles, never under 150s), each attributed
+  "freshness": null,    // the plans' and spend clocks, attributed. Claude's rollups
+                        // contribute none: they are on the `ClaudeRollups` cadence,
+                        // and `footer` already measures it
+  "loading": false      // the OR of every enabled part's
 }
 
 // azure_cost
@@ -2594,8 +2601,8 @@ Two things worth knowing about this surface:
   so a change applies on the next tick. Since
   [#614](https://github.com/Sassy-Dog/solador/issues/614) the control is in the
   Configure of the tile(s) each feeds (**Poll cadence** — Containers, GitHub
-  Repos and Runners, Service Health, Anthropic (three: local logs, API spend and
-  plans), OpenAI (two: API spend and plans), Usage (metered providers), Azure
+  Repos and Runners, Service Health, AI Usage (three: local logs, API spend and
+  plans), Usage (metered providers), Azure
   Cost, Actions billing, Sentry Crons), not
   here; it was this tab's **Panel Poll Cadence**
   group ([#337](https://github.com/Sassy-Dog/solador/issues/337)). It says it is
@@ -3146,9 +3153,8 @@ cargo run -p solador-app -- --dump-repos sample-repos.json         # the Repos p
 cargo run -p solador-app -- --dump-runners sample-runners.json     # the Runners panel
 #   …both take `--empty`, which dumps the no-credential state.
 cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage panel
-cargo run -p solador-app -- --dump-anthropic sample-anthropic.json # the Anthropic panel
-cargo run -p solador-app -- --dump-openai sample-openai.json       # the OpenAI panel
-#   …all three take `--unmeasured` (both providers answering, neither measuring:
+cargo run -p solador-app -- --dump-ai-usage sample-ai-usage.json  # the AI Usage panel
+#   …both take `--unmeasured` (both providers answering, neither measuring:
 #   the em dash path, with the quota set and the bar therefore suppressed),
 #   `--empty` (no summary, every key read and none found) and `--stale` (the
 #   same good read, with the METERED providers' and the plans' last success
@@ -3230,7 +3236,7 @@ the_panels_have`) precisely so the Playwright suite cannot pass against a
 payload that quietly lost the case it claims to exercise — it carries an
 unknown count beside a genuine zero, an approval gate, a failing repo, an
 unreachable one, and remembered runners in both absence states.
-`--dump-usage` / `--dump-anthropic` / `--dump-openai` / `--dump-azure` / `--dump-openclaw` carry the same guard
+`--dump-usage` / `--dump-ai-usage` / `--dump-azure` / `--dump-openclaw` carry the same guard
 (`the_fixtures_cover_every_rendering_the_panel_has`, one per module): between
 them they pin the quota bar's amber step, its suppression when the count is
 unknown, the em dash beside a measured figure, the amber rollover caption, the
@@ -3287,7 +3293,7 @@ path. Trade-off accepted: ACL and command-registration regressions are
 **documented, not prevented**.
 
 **That rationale is now weaker than it was.** It was priced against one command
-and one card; the surface it leaves unguarded is now twelve commands and eight
+and one card; the surface it leaves unguarded is now eleven commands and eight
 panels — the three newest of which can replace the application binary
 (#308) — and the checklist below has grown with it. The trade-off still holds —
 `tauri-driver` still has no macOS support, so the cost side has not moved — but
@@ -3325,7 +3331,7 @@ SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
 A scratch store has no sources, so once the window opens add the one the
 on-screen checks read: **Settings → Sources → Add source → This machine → Finish**.
 
-Then tick these off. Eleven terminal lines, seven on-screen reads and one command in
+Then tick these off. Ten terminal lines, seven on-screen reads and one command in
 a second terminal — the terminal half works on a machine whose screen you
 cannot see.
 
@@ -3334,8 +3340,7 @@ cannot see.
 - [ ] **Terminal** — `repos: first frontend request (N repo row(s))` — **0 is a pass**
 - [ ] **Terminal** — `runners: first frontend request (N runner row(s))` — **0 is a pass**
 - [ ] **Terminal** — `usage: first frontend request (N provider section(s))` — **0 is a pass**
-- [ ] **Terminal** — `anthropic: first frontend request (N plan section(s))` — **0 is a pass**
-- [ ] **Terminal** — `openai: first frontend request (N plan section(s))` — **0 is a pass**
+- [ ] **Terminal** — `ai_usage: first frontend request (N plan section(s), N API spend section(s))` — **0 and 0 is a pass**
 - [ ] **Terminal** — `azure_cost: first frontend request (headline: false)` — **false is a pass**
 - [ ] **Terminal** — `crons: first frontend request (nothing read yet)` — that wording
       **is** the pass with no Sentry token; `all ok` or `N not ok` with one
@@ -3563,21 +3568,21 @@ and that immediacy is itself the check on the corresponding wake:
    permission `—` under READY, with the repo still green — a missing
    permission is not an outage.
 
-8. **Read the terminal a last time** for the Usage, Anthropic, OpenAI and Azure
+8. **Read the terminal a last time** for the Usage, AI Usage and Azure
    Cost panels' own one-line signals (all print at load, alongside the others):
 
    ```
    usage: first frontend request (0 provider section(s))
-   anthropic: first frontend request (0 plan section(s))
-   openai: first frontend request (0 plan section(s))
+   ai_usage: first frontend request (0 plan section(s), 0 API spend section(s))
    azure_cost: first frontend request (headline: false)
    ```
 
    The dashboard reads these payloads itself, so those lines do not prove the
-   commands are registered. To prove that, add an Anthropic and an OpenAI tile
-   and open each one's **Full view**: an unregistered command leaves it on its
-   failure line, and an upgrade from a store with a saved Usage tile should
-   already have added them.
+   commands are registered. To prove that, add an AI Usage tile and open its
+   **Full view**: an unregistered `ai_usage` command leaves it on its failure
+   line, and an upgrade from a store with a saved Usage tile, or with the
+   Anthropic and OpenAI tiles an earlier build wrote, should already have one
+   (`StoreData::merge_ai_tiles` leaves none of those two behind).
 
    **Both zero/false is still a pass for the boundary.** With no Neon key and no
    Sentry token in the scratch keychain the Usage panel has no section —
@@ -3589,14 +3594,14 @@ and that immediacy is itself the check on the corresponding wake:
    pass has read the saved export location — same rule as the GitHub panels
    above.
 
-   A scratch store has no sources, so the Anthropic panel starts as the sentence
-   `Anthropic isn't set up — add it in Settings → Sources → Add source`, which is
-   also a pass. To read its rollups, open that path, pick **Anthropic**, leave only
+   A scratch store has no sources, so the AI Usage panel starts as the sentence
+   `No AI usage yet — add Anthropic or OpenAI in Settings → Sources → Add source`,
+   which is also a pass. To read its rollups, open that path, pick **Anthropic**, leave only
    **Local usage** ticked and press Finish. That part needs **no credential at
    all** to populate: it walks `~/.claude/projects` on this machine. On a machine that has
    run Claude Code, expect `LAST 5H` and `LAST 7D` token counts under `THIS
    MACHINE`, a `TOP PROJECTS (7D)`
-   list, and an `N today` trailing label within one rollup cadence (a minute by default). On one that
+   list, and a `Claude Code · N today` trailing label within one rollup cadence (a minute by default). On one that
    has not, expect `no ~/.claude/projects` in the footer with `no usage data`
    above it — also a pass, and the two are different Rust sentences.
 
@@ -3619,24 +3624,27 @@ and that immediacy is itself the check on the corresponding wake:
    **Anthropic** under Settings → Sources (or Add source → **Anthropic**, on a
    store that has not added it), leave only **Subscription** ticked, and press
    Finish. The steps must not read the sign-in before Finish, the tile must have
-   no `Claude Code` row, and the overview must hold one Anthropic tile. Within a poll the
-   Anthropic panel's first block is `Claude · <plan>` (the name Claude Code itself
+   no `Claude Code` row, and the overview must hold one AI Usage tile. Within a poll the
+   AI Usage panel's first block is `Claude · <plan>` (the name Claude Code itself
    displays; `Claude` alone when its profile names none) with one meter per
    limit the reply carries: on a verified Ultra plan, `Week` and `Week ·
    <model>` and **no `5h` meter**. Once a tenth of the week has passed each
    meter has a pace tick and a note under it (`resets in 3d 5h · on pace for
    76%`), and the row's verdict is the tightest of them. On an Enterprise seat
    expect one full-width `Budget` meter (`$312 / $500 · 62%`), no tick, and
-   `no reset date reported`. The Anthropic tile on the overview shows the same
+   `no reset date reported`. The AI Usage tile on the overview shows the same
    meters as a card, the plan's verdict in its value slot, and the token
-   counts folded into one `Claude Code · N today` row once **Local usage** is
-   picked too. **Subscription** under **OpenAI** does the same for the OpenAI
+   counts folded into one `Claude Code` row (`N today`) once **Local usage** is
+   picked too. **Subscription** under **OpenAI** adds the Codex plan to the same
+   tile, after Claude's, and adding OpenAI after Anthropic must not add a second
    tile. **API key** takes an Admin key, which must land in the OS credential
-   store and never in `store.json`, and the tile gains `API spend (MTD)`; these
+   store and never in `store.json`, and the tile gains `Anthropic API spend
+   (MTD)` or `OpenAI API spend (MTD)`, each only for the vendor whose key was
+   saved, and removing one vendor's source hides only that vendor's figure; these
    readers have only ever been run against the vendors' documentation, so the
    first real key is the first live test. None of this has
    automated coverage across the IPC boundary; the fixtures behind the e2e
-   suite (`--dump-anthropic`, `--dump-openai`, `--plan-edges`) are Rust's, not
+   suite (`--dump-ai-usage`, `--plan-edges`) are Rust's, not
    the live reply's.
 
 9. **Read the terminal for the OpenClaw panel's own one-line signal** (it prints
@@ -3803,14 +3811,14 @@ sentence — the same argument a fourth and fifth time. A missing panel does not
 pass: both stay hidden until a payload arrives, deliberately, so a broken
 boundary cannot masquerade as an unconfigured one.
 
-Step 8 passes when `usage:`, `anthropic:`, `openai:` and `azure_cost: first frontend request …` all
+Step 8 passes when `usage:`, `ai_usage:` and `azure_cost: first frontend request …` all
 print and each panel carries a heading plus *either* its content or its
-zero-credential state — the same argument a sixth to ninth time.
+zero-credential state — the same argument a sixth to eighth time.
 
 Step 9 passes when `openclaw: first frontend request …` prints and the panel
 carries a heading plus *either* its runtime sections, its connection line, its
 pairing banner, or the muted `add a gateway URL in Settings → Sources → OpenClaw` hint —
-the same argument a tenth time. Every one of those strings is
+the same argument a ninth time. Every one of those strings is
 `openclaw::view`'s, reachable only through `invoke("openclaw")`. A machine with
 no gateway configured passes; a missing panel does not.
 
@@ -3850,7 +3858,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The **Repos** or **GitHub Runners** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `repos`/`runners` command, or a script error in `github.js`. Both panels stay hidden until a payload arrives, so this cannot be mistaken for "no token configured" — that state renders a visible panel with one sentence in it. Check the webview console. |
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. A different footer, `couldn't read runners — GitHub has more than this build will count — …`, means the org registers more runners than the walk will read (`RUNNERS_PAGE_CAP` x 100); the token is fine and the rows are the last good fetch. |
-| The **Usage**, **Anthropic**, **OpenAI** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`anthropic`/`openai`/`azure_cost` command, or a script error in `usage.js`/`ai-sources.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
+| The **Usage**, **AI Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`ai_usage`/`azure_cost` command, or a script error in `usage.js`/`ai-sources.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
 | The Usage panel shows no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Sources shows the source's row; if it does, the provider read has not run yet — saving wakes it. For Neon, Sentry or Vercel, reopen the row's steps and press **Finish** (the key field may stay empty, which keeps the stored key). |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |

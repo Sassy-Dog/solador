@@ -140,7 +140,7 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   app over the hand-off channel; it never writes the store or keychain itself.
 - **No seeded container grouping rules**, and matching is first-match-wins.
 - **Another program's credential is read, never kept** (Security below); the
-  Anthropic tile's Claude Code rollups have **no account** and a subscription is not an account.
+  AI Usage tile's Claude Code rollups have **no account** and a subscription is not an account.
 - **Nine panel cadences are the operator's**, edited in the owning tile's
   Configure and read after every pass; a below-floor value is refused with its
   reason, not clamped (`set_panel_interval_secs` / `panel_interval_secs` still
@@ -152,7 +152,8 @@ Detail for each is in `docs/APP-INTERNALS.md` and `docs/PANELS.md`.
   Full view of Solador itself (#647).
 - **Every source is added; none is built in.** A fresh store has none, and a
   store written before the switches keeps what it had
-  (`on_before_sources_were_added`). Anthropic and OpenAI are added when any part
+  (`on_before_sources_were_added`). Anthropic and OpenAI are two sources that
+  both feed the one AI Usage tile (`aiUsage`); each is added when any part
   is on, which is derived, never stored. A part not set up says nothing.
   `settings_save_source` applies a source's steps at Finish through
   `store::source_save`, and whatever can refuse runs before its first write.

@@ -39,8 +39,7 @@ const PAYLOADS = {
   repos: "sample-showcase-repos.json",
   runners: "sample-showcase-runners.json",
   containers: "sample-showcase-containers.json",
-  anthropic: "sample-showcase-anthropic.json",
-  openai: "sample-showcase-openai.json",
+  ai_usage: "sample-showcase-ai-usage.json",
   usage: "sample-showcase-usage.json",
   azure_cost: "sample-showcase-azure.json",
   crons: "sample-showcase-crons.json",
@@ -56,8 +55,8 @@ const PAYLOADS = {
  * narrow shot once showed overlapping host cards: a layout computed for 2732px
  * painted into a 900px window. So each viewport below has its own dump, and a
  * width with none is refused, never approximated. The widths are what those
- * viewports measure (1024, 908, 900, 462, 452 and 366 wide, less the page padding; a tile's Full view asks
- * at the window's own width too, which is why 900 and 366 have a dump); a CSS change that
+ * viewports measure (1024, 908, 900, 462 and 452 wide, less the page padding; a tile's Full view asks
+ * at the window's own width too, which is why 900 has a dump); a CSS change that
  * moves them fails here loudly, and the fix is to re-measure and re-pin them in package.json's `fixtures:showcase`.
  */
 const COCKPITS = {
@@ -67,8 +66,6 @@ const COCKPITS = {
   900: "sample-showcase-cockpit-900.json",
   430: "sample-showcase-cockpit-430.json",
   420: "sample-showcase-cockpit-420.json",
-  366: "sample-showcase-cockpit-366.json",
-  334: "sample-showcase-cockpit-334.json",
 };
 
 /** The box `.tile-shot img` crops each panel image into on solador.app (site.css, 311x195 at the 3-up layout). */
@@ -186,7 +183,7 @@ async function expectCpuSectionInCrop(panel) {
 
 /**
  * What a card says must lie wholly inside the crop the site shows: Usage's says
- * "Neon, Sentry and Vercel consumption", OpenAI's alt says a meter for each
+ * "Neon, Sentry and Vercel consumption", AI Usage's alt says a meter for each
  * limit. Every card is anchored top left: `cover` scales the image to fill the
  * box, and what lies below the top `visibleH` is cut. The crop must also keep
  * the panel's full width, because these panels' values are right-aligned.
@@ -276,9 +273,9 @@ test.describe("at 2x: the shots people look at", () => {
   // under this machine's, Azure Cost keeps the prior month, projection and
   // resource groups. Usage is 452, ten narrower: it is the one panel shorter
   // than the box's shape, so at 462 `cover` scaled it by its height and cut its
-  // right-aligned values (expectWholeInCrop). OpenAI is 366: one plan is short,
-  // so at 462 the crop kept half its width and cut the second meter; narrow
-  // enough, the meters stack, and wide enough, the API row stays in the box.
+  // right-aligned values (expectWholeInCrop). AI Usage is 462: both plans lead
+  // it, so the crop keeps both plans' meters, and what lies below (the API
+  // spend, the rollups) is cut.
   // Hosts is one card — this machine's — at 900: the whole host
   // grid at 1800 wide and 2x is a 3500px image for a tile that shows a few
   // hundred. Hosts asks Rust for the cockpit at the window's own width (900) as
@@ -288,8 +285,7 @@ test.describe("at 2x: the shots people look at", () => {
     ["#reposPanel", "repos", 908, "ghWorkflows"],
     ["#runnersPanel", "runners", 908, "ghRunners"],
     ["#containersPanel", "containers", 462, "containers"],
-    ["#anthropicPanel", "anthropic", 462, "anthropic"],
-    ["#openaiPanel", "openai", 366, "openai"],
+    ["#aiUsagePanel", "ai-usage", 462, "aiUsage"],
     ["#usagePanel", "usage", 452, "usage"],
     ["#cronsPanel", "crons", 462, "sentryCrons"],
     ["#servicesPanel", "services", 462, "services"],
@@ -306,8 +302,8 @@ test.describe("at 2x: the shots people look at", () => {
       if (name === "usage") {
         await expectWholeInCrop(panel, ["neon", "sentry", "vercel"].map((id) => `.pv-section[data-provider="${id}"]`));
       }
-      if (name === "openai") {
-        await expectWholeInCrop(panel, ['.pv-section[data-plan="codex-plan"]', '.pv-section[data-section="api"]']);
+      if (name === "ai-usage") {
+        await expectWholeInCrop(panel, ['.pv-section[data-plan="claude-plan"]', '.pv-section[data-plan="codex-plan"]']);
       }
       if (name === "hosts") await expectCpuSectionInCrop(panel);
       await panel.screenshot({ path: path.join(OUT, `panel-${name}.png`) });

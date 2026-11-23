@@ -52,7 +52,7 @@ need no account, no sign-up, no server and no token:
   shipped: add GitHub and GitHub appears, add Anthropic and Anthropic does. Add
   any Atlassian Statuspage of your own in Settings and it is watched alongside
   them.
-- **Anthropic, with Local usage picked** — token rollups folded up from the
+- **AI Usage, with Anthropic's Local usage picked** — token rollups folded up from the
   Claude Code logs already on your disk. No key, no account, nothing leaves the
   machine.
 
@@ -63,7 +63,7 @@ not failure*, and the code says so in as many words.
 ## What it shows
 
 The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
-duplicate and scope them, or add a view of any of the twelve sources below.
+duplicate and scope them, or add a view of any of the eleven sources below.
 **Needs attention** includes hidden sources. A tile's **View** menu opens its
 **Detail**, or its own **Full view**: the source's full panel holding only that
 tile's scope, under the tile's name; **Escape** returns to the overview. Both
@@ -91,8 +91,7 @@ carries one splits, and Detail and Full show every runner's labels.
 | **Containers / VMs** | docker, podman and tart, locally and on every host |
 | **GitHub Repos** | running workflows, open issues, ready work and PRs (with Dependabot's count), longest-running elapsed, branch and worktree counts, grouped by owner |
 | **GitHub Runners** | your self-hosted runners, with an absence roster for the ones that should be there and aren't |
-| **Anthropic** | whichever you set up: Claude's plan limits (the plan's name, a meter per 5-hour and weekly window it has or an Enterprise seat's dollar budget, and whether the current pace runs out before the reset), your organization's API spend this month, and this machine's Claude Code token rollups |
-| **OpenAI** | Codex's plan limits and your organization's API spend this month, each only if you set it up |
+| **AI Usage** | every AI vendor in one tile, whichever parts you set up: Claude's and Codex's plan limits (the plan's name, a meter per 5-hour and weekly window it has or an Enterprise seat's dollar budget, and whether the current pace runs out before the reset), your Anthropic and OpenAI organizations' API spend this month, and this machine's Claude Code token rollups |
 | **Usage** | Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
 | **Actions billing** | your GitHub organization's hosted Actions minutes and net spend this month, by SKU and by repo, against its Actions budget, flagging a repo's daily spike and hosted macOS minutes on repos you list as self-hosted, a day-by-day hosted-minutes line in its Full view, and how far behind the report is |
@@ -107,9 +106,9 @@ carries one splits, and Detail and Full show every runner's labels.
 |:--:|:--:|
 | ![Repos](site/assets/screenshots/panel-repos.png) | ![GitHub Runners](site/assets/screenshots/panel-runners.png) |
 | ![Containers](site/assets/screenshots/panel-containers.png) | ![Usage](site/assets/screenshots/panel-usage.png) |
-| ![Anthropic](site/assets/screenshots/panel-anthropic.png) | ![OpenAI](site/assets/screenshots/panel-openai.png) |
-| ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Service Health](site/assets/screenshots/panel-services.png) |
-| ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](site/assets/screenshots/panel-openclaw.png) |
+| ![AI Usage](site/assets/screenshots/panel-ai-usage.png) | ![Sentry Crons](site/assets/screenshots/panel-crons.png) |
+| ![Service Health](site/assets/screenshots/panel-services.png) | ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) |
+| ![OpenClaw](site/assets/screenshots/panel-openclaw.png) | |
 
 Each tile's own **Configure** has a **Full view** page for how its panel is
 laid out (CPU core rows, row spacing, host overflow, Table or List).
@@ -328,7 +327,7 @@ palette.
 It ships, it's signed, and it runs all day — and it is still young.
 
 **Working today:** signed and notarized universal macOS builds, a signed Windows
-installer, an update check, and all twelve panels.
+installer, an update check, and all eleven panels.
 
 **Rough edges, stated plainly:**
 

@@ -268,7 +268,7 @@ struct App {
     /// credentials and accounts already in the cockpit, so those edits wake
     /// this one (and the GitHub one too, where they also change what it fetches).
     services_wake: tokio::sync::Notify,
-    /// What the Usage, Anthropic and OpenAI panels render: Claude token rollups on
+    /// What the Usage and AI Usage panels render: Claude token rollups on
     /// [`PanelInterval::ClaudeRollups`], Neon, Sentry and Vercel on
     /// [`PanelInterval::UsageProviders`] (hourly by default).
     usage: Mutex<UsageState>,
@@ -3003,8 +3003,7 @@ fn dashboard_view_in(width: f64, app: &App) -> Value {
         containers_unscoped(app),
         services_unscoped(app),
         crons_unscoped(app),
-        anthropic_unscoped(app),
-        openai_unscoped(app),
+        ai_usage_unscoped(app),
         usage_unscoped(app),
         azure_cost_unscoped(app),
         actions_billing_unscoped(app),
@@ -3263,7 +3262,7 @@ fn apply_machine_preferences(
 // re-read the interval, sleep interruptibly — so a Settings edit applies now
 // rather than on the far side of a cadence that can be four hours long.
 
-/// One walk of Claude Code's logs for the Anthropic panel's token rollups.
+/// One walk of Claude Code's logs for the AI Usage panel's token rollups.
 ///
 /// Stamped when the walk returns, not before it starts, like every provider
 /// below: a reading is as old as the moment it was taken.
@@ -3625,7 +3624,7 @@ impl UsageClocks {
     }
 }
 
-/// The poll loop for the Anthropic panel's Claude rollups and the Usage
+/// The poll loop for the AI Usage panel's Claude rollups and the Usage
 /// panel's metered providers: one loop, two halves, each on **its own**
 /// cadence (#635).
 ///
@@ -3678,7 +3677,7 @@ async fn usage_loop(app: Arc<App>) {
     }
 }
 
-// MARK: the Anthropic panel's plan rows
+// MARK: the AI Usage panel's plan rows
 //
 // Their own loop rather than a fourth provider inside `poll_usage_providers`:
 // they run on their own cadence, and they are the only reads in the app that
@@ -4170,7 +4169,7 @@ async fn actions_billing_loop(app: Arc<App>) {
     }
 }
 
-/// Guards the Anthropic panel's counterpart to [`FIRST_REQUEST`].
+/// Guards the Usage panel's counterpart to [`FIRST_REQUEST`].
 static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
@@ -4208,52 +4207,31 @@ fn usage_unscoped(state: &App) -> Value {
     payload
 }
 
-/// Guards the Anthropic panel's counterpart to [`FIRST_REQUEST`].
-static FIRST_ANTHROPIC_REQUEST: std::sync::Once = std::sync::Once::new();
+/// Guards the AI Usage panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_AI_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
-fn anthropic(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(&state, "anthropic", tile.as_deref(), || {
-        anthropic_unscoped(&state)
+fn ai_usage(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
+    scope_to_tile(&state, "aiUsage", tile.as_deref(), || {
+        ai_usage_unscoped(&state)
     })
 }
 
-/// [`anthropic`] without a tile: the whole source, as the dashboard reads it.
-fn anthropic_unscoped(state: &App) -> Value {
-    // The plan opt-in, read here rather than by the poller: switching it off
+/// [`ai_usage`] without a tile: the whole source, as the dashboard reads it.
+fn ai_usage_unscoped(state: &App) -> Value {
+    // The plan opt-ins, read here rather than by the poller: switching one off
     // must hide its row on this frame, not after the next pass drops it.
     let plans = plan_inputs(&state.store);
     let payload = {
         let panel = state.usage.lock().expect("usage state poisoned");
-        usage::anthropic_view(&panel, plans, panel::now_unix())
+        usage::ai_usage_view(&panel, plans, panel::now_unix())
     };
-    FIRST_ANTHROPIC_REQUEST.call_once(|| {
+    FIRST_AI_USAGE_REQUEST.call_once(|| {
         let plans = payload["plans"].as_array().map_or(0, Vec::len);
-        eprintln!("anthropic: first frontend request ({plans} plan section(s))");
-    });
-    payload
-}
-
-/// Guards the OpenAI panel's counterpart to [`FIRST_REQUEST`].
-static FIRST_OPENAI_REQUEST: std::sync::Once = std::sync::Once::new();
-
-#[tauri::command]
-fn openai(tile: Option<String>, state: tauri::State<'_, Arc<App>>) -> Result<Value, String> {
-    scope_to_tile(&state, "openai", tile.as_deref(), || {
-        openai_unscoped(&state)
-    })
-}
-
-/// [`openai`] without a tile: the whole source, as the dashboard reads it.
-fn openai_unscoped(state: &App) -> Value {
-    let plans = plan_inputs(&state.store);
-    let payload = {
-        let panel = state.usage.lock().expect("usage state poisoned");
-        usage::openai_view(&panel, plans, panel::now_unix())
-    };
-    FIRST_OPENAI_REQUEST.call_once(|| {
-        let plans = payload["plans"].as_array().map_or(0, Vec::len);
-        eprintln!("openai: first frontend request ({plans} plan section(s))");
+        let apis = payload["apis"].as_array().map_or(0, Vec::len);
+        eprintln!(
+            "ai_usage: first frontend request ({plans} plan section(s), {apis} API spend section(s))"
+        );
     });
     payload
 }
@@ -6674,8 +6652,7 @@ fn dump_showcase_dashboard() -> Value {
             dump_containers_showcase(),
             services::view(&services::showcase_statuses(), true),
             dump_crons(crons::Fixture::Healthy, false),
-            dump_anthropic(usage::Fixture::Showcase, false),
-            dump_openai(usage::Fixture::Showcase, false),
+            dump_ai_usage(usage::Fixture::Showcase, false),
             dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA),
             dump_azure(azure::Fixture::Measured, false, SHOWCASE_AZURE_BUDGET),
             dump_openclaw(openclaw::Fixture::Showcase),
@@ -6778,7 +6755,7 @@ const FIXTURE_USAGE_QUOTA: u64 = 10_000;
 /// The e2e fixture's Azure budget, which its projected month lands at 97% of.
 const FIXTURE_AZURE_BUDGET: f64 = 2_000.0;
 
-/// The instant every Usage, Anthropic and OpenAI dump is rendered at.
+/// The instant every Usage and AI Usage dump is rendered at.
 const USAGE_DUMP_NOW: u64 = 1_700_000_000;
 
 /// The hand-made state behind those three dumps. `stale` moves the slow clock,
@@ -6831,16 +6808,8 @@ fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
     )
 }
 
-fn dump_anthropic(kind: usage::Fixture, stale: bool) -> Value {
-    usage::anthropic_view(
-        &dump_usage_state(kind, stale),
-        dump_plan_inputs(kind),
-        USAGE_DUMP_NOW,
-    )
-}
-
-fn dump_openai(kind: usage::Fixture, stale: bool) -> Value {
-    usage::openai_view(
+fn dump_ai_usage(kind: usage::Fixture, stale: bool) -> Value {
+    usage::ai_usage_view(
         &dump_usage_state(kind, stale),
         dump_plan_inputs(kind),
         USAGE_DUMP_NOW,
@@ -7282,8 +7251,7 @@ fn dump_dashboard_with(layout: &store::DashboardLayout, repos: Value) -> Value {
         dump_containers(false),
         services::view(&services::fixture_statuses(), true),
         dump_crons(crons::Fixture::Alerting, false),
-        dump_anthropic(usage::Fixture::Measured, false),
-        dump_openai(usage::Fixture::Measured, false),
+        dump_ai_usage(usage::Fixture::Measured, false),
         dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
         dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
         dump_actions_billing(actions_billing::Fixture::Measured, false),
@@ -7479,12 +7447,8 @@ fn run_dump(args: &[String]) -> bool {
             usage::Fixture::Measured
         }
     };
-    if let Some(path) = dump_flag_path(args, "--dump-anthropic", "sample-anthropic.json") {
-        write_json(&path, &dump_anthropic(usage_fixture(), stale));
-        return true;
-    }
-    if let Some(path) = dump_flag_path(args, "--dump-openai", "sample-openai.json") {
-        write_json(&path, &dump_openai(usage_fixture(), stale));
+    if let Some(path) = dump_flag_path(args, "--dump-ai-usage", "sample-ai-usage.json") {
+        write_json(&path, &dump_ai_usage(usage_fixture(), stale));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-usage", "sample-usage.json") {
@@ -8015,8 +7979,7 @@ fn main() {
             runners,
             runners_forget,
             usage,
-            anthropic,
-            openai,
+            ai_usage,
             azure_cost,
             actions_billing,
             services,
@@ -8831,10 +8794,25 @@ mod tests {
             layout
                 .tiles
                 .iter()
-                .filter(|t| t.source == "anthropic")
+                .filter(|t| t.source == "aiUsage")
                 .count(),
             1
         );
+        dashboard::validate(layout).unwrap();
+    }
+
+    /// Both vendors feed the one AI Usage tile, so adding OpenAI after Anthropic
+    /// finds the tile already there and adds no second one.
+    #[test]
+    fn adding_openai_after_anthropic_adds_no_second_ai_tile() {
+        let (_dir, _rt, app) = test_app();
+        save_source_in(&app, "anthropic", &parts(&["subscription"]), None, true).unwrap();
+        save_source_in(&app, "openai", &parts(&["subscription"]), None, true).unwrap();
+        let store = app.store.lock().unwrap();
+        let layout = store.dashboard().unwrap();
+        let sources: Vec<&str> = layout.tiles.iter().map(|t| t.source.as_str()).collect();
+        assert_eq!(sources.iter().filter(|s| **s == "aiUsage").count(), 1);
+        assert!(!sources.iter().any(|s| matches!(*s, "anthropic" | "openai")));
         dashboard::validate(layout).unwrap();
     }
 
@@ -8989,7 +8967,7 @@ mod tests {
             .unwrap()
             .tiles
             .iter()
-            .any(|tile| tile.source == "anthropic"));
+            .any(|tile| tile.source == "aiUsage"));
     }
 
     /// Remove source sends the same `add_tile` the steps were opened with, and
@@ -9042,8 +9020,9 @@ mod tests {
         rt.block_on(rollups_pass(&app, || {
             (Some(usage::UsageSummary::default()), None)
         }));
-        let on = usage::anthropic_view(&app.usage.lock().unwrap(), inputs(&app), 1);
-        assert_eq!(on["trailing"], "0 today");
+        let on = usage::ai_usage_view(&app.usage.lock().unwrap(), inputs(&app), 1);
+        assert_eq!(on["claudeToday"], "0 today");
+        assert_eq!(on["trailing"], "Claude Code \u{b7} 0 today");
 
         app.store
             .lock()
@@ -9056,8 +9035,9 @@ mod tests {
             .unwrap()
             .settings_mut()
             .claude_local_logs_enabled = true;
-        let again = usage::anthropic_view(&app.usage.lock().unwrap(), inputs(&app), 1);
+        let again = usage::ai_usage_view(&app.usage.lock().unwrap(), inputs(&app), 1);
         assert_eq!(again["trailing"], "", "nothing retained");
+        assert_eq!(again["claudeToday"], "", "nothing retained");
         assert_eq!(again["message"]["text"], usage::LOADING_MESSAGE);
     }
 
@@ -9084,11 +9064,21 @@ mod tests {
             ));
         };
         let card = |app: &App| {
-            usage::anthropic_view(
+            usage::ai_usage_view(
                 &app.usage.lock().unwrap(),
                 plan_usage::PlanInputs::OFF,
                 panel::now_unix(),
             )
+        };
+        // Anthropic's spend, by its row id: the card carries both vendors'.
+        let spend = |app: &App| {
+            card(app)["apis"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|api| api["id"] == usage::ANTHROPIC_API_ID)
+                .cloned()
+                .unwrap_or(Value::Null)
         };
 
         rt.block_on(poll_api_spend(
@@ -9109,19 +9099,19 @@ mod tests {
             .set_secret(SecretKey::AnthropicAdminKey, "sk-ant-admin01-x")
             .unwrap();
         pass(Ok(measured));
-        assert_eq!(card(&app)["api"]["value"], "$2.50");
+        assert_eq!(spend(&app)["value"], "$2.50");
 
         pass(Err(ApiSpendError::Unauthorized {
             vendor: "Anthropic",
         }));
-        assert_eq!(card(&app)["api"]["value"], "$2.50");
+        assert_eq!(spend(&app)["value"], "$2.50");
         assert!(card(&app)["footer"]["text"]
             .as_str()
             .unwrap()
             .contains("Admin API key"));
 
         pass(Ok(ApiSpendSummary::Unmeasured));
-        assert_eq!(card(&app)["api"]["value"], "\u{2014}");
+        assert_eq!(spend(&app)["value"], "\u{2014}");
         assert!(card(&app)["footer"]["text"]
             .as_str()
             .unwrap()
@@ -9137,7 +9127,7 @@ mod tests {
             UsageState::anthropic_api_mut,
             |_| -> Option<std::future::Ready<_>> { panic!("asked with no key") },
         ));
-        assert!(card(&app)["api"].is_null());
+        assert!(spend(&app).is_null());
     }
 
     /// A keychain that won't answer is evidence of nothing, so the figure stays
@@ -9167,36 +9157,46 @@ mod tests {
             |_| -> Option<std::future::Ready<_>> { panic!("asked with no key") },
         ));
 
-        let card = usage::anthropic_view(
+        let card = usage::ai_usage_view(
             &app.usage.lock().unwrap(),
             plan_usage::PlanInputs::OFF,
             panel::now_unix(),
         );
-        assert_eq!(card["api"]["value"], "$2.50");
+        assert_eq!(card["apis"][0]["id"], usage::ANTHROPIC_API_ID);
+        assert_eq!(card["apis"][0]["value"], "$2.50");
         assert!(card["footer"]["text"]
             .as_str()
             .unwrap()
             .contains(CREDENTIAL_UNREADABLE_MESSAGE));
     }
 
-    type SpendCard = fn(&UsageState, plan_usage::PlanInputs, u64) -> Value;
+    /// Whether the AI Usage card carries this vendor's API spend, by its row id.
+    /// One card holds both vendors' spend, so this is what keeps one vendor from
+    /// showing the other's figure.
+    fn card_has_spend(card: &Value, api_id: &str) -> bool {
+        card["apis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|api| api["id"] == api_id)
+    }
 
-    /// The two Admin-key sources. `SOURCES` pairs each key with its spend figure
-    /// (`ApiKey { secret, spend }`) and `AppSourceSave::unconfigure_spend` maps
-    /// that to the spend state by hand, so the tests below run over both rather than over the
-    /// first.
-    const KEYED_SOURCES: [(&str, SecretKey, SpendState, SpendCard); 2] = [
+    /// The two Admin-key sources, each with the id of the spend row it feeds.
+    /// `SOURCES` pairs each key with its spend figure (`ApiKey { secret, spend }`)
+    /// and `AppSourceSave::unconfigure_spend` maps that to the spend state by
+    /// hand, so the tests below run over both rather than over the first.
+    const KEYED_SOURCES: [(&str, SecretKey, SpendState, &str); 2] = [
         (
             "anthropic",
             SecretKey::AnthropicAdminKey,
             UsageState::anthropic_api_mut,
-            usage::anthropic_view,
+            usage::ANTHROPIC_API_ID,
         ),
         (
             "openai",
             SecretKey::OpenAiAdminKey,
             UsageState::openai_api_mut,
-            usage::openai_view,
+            usage::OPENAI_API_ID,
         ),
     ];
 
@@ -9251,9 +9251,10 @@ mod tests {
 
             assert_eq!(app.credentials.secret(key).unwrap(), None, "{kind}");
             let state = app.usage.lock().unwrap();
-            for (other, _, _, card) in KEYED_SOURCES {
-                let inputs = plan_usage::PlanInputs::OFF;
-                let hidden = card(&state, inputs, panel::now_unix())["api"].is_null();
+            let inputs = plan_usage::PlanInputs::OFF;
+            let card = usage::ai_usage_view(&state, inputs, panel::now_unix());
+            for (other, _, _, api_id) in KEYED_SOURCES {
+                let hidden = !card_has_spend(&card, api_id);
                 assert_eq!(hidden, other == kind, "removing {kind}, reading {other}");
             }
         }
@@ -9463,26 +9464,32 @@ mod tests {
                 }));
             }
 
-            for ((kind, _, _, card), (_, added)) in KEYED_SOURCES.into_iter().zip(vendors) {
+            // One tile holds both vendors, so what each vendor contributes to it
+            // is checked per vendor, and its one setup sentence is checked once.
+            let tile = usage::ai_usage_view(
+                &app.usage.lock().unwrap(),
+                plan_inputs(&app.store),
+                panel::now_unix(),
+            );
+            for ((kind, _, _, api_id), (keyed, added)) in KEYED_SOURCES.into_iter().zip(vendors) {
                 let listed = settings_payload(&app)["connections"]["rows"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .any(|row| row["kind"] == kind);
                 assert_eq!(listed, added, "{kind}'s Sources row, {context}");
-
-                let tile = card(
-                    &app.usage.lock().unwrap(),
-                    plan_inputs(&app.store),
-                    panel::now_unix(),
-                );
-                let setup = settings::not_set_up_message(tile["title"].as_str().unwrap());
                 assert_eq!(
-                    tile["message"].to_string().contains(&setup),
-                    !added,
-                    "{kind}'s tile, {context}"
+                    card_has_spend(&tile, api_id),
+                    keyed,
+                    "{kind}'s spend on the tile, {context}"
                 );
             }
+            let setup = settings::none_added_message();
+            assert_eq!(
+                tile["message"].to_string().contains(&setup),
+                !vendors.iter().any(|(_, added)| *added),
+                "the tile's setup sentence, {context}"
+            );
 
             let store = app.store.lock().unwrap();
             let vendors = services::active_vendors(&store, &*app.credentials);
@@ -10693,7 +10700,7 @@ mod tests {
     #[test]
     fn each_panel_command_scopes_its_tile_to_its_own_source() {
         // Command, the function whose body makes the call, and the call's text.
-        let table: [(&str, &str, &str); 12] = [
+        let table: [(&str, &str, &str); 11] = [
             ("cockpit", "cockpit_for_tile", "tile_from_store(app, id, \""),
             ("repos", "repos", "scope_to_tile(&state, \""),
             ("runners", "runners", "scope_to_tile(&state, \""),
@@ -10701,8 +10708,7 @@ mod tests {
             ("services", "services", "scope_to_tile(&state, \""),
             ("crons", "crons", "scope_to_tile(&state, \""),
             ("usage", "usage", "scope_to_tile(&state, \""),
-            ("anthropic", "anthropic", "scope_to_tile(&state, \""),
-            ("openai", "openai", "scope_to_tile(&state, \""),
+            ("ai_usage", "ai_usage", "scope_to_tile(&state, \""),
             ("azure_cost", "azure_cost", "scope_to_tile(&state, \""),
             (
                 "actions_billing",
@@ -10719,8 +10725,7 @@ mod tests {
             ("services", "services"),
             ("crons", "sentryCrons"),
             ("usage", "usage"),
-            ("anthropic", "anthropic"),
-            ("openai", "openai"),
+            ("ai_usage", "aiUsage"),
             ("azure_cost", "azureCost"),
             ("actions_billing", "actionsBilling"),
             ("openclaw", "openclawAgents"),
@@ -10775,9 +10780,9 @@ mod tests {
                 && cockpit.contains("Some(id) => cockpit_for_tile("),
             "the cockpit command scopes a Machines tile with its own tile"
         );
-        // The twelve are all of them. Every function that calls into the scoping
+        // The eleven are all of them. Every function that calls into the scoping
         // is a row above, `cockpit`, or the scoping itself, whatever it calls its
-        // tile: a thirteenth command that scopes one is a new row here.
+        // tile: a twelfth command that scopes one is a new row here.
         let mut callers = std::collections::BTreeSet::new();
         let mut current = "";
         for line in source.lines() {
@@ -13776,15 +13781,14 @@ mod tests {
         assert_eq!(dump_local_card()["hostName"], "mac-studio");
     }
 
-    /// The showcase carries a plan on each AI tile and the Vercel reading on
-    /// Usage (#685): the plan condition in `dump_plan_inputs` must hold for
-    /// `Showcase`, or the README's full image silently loses its plan rows.
+    /// The showcase carries both plans on the AI Usage tile and the Vercel
+    /// reading on Usage (#685): the plan condition in `dump_plan_inputs` must
+    /// hold for `Showcase`, or the README's full image silently loses its plan
+    /// rows.
     #[test]
     fn the_showcase_dumps_have_each_plan_and_three_providers() {
-        let anthropic = dump_anthropic(usage::Fixture::Showcase, false);
-        assert_eq!(anthropic["plans"].as_array().expect("plans").len(), 1);
-        let openai = dump_openai(usage::Fixture::Showcase, false);
-        assert_eq!(openai["plans"].as_array().expect("plans").len(), 1);
+        let ai_usage = dump_ai_usage(usage::Fixture::Showcase, false);
+        assert_eq!(ai_usage["plans"].as_array().expect("plans").len(), 2);
         let usage = dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA);
         assert_eq!(usage["providers"].as_array().expect("providers").len(), 3);
     }

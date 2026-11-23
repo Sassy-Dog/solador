@@ -326,7 +326,7 @@ test("every screenshot's declared width and height is its file's pixel size", ()
   const imgs = [
     ...html.matchAll(/<img src="(\/assets\/screenshots\/[^"]+\.png)"[^>]*? width="(\d+)" height="(\d+)"/g),
   ];
-  expect(imgs.length).toBe(12);
+  expect(imgs.length).toBe(11);
   for (const [, src, width, height] of imgs) {
     const png = fs.readFileSync(path.join(SITE, src));
     expect(png.subarray(0, 8).toString("hex"), `${src} is a PNG`).toBe("89504e470d0a1a0a");

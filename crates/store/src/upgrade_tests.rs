@@ -479,18 +479,20 @@ fn old_usage(id: &str, scope: &str, title: &str) -> Value {
     t
 }
 
-fn store_of(tiles: Vec<Value>, settings: Value) -> Value {
-    json!({
-        "version": 3,
-        "settings": settings,
-        "dashboard": {"revision": 5, "tiles": tiles},
-    })
+/// A saved Anthropic or OpenAI tile, as the build that split them wrote it.
+fn vendor(id: &str, source: &str, scope: &str, title: &str) -> Value {
+    let mut t = tile(id, source);
+    t["scope"] = json!(scope);
+    t["title"] = json!(title);
+    t
 }
 
-const CODEX_ON: &str = r#"{"codex_plan_usage_enabled":true}"#;
-
-fn settings(json_text: &str) -> Value {
-    serde_json::from_str(json_text).expect("settings json")
+fn store_of(tiles: Vec<Value>) -> Value {
+    json!({
+        "version": 3,
+        "settings": {},
+        "dashboard": {"revision": 5, "tiles": tiles},
+    })
 }
 
 /// `(id, source, scope, title)` of every tile, in overview order.
@@ -515,84 +517,53 @@ fn row(id: &str, source: &str, scope: &str, title: &str) -> (String, String, Str
     (id.into(), source.into(), scope.into(), title.into())
 }
 
-/// One saved scope, split with Codex's plan off and then on.
+/// One saved scope, split.
 #[test]
 fn every_saved_usage_scope_lands_on_its_new_source() {
     type Want = &'static [(&'static str, &'static str, &'static str, &'static str)];
-    let cases: [(&str, Want, Want); 10] = [
+    let cases: [(&str, Want); 10] = [
         (
             "all",
             &[
                 ("u", "usage", "all", "Usage"),
-                ("u-anthropic", "anthropic", "all", "Anthropic"),
-            ],
-            &[
-                ("u", "usage", "all", "Usage"),
-                ("u-anthropic", "anthropic", "all", "Anthropic"),
-                ("u-openai", "openai", "all", "OpenAI"),
+                ("u-aiUsage", "aiUsage", "all", "AI Usage"),
             ],
         ),
         (
             "attention",
             &[
                 ("u", "usage", "attention", "Usage"),
-                ("u-anthropic", "anthropic", "attention", "Anthropic"),
-            ],
-            &[
-                ("u", "usage", "attention", "Usage"),
-                ("u-anthropic", "anthropic", "attention", "Anthropic"),
-                ("u-openai", "openai", "attention", "OpenAI"),
+                ("u-aiUsage", "aiUsage", "attention", "AI Usage"),
             ],
         ),
-        (
-            "providers",
-            &[("u", "usage", "all", "Usage")],
-            &[("u", "usage", "all", "Usage")],
-        ),
+        ("providers", &[("u", "usage", "all", "Usage")]),
         (
             "item:neon:COMPUTE",
-            &[("u", "usage", "item:neon:COMPUTE", "Usage")],
             &[("u", "usage", "item:neon:COMPUTE", "Usage")],
         ),
         (
             "item:sentry:EVENTS",
             &[("u", "usage", "item:sentry:EVENTS", "Usage")],
-            &[("u", "usage", "item:sentry:EVENTS", "Usage")],
         ),
-        (
-            "item:gone",
-            &[("u", "usage", "item:gone", "Usage")],
-            &[("u", "usage", "item:gone", "Usage")],
-        ),
-        (
-            "claude",
-            &[("u", "anthropic", "claude", "Anthropic")],
-            &[("u", "anthropic", "claude", "Anthropic")],
-        ),
-        (
-            "plans",
-            &[("u", "anthropic", "plans", "Anthropic")],
-            // OpenAI has no `plans` scope, and its only row is the plan, so
-            // `all` shows what the old scope showed of Codex.
-            &[
-                ("u", "anthropic", "plans", "Anthropic"),
-                ("u-openai", "openai", "all", "OpenAI"),
-            ],
-        ),
+        ("item:gone", &[("u", "usage", "item:gone", "Usage")]),
+        ("claude", &[("u", "aiUsage", "claude", "AI Usage")]),
+        // Both plans were one scope on the old tile, and still are.
+        ("plans", &[("u", "aiUsage", "plans", "AI Usage")]),
         (
             "item:claude-plan",
-            &[("u", "anthropic", "item:claude-plan", "Anthropic")],
-            &[("u", "anthropic", "item:claude-plan", "Anthropic")],
+            &[("u", "aiUsage", "item:claude-plan", "AI Usage")],
         ),
         (
             "item:codex-plan",
-            &[("u", "openai", "item:codex-plan", "OpenAI")],
-            &[("u", "openai", "item:codex-plan", "OpenAI")],
+            &[("u", "aiUsage", "item:codex-plan", "AI Usage")],
         ),
     ];
-    for (scope, off, on) in cases {
-        for (codex, want) in [(json!({}), off), (settings(CODEX_ON), on)] {
-            let (_dir, opened) = open(&store_of(vec![old_usage("u", scope, "Usage")], codex));
+    for (scope, want) in cases {
+        // Whatever Codex's plan setting was: the AI Usage tile covers both.
+        for codex in [false, true] {
+            let mut saved = store_of(vec![old_usage("u", scope, "Usage")]);
+            saved["settings"] = json!({ "codex_plan_usage_enabled": codex });
+            let (_dir, opened) = open(&saved);
             let want: Vec<_> = want.iter().map(|w| row(w.0, w.1, w.2, w.3)).collect();
             assert_eq!(tiles_of(&opened), want, "{scope}");
         }
@@ -601,36 +572,50 @@ fn every_saved_usage_scope_lands_on_its_new_source() {
 
 #[test]
 fn a_saved_scope_from_the_oldest_rows_still_reaches_its_new_source() {
-    let (_dir, opened) = open(&store_of(
-        vec![
-            old_usage("p", "item:claude-plan:CLAUDE PLAN (5H)", "Usage"),
-            old_usage("t", "item:claude-WEEK", "Usage"),
-            old_usage("x", "item:codex-plan:CODEX PLAN (5H)", "Usage"),
-        ],
-        json!({}),
-    ));
+    let (_dir, opened) = open(&store_of(vec![
+        old_usage("p", "item:claude-plan:CLAUDE PLAN (5H)", "Usage"),
+        old_usage("t", "item:claude-WEEK", "Usage"),
+        old_usage("x", "item:codex-plan:CODEX PLAN (5H)", "Usage"),
+    ]));
     assert_eq!(
         tiles_of(&opened),
         [
-            row("p", "anthropic", "item:claude-plan", "Anthropic"),
-            row("t", "anthropic", "item:claude-today", "Anthropic"),
-            row("x", "openai", "item:codex-plan", "OpenAI"),
+            row("p", "aiUsage", "item:claude-plan", "AI Usage"),
+            row("t", "aiUsage", "item:claude-today", "AI Usage"),
+            row("x", "aiUsage", "item:codex-plan", "AI Usage"),
         ]
     );
 }
 
 #[test]
-fn a_split_tile_keeps_its_place_and_its_additions_follow_it() {
-    let (_dir, opened) = open(&store_of(
-        vec![
-            tile("m", "hosts"),
-            old_usage("u", "all", "Usage"),
-            tile("s", "services"),
-        ],
-        settings(CODEX_ON),
-    ));
+fn a_split_tile_keeps_its_place_and_its_addition_follows_it() {
+    let (_dir, opened) = open(&store_of(vec![
+        tile("m", "hosts"),
+        old_usage("u", "all", "Usage"),
+        tile("s", "services"),
+    ]));
     let ids: Vec<String> = tiles_of(&opened).into_iter().map(|t| t.0).collect();
-    assert_eq!(ids, ["m", "u", "u-anthropic", "u-openai", "s"]);
+    assert_eq!(ids, ["m", "u", "u-aiUsage", "s"]);
+}
+
+/// An old Usage tile goes straight to AI Usage: no Anthropic or OpenAI tile is
+/// ever written, so the merge has nothing to do afterwards.
+#[test]
+fn an_old_usage_tile_splits_straight_onto_ai_usage() {
+    let (_dir, opened) = open(&store_of(vec![
+        old_usage("a", "all", "Usage"),
+        old_usage("b", "claude", "Usage"),
+    ]));
+    for (_, source, _, _) in tiles_of(&opened) {
+        assert!(
+            !matches!(source.as_str(), "anthropic" | "openai"),
+            "{source}"
+        );
+    }
+    let mut again = opened.data().clone();
+    let once = again.clone();
+    again.merge_ai_tiles();
+    assert_eq!(again, once, "the merge finds nothing to do");
 }
 
 /// Hidden stays hidden, so unhiding gives back everything the one tile showed.
@@ -643,9 +628,9 @@ fn an_added_tile_copies_every_field_of_the_tile_it_came_from() {
     saved["rowLimit"] = json!("10");
     saved["rowGapPx"] = json!(7);
     saved["detailView"] = json!("list");
-    let (_dir, opened) = open(&store_of(vec![saved], json!({})));
+    let (_dir, opened) = open(&store_of(vec![saved]));
     let original = by_id(&opened, "u");
-    let added = by_id(&opened, "u-anthropic");
+    let added = by_id(&opened, "u-aiUsage");
     assert!(added.hidden && original.hidden);
     assert_eq!(
         DashboardTile {
@@ -660,33 +645,30 @@ fn an_added_tile_copies_every_field_of_the_tile_it_came_from() {
 
 #[test]
 fn each_saved_usage_tile_splits_on_its_own() {
-    let (_dir, opened) = open(&store_of(
-        vec![
-            old_usage("a", "all", "Usage"),
-            old_usage("b", "attention", "Usage"),
-        ],
-        json!({}),
-    ));
+    let (_dir, opened) = open(&store_of(vec![
+        old_usage("a", "all", "Usage"),
+        old_usage("b", "attention", "Usage"),
+    ]));
     assert_eq!(
         tiles_of(&opened),
         [
             row("a", "usage", "all", "Usage"),
-            row("a-anthropic", "anthropic", "all", "Anthropic"),
+            row("a-aiUsage", "aiUsage", "all", "AI Usage"),
             row("b", "usage", "attention", "Usage"),
-            row("b-anthropic", "anthropic", "attention", "Anthropic"),
+            row("b-aiUsage", "aiUsage", "attention", "AI Usage"),
         ]
     );
 }
 
 /// A scope this build does not recognise (say, one a later build wrote) is not
-/// guessed at: the tile stays on Usage with that scope, and nothing is added,
-/// even with the Codex plan on.
+/// guessed at: the tile stays on Usage with that scope, and nothing is added.
 #[test]
 fn a_scope_the_split_does_not_recognise_is_left_unchanged() {
-    let (_dir, opened) = open(&store_of(
-        vec![old_usage("z", "some-future-scope", "Usage")],
-        settings(CODEX_ON),
-    ));
+    let (_dir, opened) = open(&store_of(vec![old_usage(
+        "z",
+        "some-future-scope",
+        "Usage",
+    )]));
     assert_eq!(
         tiles_of(&opened),
         [row("z", "usage", "some-future-scope", "Usage")]
@@ -697,19 +679,16 @@ fn a_scope_the_split_does_not_recognise_is_left_unchanged() {
 /// operator chose stays, and an added tile is new, so it takes the source's.
 #[test]
 fn a_chosen_title_stays_on_a_moved_tile() {
-    let (_dir, opened) = open(&store_of(
-        vec![
-            old_usage("c", "claude", "My Claude"),
-            old_usage("k", "all", "Everything"),
-        ],
-        json!({}),
-    ));
+    let (_dir, opened) = open(&store_of(vec![
+        old_usage("c", "claude", "My Claude"),
+        old_usage("k", "all", "Everything"),
+    ]));
     assert_eq!(
         tiles_of(&opened),
         [
-            row("c", "anthropic", "claude", "My Claude"),
+            row("c", "aiUsage", "claude", "My Claude"),
             row("k", "usage", "all", "Everything"),
-            row("k-anthropic", "anthropic", "all", "Anthropic"),
+            row("k-aiUsage", "aiUsage", "all", "AI Usage"),
         ]
     );
 }
@@ -719,30 +698,27 @@ fn a_chosen_title_stays_on_a_moved_tile() {
 #[test]
 fn an_added_id_stays_short_enough_and_unique() {
     let long = "x".repeat(80);
-    let (_dir, opened) = open(&store_of(
-        vec![
-            old_usage(&long, "all", "Usage"),
-            tile("u-anthropic", "hosts"),
-            old_usage("u", "all", "Usage"),
-        ],
-        json!({}),
-    ));
+    let (_dir, opened) = open(&store_of(vec![
+        old_usage(&long, "all", "Usage"),
+        tile("u-aiUsage", "hosts"),
+        old_usage("u", "all", "Usage"),
+    ]));
     let ids: Vec<String> = tiles_of(&opened).into_iter().map(|t| t.0).collect();
     assert_eq!(ids.len(), 5);
     assert!(ids.iter().all(|id| id.len() <= 80), "{ids:?}");
     let distinct: std::collections::BTreeSet<&String> = ids.iter().collect();
     assert_eq!(distinct.len(), ids.len(), "{ids:?}");
-    assert!(ids[1].ends_with("-anthropic"), "{ids:?}");
-    assert!(ids[4].starts_with("u-anthropic"), "{ids:?}");
+    assert!(ids[1].ends_with("-aiUsage"), "{ids:?}");
+    assert!(ids[4].starts_with("u-aiUsage"), "{ids:?}");
 }
 
 /// Dropping a tile to fit would lose something it showed.
 #[test]
 fn a_full_dashboard_still_splits() {
-    let mut tiles: Vec<Value> = (0..47).map(|i| tile(&format!("t{i}"), "hosts")).collect();
+    let mut tiles: Vec<Value> = (0..49).map(|i| tile(&format!("t{i}"), "hosts")).collect();
     tiles.push(old_usage("u", "all", "Usage"));
-    let (_dir, opened) = open(&store_of(tiles, settings(CODEX_ON)));
-    assert_eq!(opened.dashboard().expect("dashboard").tiles.len(), 50);
+    let (_dir, opened) = open(&store_of(tiles));
+    assert_eq!(opened.dashboard().expect("dashboard").tiles.len(), 51);
 }
 
 #[test]
@@ -756,23 +732,242 @@ fn a_store_with_no_saved_dashboard_has_nothing_to_split() {
 /// save, and a version bump would stop older builds opening the file at all.
 #[test]
 fn the_split_runs_once_so_a_removed_tile_stays_removed() {
-    let (dir, mut opened) = open(&store_of(
-        vec![old_usage("u", "all", "Usage")],
-        settings(CODEX_ON),
-    ));
+    let (dir, mut opened) = open(&store_of(vec![old_usage("u", "all", "Usage")]));
     let once = opened.data().clone();
     let mut again = once.clone();
     again.split_usage_tiles();
+    again.merge_ai_tiles();
     assert_eq!(again, once, "a second pass changes nothing");
 
     let mut layout = opened.dashboard().expect("dashboard").clone();
-    layout.tiles.retain(|t| t.source != "anthropic");
+    layout.tiles.retain(|t| t.source != "aiUsage");
     opened.save_dashboard(layout).expect("save");
     let reopened = Store::open_in(dir.path(), false).expect("reopen");
     let sources: Vec<String> = tiles_of(&reopened).into_iter().map(|t| t.1).collect();
-    assert_eq!(sources, ["usage", "openai"]);
+    assert_eq!(sources, ["usage"]);
 }
 
+// MARK: - merge_ai_tiles
+
+/// The first `anthropic` and the first `openai` tile of a scope become one
+/// tile, in the place of the earlier of the two.
+#[test]
+fn the_anthropic_and_openai_pair_collapses_into_the_first() {
+    let (_dir, opened) = open(&store_of(vec![
+        vendor("a", "anthropic", "all", "Anthropic"),
+        tile("m", "hosts"),
+        vendor("o", "openai", "all", "OpenAI"),
+    ]));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("a", "aiUsage", "all", "AI Usage"),
+            row("m", "hosts", "all", "m"),
+        ]
+    );
+
+    // The earlier tile survives whichever vendor it was.
+    let (_dir, opened) = open(&store_of(vec![
+        vendor("o", "openai", "all", "OpenAI"),
+        vendor("a", "anthropic", "all", "Anthropic"),
+    ]));
+    assert_eq!(tiles_of(&opened), [row("o", "aiUsage", "all", "AI Usage")]);
+}
+
+#[test]
+fn the_attention_pair_collapses_and_a_scope_never_pairs_with_another() {
+    let (_dir, opened) = open(&store_of(vec![
+        vendor("a", "anthropic", "attention", "Anthropic"),
+        vendor("o", "openai", "attention", "OpenAI"),
+        vendor("a2", "anthropic", "all", "Anthropic"),
+        vendor("o2", "openai", "attention", "OpenAI"),
+    ]));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("a", "aiUsage", "attention", "AI Usage"),
+            row("a2", "aiUsage", "all", "AI Usage"),
+            row("o2", "aiUsage", "attention", "AI Usage"),
+        ]
+    );
+}
+
+/// The deliberate widening: a lone vendor tile now shows both vendors.
+#[test]
+fn a_lone_all_or_attention_tile_widens_and_is_renamed() {
+    let (_dir, opened) = open(&store_of(vec![
+        vendor("a", "anthropic", "all", "Anthropic"),
+        vendor("o", "openai", "attention", "OpenAI"),
+    ]));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("a", "aiUsage", "all", "AI Usage"),
+            row("o", "aiUsage", "attention", "AI Usage"),
+        ]
+    );
+}
+
+/// `plans` now covers Codex's plan too, so Anthropic's `plans` tile names the
+/// Claude plan row instead of widening.
+#[test]
+fn anthropic_plans_narrows_to_the_claude_plan_row() {
+    let (_dir, opened) = open(&store_of(vec![vendor(
+        "a",
+        "anthropic",
+        "plans",
+        "Anthropic",
+    )]));
+    assert_eq!(
+        tiles_of(&opened),
+        [row("a", "aiUsage", "item:claude-plan", "Anthropic")]
+    );
+}
+
+#[test]
+fn claude_and_item_scopes_are_kept() {
+    let (_dir, opened) = open(&store_of(vec![
+        vendor("c", "anthropic", "claude", "Anthropic"),
+        vendor("p", "anthropic", "item:claude-plan", "Anthropic"),
+        vendor("t", "anthropic", "item:claude-today", "Anthropic"),
+        vendor("s", "anthropic", "item:anthropic-api", "Anthropic"),
+        vendor("x", "openai", "item:codex-plan", "OpenAI"),
+        vendor("y", "openai", "item:openai-api", "OpenAI"),
+        // Hand-edited: kept, and `validate` decides, as for any scope.
+        vendor("h", "openai", "some-future-scope", "OpenAI"),
+    ]));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("c", "aiUsage", "claude", "Anthropic"),
+            row("p", "aiUsage", "item:claude-plan", "Anthropic"),
+            row("t", "aiUsage", "item:claude-today", "Anthropic"),
+            row("s", "aiUsage", "item:anthropic-api", "Anthropic"),
+            row("x", "aiUsage", "item:codex-plan", "OpenAI"),
+            row("y", "aiUsage", "item:openai-api", "OpenAI"),
+            row("h", "aiUsage", "some-future-scope", "OpenAI"),
+        ]
+    );
+}
+
+#[test]
+fn the_surviving_tile_keeps_its_fields_and_is_hidden_only_if_both_were() {
+    let styled = |id: &str, source: &str, hidden: bool| {
+        let mut t = vendor(id, source, "all", "Anthropic");
+        t["hidden"] = json!(hidden);
+        t["width"] = json!("wide");
+        t["presentation"] = json!("detailed");
+        t["rowLimit"] = json!("10");
+        t["rowGapPx"] = json!(7);
+        t["detailView"] = json!("list");
+        t
+    };
+    for (first, second, hidden) in [
+        (true, true, true),
+        (true, false, false),
+        (false, true, false),
+        (false, false, false),
+    ] {
+        let mut dropped = styled("o", "openai", second);
+        dropped["width"] = json!("small");
+        dropped["rowGapPx"] = json!(2);
+        let (_dir, opened) = open(&store_of(vec![styled("a", "anthropic", first), dropped]));
+        assert_eq!(tiles(&opened).len(), 1);
+        let kept = by_id(&opened, "a");
+        assert_eq!(kept.hidden, hidden, "{first} {second}");
+        assert_eq!(kept.width, "wide");
+        assert_eq!(kept.presentation, "detailed");
+        assert_eq!(kept.row_limit, "10");
+        assert_eq!(kept.row_gap_px, 7);
+        assert_eq!(kept.detail_view, "list");
+    }
+}
+
+/// Only the default names are renamed. A chosen name wins on a pair, the
+/// survivor's before the dropped tile's, and a narrowed tile keeps its own.
+#[test]
+fn only_default_titles_are_renamed() {
+    let (_dir, opened) = open(&store_of(vec![
+        // Survivor's chosen title wins.
+        vendor("a", "anthropic", "all", "Spend"),
+        vendor("o", "openai", "all", "Codex bills"),
+        // Survivor has none, so the dropped tile's is taken.
+        vendor("a2", "anthropic", "attention", "Anthropic"),
+        vendor("o2", "openai", "attention", "Alerts"),
+        // A lone tile with a chosen title keeps it.
+        vendor("l", "anthropic", "all", "Mine"),
+        // Narrowed tiles keep even a default title.
+        vendor("n", "openai", "item:codex-plan", "OpenAI"),
+    ]));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("a", "aiUsage", "all", "Spend"),
+            row("a2", "aiUsage", "attention", "Alerts"),
+            row("l", "aiUsage", "all", "Mine"),
+            row("n", "aiUsage", "item:codex-plan", "OpenAI"),
+        ]
+    );
+}
+
+/// Pairs form in layout order, and every tile past the first pair simply
+/// becomes `aiUsage`.
+#[test]
+fn pairs_form_in_layout_order_and_extra_tiles_each_become_ai_usage() {
+    let (_dir, opened) = open(&store_of(vec![
+        vendor("a1", "anthropic", "all", "Anthropic"),
+        vendor("a2", "anthropic", "all", "Anthropic"),
+        vendor("o1", "openai", "all", "OpenAI"),
+        vendor("o2", "openai", "all", "OpenAI"),
+    ]));
+    assert_eq!(
+        tiles_of(&opened),
+        [
+            row("a1", "aiUsage", "all", "AI Usage"),
+            row("a2", "aiUsage", "all", "AI Usage"),
+            row("o2", "aiUsage", "all", "AI Usage"),
+        ]
+    );
+}
+
+/// Nothing the merge writes is a kind it reads, so a removed AI Usage tile
+/// stays removed, and no vendor tile is left for `validate` to refuse.
+#[test]
+fn the_merge_is_idempotent_and_leaves_no_vendor_tile() {
+    let (dir, mut opened) = open(&store_of(vec![
+        vendor("a", "anthropic", "all", "Anthropic"),
+        vendor("o", "openai", "all", "OpenAI"),
+        vendor("p", "anthropic", "plans", "Anthropic"),
+        vendor("c", "anthropic", "claude", "Anthropic"),
+        vendor("x", "openai", "item:codex-plan", "OpenAI"),
+        vendor("e", "openai", "attention", "OpenAI"),
+        tile("m", "hosts"),
+    ]));
+    assert!(tiles(&opened)
+        .iter()
+        .all(|t| !matches!(t.source.as_str(), "anthropic" | "openai")));
+    let once = opened.data().clone();
+    let mut again = once.clone();
+    again.merge_ai_tiles();
+    assert_eq!(again, once, "a second pass changes nothing");
+
+    let mut layout = opened.dashboard().expect("dashboard").clone();
+    layout.tiles.retain(|t| t.source != "aiUsage");
+    opened.save_dashboard(layout).expect("save");
+    let reopened = Store::open_in(dir.path(), false).expect("reopen");
+    let sources: Vec<String> = tiles_of(&reopened).into_iter().map(|t| t.1).collect();
+    assert_eq!(sources, ["hosts"]);
+}
+
+#[test]
+fn a_store_with_no_dashboard_is_untouched_by_the_merge() {
+    let (_dir, opened) = open(&json!({"version": 3, "settings": {}}));
+    let mut data = opened.data().clone();
+    let before = data.clone();
+    data.merge_ai_tiles();
+    assert_eq!(data, before);
+    assert!(data.dashboard.is_none());
+}
 /// A section missing from a file means what a key missing from it means. Only a
 /// new store, which has no file, starts with nothing added.
 #[test]
