@@ -318,16 +318,19 @@ while that read is pending, so the count can never rise. Arm the gate
 (`__hold`) and read the baseline in the same `evaluate`; a longer poll timeout
 only fails later. Reads left as they were: `.db-tile-content` in
 `status-layout.spec.js` is never replaced by a render, and the Settings specs
-run while `settingsOpen` stops the polls. The one read left running there is
-the About tab's 1.5 s `update_status` (`settings.js`), which repaints only when
-its answer changes; the e2e stub answers every `update_*` with the same
-`window.__UPDATES__`, so nothing repaints between steps today. The per-panel
-specs (`azure`, `github`, `usage`, `openclaw`, `ai-sources`, `actions-billing`)
-still `boundingBox()` a panel after awaiting it; a panel re-renders every 10 s
-(OpenClaw 2 s, any panel 1 s while loading, and Repos' `#reposBody` whenever
-Rust's `panelcolumns` count changes, `app.js` into `github.js`), so the window
-is narrower but real, and they are not audited or fixed here. Fix a failure that appears only
-under several workers at its cause, not with a retry or a longer timeout.
+run while `settingsOpen` stops the overview and panel polls. The one poll
+left running there is the About tab's 1.5 s `update_status` (`settings.js`).
+It rebuilds the tab whenever its answer differs from the payload's
+`about.updates`, so a test that hands the stub its own `updates`, or swaps
+`window.__UPDATES__`, gets a repaint at a moment it does not choose; the two
+About tests that compare geometry across one read through `boxes()`. The
+per-panel specs (`azure`, `github`, `usage`, `openclaw`, `ai-sources`,
+`actions-billing`) still `boundingBox()` a panel after awaiting it; a panel
+re-renders every 10 s (OpenClaw 2 s, any panel 1 s while loading, and Repos'
+`#reposBody` whenever the payload's `panelColumns` or `repoCards` for it
+change, `app.js` into `github.js`), so the window is narrower but real, and
+they are not audited or fixed here. Fix a failure that appears only under
+several workers at its cause, not with a retry or a longer timeout.
 Watch the three timing-sensitive waits named above first. `csp_server.py`
 holds no request state, so parallel workers share one server.
 
