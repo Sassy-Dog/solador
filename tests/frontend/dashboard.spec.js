@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { lastArgs, swapReport } from "./tile-full.js";
+import { boxes, lastArgs, swapReport } from "./tile-full.js";
 
 // Real UI and Rust-dumped readings under Tauri's CSP. The IPC double projects
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
@@ -743,11 +743,11 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   for (const [i, plan] of plans.entries()) {
     const item = items.nth(i);
     await expect(item.locator('.db-value')).toHaveText(plan.value);
-    const rgb = await item.locator('.db-value').evaluate(el => getComputedStyle(el).color);
-    expect(rgb, 'the verdict in Rust\'s colour').toBe(await page.evaluate(hex => {
+    const expected = await page.evaluate(hex => {
       const n = parseInt(hex.slice(1), 16);
       return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
-    }, plan.valueColor));
+    }, plan.valueColor);
+    await expect(item.locator('.db-value'), 'the verdict in Rust\'s colour').toHaveCSS('color', expected);
     const metrics = item.locator('.db-metric');
     await expect(metrics).toHaveCount(plan.metrics.length);
     for (const [j, m] of plan.metrics.entries()) {
@@ -913,10 +913,13 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   });
   await expect(page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll')).toBeFocused();
   expect(await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
-  const expandedHeight = (await page.locator('.db-inspector-body').boundingBox()).height;
+  // Height reads re-resolve the node inside the evaluate (#793): a boundingBox()
+  // on a node the 1 s render just replaced is null.
+  const inspectorHeight = () => page.locator('.db-inspector-body').evaluate(el => el.getBoundingClientRect().height);
+  const expandedHeight = await inspectorHeight();
   await rows.first().locator('[data-action="detail-toggle"]').click();
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
-  await expect.poll(async () => (await page.locator('.db-inspector-body').boundingBox()).height).toBeLessThan(expandedHeight);
+  await expect.poll(inspectorHeight).toBeLessThan(expandedHeight);
 });
 
 test("Detail Table/List choice persists per tile and failed saves keep the selected view", async ({ page, baseURL }) => {
@@ -1886,9 +1889,12 @@ test("a long group label wraps inside a small tile", async ({ page, baseURL }) =
   const runners = tile(page, "ghRunners");
   const name = runners.locator(".db-item-name").first();
   await expect(name).toHaveText(long);
-  const box = await name.evaluate(el => ({ height: el.getBoundingClientRect().height, line: parseFloat(getComputedStyle(el).lineHeight) }));
-  expect(box.height).toBeGreaterThan(box.line * 1.5);
-  expect(await runners.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  // Retrying reads of the node as it is now: a re-render between the wait above
+  // and a one-shot read leaves a detached node (height 0, line height NaN) that
+  // the wait cannot see (#793). The ratio is NaN until the node is painted.
+  await expect.poll(() => name.evaluate(el => el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))
+    .toBeGreaterThan(1.5);
+  await expect.poll(() => runners.evaluate(el => el.clientWidth > 0 && el.scrollWidth <= el.clientWidth)).toBe(true);
 });
 
 test("Full runners table and list show labels", async ({ page, baseURL }) => {
@@ -2523,9 +2529,7 @@ test("clicking or cancelling a move handle leaves the saved layout alone", async
   const handle = tile(page, "services").locator(".db-drag");
   await handle.click();
   expect(await savedLayout(page)).toBeNull();
-  const from = await handle.boundingBox();
-  await expect(tile(page, "hosts")).toBeVisible();
-  const to = await tile(page, "hosts").boundingBox();
+  const [from, to] = await boxes(page, ['[data-tile="overview-services"] .db-drag', '[data-tile="overview-hosts"]']);
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
   await page.mouse.move(to.x + 20, to.y + 20, { steps: 6 });
@@ -4035,12 +4039,10 @@ test("Repos tiles show one card per owner, big owners last", async ({ page, base
   await expect(globex.locator(".db-item")).toHaveCount(18);
   // The two small owners share a row, in two columns rather than three with
   // one left empty; the big one spans the next.
-  for (const o of ["acme", "jdoe", "globex"]) {
-    await expect(all.locator(`.db-owner-card[data-owner="${o}"]`)).toBeVisible();
-  }
-  const [acme, jdoe, big] = await Promise.all(
-    ["acme", "jdoe", "globex"].map((o) => all.locator(`.db-owner-card[data-owner="${o}"]`).boundingBox()),
-  );
+  // One evaluate for all three boxes: the overview rebuilds owner cards on
+  // every render, so a box per locator can land on a replaced node (#793).
+  const [acme, jdoe, big] = await boxes(
+    page, ["acme", "jdoe", "globex"].map((o) => `.db-owner-card[data-owner="${o}"]`), '[data-tile="repos-all"]');
   expect(Math.round(acme.y)).toBe(Math.round(jdoe.y));
   expect(Math.round(acme.width)).toBe(Math.round(jdoe.width));
   expect(big.y).toBeGreaterThan(acme.y);
@@ -4062,9 +4064,7 @@ test("a sole owner's card fills its tile", async ({ page, baseURL }) => {
   const repos = tile(page, "ghWorkflows");
   const card = repos.locator(".db-owner-card");
   await expect(card).toHaveCount(1);
-  await expect(card).toBeVisible();
-  await expect(repos.locator(".db-owner-cards")).toBeVisible();
-  const [one, row] = await Promise.all([card.boundingBox(), repos.locator(".db-owner-cards").boundingBox()]);
+  const [one, row] = await boxes(page, [".db-owner-card", ".db-owner-cards"], '[data-tile="overview-ghWorkflows"]');
   expect(Math.round(one.width)).toBe(Math.round(row.width));
 });
 

@@ -45,9 +45,11 @@ export default {
   // CPUs, which is one worker on the hosted arm64 macOS runner and made the
   // 535-test run take 11.5 min (#763). Locally the default stands. No retries
   // and no raised timeouts: a failure that appears only under several workers
-  // is fixed at its cause. Two have turned up: a test reading the box of an
-  // element it never waited for, and a one-shot read of a node the 1 s poll
-  // just replaced (docs/TESTING.md).
+  // is fixed at its cause. Three classes have turned up: a test reading the box
+  // of an element it never waited for; a read of a node the 1 s tick replaced
+  // between the wait and the read; and a gate armed in one step with its
+  // baseline call count read in another, so a tick lands between them (#793;
+  // docs/TESTING.md).
   workers: process.env.CI ? "100%" : undefined,
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   webServer: {

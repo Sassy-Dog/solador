@@ -166,3 +166,44 @@ export async function swapReport(page, what, wait) {
     throw error;
   }
 }
+
+/**
+ * Every box in `selectors`, read in ONE synchronous `evaluate`, so all of them
+ * come from one DOM and one layout. The cockpit and the overview re-render on a
+ * 1 s tick, and a `boundingBox()` per element (each its own round trip) can land
+ * on a node the tick just replaced, which reads `null` (#793). `expect.poll`
+ * re-reads until every selector resolves to a painted box, so a read taken
+ * mid-replace is retried instead of returned.
+ *
+ * Selectors resolve inside `scope`, a CSS selector (a spec holding only a
+ * Locator passes the selector it was built from). `":scope"` is the scope
+ * element itself and needs a scope. A selector matching more than one element
+ * throws, as a strict Playwright locator would, rather than measuring the first.
+ */
+export async function boxes(page, selectors, scope = "") {
+  if (!scope && selectors.includes(":scope")) {
+    throw new Error('boxes(): ":scope" needs a scope selector; the document has no box');
+  }
+  let found;
+  await expect
+    .poll(async () => {
+      found = await page.evaluate(([sels, scope]) => {
+        const root = scope ? document.querySelector(scope) : document;
+        const read = (el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, width: r.width, height: r.height } : null;
+        };
+        return sels.map((sel) => {
+          if (sel === ":scope") return root && read(root);
+          const all = root ? root.querySelectorAll(sel) : [];
+          if (all.length > 1) return { ambiguous: `${sel} matches ${all.length} elements` };
+          return all.length ? read(all[0]) : null;
+        });
+      }, [selectors, scope]);
+      const bad = found.find((b) => b && b.ambiguous);
+      if (bad) throw new Error(`boxes(): ${bad.ambiguous}`);
+      return found.every((b) => b !== null);
+    }, { message: `every one of ${selectors.join(", ")} has a painted box` })
+    .toBe(true);
+  return found;
+}

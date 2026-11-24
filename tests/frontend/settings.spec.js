@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { stubTileIpc, openTileFull, SOURCE_READS } from "./tile-full.js";
+import { stubTileIpc, openTileFull, SOURCE_READS, boxes } from "./tile-full.js";
 
 // Same CSP guard as layout.spec.js: the page is served under the app's real
 // policy (csp_server.py), and a blocked style or script surfaces as a console
@@ -2621,11 +2621,13 @@ test("update status, notes and buttons change inside a stable group", async ({ p
   await openSettings(page, baseURL, null, failed);
   await tab(page, "about").click();
   const group = page.locator('.group[data-group="updates"]');
-  await expect(group).toBeVisible();
-  const before = await group.boundingBox();
+  // The About poll repaints the tab once its answer differs from the payload's
+  // `about.updates`, as `failed` does, so each box is read in one evaluate.
+  const box = async () => (await boxes(page, [":scope"], '.group[data-group="updates"]'))[0];
+  const before = await box();
   await group.locator('.check-updates').click();
   await expect(group.locator('.update-status')).toHaveText(failed.status.text);
-  expect(await group.boundingBox()).toEqual(before);
+  expect(await box()).toEqual(before);
 });
 
 // The real v2026.10.47 release body (`gh release view`), pasted so CI stays hermetic.
@@ -2736,10 +2738,9 @@ test("update controls stay above changing messages", async ({ page, baseURL }) =
   await openSettings(page, baseURL, null, base);
   await tab(page, "about").click();
   const group = page.locator('.group[data-group="updates"]');
-  const y = async () => {
-    await expect(group.locator(".update-controls")).toBeVisible();
-    return (await group.locator(".update-controls").boundingBox()).y;
-  };
+  // `base` differs from the payload's `about.updates`, so the About poll
+  // repaints the tab at a moment the test does not choose: read in one evaluate.
+  const y = async () => (await boxes(page, [".update-controls"], '.group[data-group="updates"]'))[0].y;
   const installed = await y();
   const states = [
     { ...base, notes: null, status: { text: "Checking for updates...", color: "#8b949e" } },
