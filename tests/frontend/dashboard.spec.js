@@ -743,11 +743,11 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   for (const [i, plan] of plans.entries()) {
     const item = items.nth(i);
     await expect(item.locator('.db-value')).toHaveText(plan.value);
-    const rgb = await item.locator('.db-value').evaluate(el => getComputedStyle(el).color);
-    expect(rgb, 'the verdict in Rust\'s colour').toBe(await page.evaluate(hex => {
+    const expected = await page.evaluate(hex => {
       const n = parseInt(hex.slice(1), 16);
       return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
-    }, plan.valueColor));
+    }, plan.valueColor);
+    await expect(item.locator('.db-value'), 'the verdict in Rust\'s colour').toHaveCSS('color', expected);
     const metrics = item.locator('.db-metric');
     await expect(metrics).toHaveCount(plan.metrics.length);
     for (const [j, m] of plan.metrics.entries()) {
@@ -1886,9 +1886,12 @@ test("a long group label wraps inside a small tile", async ({ page, baseURL }) =
   const runners = tile(page, "ghRunners");
   const name = runners.locator(".db-item-name").first();
   await expect(name).toHaveText(long);
-  const box = await name.evaluate(el => ({ height: el.getBoundingClientRect().height, line: parseFloat(getComputedStyle(el).lineHeight) }));
-  expect(box.height).toBeGreaterThan(box.line * 1.5);
-  expect(await runners.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  // Retrying reads of the node as it is now: a re-render between the wait above
+  // and a one-shot read leaves a detached node (height 0, line height NaN) that
+  // the wait cannot see (#793). The ratio is NaN until the node is painted.
+  await expect.poll(() => name.evaluate(el => el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))
+    .toBeGreaterThan(1.5);
+  await expect.poll(() => runners.evaluate(el => el.clientWidth > 0 && el.scrollWidth <= el.clientWidth)).toBe(true);
 });
 
 test("Full runners table and list show labels", async ({ page, baseURL }) => {

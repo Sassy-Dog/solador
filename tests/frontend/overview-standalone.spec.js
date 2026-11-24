@@ -12,6 +12,11 @@ import { stubTileIpc, openTileFull, tileIdFor, lastArgs, advance, SOURCE_READS, 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
 const PANEL_COMMANDS = PANEL_SOURCE_READS.map(([, command]) => command);
+// The stub answers on the frontend's own 1 s refresh (`app.js`); a call count
+// that must grow by a tick or two gets ten ticks of budget for a loaded
+// parallel worker, not Playwright's 5 s default (#793).
+const POLL_MS = 1000;
+const TICKS_BUDGET_MS = POLL_MS * 10;
 const gear = '.db-chrome [data-action="settings"]';
 
 /**
@@ -174,10 +179,10 @@ test("a tile removed while an older dashboard_view is in flight is gone, not a c
   await openTileFull(page, "hosts");
   // A dashboard_view that still has the tile is on its way back...
   await page.evaluate(() => window.__hold("dashboard_view"));
-  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length))
+  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length), { timeout: TICKS_BUDGET_MS })
     .toBeGreaterThan(0);
   const before = await page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length);
-  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length))
+  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length), { timeout: TICKS_BUDGET_MS })
     .toBeGreaterThan(before);
   // ...when the tile leaves and Rust refuses its cockpit read.
   await page.evaluate(() => {
@@ -188,7 +193,7 @@ test("a tile removed while an older dashboard_view is in flight is gone, not a c
   });
   const cockpitCalls = () => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "cockpit").length);
   const seen = await cockpitCalls();
-  await expect.poll(cockpitCalls).toBeGreaterThan(seen);
+  await expect.poll(cockpitCalls, { timeout: TICKS_BUDGET_MS }).toBeGreaterThan(seen);
   await page.evaluate(() => window.__release("dashboard_view"));
   await expect(page.locator("#dashboardOverview .db-action-error")).toHaveText(dashboard.labels.tileGone);
   expect(await page.evaluate(() => cockpitFailed)).toBe(false);

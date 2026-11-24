@@ -302,14 +302,20 @@ tests ran serially in 11.5 min on the job that is the CI critical path. There
 are no retries and no raised timeouts. The first failure under more workers was
 a race against paint inside one test: `boundingBox()` does not wait, so a
 test must await every element it measures itself, not just its parent, before
-reading its box. The same rule applies to any one-shot `evaluate` read of a
-rendered element in a new or changed spec, because the dashboard and
-cockpit re-render on a 1 s poll and a read can land on a node the poll just
-detached. A detached node reads `""` for `getComputedStyle` and 0 for
-geometry (`scrollWidth`, `clientWidth`, a box), so a one-shot read can go
-false-green as well as red. Prefer a retrying assertion such as
-`toHaveCSS`. Older one-shot reads remain (`dashboard.spec.js:726`,
-`layout.spec.js:722`). Fix a failure that appears only under several
+reading its box. A second failure class followed (#793): the element is awaited
+and then replaced before the read, because the dashboard and cockpit re-render
+on a 1 s tick and a read can land on a node the tick just detached. A detached
+node reads `""` for `getComputedStyle`, 0 for geometry (`scrollWidth`,
+`clientWidth`, a box) and `null` from `boundingBox()`, so a one-shot read can
+go false-green as well as red. The rule: never measure in a step separate from
+the wait. Use a retrying assertion (`toHaveCSS`, or `expect.poll` around an
+`evaluate` that re-resolves the locator), and read boxes that are compared with
+each other in ONE `evaluate` (`boxes()` in `layout.spec.js`) so they share one
+DOM. An `expect.poll` on a stub's call count gets a budget derived from the
+stub's tick (`TICKS_BUDGET_MS` in `overview-standalone.spec.js`), not the 5 s
+default. One-shot `boundingBox()` reads remain in the
+per-panel specs, whose panels refresh every 10 s rather than every 1 s; they
+have not failed, and are not audited as fixed. Fix a failure that appears only under several
 workers at its cause, not with a retry or a longer timeout. Watch the three
 timing-sensitive waits named above first. `csp_server.py` holds no
 request state, so parallel workers share one server.

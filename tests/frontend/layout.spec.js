@@ -482,6 +482,33 @@ test("this machine leads the grid and admits what it could not measure", async (
 const sharesLine = (a, b) =>
   Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) >= Math.min(a.height, b.height) * 0.8;
 
+/**
+ * Every box in `selectors`, read in ONE synchronous `evaluate`, so all of them
+ * come from one DOM and one layout: the cockpit re-renders on a 1 s tick, and a
+ * `boundingBox()` per element (each its own round trip) can land on a node the
+ * tick just replaced, which reads `null` (#793). `expect.poll` re-reads until
+ * every selector resolves to a painted box, so a read taken mid-replace is
+ * retried instead of returned. Selectors resolve inside `scope` (a CSS
+ * selector; the document when empty); ":scope" is the scope element itself.
+ */
+async function boxes(page, selectors, scope = "") {
+  let found;
+  await expect
+    .poll(async () => {
+      found = await page.evaluate(([sels, scope]) => {
+        const root = scope ? document.querySelector(scope) : document;
+        const read = (el) => {
+          const r = el && el.getBoundingClientRect();
+          return r && r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, width: r.width, height: r.height } : null;
+        };
+        return sels.map((sel) => (sel === ":scope" ? read(root) : read(root && root.querySelector(sel))));
+      }, [selectors, scope]);
+      return found.every((b) => b !== null);
+    }, { message: `every one of ${selectors.join(", ")} has a painted box` })
+    .toBe(true);
+  return found;
+}
+
 test("a card's header names the host and its CPU on one line, ellipsizing the model", async ({ page, baseURL }) => {
   // The header used to be two rows: the name (with its dot) above the CPU
   // model / thermal badge / percentage. They are one row now, which is worth
@@ -498,11 +525,10 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
   for (const sel of [".hostName", ".cpuModel", ".thermal", ".cpuValue", ".hdr"]) {
     await expect(card.locator(sel)).toBeVisible();
   }
-  const box = async (sel) => await card.locator(sel).boundingBox();
-  const [name, model, badge, pct, header, cardBox] = await Promise.all([
-    box(".hostName"), box(".cpuModel"), box(".thermal"), box(".cpuValue"),
-    box(".hdr"), card.boundingBox(),
-  ]);
+  // One evaluate for every box: awaiting each locator and then boxing it leaves
+  // a gap a re-render can land in (#793). The first card is the scope.
+  const [name, model, badge, pct, header, cardBox] = await boxes(
+    page, [".hostName", ".cpuModel", ".thermal", ".cpuValue", ".hdr", ":scope"], ".cockpit .card");
 
   // One row, and everything that matters is on it.
   expect(sharesLine(name, model), "the CPU model shares the host name's line").toBe(true);
@@ -516,13 +542,16 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
   await expect(card.locator(".cpuValue")).toHaveText(vm.hosts[0].cpuValue);
 
   // …because the model clipped rather than the row growing to fit it.
-  const clipped = await card
-    .locator(".cpuModel")
-    .evaluate((el) => el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === "ellipsis");
-  expect(clipped, "a 120-character CPU model must ellipsize").toBe(true);
+  // Retrying reads: a detached node reads 0 for both widths, which would pass
+  // the name check below for the wrong reason (#793).
+  await expect
+    .poll(() => card.locator(".cpuModel").evaluate((el) => el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === "ellipsis"),
+      { message: "a 120-character CPU model must ellipsize" })
+    .toBe(true);
   // The name never does: it is how you tell the cards apart.
-  const nameClipped = await card.locator(".hostName").evaluate((el) => el.scrollWidth > el.clientWidth);
-  expect(nameClipped).toBe(false);
+  await expect
+    .poll(() => card.locator(".hostName").evaluate((el) => el.clientWidth > 0 && el.scrollWidth <= el.clientWidth))
+    .toBe(true);
 
   // The stale message shares this row too, and `sample-cockpit.json` carries a
   // host that has one. It is the last thing to give — the model beside it goes
@@ -718,16 +747,13 @@ test("a tab whose host cannot be contacted is red and pulses", async ({ page, ba
   await expect(alerting.first()).toHaveCSS("color", rgb(down[0].color));
   // The pulse is what makes it findable in peripheral vision; a red tab that
   // sits still reads as a style, not an alarm.
-  expect(
-    await alerting.first().evaluate((el) => getComputedStyle(el).animationName)
-  ).not.toBe("none");
+  // A retrying assertion: a node the tick just replaced reads "" here (#793).
+  await expect(alerting.first()).not.toHaveCSS("animation-name", "none");
 
   // …and the healthy tabs are untouched, or the bar would read as all-alarm.
   const calm = page.locator("#hostTabs .tab:not([data-alert])");
   await expect(calm).toHaveCount(tabbed.hostTabs.tabs.length - down.length);
-  expect(
-    await calm.first().evaluate((el) => getComputedStyle(el).animationName)
-  ).toBe("none");
+  await expect(calm.first()).toHaveCSS("animation-name", "none");
 });
 
 test("the host tab bar rides the Hosts title line instead of costing a row", async ({ page, baseURL }) => {
@@ -741,20 +767,12 @@ test("the host tab bar rides the Hosts title line instead of costing a row", asy
 
   const topbar = page.locator("#fullView > .topbar");
   const bar = page.locator("#hostTabs");
-  // boundingBox() does not wait: every element measured below is awaited
-  // itself, not just its parent, or a slower paint reads null (#763).
-  const firstTabLoc = bar.locator(".tab").first();
+  // The boxes are read in one evaluate that waits until every element is
+  // painted; a box per locator can land on a node a re-render just replaced
+  // (#793).
   await expect(topbar).toBeVisible();
-  await expect(bar).toBeVisible();
-  await expect(page.locator("#hostsTitle")).toBeVisible();
-  await expect(firstTabLoc).toBeVisible();
-
-  const [tb, barBox, title, firstTab] = await Promise.all([
-    topbar.boundingBox(),
-    bar.boundingBox(),
-    page.locator("#hostsTitle").boundingBox(),
-    firstTabLoc.boundingBox(),
-  ]);
+  const [tb, barBox, title, firstTab] = await boxes(
+    page, ["#fullView > .topbar", "#hostTabs", "#hostsTitle", "#hostTabs .tab"]);
 
   // Same visual line as the title, and inside the topbar's box.
   expect(sharesLine(title, firstTab), "the tabs sit on the Hosts title's line").toBe(true);
@@ -767,8 +785,7 @@ test("the host tab bar rides the Hosts title line instead of costing a row", asy
 
   // The strip scrolls rather than wrapping: wrapping would put the overflow
   // tabs back on a second line, which is the line this move reclaimed.
-  const wrap = await bar.evaluate((el) => getComputedStyle(el).flexWrap);
-  expect(wrap).toBe("nowrap");
+  await expect(bar).toHaveCSS("flex-wrap", "nowrap");
 });
 
 test("stack keeps every host on screen, and leaves no tab bar behind", async ({ page, baseURL }) => {
