@@ -174,10 +174,17 @@
   fill). **`has_quota` is never branched on**: it turns `false` once the quota is
   used up, which is a figure to show. **The endpoint is undocumented**, so it
   degrades like the Claude and Codex plan readers: anything the row cannot trust
-  reads `—` and says why in the `Fault` vocabulary (vendor `GitHub`), never a
-  zero, and the figure goes with it. That is: `token_based_billing` not `true`
+  reads `—` and says why, never a zero, and the figure goes with it. Most say it
+  in the `Fault` vocabulary (vendor `GitHub`); three keep the crate's own
+  sentences, because the vocabulary has no word for them (AGENTS.md convention 4):
+  a login mismatch and a plan billed in premium requests (GitHub answered 200, so
+  nothing was rejected or unreadable), and a 404 (no Copilot plan or seat for
+  this token's account, or the endpoint changed; there is no account in its
+  path). The cases are: `token_based_billing: false`
   (an annual premium-request plan, whose figures are requests and never dollars),
-  a missing, negative or non-finite figure, a body that no longer decodes, and a
+  a missing, negative or non-finite figure (a missing or null
+  `token_based_billing` is a missing figure, never a plan type), a body that no
+  longer decodes, and a
   `login` that is not the configured username (ASCII case-insensitive; the
   token belongs to a different account, and that account's figures are never
   shown under this username). **Kept:** a failure to reach GitHub, a refused

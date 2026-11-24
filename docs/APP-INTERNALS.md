@@ -401,10 +401,10 @@
   an undecodable body) clears the figure with the failure
   (`SeatError::keeps_last_figure`), so the row reads `—` and the reason; the
   rest (unreachable, a rate limit, a refused 401/403 token, a 5xx or another
-  unexpected status) keep the last good figure beside its `⚠`. The two
-  sentences for a login mismatch and a plan billed in premium requests are the
-  crate's own, not the vocabulary's: GitHub answered 200, so nothing was
-  rejected and nothing was unreadable.
+  unexpected status) keep the last good figure beside its `⚠`. The three
+  sentences for a login mismatch, a plan billed in premium requests (`token_based_billing: false`; an absent field is a missing figure instead) and a 404 are the
+  crate's own, not the vocabulary's: the first two are 200 answers, so nothing was
+  rejected and nothing was unreadable, and a 404 has no account in its path.
   The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
   `nothing_added_message`): any key undecided is loading, else any key the
   credential store would not read gives no message (its `⚠` line says why),

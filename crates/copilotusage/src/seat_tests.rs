@@ -181,11 +181,31 @@ fn a_blank_or_oversized_plan_name_is_no_plan() {
 
 #[test]
 fn a_plan_not_billed_in_credits_is_never_dollars() {
-    for patch in [
-        json!({"token_based_billing": false}),
-        json!({"token_based_billing": null}),
-    ] {
-        assert_eq!(kind(&with_quota(&patch)), SeatErrorKind::NotCreditBilled);
+    // Only an explicit `false` is a plan type.
+    assert_eq!(
+        kind(&with_quota(&json!({"token_based_billing": false}))),
+        SeatErrorKind::NotCreditBilled
+    );
+}
+
+/// Absent is unknown: a missing or null `token_based_billing` is a missing
+/// field, never a claim about the plan, and carries no dollar figure.
+#[test]
+fn a_missing_billing_field_is_a_missing_figure_not_a_plan_type() {
+    // `with_quota` removes the key for a null patch.
+    let absent = with_quota(&json!({"token_based_billing": null}));
+    assert!(absent["quota_snapshots"]["premium_interactions"]
+        .get("token_based_billing")
+        .is_none());
+    let mut explicit_null = fixture();
+    explicit_null["quota_snapshots"]["premium_interactions"]["token_based_billing"] = Value::Null;
+    for v in [absent, explicit_null] {
+        let error = seat_of(&v).expect_err("no figure");
+        assert_eq!(error.kind, SeatErrorKind::MissingFigure);
+        assert!(!error.keeps_last_figure());
+        let message = error.user_message();
+        assert!(!message.contains("premium requests"), "{message}");
+        assert!(message.contains("left out a field"), "{message}");
     }
 }
 
@@ -270,7 +290,10 @@ async fn a_404_never_mentions_a_username_and_clears_the_figure() {
     let error = one_status(404).await;
     let message = error.user_message();
     assert!(!message.to_lowercase().contains("username"), "{message}");
-    assert!(message.contains("no Copilot plan or seat"), "{message}");
+    assert!(
+        message.contains("no Copilot plan or seat for this token"),
+        "{message}"
+    );
     assert!(!error.keeps_last_figure());
 }
 
@@ -295,7 +318,7 @@ async fn statuses_map_to_the_vocabulary_like_the_billing_reads() {
         one_status(403).await.fault(),
         Some(Fault::CredentialRejected)
     );
-    assert_eq!(one_status(404).await.fault(), Some(Fault::NotFound));
+    assert_eq!(one_status(404).await.fault(), None, "its own sentence");
     assert_eq!(one_status(429).await.fault(), Some(Fault::RateLimited));
     assert_eq!(one_status(503).await.fault(), Some(Fault::VendorFailure));
     assert_eq!(one_status(418).await.fault(), Some(Fault::Unexpected));

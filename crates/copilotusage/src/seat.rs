@@ -22,8 +22,9 @@
 //!
 //! # What is never a figure
 //!
-//! `token_based_billing` other than `true` (an annual premium-request plan:
-//! requests, never dollars), a missing figure, a negative or non-finite one,
+//! `token_based_billing: false` (an annual premium-request plan:
+//! requests, never dollars), a missing figure (a missing `token_based_billing`
+//! included: absent is unknown, never a plan type), a negative or non-finite one,
 //! and a response whose `login` is not the account the operator named. Each is
 //! a [`SeatError`], never a zero. `has_quota` is decoded and never branched
 //! on: it turns `false` once the quota is used up, which is a figure to show,
@@ -140,7 +141,7 @@ pub(crate) struct Quota {
 pub enum SeatErrorKind {
     /// The request failed or GitHub answered with a failure status.
     Request(ErrorKind),
-    /// `token_based_billing` was not `true`: an annual premium-request plan,
+    /// `token_based_billing` was `false`: an annual premium-request plan,
     /// whose figures are requests and never dollars.
     NotCreditBilled,
     /// A figure the row needs was absent.
@@ -170,9 +171,12 @@ impl SeatError {
     #[must_use]
     pub fn fault(&self) -> Option<Fault> {
         match self.kind {
+            // A 404 here is no plan or seat, not a missing account: its own
+            // sentence, like the two 200 answers below.
+            SeatErrorKind::Request(ErrorKind::NotFound) => None,
             SeatErrorKind::Request(kind) => Some(match kind {
                 ErrorKind::Unauthorized | ErrorKind::Forbidden => Fault::CredentialRejected,
-                ErrorKind::NotFound => Fault::NotFound,
+                ErrorKind::NotFound => unreachable!("matched above"),
                 ErrorKind::RateLimited => Fault::RateLimited,
                 ErrorKind::VendorFailure { .. } => Fault::VendorFailure,
                 ErrorKind::UnexpectedStatus { .. } => Fault::Unexpected,
@@ -212,6 +216,13 @@ impl SeatError {
                         username \u{2014} check the token and the username in Settings"
                     .to_owned();
             }
+            // The vocabulary's 404 says "no such account \u{2014} check Settings", and
+            // this endpoint has no account in its path.
+            SeatErrorKind::Request(ErrorKind::NotFound) => {
+                return "GitHub reports no Copilot plan or seat for this token's account, \
+                        or it changed this endpoint"
+                    .to_owned();
+            }
             SeatErrorKind::NotCreditBilled => {
                 return "This Copilot plan is billed in premium requests rather than AI \
                         credits, so there is no dollar figure to show"
@@ -224,15 +235,12 @@ impl SeatError {
             SeatErrorKind::Request(ErrorKind::Unauthorized | ErrorKind::Forbidden) => {
                 format!("{stock} \u{2014} it needs User permissions \u{2192} Plan: Read")
             }
-            SeatErrorKind::Request(ErrorKind::NotFound) => format!(
-                "{stock} \u{2014} the account has no Copilot plan or seat, or GitHub changed this endpoint"
-            ),
             SeatErrorKind::Request(ErrorKind::UnexpectedStatus { status }) => {
                 fault::http_status_message(status, VENDOR)
             }
             SeatErrorKind::Request(_) => stock,
             SeatErrorKind::MissingFigure => {
-                format!("{stock} \u{2014} it carried no credit figure")
+                format!("{stock} \u{2014} it left out a field this row needs")
             }
             SeatErrorKind::InvalidFigure => {
                 format!("{stock} \u{2014} a credit figure was out of range")
@@ -279,8 +287,13 @@ pub(crate) fn interpret(body: &SeatBody, expected_login: &str) -> Result<Seat, S
         .as_ref()
         .and_then(|s| s.premium_interactions.as_ref())
         .ok_or(SeatError::new(SeatErrorKind::MissingFigure))?;
-    if quota.token_based_billing != Some(true) {
+    if quota.token_based_billing == Some(false) {
         return Err(SeatError::new(SeatErrorKind::NotCreditBilled));
+    }
+    // Absent (or null) says nothing about the plan: it is a missing field, not a
+    // plan type, and the figures are not known to be credits.
+    if quota.token_based_billing.is_none() {
+        return Err(SeatError::new(SeatErrorKind::MissingFigure));
     }
     let used = credits(quota.credits_used)?;
     let allowance = if quota.unlimited == Some(true) {

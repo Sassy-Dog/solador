@@ -9775,56 +9775,120 @@ mod tests {
         );
     }
 
-    /// With a token stored, a pass notes the username on both readings and each
-    /// failure lands under its own id: the plan row's reading and the billing
-    /// row's are separate states. The requests go to a local server that answers
-    /// 500, never to GitHub.
+    /// Restores [`COPILOT_TEST_BASE`] when dropped, panic or not.
+    struct CopilotBaseGuard;
+
+    impl Drop for CopilotBaseGuard {
+        fn drop(&mut self) {
+            *COPILOT_TEST_BASE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
+    /// With a token stored, a pass notes the username on both readings, and each
+    /// reading lands under its own id. The plan row keeps its last good figure
+    /// through a failure that says nothing about it (a 500) and drops it on one
+    /// that does (a 404: the seat or the endpoint is gone). The requests go to a
+    /// local server, never to GitHub: the billing paths always answer 500, the
+    /// seat path answers what the test sets. **One test** holds every scenario
+    /// because [`COPILOT_TEST_BASE`] is process-global.
     #[test]
-    fn a_personal_pass_notes_the_login_on_both_readings_and_fails_each_on_its_own() {
+    fn a_personal_pass_notes_the_login_and_the_plan_row_keeps_or_drops_its_figure() {
+        // Invented figures and names only.
+        const SEAT_OK: &str = r#"{"login":"Example-User","copilot_plan":"business","quota_reset_date_utc":"2099-01-01T00:00:00Z","quota_snapshots":{"premium_interactions":{"credits_used":1234.56,"entitlement":3900,"unlimited":false,"token_based_billing":true,"has_quota":true}}}"#;
         let (_dir, rt, app) = test_app();
         let app = Arc::new(app);
         app.credentials
             .set_secret(SecretKey::CopilotPersonalToken, "github_pat_x")
             .unwrap();
         app.store.lock().unwrap().settings_mut().copilot_username = "example-user".into();
-        let base = rt.block_on(async {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            tokio::spawn(async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    tokio::spawn(async move {
-                        let mut buf = [0_u8; 2048];
-                        let _ = socket.read(&mut buf).await;
-                        let _ = socket
-                            .write_all(
-                                b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                            )
-                            .await;
-                    });
-                }
-            });
-            base
-        });
-        *COPILOT_TEST_BASE.lock().unwrap() = Some(base);
-        rt.block_on(poll_copilot_personal(&app));
-        *COPILOT_TEST_BASE.lock().unwrap() = None;
 
+        // What the seat path answers next: (status, body).
+        let seat: Arc<std::sync::Mutex<(u16, &'static str)>> =
+            Arc::new(std::sync::Mutex::new((200, SEAT_OK)));
+        let base = rt.block_on({
+            let seat = Arc::clone(&seat);
+            async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let base = format!("http://{}", listener.local_addr().unwrap());
+                tokio::spawn(async move {
+                    loop {
+                        let Ok((mut socket, _)) = listener.accept().await else {
+                            break;
+                        };
+                        let seat = Arc::clone(&seat);
+                        tokio::spawn(async move {
+                            let mut buf = [0_u8; 4096];
+                            let n = socket.read(&mut buf).await.unwrap_or(0);
+                            let head = String::from_utf8_lossy(&buf[..n]);
+                            let (status, body) = if head.contains("/copilot_internal/user") {
+                                *seat.lock().unwrap()
+                            } else {
+                                (500, "")
+                            };
+                            let reply = format!(
+                                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            let _ = socket.write_all(reply.as_bytes()).await;
+                        });
+                    }
+                });
+                base
+            }
+        });
+        let _restore = CopilotBaseGuard;
+        *COPILOT_TEST_BASE.lock().unwrap() = Some(base);
+
+        let plan_row = |card: &Value| card["plans"].as_array().unwrap().first().cloned();
+        let plan_warning = |card: &Value| {
+            card["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["id"] == "copilot-plan")
+                .unwrap()["warning"]["text"]
+                .as_str()
+                .map(str::to_owned)
+        };
+
+        // 200: the login is noted on both readings and the plan row has its figure.
+        rt.block_on(poll_copilot_personal(&app));
         {
             let mut state = app.usage.lock().unwrap();
             assert_eq!(state.copilot_personal_mut().login, "example-user");
             assert_eq!(state.copilot_plan_mut().login, "example-user");
         }
         let card = copilot_card(&app);
+        let row = plan_row(&card).expect("the plan row");
+        assert_eq!(row["label"], "Copilot \u{b7} Business");
+        assert_eq!(row["metrics"][0]["value"], "$12.35 / $39.00 \u{b7} 32%");
+        assert!(plan_warning(&card).is_none());
+        // The billing read failed on its own: its warning is its own.
         let footer = card["footer"]["text"].as_str().unwrap();
         assert!(footer.contains("copilot-personal: "), "{footer}");
-        assert!(footer.contains("copilot-plan: "), "{footer}");
-        // Both rows exist (a set-up token), as dashes: nothing was measured.
-        assert_eq!(card["plans"][0]["id"], "copilot-plan");
-        assert_eq!(card["plans"][0]["value"], "\u{2014}");
+        assert!(!footer.contains("copilot-plan: "), "{footer}");
+
+        // 500: says nothing about the figure, so it stays beside the warning.
+        *seat.lock().unwrap() = (500, "");
+        rt.block_on(poll_copilot_personal(&app));
+        let card = copilot_card(&app);
+        let row = plan_row(&card).expect("the plan row");
+        assert_eq!(row["metrics"][0]["value"], "$12.35 / $39.00 \u{b7} 32%");
+        assert!(plan_warning(&card).expect("a warning").contains("GitHub"));
+
+        // 404: the seat or the endpoint is gone, so the old limit is dropped.
+        *seat.lock().unwrap() = (404, "");
+        rt.block_on(poll_copilot_personal(&app));
+        let card = copilot_card(&app);
+        let row = plan_row(&card).expect("the plan row stays, as a dash");
+        assert_eq!(row["value"], "\u{2014}");
+        assert!(row["metrics"].as_array().unwrap().is_empty());
+        assert!(plan_warning(&card)
+            .expect("a warning")
+            .contains("no Copilot plan or seat"));
     }
 
     /// A key the store refused is unsaved, and nothing else in the walk ran.

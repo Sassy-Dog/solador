@@ -250,7 +250,8 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
 /// no `lines` (a setup or error state).
 ///
 /// **A tile's scope picks only which figures it shows.** Every `\u{26a0}` warning
-/// from a configured AI source (both plans, both keys, the Claude Code logs,
+/// from a configured AI source (the three plans, Claude's, Codex's and Copilot's
+/// `copilot-plan`; both Admin keys; both Copilot billing rows; the Claude Code logs,
 /// and a key the credential store would not read) shows on every AI Usage tile,
 /// labelled with its row id: the payload's `footer` and an overview card's `\u{26a0}`
 /// entry are the whole tile's, whatever the scope. Only three things follow
