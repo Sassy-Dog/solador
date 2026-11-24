@@ -320,10 +320,11 @@ only fails later. Reads left as they were: `.db-tile-content` in
 `status-layout.spec.js` is never replaced by a render, and the Settings specs
 run while `settingsOpen` stops the overview and panel polls. The one poll
 left running there is the About tab's 1.5 s `update_status` (`settings.js`).
-It rebuilds the tab whenever its answer differs from the payload's
-`about.updates`, so a test that hands the stub its own `updates`, or swaps
-`window.__UPDATES__`, gets a repaint at a moment it does not choose; the two
-About tests that compare geometry across one read through `boxes()`. The
+It rebuilds the tab whenever its answer differs from the `about.updates` it
+last painted (the payload's, until an answer differs), so a test that hands
+the stub its own `updates` gets one repaint at a moment it does not choose,
+and another after it swaps `window.__UPDATES__`; the two About tests that
+compare geometry across one read through `boxes()`. The
 per-panel specs (`azure`, `github`, `usage`, `openclaw`, `ai-sources`,
 `actions-billing`) still `boundingBox()` a panel after awaiting it; a panel
 re-renders every 10 s (OpenClaw 2 s, any panel 1 s while loading, and Repos'
