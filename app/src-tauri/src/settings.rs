@@ -116,6 +116,9 @@ pub struct StoredSecrets {
     /// source being added.
     pub anthropic_admin: StoredKey,
     pub openai_admin: StoredKey,
+    /// The Copilot source's personal token: its own item, and the only key that
+    /// source owns (its organization half reads the Actions billing token).
+    pub copilot_personal: StoredKey,
     /// Whether an OpenClaw *bearer* token is stored, which keeps the row alive
     /// when no gateway URL is saved. The device key is not represented here at
     /// all: it is minted by the app, and whether one exists is answered by the
@@ -1003,19 +1006,21 @@ pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Val
             target = editor("openclaw", None);
             ("OpenClaw source", &["openclaw"])
         }
-        // Two sources feed this one tile, each holding its own Admin key. A scope
-        // or row that names one vendor goes to that vendor's editor; `all`,
-        // `attention` and `plans` span both, so the operator chooses.
+        // Three sources feed this one tile: two hold their own Admin key, and
+        // Copilot holds its personal token and reads the Actions billing one.
+        // A scope or row that names one vendor goes to that vendor's editor;
+        // `all`, `attention` and `plans` span them, so the operator chooses.
         "aiUsage" => {
             let vendor = match route.scope.as_str() {
                 "anthropic" | "claude" => Some("anthropic"),
                 "openai" => Some("openai"),
+                "copilot" => Some("copilot"),
                 _ => resource.and_then(crate::dashboard::vendor_of),
             };
             if let Some(vendor) = vendor {
                 target = editor(vendor, None);
             }
-            ("AI Usage sources", &["anthropic", "openai"])
+            ("AI Usage sources", &["anthropic", "openai", "copilot"])
         }
         "usage" => {
             if let Some((provider, _)) = resource.and_then(|id| id.split_once(':')) {
@@ -1060,13 +1065,15 @@ pub const SOURCES_LABEL: &str = "Sources";
 pub const ANTHROPIC_TITLE: &str = store::source_save::ANTHROPIC_TITLE;
 /// Everything read about Codex and the OpenAI API.
 pub const OPENAI_TITLE: &str = store::source_save::OPENAI_TITLE;
+/// GitHub Copilot's AI credits, for an organization and for a person.
+pub const COPILOT_TITLE: &str = store::source_save::COPILOT_TITLE;
 /// The AI sources that feed the AI Usage tile, in the order its body lists them.
 /// The sentence below is built from this, so a source added to the tile is named
 /// by adding it here.
-pub const AI_SOURCE_TITLES: &[&str] = &[ANTHROPIC_TITLE, OPENAI_TITLE];
+pub const AI_SOURCE_TITLES: &[&str] = &[ANTHROPIC_TITLE, OPENAI_TITLE, COPILOT_TITLE];
 
 /// The one sentence the AI Usage tile shows when no part of any AI source is on:
-/// "Anthropic or OpenAI", and "Anthropic, OpenAI or X" once there is an X.
+/// "Anthropic, OpenAI or GitHub Copilot", built from [`AI_SOURCE_TITLES`].
 #[must_use]
 pub fn none_added_message() -> String {
     let names = match AI_SOURCE_TITLES {
@@ -1114,6 +1121,9 @@ const SENTRY_CRONS_PART_TITLE: &str = "Scheduled jobs";
 const AZURE_EXPORT_PART_TITLE: &str = "Cost export";
 const AZURE_BUDGET_PART_TITLE: &str = "Monthly budget";
 const SUBSCRIPTION_PART_TITLE: &str = "Subscription";
+const COPILOT_ORG_PART_TITLE: &str = "Organization";
+const COPILOT_PERSONAL_PART_TITLE: &str = "Personal";
+const COPILOT_PERSONAL_UNREAD_TITLE: &str = "Personal token not read";
 const LOCAL_PART_TITLE: &str = "Local usage";
 
 /// A row's status: its words, and whether it needs the operator's attention.
@@ -1404,6 +1414,50 @@ fn connections_section(
             key_status(stored.openai_admin),
         ));
     }
+    let copilot = added_parts(&[
+        (s.copilot_org_enabled, COPILOT_ORG_PART_TITLE),
+        (
+            stored.copilot_personal != StoredKey::Absent,
+            if stored.copilot_personal == StoredKey::Unread {
+                COPILOT_PERSONAL_UNREAD_TITLE
+            } else {
+                COPILOT_PERSONAL_PART_TITLE
+            },
+        ),
+    ]);
+    if !copilot.is_empty() {
+        // The organization half reads Actions billing's token and organization,
+        // so it is not a working part without them.
+        let needs_billing = s.copilot_org_enabled
+            && (stored.actions_billing == StoredKey::Absent || s.actions_billing_org.is_empty());
+        let identity = [
+            s.copilot_org_enabled
+                .then_some(s.actions_billing_org.as_str()),
+            (stored.copilot_personal != StoredKey::Absent).then_some(s.copilot_username.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|login| !login.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
+        rows.push(row(
+            "copilot".into(),
+            "copilot",
+            None,
+            COPILOT_TITLE,
+            identity,
+            &copilot,
+            if stored.copilot_personal == StoredKey::Unread
+                || (s.copilot_org_enabled && stored.actions_billing == StoredKey::Unread)
+            {
+                row_status_not_read()
+            } else if needs_billing {
+                status(COPILOT_NEEDS_BILLING_LABEL, true)
+            } else {
+                status("Configured", false)
+            },
+        ));
+    }
     if s.service_health_enabled {
         rows.push(row(
             "services".into(),
@@ -1456,6 +1510,7 @@ fn connections_section(
             local_entry(s, store.tile_sources),
             anthropic_entry(s, stored, store.tile_sources),
             openai_entry(s, stored, store.tile_sources),
+            copilot_entry(s, stored, store.tile_sources),
             neon_entry(s, stored, store.tile_sources),
             sentry_entry(s, stored, store.tile_sources),
             vercel_entry(s, stored, store.tile_sources),
@@ -2009,6 +2064,59 @@ fn openai_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
             ],
             "tile": tile_offer("aiUsage", tile_sources),
         },
+    })
+}
+
+/// What the Copilot row and the organization part say while Actions billing,
+/// whose token and organization that half reads, is not set up.
+const COPILOT_NEEDS_BILLING_LABEL: &str = "Needs Actions billing";
+
+/// GitHub Copilot's steps: the organization half, which owns no credential and
+/// reads the Actions billing token and organization, then the personal half,
+/// whose one token is the source's only key. The organization half is refused at
+/// Finish while Actions billing is not set up (`store::source_save::Requires`),
+/// and its summary says so up front.
+fn copilot_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -> Value {
+    let billing_ready =
+        stored.actions_billing != StoredKey::Absent && !s.actions_billing_org.is_empty();
+    let org_summary = if billing_ready {
+        format!("AI credits for {}", s.actions_billing_org)
+    } else {
+        "Needs Actions billing \u{2014} set it up first".to_owned()
+    };
+    let org = walk_part(
+        "org",
+        COPILOT_ORG_PART_TITLE,
+        &org_summary,
+        s.copilot_org_enabled,
+        "Organization credits",
+        "Month-to-date AI credits for your organization\u{2019}s Copilot seats. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first; nothing new is stored, and removing this part leaves that token alone.",
+    );
+    let mut personal = with_secret(
+        walk_part(
+            "personal",
+            COPILOT_PERSONAL_PART_TITLE,
+            "Your own Copilot plan",
+            stored.copilot_personal != StoredKey::Absent,
+            "Personal credits",
+            "Month-to-date AI credits for a Copilot Pro or Pro+ plan you bought yourself. This needs a fine-grained personal access token owned by your own account with User permissions \u{2192} Plan: Read, and nothing else, plus your GitHub username. The token is kept in your OS credential store; the username is not a secret and is stored as a normal preference.",
+        ),
+        stored.copilot_personal,
+        "Fine-grained PAT",
+        "github_pat_\u{2026}",
+        "token",
+    );
+    personal["inputs"] = json!([walk_input(
+        "username",
+        "GitHub username",
+        &s.copilot_username,
+        false,
+        false
+    )]);
+    json!({
+        "kind": "copilot", "title": COPILOT_TITLE,
+        "feeds": "AI credits for an organization or a person",
+        "walk": {"parts": [org, personal], "tile": tile_offer("aiUsage", tile_sources)},
     })
 }
 
@@ -2910,6 +3018,9 @@ mod tests {
             ("openai", "openai"),
             ("item:codex-plan", "openai"),
             ("item:openai-api", "openai"),
+            ("copilot", "copilot"),
+            ("item:copilot-org", "copilot"),
+            ("item:copilot-personal", "copilot"),
         ] {
             assert_eq!(
                 route("aiUsage", scope, &data)["editor"]["kind"],
@@ -2921,7 +3032,11 @@ mod tests {
         for scope in ["all", "attention", "plans", "item:gone"] {
             let routed = route("aiUsage", scope, &data);
             assert!(routed["editor"].is_null(), "{scope}");
-            assert_eq!(routed["kinds"], json!(["anthropic", "openai"]), "{scope}");
+            assert_eq!(
+                routed["kinds"],
+                json!(["anthropic", "openai", "copilot"]),
+                "{scope}"
+            );
             assert_eq!(routed["heading"], "AI Usage sources", "{scope}");
         }
         assert_eq!(
@@ -3519,7 +3634,7 @@ mod tests {
             &facts(),
         );
         assert_eq!(vm["connections"]["rows"], json!([]));
-        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 13);
+        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 14);
         assert!(vm["connections"].get("automatic").is_none());
     }
 
@@ -3606,6 +3721,68 @@ mod tests {
             .cloned()
     }
 
+    /// Copilot is two parts with one key between them: the personal token. The
+    /// organization half owns none and reads Actions billing's, which its summary
+    /// says before the operator ticks it.
+    #[test]
+    fn copilot_is_two_parts_with_one_key_and_reads_the_billing_org() {
+        let none = StoredSecrets::default();
+        let fresh = view_of(&Settings::default(), &[], &[], &none, &facts());
+        assert!(row_of(&fresh, "copilot").is_none(), "nothing is built in");
+        let entry = catalog_entry(&fresh, "copilot");
+        assert_eq!(entry["title"], "GitHub Copilot");
+        assert_eq!(part_ids(&entry), ["org", "personal"]);
+        let parts = entry["walk"]["parts"].as_array().unwrap();
+        assert!(parts[0]["secret"].is_null(), "the org half owns no key");
+        assert_eq!(
+            parts[0]["summary"],
+            "Needs Actions billing \u{2014} set it up first"
+        );
+        assert_eq!(parts[0]["on"], false);
+        assert!(!parts[1]["secret"].is_null());
+        assert_eq!(parts[1]["inputs"][0]["id"], "username");
+        assert!(parts[1]["help"].as_str().unwrap().contains("Plan: Read"));
+
+        let settings = Settings {
+            actions_billing_org: "example-org".into(),
+            copilot_org_enabled: true,
+            ..Settings::default()
+        };
+        let stored = StoredSecrets {
+            actions_billing: StoredKey::Stored,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&settings, &[], &[], &stored, &facts());
+        let parts = catalog_entry(&vm, "copilot")["walk"]["parts"].clone();
+        assert_eq!(parts[0]["on"], true);
+        assert!(parts[0]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("example-org"));
+        assert_eq!(parts[1]["on"], false);
+        let row = row_of(&vm, "copilot").expect("an org part on is a source");
+        assert_eq!(row["status"]["text"], "Configured");
+        assert_eq!(row["feeds"], "Organization");
+
+        // Actions billing gone: the half is still on, and the row says why it
+        // cannot be read.
+        let vm = view_of(&settings, &[], &[], &none, &facts());
+        let row = row_of(&vm, "copilot").expect("row");
+        assert_eq!(row["status"]["text"], "Needs Actions billing");
+        assert_eq!(row["status"]["attention"], true);
+
+        // The personal token alone is a source too.
+        let stored = StoredSecrets {
+            copilot_personal: StoredKey::Stored,
+            ..StoredSecrets::default()
+        };
+        let vm = view_of(&Settings::default(), &[], &[], &stored, &facts());
+        let row = row_of(&vm, "copilot").expect("row");
+        assert_eq!(row["feeds"], "Personal");
+        assert_eq!(row["status"]["text"], "Configured");
+        let parts = catalog_entry(&vm, "copilot")["walk"]["parts"].clone();
+        assert_eq!(parts[1]["on"], true);
+    }
     fn azure_view(settings: &Settings) -> Value {
         view_of(settings, &[], &[], &StoredSecrets::default(), &facts())
     }

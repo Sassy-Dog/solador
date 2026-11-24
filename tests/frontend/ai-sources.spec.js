@@ -165,12 +165,16 @@ test("both plans lead, then each vendor's spend, then this machine's rollups", a
   const classes = (selector) =>
     page.locator(selector).evaluate((el) => [...el.children].map((c) => c.className));
   expect(await classes("#aiUsageBody")).toEqual(["ai-plans", "ai-rollups"]);
-  // Plans, then spend, in that order, inside the one block.
+  // Plans, then spend, then Copilot, in that order, inside the one block.
+  expect(payload.copilot.map((c) => c.id), "the organization's Copilot, then the person's").toEqual([
+    "copilot-org",
+    "copilot-personal",
+  ]);
   expect(
     await page
       .locator("#aiUsageBody .ai-plans")
-      .evaluate((el) => [...el.children].map((c) => c.dataset.plan ?? c.dataset.api)),
-  ).toEqual(["claude-plan", "codex-plan", "anthropic-api", "openai-api"]);
+      .evaluate((el) => [...el.children].map((c) => c.dataset.plan ?? c.dataset.api ?? c.dataset.copilot)),
+  ).toEqual(["claude-plan", "codex-plan", "anthropic-api", "openai-api", "copilot-org", "copilot-personal"]);
   expect(await classes("#aiUsageBody .ai-rollups")).toEqual([
     "lbl pv-heading",
     "pv-row window",
@@ -184,6 +188,46 @@ test("both plans lead, then each vendor's spend, then this machine's rollups", a
   // Nothing sits above the first plan, so its rule is not drawn.
   await expect(page.locator("#aiUsageBody .ai-plans .pv-section:first-child .pv-divider")).toBeHidden();
   await expect(page.locator("#aiUsageBody .ai-plans .pv-section:last-child .pv-divider"), "the API spend's is").toBeVisible();
+});
+
+const copilotSection = (page, id) =>
+  page.locator(`#aiUsageBody [data-section="copilot"][data-copilot="${id}"]`);
+
+test("each Copilot row paints Rust's billed value, note and top models, and no meter", async ({ page, baseURL }) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  expect(payload.copilot).toHaveLength(2);
+  for (const half of payload.copilot) {
+    const section = copilotSection(page, half.id);
+    await expect(section).toHaveCount(1);
+    await expect(section.locator(".pv-row .lbl")).toHaveText(half.label);
+    await expect(section.locator(".pv-row .val")).toHaveText(half.value);
+    await expect(section.locator(".pv-row .val")).toHaveCSS("color", rgb(half.valueColor));
+    await expect(section.locator(".pv-note")).toHaveText(half.note);
+    expect(half.models.length, "the top models are named").toBeGreaterThan(0);
+    await expect(section.locator(".pv-item .name")).toHaveText(half.models.map((m) => m.name));
+    await expect(section.locator(".pv-item .val")).toHaveText(half.models.map((m) => m.value));
+    // The API reports no pool, so there is nothing for a meter to be a share of.
+    await expect(section.locator(".db-meter, .db-meter-fill, .pbar")).toHaveCount(0);
+  }
+  // Both vendors' own strings: nothing here is composed by the page.
+  expect(payload.copilot[0].label).toMatch(/^Copilot · /);
+});
+
+test("an unmeasured Copilot figure is the em dash, with no note and no models, never a zero", async ({
+  page,
+  baseURL,
+}) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  const unmeasured = {
+    ...payload,
+    copilot: [{ ...payload.copilot[0], value: "\u2014", note: null, models: [] }],
+  };
+  await render(page, unmeasured);
+  const section = copilotSection(page, "copilot-org");
+  await expect(section.locator(".pv-row .val")).toHaveText("\u2014");
+  await expect(section.locator(".pv-note")).toHaveCount(0);
+  await expect(section.locator(".pv-item")).toHaveCount(0);
+  await expect(copilotSection(page, "copilot-personal")).toHaveCount(0);
 });
 
 test("a window whose reset has passed is an empty track: no fill, no tick, no zero", async ({ page, baseURL }) => {
@@ -347,6 +391,7 @@ for (const { name, block, mutate } of [
     mutate: (payload) => {
       payload.plans = [];
       payload.apis = [];
+      payload.copilot = [];
     },
   },
   {

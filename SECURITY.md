@@ -44,6 +44,16 @@ steps, read for one request per poll, never copied, written or refreshed
 (`docs/SECRETS.md`, "Borrowed sign-ins"). A path that makes either one
 leave that request, or be modified, is a vulnerability too.
 
+**Token permissions.** Each GitHub token asks for the narrowest grant its read
+needs, and the docs say so in those words: the Actions billing token is
+**Administration: read** on one organization, and the GitHub Copilot source's
+personal token is the user permission **Plan: read** and nothing else. The
+Copilot source's organization part reads the Actions billing token and keeps no
+credential of its own, so removing it never deletes that token. Neither token is
+sent anywhere but `api.github.com`, and neither appears in an error, a log line
+or a payload (`crates/copilotusage` and `crates/actionsbilling` carry a kind and
+a status, never a URL, body or token).
+
 **The command line hands credentials in, never out.** `solador-app host …`
 gives the running app a host and its token over a local channel: on Unix a
 socket, `<store dir>/run/cli.sock`, whose directory is created `0700` and

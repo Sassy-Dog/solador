@@ -73,6 +73,13 @@
 │   │                       #   spike and macOS-on-self-hosted rules over it (#770).
 │   │                       #   The tile is app/src-tauri's. APP-ONLY — agent/ must
 │   │                       #   never resolve it
+│   ├── copilotusage/       # GitHub Copilot usage reader (#789): month-to-date AI
+│   │                       #   credits (and premium requests, where the plan still
+│   │                       #   bills them) for an organization or a person, from the
+│   │                       #   Actions billing token or a personal Plan: read token
+│   │                       #   the caller passes in. No plan allowance exists in the
+│   │                       #   API, so there is no pool. The tile is app/src-tauri's.
+│   │                       #   APP-ONLY — agent/ must never resolve it
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer
 │   ├── updatefeed/         # the `latest.json` manifest + the minisign check

@@ -74,11 +74,13 @@
   `1 missing`, red) rather than a load figure, which moves to the line under
   it. Individual rows keep their state colours.
 - **AI Usage** — every AI vendor in one tile (`aiUsage`, command `ai_usage`,
-  `usage::ai_usage_view`). The **Anthropic** and **OpenAI** sources in Settings
-  both feed it, each with its own Admin key, so a part is set up in the source
-  that owns it and a source adds the one tile, never two. The body reads, in this
-  order: the **plan limits** (Claude's, then Codex's), the **API spend** (`apis`,
-  Anthropic's then OpenAI's), then this machine's Claude Code rollups last.
+  `usage::ai_usage_view`). The **Anthropic**, **OpenAI** and **GitHub Copilot**
+  sources in Settings all feed it, so a part is set up in the source that owns it
+  and a source adds the one tile, never two. The body reads, in this order: the
+  **plan limits** (Claude's, then Codex's), the **API spend** (`apis`,
+  Anthropic's then OpenAI's, each from its own Admin key), **Copilot** (`copilot`,
+  the organization's then the person's), then this machine's Claude Code rollups
+  last.
   Plans are **opt-in and off in a fresh store** (15 min by default, see
   `docs/APP-INTERNALS.md`, **Authentication**).
   A plan is one row named by its provider and plan (`Claude · Ultra`,
@@ -106,32 +108,67 @@
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` from its Admin key, on
   `PanelInterval::UsageProviders`, with a note saying how far the figure reaches
   (`counted 3h ago`), which is not when it was read: Anthropic's lag by hours.
-  `apis` is always a list, empty when neither key is there. The header's warning
-  and clock lines read in body order and each names its row's own id
-  (`claude-plan`, `codex-plan`, `anthropic-api`, `openai-api`, and the rollups'
-  `claude-today`, last), so a line about one vendor is never read as another's.
+  `apis` is always a list, empty when neither key is there.
+  **GitHub Copilot** (`crates/copilotusage`) is month-to-date AI credits, in two
+  halves that answer to the one `copilot` scope: the organization's
+  (`copilot-org`, Copilot Business) and the person's (`copilot-personal`,
+  Pro/Pro+). `copilot` is always a list, empty when neither half is set up. The
+  **organization half owns no credential**: it is a flag
+  (`copilot_org_enabled`) that reads the **Actions billing** token and
+  organization fresh on every pass and keeps neither, so its part is refused at
+  Finish until Actions billing is set up (`store::source_save::Requires`, a
+  read-only precondition that never writes or deletes that token). Removing
+  Actions billing drops the figure on the same frame, and the row then reads `—`
+  and says `Actions billing isn't set up` (a `⚠` line under `copilot-org`);
+  unticking the part hides the row on the same frame, because the flag is read at
+  render time. The **personal half** has its own fine-grained token
+  (`copilot_personal_token`, user permission Plan: read and nothing else) and a
+  username; it is the source's only key, and it is read only for a plan the
+  person bought themselves. Both halves ride `PanelInterval::UsageProviders`
+  (there is no tenth cadence) and read the `ai_credit` usage report and, beside
+  it, the `premium_request` one, pinned to API version `2026-03-10` in this crate
+  only. A row is `Copilot · {login}` (plain `Copilot` when no login is known, as after
+  Actions billing is removed) with the billed USD as its value (`—` when
+  any item lacks its net amount, never a zero), a note of `N AI credits used · N
+  included · N premium requests` that names only what was measured, and the top
+  three models by credits underneath. The premium-request line is there only when
+  that report has items (an annual Pro/Pro+ plan still bills them); a 404 on it is
+  no line and no claim, never an error. **There is no plan meter**: the API
+  reports no allowance and no pool, so a bar would be a share of an invented
+  number. A figure belongs to its login: changing the organization or the
+  username drops the previous figures. **Copilot rows are never attention rows**,
+  so they cannot raise the red chip; a failed read, a stale clock and a token the
+  credential store would not read are `⚠` lines like any other row's.
+  The header's warning and clock lines read in body order and each names its
+  row's own id (`claude-plan`, `codex-plan`, `anthropic-api`, `openai-api`,
+  `copilot-org`, `copilot-personal`, and the rollups' `claude-today`, last), so a
+  line about one vendor is never read as another's.
   `loading` is the OR of every enabled part's. **A part that is not set up says
   nothing**: no row, no warning, no setup line, no walk of the logs, and no
   `Claude Code` row on the tile. Only **no part at all** paints the one sentence
-  (`No AI usage yet — add Anthropic or OpenAI in Settings → Sources → Add
-  source`, built from `settings::AI_SOURCE_TITLES`), and only once **every** key
-  read is `Absent`: any key still unread keeps the tile loading, and otherwise a
+  (`No AI usage yet — add Anthropic, OpenAI or GitHub Copilot in Settings →
+  Sources → Add source`, built from `settings::AI_SOURCE_TITLES`), and only once
+  **every** key read is `Absent` (Copilot's organization flag counts as a part
+  that is on, and its personal token as a key): any key still unread keeps the
+  tile loading, and otherwise a
   key that could not be read says why, first in body order, instead of the setup
   sentence. Plans are their own block (`crates/subscription`,
   `app/src-tauri/src/plan_usage.rs`, `crates/viewmodel/src/plan_usage.rs`): a plan
   is not an account, and its figures never merge into the rollups.
   *Scopes.* Besides `all` and `attention`, a tile can be narrowed to `plans` (both
   plans), `claude` (the Claude Code row and its rollups), `anthropic` or `openai`
-  (that vendor's plan, spend and, for Anthropic, the Claude Code row), or one row
-  (`item:<id>`). The row ids are unchanged from the two tiles this one replaced,
-  so a saved `item:` scope keeps working (`dashboard::vendor_of` maps each row to
-  its vendor scope). A tile that does not keep `claude-today` also drops the
+  (that vendor's plan, spend and, for Anthropic, the Claude Code row), `copilot`
+  (both Copilot rows), or one row (`item:<id>`). The Anthropic and OpenAI row
+  ids are unchanged from the two tiles this one replaced, so a saved `item:`
+  scope keeps working; `copilot-org` and `copilot-personal` are new
+  (`dashboard::vendor_of` maps each row to its vendor scope). A tile that does not keep `claude-today` also drops the
   header's Claude Code figure. **A tile's scope picks only which
   figures it shows.** Every `⚠` warning from a configured AI source (both plans,
-  both keys, the Claude Code logs, and a key the credential store would not
-  read) shows on every AI Usage tile, overview card and Full view alike, in body
-  order and labelled with its row id (`claude-plan`, `codex-plan`,
-  `anthropic-api`, `openai-api`, `claude-today`). A key whose read failed has no
+  both keys, each Copilot half, the Claude Code logs, and a key the credential
+  store would not read) shows on every AI Usage tile, overview card and Full view
+  alike, in body order and labelled with its row id (`claude-plan`, `codex-plan`,
+  `anthropic-api`, `openai-api`, `copilot-org`, `copilot-personal`,
+  `claude-today`). A key whose read failed has no
   section, so it warns as `⚠ anthropic-api: <reason>`; a key merely unread warns
   of nothing, it is loading. Only the freshness clock, `loading` and the
   "isn’t set up" sentence follow the scope (an overview card's clock entry is the
@@ -139,23 +176,27 @@
   the whole-tile values. Any `⚠` line or freshness clock, from any row, lights
   the Needs Attention chip: amber "AI Usage · check readings", or red "AI Usage ·
   N" when a plan row is red. A key the credential store would not read counts as a
-  `⚠` line. **A tile's Detail is source-level**, as every other source's is: it
-  paints the source's whole `warnings` (every row's `⚠` lines and freshness
-  clocks), whatever the tile's scope. So a narrowed tile whose card shows nothing
-  can still be where the chip points, and its Detail says why: an `anthropic`
-  tile, with only the Codex plan's clock late, has an empty card, the amber chip
-  points at that tile, and its Detail shows `codex-plan: as of …`. Every other scope looks at its **relevant set**
+  `⚠` line. **A tile's Detail warnings are source-level** (its rows follow the
+  scope), as every other source's are: it paints the source's whole `warnings`
+  (every row's `⚠` lines and freshness clocks), whatever the tile's scope. So a
+  narrowed tile whose card shows nothing can still be where the chip points, and
+  its Detail says why: an `anthropic` tile, with only the Codex plan's clock
+  late, has an empty card, the amber chip points at that tile, and its Detail
+  shows `codex-plan: as of …`.
+  Every scope but `all` and `attention` looks at its **relevant set**
   (`anthropic`: the Anthropic vendor, meaning its plan, key and logs; `claude`
   and `item:claude-today`: the logs; `item:claude-plan`, `item:codex-plan`: that
   plan; `item:anthropic-api`, `item:openai-api`: that key; `openai`: the OpenAI
-  vendor; `plans`: both plans; an unknown `item:`: nothing, so no message and not
-  loading). Its `freshness` carries only the relevant rows' clocks; it is
-  loading when a relevant row is or a relevant key is unread; and its message is, in order: (1) the
-  loading line if a relevant key is unread, else (2) the rollups' own line
+  vendor; `copilot`: both Copilot rows and the personal key; `plans`: both plans;
+  an unknown `item:`: nothing, so no message and not loading). Its `freshness`
+  carries only the relevant rows' clocks; it is loading when a relevant row is or
+  a relevant key is unread; and its message is, in order: (1) the loading line if
+  a relevant key is unread, else (2) the rollups' own line
   (`reading logs…`, the no-logs line) when the Claude Code logs are relevant and
   on but have no data yet (both are said even beside a kept plan with content),
   else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
-  `OpenAI isn’t set up — …` for each vendor with a relevant part off (every
+  `OpenAI isn’t set up — …` / `GitHub Copilot isn’t set up — …` for each vendor
+  with a relevant part off (every
   relevant key read and absent; `plans` with both plan parts off names both, in
   body order), else (4) none. A key's failure is said once, as its `⚠` line,
   never also as a message, so a key the credential store would not read gives

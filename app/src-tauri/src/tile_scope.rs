@@ -194,6 +194,7 @@ fn plan_id(plan: &Value) -> String {
 fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     retain_in(payload, "plans", plan_id, kept);
     retain_in(payload, "apis", plan_id, kept);
+    retain_in(payload, "copilot", plan_id, kept);
     // The scope picks figures only. `footer` (every row's warning) is left as the
     // whole tile has it; `freshness`, `loading` and the body `message` are the
     // scope's rows' alone, and so is what the payload carries per row: `lines` is
@@ -236,7 +237,7 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     if narrowed {
         return;
     }
-    let shows_a_block = ["plans", "apis"]
+    let shows_a_block = ["plans", "apis", "copilot"]
         .into_iter()
         .any(|key| array_mut(payload, key).is_some_and(|rows| !rows.is_empty()));
     if shows_a_block {
@@ -312,10 +313,10 @@ pub(crate) fn ai_header(inputs: &Value, scope: &str) -> Option<AiHeader> {
         let sentences: Vec<String> = vendors
             .iter()
             .map(|v| {
-                let title = if *v == "anthropic" {
-                    crate::settings::ANTHROPIC_TITLE
-                } else {
-                    crate::settings::OPENAI_TITLE
+                let title = match *v {
+                    "anthropic" => crate::settings::ANTHROPIC_TITLE,
+                    "copilot" => crate::settings::COPILOT_TITLE,
+                    _ => crate::settings::OPENAI_TITLE,
                 };
                 crate::settings::not_set_up_message(title)
             })
@@ -647,9 +648,9 @@ mod tests {
                 {"id":"codex-plan","label":"Codex · Plus","value":"ok","metrics":[]}]})
     }
 
-    /// The ids of a payload's plans and spend blocks, in order.
+    /// The ids of a payload's plans, spend and Copilot blocks, in order.
     fn blocks(v: &Value) -> Vec<String> {
-        ["plans", "apis"]
+        ["plans", "apis", "copilot"]
             .iter()
             .flat_map(|key| v[*key].as_array().into_iter().flatten())
             .map(|b| b["id"].as_str().unwrap().to_owned())
@@ -812,10 +813,13 @@ mod tests {
             "codex-plan",
             "anthropic-api",
             "openai-api",
+            "copilot-org",
+            "copilot-personal",
             "claude-today",
         ];
         // (scope, the ids whose clock it may carry)
-        let cases: [(&str, &[&str]); 5] = [
+        let cases: [(&str, &[&str]); 6] = [
+            ("copilot", &["copilot-org", "copilot-personal"]),
             ("openai", &["codex-plan", "openai-api"]),
             ("item:openai-api", &["openai-api"]),
             ("item:codex-plan", &["codex-plan"]),
@@ -993,6 +997,9 @@ mod tests {
             };
         set(state.anthropic_api_mut(), anthropic);
         set(state.openai_api_mut(), openai);
+        // Copilot's token has been read and is absent, as on a store that never
+        // added it: these tests are about the other vendors.
+        state.copilot_personal_mut().unconfigure();
         let inputs = PlanInputs {
             claude,
             codex,
@@ -1024,10 +1031,15 @@ mod tests {
             "codex-plan",
             "anthropic-api",
             "openai-api",
+            "copilot-org",
+            "copilot-personal",
             "claude-today",
         ];
         // (scope, the ids it speaks for)
-        let matrix: [(&str, &[&str]); 12] = [
+        let matrix: [(&str, &[&str]); 15] = [
+            ("copilot", &["copilot-org", "copilot-personal"]),
+            ("item:copilot-org", &["copilot-org"]),
+            ("item:copilot-personal", &["copilot-personal"]),
             ("all", &all_ids),
             ("attention", &all_ids),
             (
@@ -1203,6 +1215,52 @@ mod tests {
         assert_eq!(scoped(&p, "all")["loading"], true);
     }
 
+    /// A Copilot tile keeps only Copilot: both halves' rows and their clocks,
+    /// none of another vendor's, and not the Claude Code rollups.
+    #[test]
+    fn a_copilot_tile_keeps_only_copilot() {
+        let p = every_line_firing();
+        let out = scoped(&p, "copilot");
+        assert_eq!(blocks(&out), ["copilot-org", "copilot-personal"]);
+        assert_eq!(out["windows"], json!([]));
+        assert!(out.get("projects").is_none());
+        assert_eq!(out["trailing"], "");
+        let one = scoped(&p, "item:copilot-personal");
+        assert_eq!(blocks(&one), ["copilot-personal"]);
+        // The scope picks figures only: every other row's warning is still here.
+        assert_eq!(out["footer"], p["footer"]);
+        assert!(header_text(&out, "footer").contains("anthropic-api"));
+        // And another vendor's tile never carries Copilot's rows.
+        for scope in ["anthropic", "openai", "plans", "claude"] {
+            let other = scoped(&p, scope);
+            assert!(other["copilot"].as_array().unwrap().is_empty(), "{scope}");
+        }
+    }
+
+    /// A Copilot half that is on and not yet read holds only a Copilot tile
+    /// loading, and one that is off and read absent says only its own sentence.
+    #[test]
+    fn a_copilot_tile_is_held_by_its_own_key_only() {
+        let mut state = crate::usage::UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        let p = crate::usage::ai_usage_view(&state, crate::plan_usage::PlanInputs::OFF, AI_NOW);
+        let out = scoped(&p, "copilot");
+        assert_eq!(out["loading"], true);
+        assert_eq!(text(&out), crate::usage::PROVIDERS_LOADING_MESSAGE);
+        for scope in ["anthropic", "openai"] {
+            assert_eq!(scoped(&p, scope)["loading"], false, "{scope}");
+        }
+        state.copilot_personal_mut().unconfigure();
+        let p = crate::usage::ai_usage_view(&state, crate::plan_usage::PlanInputs::OFF, AI_NOW);
+        let out = scoped(&p, "copilot");
+        assert_eq!(out["loading"], false);
+        assert_eq!(
+            text(&out),
+            crate::settings::not_set_up_message(crate::settings::COPILOT_TITLE)
+        );
+    }
+
     /// A key failure is never a tile's message; it is its warning.
     #[test]
     fn a_key_failure_is_never_the_tiles_message() {
@@ -1360,6 +1418,8 @@ mod tests {
             ("claude", true),
             ("item:claude-today", true),
             ("openai", false),
+            ("copilot", false),
+            ("item:copilot-org", false),
             ("plans", false),
             ("item:claude-plan", false),
             ("item:anthropic-api", false),

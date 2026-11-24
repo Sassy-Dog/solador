@@ -728,13 +728,15 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   const plans = source.rows.filter(r => r.scopes.includes('plans'));
   expect(plans.map(r => r.id), 'Claude\'s plan then Codex\'s, first').toEqual(['claude-plan', 'codex-plan']);
   expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, plans.length).map(r => r.id));
-  // Body order: plans, API spend, then the Claude Code line last.
-  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'anthropic-api', 'openai-api', 'claude-today']);
+  // Body order: plans, API spend, Copilot, then the Claude Code line last.
+  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'anthropic-api', 'openai-api', 'copilot-org', 'copilot-personal', 'claude-today']);
   expect(source.rows.filter(r => r.label === 'Claude Code'), 'the tokens are one line').toHaveLength(1);
   // Every row answers to its vendor, so a tile can be narrowed to one.
-  const vendors = Object.fromEntries(source.rows.map(r => [r.id, r.scopes.filter(s => s === 'anthropic' || s === 'openai')]));
+  const vendors = Object.fromEntries(source.rows.map(r => [r.id, r.scopes.filter(s => s === 'anthropic' || s === 'openai' || s === 'copilot')]));
   expect(vendors).toEqual({'claude-plan': ['anthropic'], 'codex-plan': ['openai'], 'anthropic-api': ['anthropic'],
-    'openai-api': ['openai'], 'claude-today': ['anthropic']});
+    'openai-api': ['openai'], 'copilot-org': ['copilot'], 'copilot-personal': ['copilot'], 'claude-today': ['anthropic']});
+  // Copilot is never an attention row: it cannot raise the red chip.
+  expect(source.rows.filter(r => r.id.startsWith('copilot-')).map(r => r.attention)).toEqual([false, false]);
   // A row with meters is a card, as a machine is.
   const items = tile(page, 'aiUsage').locator('.db-host');
   await expect(items).toHaveCount(plans.length);
@@ -769,14 +771,16 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   }
 });
 
-// A tile's Detail is source-level: it paints the source's whole warnings,
-// whatever the tile's scope, so an `anthropic` tile whose card shows nothing is
-// still where the chip points and its Detail says why (the Codex plan's clock).
+// A tile's Detail warnings are source-level (its rows follow the scope): it
+// paints the source's whole warnings, whatever the tile's scope, so an
+// `anthropic` tile whose card shows nothing is still where the chip points and
+// its Detail says why (the Codex plan's clock, in the amber a freshness clock
+// carries).
 test('a narrowed AI Usage tile\'s Detail paints the source\'s warnings, not its own card\'s', async ({page,baseURL}) => {
   await openDashboard(page, baseURL, false, (view) => {
     withAiUsageTile(view);
     view.layout.tiles.find(t => t.id === 'overview-aiUsage').scope = 'anthropic';
-    view.sources.find(s => s.id === 'aiUsage').warnings = [{text: 'codex-plan: as of 20m ago', color: '#8090ac'}];
+    view.sources.find(s => s.id === 'aiUsage').warnings = [{text: 'codex-plan: as of 20m ago', color: '#e0a03a'}];
     // Rust's card for this tile: nothing to say.
     view.tiles.push({id: 'overview-aiUsage', source: 'aiUsage', cardWarnings: []});
   });

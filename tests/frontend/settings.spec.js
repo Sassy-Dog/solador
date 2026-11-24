@@ -1970,6 +1970,86 @@ test("a refusal from Rust leaves the Azure steps open with what was typed", asyn
   await expect(page.locator("#walk-container")).toHaveValue("cost-exports");
 });
 
+// MARK: GitHub Copilot's steps: an organization half with no key, a personal half with the one
+
+test("GitHub Copilot: the organization half asks for no key, and the personal token is the one key sent", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+  const entry = catalogEntry(settings, "copilot");
+  const labels = settings.connections.walkLabels;
+  await addConnection(page, "copilot");
+
+  await expect(stepHeading(page)).toHaveText(labels.pickHeading);
+  await expect(page.locator(".walk-pick")).toHaveCount(2);
+  // Said before the part is ticked: the organization half reads Actions billing's token.
+  await expect(pick(page, "org")).toContainText("Needs Actions billing");
+  await pick(page, "org").locator("input").check();
+  await pick(page, "personal").locator("input").check();
+  await expect(stepLine(page)).toHaveText("GitHub Copilot \u00b7 step 1 of 4");
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(partOf(entry, "org").title);
+  await expect(page.locator("#walk-secret"), "the organization half owns no key").toHaveCount(0);
+  await expect(page.locator("#walk-username")).toHaveCount(0);
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(partOf(entry, "personal").title);
+  await expect(page.locator("#walk-secret")).toHaveAttribute("type", "password");
+  await expect(page.locator("[data-secret]"), "no Save that writes before Finish").toHaveCount(0);
+  await next(page);
+  await expect(page.locator(".walk-problem")).toHaveText(labels.keyRequired);
+  await page.locator("#walk-secret").fill("github_pat_secret");
+  await page.locator("#walk-username").fill("example-user");
+  await next(page);
+
+  await expect(stepHeading(page)).toHaveText(labels.readyHeading);
+  expect(await saves(page), "nothing is applied before Finish").toEqual([]);
+  await page.locator(".walk-finish").click();
+  const [save] = await saves(page);
+  expect(save.args).toEqual({
+    kind: "copilot", parts: ["org", "personal"], secret: "github_pat_secret",
+    inputs: { username: "example-user" }, addTile: true,
+  });
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await writesOf(page)).toEqual(["settings_save_source"]);
+});
+
+test("GitHub Copilot's organization half alone sends no key and no values", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "copilot");
+  await pick(page, "org").locator("input").check();
+  await expect(stepLine(page)).toHaveText("GitHub Copilot \u00b7 step 1 of 3");
+  await next(page);
+  await expect(page.locator("#walk-secret")).toHaveCount(0);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  expect((await saves(page))[0].args).toEqual({ kind: "copilot", parts: ["org"], secret: null, addTile: true });
+});
+
+test("a refusal from Rust leaves the Copilot steps open when Actions billing is not set up", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+  const refusal =
+    "Set up Actions billing first \u2014 Copilot's organization figures use its token and organization.";
+  await page.evaluate(
+    ([view, status]) => {
+      window.__SAVE_SOURCE__ = { status, settings: view, saved: false };
+    },
+    [settings, refusal],
+  );
+  await addConnection(page, "copilot");
+  await pick(page, "org").locator("input").check();
+  await next(page);
+  await next(page);
+  await page.locator(".walk-finish").click();
+  await expect(page.locator("#settingsStatus")).toHaveText(refusal);
+  await expect(page.locator(".walk")).toBeVisible();
+});
+
 test("Azure Cost's row opens the same steps with both parts ticked and the saved values", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   const entry = catalogEntry(settings, "azure");

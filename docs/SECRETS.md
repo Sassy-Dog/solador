@@ -7,7 +7,7 @@ Two different things get called "secrets" below, and keeping them apart is the
 whole point of this document:
 
 - **Runtime credentials** — the tokens *you* give the app so it can read your
-  GitHub (the Repos and Runners token, and a separate billing token), Neon, Sentry, Vercel and Azure accounts. These live in your OS
+  GitHub (the Repos and Runners token, a separate billing token, and a personal Copilot token), Neon, Sentry, Vercel and Azure accounts. These live in your OS
   credential store. The app never writes them to disk.
 - **Build-time configuration** — optional environment variables the
   maintainer's *release* build uses. Everything else builds without them.
@@ -27,11 +27,18 @@ Credential Manager on Windows), never in `store.json`.
 | Vercel API token | Usage | read |
 | Anthropic Admin API key (`sk-ant-admin…`) | AI Usage (Anthropic source) | Admin API, read here only for `GET /v1/organizations/analytics/cost`. Only a Console organization can create one. |
 | OpenAI Admin API key | AI Usage (OpenAI source) | read here only for `GET /v1/organization/costs` |
+| GitHub fine-grained PAT, **Copilot personal** (`copilot_personal_token`) | AI Usage (GitHub Copilot source) | resource owner your own account; User permissions: **Plan: read** only; read here only for `GET /users/{username}/settings/billing/{ai_credit,premium_request}/usage`, and only for a plan you bought yourself. Its own item. **The account name is permanent once shipped** |
 | OpenClaw bearer + device key | OpenClaw | gateway-dependent |
 
 An Admin API key can do far more than Solador asks of it, and neither vendor
 offers a narrower one for cost reporting. Solador sends each only to that
 vendor's own endpoint.
+
+The GitHub Copilot source's **organization** part owns no credential: it reads
+`actions_billing_token` and the Actions billing organization on every pass and
+keeps neither, so ticking it needs Actions billing set up, and removing it never
+touches that token. Only its **personal** part has a key of its own
+(`copilot_personal_token` above), which is the source's only typed key.
 
 ### Borrowed sign-ins (read, never stored)
 

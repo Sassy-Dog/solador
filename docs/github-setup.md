@@ -115,6 +115,31 @@ choose **Finish**. Nothing is saved before that, and an empty organization or
 token is refused in its own words. The token is stored in your OS credential
 store under its own item, and Remove source forgets it.
 
+## GitHub Copilot token
+
+The **GitHub Copilot** source has two independent parts on the AI Usage tile.
+
+- **Organization** (Copilot Business) needs no token of its own: it reads with
+  the Actions billing token and organization above, so set **Actions billing** up
+  first. Solador refuses to turn the part on until that is done, and removing the
+  part never deletes the Actions billing token.
+- **Personal** (Copilot Pro or Pro+, bought on your own account) needs a token
+  of its own, created on that account:
+
+  1. **GitHub → Settings → Developer settings → Personal access tokens →
+     Fine-grained tokens → Generate new token**.
+  2. Leave **Resource owner** as yourself.
+  3. Under **Account permissions**, grant read-only **Plan** (**Plan: Read**), and
+     nothing else. Leave every repository and organization permission at **No
+     access**.
+  4. Generate the token and copy it; it is shown only once.
+
+Then in Solador: **Settings → Sources → Add source → GitHub Copilot**, tick the
+parts you want, paste the token into the personal part and type your GitHub
+username, then choose **Finish**. Nothing is saved before that. The token is
+stored in your OS credential store under its own item, and Remove source forgets
+it.
+
 ## Troubleshooting
 
 ### Repos panel shows no data, or 401
@@ -147,6 +172,14 @@ not on GitHub's enhanced billing platform.
 That is GitHub's report lagging, not Solador. It is shown as a plain line and
 is not a warning: the tile only warns when a read fails or the figures are
 older than the poll cadence expects.
+
+### Copilot says the credential was rejected
+For the **organization** part, the Actions billing token needs **Administration:
+Read** and an organization admin, as above. For the **personal** part, the token
+needs the user permission **Plan: Read**. A **not found** message means the
+organization (and its enhanced billing platform) or the username is wrong. The
+personal usage is only served for a plan you bought yourself, not one a company
+or school provides.
 
 ### Rate limiting
 Authenticated requests get **5,000/hour per token**. The Repos panel spends
