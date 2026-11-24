@@ -1326,7 +1326,7 @@ pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
 /// Anthropic and OpenAI API spend, GitHub Copilot's AI credits, and this
 /// machine's Claude Code rollups, each only if the operator added it.
 ///
-/// The body reads plans (Claude, then Codex), API spend (`apis`, Anthropic then
+/// The body reads plans (Claude, Codex, then Copilot's own limit), API spend (`apis`, Anthropic then
 /// OpenAI, always present and empty when neither is on), Copilot (`copilot`,
 /// the organization then the person, always present and empty when neither is
 /// on), then the rollups, and the header's warning and clock lines read in that
@@ -4237,7 +4237,7 @@ mod tests {
                 .unwrap();
             assert!(warning.starts_with("\u{26a0} copilot-plan: "), "{kind:?}");
             assert!(
-                warning.contains("GitHub"),
+                warning.contains("GitHub") || warning.contains("Copilot plan"),
                 "{kind:?}: the vocabulary's vendor"
             );
         }

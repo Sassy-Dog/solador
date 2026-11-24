@@ -375,7 +375,7 @@
   else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
   `OpenAI isn’t set up — …` / `GitHub Copilot isn’t set up — …` for each vendor
   with a relevant part off (every relevant key read and absent; `plans` with
-  both plan parts off names both, in body order), else (4) none. A key's failure
+  every plan part off names each vendor with a part off, GitHub Copilot included, in body order), else (4) none. A key's failure
   is said once, as its `⚠` line, never also as a message. The overview's empty
   text (`ai_narrowed_source`, into `empty_state`) comes from the same function as
   the Full view's `message`, so the two cannot disagree; `all` and `attention`
@@ -396,11 +396,15 @@
   endpoint's failure touches the other's row. `copilot_personal_unconfigure`
   drops both on the same frame (removing the token, or no username), and
   `note_login` drops the plan figures when the username changes. A failure that
-  makes the figure untrustworthy (a plan not billed in credits, a missing or
-  invalid figure, a login that is not the configured one, an undecodable body)
-  clears the figure with the failure (`SeatError::keeps_last_figure`), so the row
-  reads `—` and the reason; one that does not (unreachable, rate limit, a
-  refused token) keeps the last good figure beside its `⚠`.
+  makes the figure untrustworthy or no longer true (a 404, a plan not billed in
+  credits, a missing or invalid figure, a login that is not the configured one,
+  an undecodable body) clears the figure with the failure
+  (`SeatError::keeps_last_figure`), so the row reads `—` and the reason; the
+  rest (unreachable, a rate limit, a refused 401/403 token, a 5xx or another
+  unexpected status) keep the last good figure beside its `⚠`. The two
+  sentences for a login mismatch and a plan billed in premium requests are the
+  crate's own, not the vocabulary's: GitHub answered 200, so nothing was
+  rejected and nothing was unreadable.
   The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
   `nothing_added_message`): any key undecided is loading, else any key the
   credential store would not read gives no message (its `⚠` line says why),

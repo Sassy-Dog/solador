@@ -162,11 +162,15 @@ impl SeatError {
         SeatError { kind }
     }
 
-    /// The vocabulary state this failure is.
+    /// The vocabulary state this failure is, or `None` where the vocabulary has
+    /// no word for it. A login mismatch and a plan billed in premium requests are
+    /// both answers GitHub gave with a 200: nothing was rejected and nothing was
+    /// unreadable, so they keep their own sentences (`user_message`) rather than
+    /// borrowing `CredentialRejected` or `Undecodable`.
     #[must_use]
-    pub fn fault(&self) -> Fault {
+    pub fn fault(&self) -> Option<Fault> {
         match self.kind {
-            SeatErrorKind::Request(kind) => match kind {
+            SeatErrorKind::Request(kind) => Some(match kind {
                 ErrorKind::Unauthorized | ErrorKind::Forbidden => Fault::CredentialRejected,
                 ErrorKind::NotFound => Fault::NotFound,
                 ErrorKind::RateLimited => Fault::RateLimited,
@@ -174,22 +178,26 @@ impl SeatError {
                 ErrorKind::UnexpectedStatus { .. } => Fault::Unexpected,
                 ErrorKind::Undecodable => Fault::Undecodable,
                 ErrorKind::Unreachable => Fault::Unreachable,
-            },
-            SeatErrorKind::WrongAccount => Fault::CredentialRejected,
-            SeatErrorKind::NotCreditBilled
-            | SeatErrorKind::MissingFigure
-            | SeatErrorKind::InvalidFigure => Fault::Undecodable,
+            }),
+            SeatErrorKind::WrongAccount | SeatErrorKind::NotCreditBilled => None,
+            // The body decoded but did not carry a usable figure: the shape is
+            // not the one this build expects.
+            SeatErrorKind::MissingFigure | SeatErrorKind::InvalidFigure => Some(Fault::Undecodable),
         }
     }
 
     /// Whether a figure kept from an earlier good read may stay beside this
-    /// failure. A failure to reach GitHub or to be let in says nothing about
-    /// the figure; one that says the response no longer means what it did, or
-    /// belongs to someone else, does, and the figure goes.
+    /// failure. A failure to reach GitHub, a refused token (401/403), a rate
+    /// limit, a 5xx or another unexpected status says nothing about the figure.
+    /// A 404 (the seat or the endpoint is gone), a response that no longer means
+    /// what it did, or one that belongs to someone else, does, and the figure
+    /// goes.
     #[must_use]
     pub fn keeps_last_figure(&self) -> bool {
         match self.kind {
-            SeatErrorKind::Request(kind) => kind != ErrorKind::Undecodable,
+            SeatErrorKind::Request(kind) => {
+                !matches!(kind, ErrorKind::Undecodable | ErrorKind::NotFound)
+            }
             _ => false,
         }
     }
@@ -197,30 +205,41 @@ impl SeatError {
     /// Operator-facing sentence. Never built from `to_string()`.
     #[must_use]
     pub fn user_message(&self) -> String {
-        let stock = self.fault().message(VENDOR);
+        // The two answers the vocabulary has no word for, said in full.
+        match self.kind {
+            SeatErrorKind::WrongAccount => {
+                return "GitHub answered for a different account than the configured \
+                        username \u{2014} check the token and the username in Settings"
+                    .to_owned();
+            }
+            SeatErrorKind::NotCreditBilled => {
+                return "This Copilot plan is billed in premium requests rather than AI \
+                        credits, so there is no dollar figure to show"
+                    .to_owned();
+            }
+            _ => {}
+        }
+        let stock = self.fault().map_or_else(String::new, |f| f.message(VENDOR));
         match self.kind {
             SeatErrorKind::Request(ErrorKind::Unauthorized | ErrorKind::Forbidden) => {
                 format!("{stock} \u{2014} it needs User permissions \u{2192} Plan: Read")
             }
             SeatErrorKind::Request(ErrorKind::NotFound) => format!(
-                "{stock} \u{2014} check the username, whose account needs a Copilot plan or seat"
+                "{stock} \u{2014} the account has no Copilot plan or seat, or GitHub changed this endpoint"
             ),
             SeatErrorKind::Request(ErrorKind::UnexpectedStatus { status }) => {
                 fault::http_status_message(status, VENDOR)
             }
             SeatErrorKind::Request(_) => stock,
-            SeatErrorKind::NotCreditBilled => {
-                format!("{stock} \u{2014} this plan isn't billed in AI credits")
-            }
             SeatErrorKind::MissingFigure => {
                 format!("{stock} \u{2014} it carried no credit figure")
             }
             SeatErrorKind::InvalidFigure => {
                 format!("{stock} \u{2014} a credit figure was out of range")
             }
-            SeatErrorKind::WrongAccount => format!(
-                "{stock} \u{2014} the token belongs to a different account than the username"
-            ),
+            SeatErrorKind::WrongAccount | SeatErrorKind::NotCreditBilled => {
+                unreachable!("answered above")
+            }
         }
     }
 }

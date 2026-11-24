@@ -293,11 +293,20 @@ fn tint(v: &Value) -> Value {
 /// view keeps the panel's token counts, projects and heading with it.
 pub(crate) const CLAUDE_TODAY_ID: &str = "claude-today";
 
-/// The AI Usage rows, in body order.
-pub(crate) const AI_ROW_IDS: [&str; 8] = [
+/// The AI Usage plan rows, in body order: the rows the `plans` scope speaks for.
+pub(crate) const PLAN_ROW_IDS: [&str; 3] = [
     crate::plan_usage::CLAUDE_ID,
     crate::plan_usage::CODEX_ID,
     crate::usage::COPILOT_PLAN_ID,
+];
+
+/// The AI Usage rows, in body order. Its plans are [`PLAN_ROW_IDS`], indexed in
+/// because a const array cannot splice one in;
+/// `plan_row_ids_lead_the_ai_rows` fails if the two drift.
+pub(crate) const AI_ROW_IDS: [&str; 8] = [
+    PLAN_ROW_IDS[0],
+    PLAN_ROW_IDS[1],
+    PLAN_ROW_IDS[2],
     crate::usage::ANTHROPIC_API_ID,
     crate::usage::OPENAI_API_ID,
     crate::usage::COPILOT_ORG_ID,
@@ -318,7 +327,7 @@ pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
             .collect()
     };
     match scope {
-        "plans" => AI_ROW_IDS[..3].to_vec(),
+        "plans" => PLAN_ROW_IDS.to_vec(),
         "claude" => vec![CLAUDE_TODAY_ID],
         "anthropic" => vendor("anthropic"),
         "openai" => vendor("openai"),
@@ -4384,6 +4393,14 @@ mod tests {
         assert_eq!(empty(&state, none, "copilot"), c);
         assert_eq!(empty(&state, none, "item:copilot-personal"), c);
         assert_eq!(empty(&state, none, "item:copilot-org"), c);
+    }
+
+    /// The plan rows are the first rows of the body, and the `plans` scope
+    /// speaks for exactly them.
+    #[test]
+    fn plan_row_ids_lead_the_ai_rows() {
+        assert_eq!(AI_ROW_IDS[..PLAN_ROW_IDS.len()], PLAN_ROW_IDS);
+        assert_eq!(ai_scope_rows("plans"), PLAN_ROW_IDS.to_vec());
     }
 
     /// Every AI row carries its vendor's scope, and the fixed scopes the picker

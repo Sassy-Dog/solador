@@ -3561,6 +3561,21 @@ const COPILOT_NEEDS_BILLING_MESSAGE: &str =
 /// Where a Copilot half sits in [`UsageState`].
 type CopilotSlot = fn(&mut UsageState) -> &mut usage::CopilotState;
 
+/// A test's stand-in for api.github.com: where every Copilot read goes while it
+/// is set, so a poll with a stored token never reaches the live API.
+#[cfg(test)]
+static COPILOT_TEST_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The one place a Copilot client is made, for the billing reads and the seat
+/// read alike.
+fn copilot_client(token: &str) -> Option<copilotusage::CopilotUsageClient> {
+    #[cfg(test)]
+    if let Some(base) = COPILOT_TEST_BASE.lock().expect("test base").clone() {
+        return copilotusage::CopilotUsageClient::with_base_url(&base, token);
+    }
+    copilotusage::CopilotUsageClient::new(token)
+}
+
 /// One Copilot read, for either half. The token lives for this call: it goes
 /// from the credential store to the request and is dropped.
 async fn read_copilot(
@@ -3571,7 +3586,7 @@ async fn read_copilot(
     billed: copilotusage::Billed<'_>,
 ) {
     // `new` returns `None` only for a blank token, which `Present` excludes.
-    let Some(client) = copilotusage::CopilotUsageClient::new(token) else {
+    let Some(client) = copilot_client(token) else {
         return;
     };
     slot(&mut app.usage.lock().expect("usage state poisoned"))
@@ -3708,7 +3723,7 @@ async fn poll_copilot_personal(app: &Arc<App>) {
 /// failure with a reason, never a zero (`crates/copilotusage`'s `seat`).
 async fn read_copilot_seat(app: &Arc<App>, token: &str, username: &str) {
     // `new` returns `None` only for a blank token, which `Present` excludes.
-    let Some(client) = copilotusage::CopilotUsageClient::new(token) else {
+    let Some(client) = copilot_client(token) else {
         return;
     };
     app.usage
@@ -9724,6 +9739,92 @@ mod tests {
             .unwrap();
         assert_eq!(line["loading"], false, "the token was read and is absent");
         assert_eq!(line["on"], false);
+        // The plan row rides the same token: no row, no line that is on, no
+        // warning, and it has been read as absent rather than left loading.
+        assert!(card["plans"].as_array().unwrap().is_empty());
+        let plan = card["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == "copilot-plan")
+            .unwrap();
+        assert_eq!(plan["on"], false);
+        assert_eq!(plan["loading"], false, "the token was read and is absent");
+        assert!(plan["warning"].is_null());
+    }
+
+    /// A token the store will not hand over warns under **both** Copilot rows'
+    /// own ids, and neither is the setup sentence.
+    #[test]
+    fn an_unreadable_personal_token_warns_under_both_copilot_rows() {
+        let (_dir, rt, app) = test_app_over(UnreadableCredentialStore);
+        let app = Arc::new(app);
+        app.store.lock().unwrap().settings_mut().copilot_username = "example-user".into();
+        rt.block_on(poll_copilot_personal(&app));
+        let card = copilot_card(&app);
+        let footer = card["footer"]["text"].as_str().unwrap();
+        assert!(
+            footer.contains(&format!(
+                "copilot-personal: {CREDENTIAL_UNREADABLE_MESSAGE}"
+            )),
+            "{footer}"
+        );
+        assert!(
+            footer.contains(&format!("copilot-plan: {CREDENTIAL_UNREADABLE_MESSAGE}")),
+            "{footer}"
+        );
+    }
+
+    /// With a token stored, a pass notes the username on both readings and each
+    /// failure lands under its own id: the plan row's reading and the billing
+    /// row's are separate states. The requests go to a local server that answers
+    /// 500, never to GitHub.
+    #[test]
+    fn a_personal_pass_notes_the_login_on_both_readings_and_fails_each_on_its_own() {
+        let (_dir, rt, app) = test_app();
+        let app = Arc::new(app);
+        app.credentials
+            .set_secret(SecretKey::CopilotPersonalToken, "github_pat_x")
+            .unwrap();
+        app.store.lock().unwrap().settings_mut().copilot_username = "example-user".into();
+        let base = rt.block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    tokio::spawn(async move {
+                        let mut buf = [0_u8; 2048];
+                        let _ = socket.read(&mut buf).await;
+                        let _ = socket
+                            .write_all(
+                                b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                            )
+                            .await;
+                    });
+                }
+            });
+            base
+        });
+        *COPILOT_TEST_BASE.lock().unwrap() = Some(base);
+        rt.block_on(poll_copilot_personal(&app));
+        *COPILOT_TEST_BASE.lock().unwrap() = None;
+
+        {
+            let mut state = app.usage.lock().unwrap();
+            assert_eq!(state.copilot_personal_mut().login, "example-user");
+            assert_eq!(state.copilot_plan_mut().login, "example-user");
+        }
+        let card = copilot_card(&app);
+        let footer = card["footer"]["text"].as_str().unwrap();
+        assert!(footer.contains("copilot-personal: "), "{footer}");
+        assert!(footer.contains("copilot-plan: "), "{footer}");
+        // Both rows exist (a set-up token), as dashes: nothing was measured.
+        assert_eq!(card["plans"][0]["id"], "copilot-plan");
+        assert_eq!(card["plans"][0]["value"], "\u{2014}");
     }
 
     /// A key the store refused is unsaved, and nothing else in the walk ran.

@@ -129,8 +129,9 @@
   unticking the part hides the row on the same frame, because the flag is read at
   render time. The **personal half** has its own fine-grained token
   (`copilot_personal_token`, user permission Plan: read and nothing else) and a
-  username; it is the source's only key, and it is read only for a plan the
-  person bought themselves, and the user-level billing endpoint leaves out a seat
+  username; it is the source's only key, and its billing read covers only
+  usage billed to the person themselves (the same token also reads the
+  `copilot-plan` seat quota below), and the user-level billing endpoint leaves out a seat
   an employer assigns and pays for (GitHub: usage for a license "managed and
   billed through an organization or enterprise" is not in user-level endpoints),
   which is why that row reads a measured `$0.00` for such a seat. Both halves ride
@@ -179,9 +180,12 @@
   a missing, negative or non-finite figure, a body that no longer decodes, and a
   `login` that is not the configured username (ASCII case-insensitive; the
   token belongs to a different account, and that account's figures are never
-  shown under this username). A failure that says nothing about the figure
-  (GitHub unreachable, a refused token, a rate limit) keeps the last good one
-  beside its reason. Only the named fields are decoded: the body also carries
+  shown under this username). **Kept:** a failure to reach GitHub, a refused
+  token (401/403), a rate limit, a 5xx or another unexpected status keeps the
+  last good figure beside its reason. **Cleared:** a 404 (the seat or the
+  endpoint is gone, so the old limit is no longer true), an undecodable body,
+  a plan not billed in credits, a missing or invalid figure and a login
+  mismatch each clear it, and the row reads `—`. Only the named fields are decoded: the body also carries
   the user's organization list, enterprise ids and tracking ids, and none of it
   is kept. The request carries the bearer token only, no
   `X-GitHub-Api-Version`. **Its state, `⚠` line and clock are its own**
@@ -216,7 +220,7 @@
   scope keeps working; `copilot-org`, `copilot-personal` and `copilot-plan` are new
   (`dashboard::vendor_of` maps each row to its vendor scope). A tile that does not keep `claude-today` also drops the
   header's Claude Code figure. **A tile's scope picks only which
-  figures it shows.** Every `⚠` warning from a configured AI source (both plans,
+  figures it shows.** Every `⚠` warning from a configured AI source (all three plans,
   both keys, each Copilot row, the Claude Code logs, and a key the credential
   store would not read) shows on every AI Usage tile, overview card and Full view
   alike, in body order and labelled with its row id (`claude-plan`, `codex-plan`,

@@ -245,7 +245,33 @@ fn another_accounts_figures_are_never_returned() {
     let message = interpret(&body(&fixture()), "someone-else")
         .expect_err("mismatch")
         .user_message();
-    assert!(message.contains("different account"));
+    assert!(message.contains("different account"), "{message}");
+    assert!(message.contains("token and the username"), "{message}");
+    for banned in ["rejected", "couldn't read"] {
+        assert!(!message.contains(banned), "{message}");
+    }
+    assert_eq!(SeatError::new(SeatErrorKind::WrongAccount).fault(), None);
+}
+
+#[test]
+fn a_plan_billed_in_requests_is_not_a_read_failure_and_says_so() {
+    let error = SeatError::new(SeatErrorKind::NotCreditBilled);
+    let message = error.user_message();
+    assert!(message.contains("premium requests"), "{message}");
+    assert!(message.contains("no dollar figure"), "{message}");
+    for banned in ["rejected", "couldn't read", "failed"] {
+        assert!(!message.contains(banned), "{message}");
+    }
+    assert_eq!(error.fault(), None);
+}
+
+#[tokio::test]
+async fn a_404_never_mentions_a_username_and_clears_the_figure() {
+    let error = one_status(404).await;
+    let message = error.user_message();
+    assert!(!message.to_lowercase().contains("username"), "{message}");
+    assert!(message.contains("no Copilot plan or seat"), "{message}");
+    assert!(!error.keeps_last_figure());
 }
 
 // ---- failures ----
@@ -261,12 +287,18 @@ async fn one_status(status: u16) -> SeatError {
 
 #[tokio::test]
 async fn statuses_map_to_the_vocabulary_like_the_billing_reads() {
-    assert_eq!(one_status(401).await.fault(), Fault::CredentialRejected);
-    assert_eq!(one_status(403).await.fault(), Fault::CredentialRejected);
-    assert_eq!(one_status(404).await.fault(), Fault::NotFound);
-    assert_eq!(one_status(429).await.fault(), Fault::RateLimited);
-    assert_eq!(one_status(503).await.fault(), Fault::VendorFailure);
-    assert_eq!(one_status(418).await.fault(), Fault::Unexpected);
+    assert_eq!(
+        one_status(401).await.fault(),
+        Some(Fault::CredentialRejected)
+    );
+    assert_eq!(
+        one_status(403).await.fault(),
+        Some(Fault::CredentialRejected)
+    );
+    assert_eq!(one_status(404).await.fault(), Some(Fault::NotFound));
+    assert_eq!(one_status(429).await.fault(), Some(Fault::RateLimited));
+    assert_eq!(one_status(503).await.fault(), Some(Fault::VendorFailure));
+    assert_eq!(one_status(418).await.fault(), Some(Fault::Unexpected));
 }
 
 #[tokio::test]
@@ -286,7 +318,7 @@ async fn a_body_that_does_not_decode_is_undecodable() {
         .await;
     let error = client(&server).await.seat(USER).await.expect_err("html");
     assert_eq!(error.kind, SeatErrorKind::Request(ErrorKind::Undecodable));
-    assert_eq!(error.fault(), Fault::Undecodable);
+    assert_eq!(error.fault(), Some(Fault::Undecodable));
     assert!(!error.keeps_last_figure());
 }
 
@@ -296,6 +328,15 @@ fn only_a_failure_that_says_nothing_about_the_figure_keeps_it() {
     assert!(keeps(SeatErrorKind::Request(ErrorKind::Unreachable)));
     assert!(keeps(SeatErrorKind::Request(ErrorKind::RateLimited)));
     assert!(keeps(SeatErrorKind::Request(ErrorKind::Forbidden)));
+    assert!(keeps(SeatErrorKind::Request(ErrorKind::Unauthorized)));
+    assert!(keeps(SeatErrorKind::Request(ErrorKind::VendorFailure {
+        status: 503
+    })));
+    assert!(keeps(SeatErrorKind::Request(ErrorKind::UnexpectedStatus {
+        status: 418
+    })));
+    // The seat or the endpoint is gone: the old limit is no longer true.
+    assert!(!keeps(SeatErrorKind::Request(ErrorKind::NotFound)));
     assert!(!keeps(SeatErrorKind::NotCreditBilled));
     assert!(!keeps(SeatErrorKind::MissingFigure));
     assert!(!keeps(SeatErrorKind::InvalidFigure));
