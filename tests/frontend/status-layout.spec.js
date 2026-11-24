@@ -351,12 +351,12 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   });
   const clipped = () => page.locator('.db-tile-content, .card, .panel-body').evaluateAll(elements => elements.filter(el => el.getClientRects().length && el.scrollHeight > el.clientHeight + 1).map(el => el.className));
   await expect.poll(clipped).toEqual([]);
-  // Both nodes in one evaluate, and a detached node's "" is not a padding (#793).
+  // Both nodes in one evaluate (#793); "" on a match, else both pairs.
   await expect.poll(() => page.evaluate(() => {
     const pads = el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight];
     const attention = pads(document.querySelector('.db-attention')), tile = pads(document.querySelector('.db-tile'));
-    return attention.every(Boolean) && JSON.stringify(attention) === JSON.stringify(tile);
-  })).toBe(true);
+    return JSON.stringify(attention) === JSON.stringify(tile) ? '' : JSON.stringify({attention, tile});
+  })).toBe('');
   // Every source's Full view, as an operator reaches it. The fixture's overview
   // carries some of the sources, so the Full views come from one `all`-scoped
   // tile per source: every panel with every row.

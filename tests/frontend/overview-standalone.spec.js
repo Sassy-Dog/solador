@@ -184,7 +184,9 @@ test("a tile removed while an older dashboard_view is in flight is gone, not a c
   await expect.poll(() => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "dashboard_view").length))
     .toBeGreaterThan(before);
   // ...when the tile leaves and Rust refuses its cockpit read.
-  // Swapped answers and the cockpit baseline in one evaluate, for the same reason.
+  // Swapped answers and the cockpit baseline in one evaluate, so `seen` counts
+  // only the calls answered before the swap (the 1 s cockpit tick has no pending
+  // guard, so it sends a new call every second).
   const seen = await page.evaluate(() => {
     const view = structuredClone(window.__ANSWERS__.dashboard_view);
     view.tiles = []; view.layout.tiles = [];

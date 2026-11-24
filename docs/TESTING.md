@@ -318,11 +318,15 @@ while that read is pending, so the count can never rise. Arm the gate
 (`__hold`) and read the baseline in the same `evaluate`; a longer poll timeout
 only fails later. Reads left as they were: `.db-tile-content` in
 `status-layout.spec.js` is never replaced by a render, and the Settings specs
-run while `settingsOpen` stops the polls. The per-panel specs (`azure`,
-`github`, `usage`, `containers`, `openclaw`, `ai-sources`, `actions-billing`)
+run while `settingsOpen` stops the polls. The one read left running there is
+the About tab's 1.5 s `update_status` (`settings.js`), which repaints only when
+its answer changes; the e2e stub answers every `update_*` with the same
+`window.__UPDATES__`, so nothing repaints between steps today. The per-panel
+specs (`azure`, `github`, `usage`, `openclaw`, `ai-sources`, `actions-billing`)
 still `boundingBox()` a panel after awaiting it; a panel re-renders every 10 s
-(OpenClaw 2 s, any panel 1 s while loading), so the window is narrower but
-real, and they are not audited or fixed here. Fix a failure that appears only
+(OpenClaw 2 s, any panel 1 s while loading, and Repos' `#reposBody` whenever
+Rust's `panelcolumns` count changes, `app.js` into `github.js`), so the window
+is narrower but real, and they are not audited or fixed here. Fix a failure that appears only
 under several workers at its cause, not with a retry or a longer timeout.
 Watch the three timing-sensitive waits named above first. `csp_server.py`
 holds no request state, so parallel workers share one server.
