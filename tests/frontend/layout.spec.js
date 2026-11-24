@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { advance, gotoTileFull, PANEL_SOURCE_READS } from "./tile-full.js";
+import { advance, boxes, gotoTileFull, PANEL_SOURCE_READS } from "./tile-full.js";
 
 test.beforeEach(async ({ page, baseURL }) => {
   // Served under the app's real CSP (csp_server.py) rather than no policy at
@@ -482,33 +482,6 @@ test("this machine leads the grid and admits what it could not measure", async (
 const sharesLine = (a, b) =>
   Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) >= Math.min(a.height, b.height) * 0.8;
 
-/**
- * Every box in `selectors`, read in ONE synchronous `evaluate`, so all of them
- * come from one DOM and one layout: the cockpit re-renders on a 1 s tick, and a
- * `boundingBox()` per element (each its own round trip) can land on a node the
- * tick just replaced, which reads `null` (#793). `expect.poll` re-reads until
- * every selector resolves to a painted box, so a read taken mid-replace is
- * retried instead of returned. Selectors resolve inside `scope` (a CSS
- * selector; the document when empty); ":scope" is the scope element itself.
- */
-async function boxes(page, selectors, scope = "") {
-  let found;
-  await expect
-    .poll(async () => {
-      found = await page.evaluate(([sels, scope]) => {
-        const root = scope ? document.querySelector(scope) : document;
-        const read = (el) => {
-          const r = el && el.getBoundingClientRect();
-          return r && r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, width: r.width, height: r.height } : null;
-        };
-        return sels.map((sel) => (sel === ":scope" ? read(root) : read(root && root.querySelector(sel))));
-      }, [selectors, scope]);
-      return found.every((b) => b !== null);
-    }, { message: `every one of ${selectors.join(", ")} has a painted box` })
-    .toBe(true);
-  return found;
-}
-
 test("a card's header names the host and its CPU on one line, ellipsizing the model", async ({ page, baseURL }) => {
   // The header used to be two rows: the name (with its dot) above the CPU
   // model / thermal badge / percentage. They are one row now, which is worth
@@ -772,7 +745,7 @@ test("the host tab bar rides the Hosts title line instead of costing a row", asy
   // (#793).
   await expect(topbar).toBeVisible();
   const [tb, barBox, title, firstTab] = await boxes(
-    page, ["#fullView > .topbar", "#hostTabs", "#hostsTitle", "#hostTabs .tab"]);
+    page, ["#fullView > .topbar", "#hostTabs", "#hostsTitle", "#hostTabs .tab:first-child"]);
 
   // Same visual line as the title, and inside the topbar's box.
   expect(sharesLine(title, firstTab), "the tabs sit on the Hosts title's line").toBe(true);

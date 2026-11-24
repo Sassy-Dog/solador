@@ -302,23 +302,30 @@ tests ran serially in 11.5 min on the job that is the CI critical path. There
 are no retries and no raised timeouts. The first failure under more workers was
 a race against paint inside one test: `boundingBox()` does not wait, so a
 test must await every element it measures itself, not just its parent, before
-reading its box. A second failure class followed (#793): the element is awaited
-and then replaced before the read, because the dashboard and cockpit re-render
-on a 1 s tick and a read can land on a node the tick just detached. A detached
-node reads `""` for `getComputedStyle`, 0 for geometry (`scrollWidth`,
-`clientWidth`, a box) and `null` from `boundingBox()`, so a one-shot read can
-go false-green as well as red. The rule: never measure in a step separate from
-the wait. Use a retrying assertion (`toHaveCSS`, or `expect.poll` around an
-`evaluate` that re-resolves the locator), and read boxes that are compared with
-each other in ONE `evaluate` (`boxes()` in `layout.spec.js`) so they share one
-DOM. An `expect.poll` on a stub's call count gets a budget derived from the
-stub's tick (`TICKS_BUDGET_MS` in `overview-standalone.spec.js`), not the 5 s
-default. One-shot `boundingBox()` reads remain in the
-per-panel specs, whose panels refresh every 10 s rather than every 1 s; they
-have not failed, and are not audited as fixed. Fix a failure that appears only under several
-workers at its cause, not with a retry or a longer timeout. Watch the three
-timing-sensitive waits named above first. `csp_server.py` holds no
-request state, so parallel workers share one server.
+reading its box. Two more classes followed (#793). First, the element is
+awaited and then replaced before the read: the dashboard and cockpit re-render
+on a 1 s tick, and a read can land on a node the tick just detached. A
+detached node reads `""` for `getComputedStyle`, 0 for geometry
+(`scrollWidth`, `clientWidth`, a box) and `null` from `boundingBox()`, so a
+one-shot read can go false-green as well as red. Never measure in a step
+separate from the wait: use a retrying assertion (`toHaveCSS`, or
+`expect.poll` around an `evaluate` that re-resolves the locator), and read
+boxes that are compared with each other in ONE `evaluate` (`boxes()` in
+`tile-full.js`) so they share one DOM. Second, a gate armed in one step with
+its baseline read in another: a tick landing between them is counted in the
+baseline and then held, and the overview's `refresh()` skips every later tick
+while that read is pending, so the count can never rise. Arm the gate
+(`__hold`) and read the baseline in the same `evaluate`; a longer poll timeout
+only fails later. Reads left as they were: `.db-tile-content` in
+`status-layout.spec.js` is never replaced by a render, and the Settings specs
+run while `settingsOpen` stops the polls. The per-panel specs (`azure`,
+`github`, `usage`, `containers`, `openclaw`, `ai-sources`, `actions-billing`)
+still `boundingBox()` a panel after awaiting it; a panel re-renders every 10 s
+(OpenClaw 2 s, any panel 1 s while loading), so the window is narrower but
+real, and they are not audited or fixed here. Fix a failure that appears only
+under several workers at its cause, not with a retry or a longer timeout.
+Watch the three timing-sensitive waits named above first. `csp_server.py`
+holds no request state, so parallel workers share one server.
 
 **Per-panel specs enter a tile's Full view (#645); `?view=details` is gone (#647).**
 `actions-billing`, `azure`, `containers`, `crons`, `github`, `openclaw`, `services` and `usage` use
