@@ -726,17 +726,19 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   const view = await openDashboard(page, baseURL, false, withAiUsageTile);
   const source = view.sources.find(s => s.id === 'aiUsage');
   const plans = source.rows.filter(r => r.scopes.includes('plans'));
-  expect(plans.map(r => r.id), 'Claude\'s plan then Codex\'s, first').toEqual(['claude-plan', 'codex-plan']);
+  expect(plans.map(r => r.id), 'Claude\'s plan, Codex\'s, then Copilot\'s own limit, first').toEqual(['claude-plan', 'codex-plan', 'copilot-plan']);
   expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, plans.length).map(r => r.id));
   // Body order: plans, API spend, Copilot, then the Claude Code line last.
-  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'anthropic-api', 'openai-api', 'copilot-org', 'copilot-personal', 'claude-today']);
+  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'copilot-plan', 'anthropic-api', 'openai-api', 'copilot-org', 'copilot-personal', 'claude-today']);
   expect(source.rows.filter(r => r.label === 'Claude Code'), 'the tokens are one line').toHaveLength(1);
   // Every row answers to its vendor, so a tile can be narrowed to one.
   const vendors = Object.fromEntries(source.rows.map(r => [r.id, r.scopes.filter(s => s === 'anthropic' || s === 'openai' || s === 'copilot')]));
-  expect(vendors).toEqual({'claude-plan': ['anthropic'], 'codex-plan': ['openai'], 'anthropic-api': ['anthropic'],
+  expect(vendors).toEqual({'claude-plan': ['anthropic'], 'codex-plan': ['openai'], 'copilot-plan': ['copilot'], 'anthropic-api': ['anthropic'],
     'openai-api': ['openai'], 'copilot-org': ['copilot'], 'copilot-personal': ['copilot'], 'claude-today': ['anthropic']});
-  // Copilot is never an attention row: it cannot raise the red chip.
-  expect(source.rows.filter(r => r.id.startsWith('copilot-')).map(r => r.attention)).toEqual([false, false]);
+  // The Copilot billing rows are never attention rows: they cannot raise the red
+  // chip. Its plan row is a plan, so only a red meter would (this one is green).
+  expect(source.rows.filter(r => r.id === 'copilot-org' || r.id === 'copilot-personal').map(r => r.attention)).toEqual([false, false]);
+  expect(source.rows.find(r => r.id === 'copilot-plan').attention).toBe(false);
   // A row with meters is a card, as a machine is.
   const items = tile(page, 'aiUsage').locator('.db-host');
   await expect(items).toHaveCount(plans.length);

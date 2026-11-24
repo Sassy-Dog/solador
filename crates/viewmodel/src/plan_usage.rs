@@ -98,6 +98,10 @@ pub struct Spend {
     pub limit: Option<Money>,
     pub stated_percent: Option<f64>,
     pub enabled: Option<bool>,
+    /// When the spend's period resets, Unix seconds. `None` when the source
+    /// states none (Claude's mirror never does): the meter then says so rather
+    /// than guessing a billing period.
+    pub resets_at: Option<i64>,
 }
 
 /// One reading of a plan. Mirrors `subscription::PlanUsage`.
@@ -330,8 +334,12 @@ fn spend_percent(spend: &Spend) -> Option<f64> {
 /// A spend's meter: `Budget` when it is the plan's only limit (an Enterprise
 /// seat), `Extra usage` beside windows. Extra usage that is switched off has
 /// no meter.
+///
+/// `now` dates the reset: a period that has reset since the read is muted with
+/// no fill, as a window's is, because its share was true of a period that has
+/// since rolled over.
 #[must_use]
-pub fn spend_metric(spend: &Spend, beside_windows: bool) -> Option<Metric> {
+pub fn spend_metric(spend: &Spend, beside_windows: bool, now: i64) -> Option<Metric> {
     if beside_windows && spend.enabled == Some(false) {
         return None;
     }
@@ -342,6 +350,19 @@ pub fn spend_metric(spend: &Spend, beside_windows: bool) -> Option<Metric> {
         (None, Some(limit)) => format!("{NO_READING_VALUE} / {}", money(limit)),
         (None, None) => NO_READING_VALUE.to_owned(),
     };
+    let reset_passed = spend.resets_at.is_some_and(|at| at <= now);
+    let reset = spend
+        .resets_at
+        .filter(|at| *at > now)
+        .map(|at| format!("resets in {}", until(at, now)));
+    let note = match (beside_windows, reset_passed, reset) {
+        (_, true, _) => "reset since read".to_owned(),
+        (true, false, Some(reset)) => format!("spend past the plan's limits · {reset}"),
+        (true, false, None) => "spend past the plan's limits".to_owned(),
+        (false, false, Some(reset)) => reset,
+        (false, false, None) => "no reset date reported".to_owned(),
+    };
+    let live = percent.filter(|_| !reset_passed);
     Some(Metric {
         label: if beside_windows {
             "Extra usage"
@@ -353,15 +374,10 @@ pub fn spend_metric(spend: &Spend, beside_windows: bool) -> Option<Metric> {
             Some(p) => format!("{amounts} · {p:.0}%"),
             None => amounts,
         },
-        fraction: percent.map(|p| (p / 100.0).clamp(0.0, 1.0)),
-        color: percent.map_or(color::MUTED, color::usage_color),
+        fraction: live.map(|p| (p / 100.0).clamp(0.0, 1.0)),
+        color: live.map_or(color::MUTED, color::usage_color),
         pace: None,
-        note: if beside_windows {
-            "spend past the plan's limits"
-        } else {
-            "no reset date reported"
-        }
-        .to_owned(),
+        note,
         full: true,
     })
 }
@@ -466,7 +482,7 @@ pub fn plan_row(provider: &str, plan: &Plan, now: i64, read_at: i64, fresh: bool
     let spend = plan
         .spend
         .as_ref()
-        .and_then(|s| spend_metric(s, !plan.windows.is_empty()));
+        .and_then(|s| spend_metric(s, !plan.windows.is_empty(), now));
     if let Some(metric) = &spend {
         if metric.fraction.is_some() {
             dot = worse(dot, metric.color);
@@ -835,25 +851,61 @@ mod tests {
             limit: Some(usd(50_000)),
             stated_percent: Some(99.0),
             enabled: Some(true),
+            resets_at: None,
         };
-        let budget = spend_metric(&spend, false).expect("budget");
+        let budget = spend_metric(&spend, false, NOW).expect("budget");
         assert_eq!(budget.label, "Budget");
         assert_eq!(budget.value, "$312 / $500 · 62%", "amounts win");
         assert_eq!(budget.color, color::GREEN);
         assert_eq!((budget.pace, budget.full), (None, true));
         assert_eq!(budget.note, "no reset date reported");
 
-        let extra = spend_metric(&spend, true).expect("extra");
+        let extra = spend_metric(&spend, true, NOW).expect("extra");
         assert_eq!(extra.label, "Extra usage");
         let off = Spend {
             enabled: Some(false),
             ..spend.clone()
         };
-        assert_eq!(spend_metric(&off, true), None);
+        assert_eq!(spend_metric(&off, true, NOW), None);
         assert!(
-            spend_metric(&off, false).is_some(),
+            spend_metric(&off, false, NOW).is_some(),
             "a budget is shown off or on"
         );
+    }
+
+    #[test]
+    fn a_spend_with_a_reset_says_when_and_one_whose_reset_passed_is_muted() {
+        let spend = Spend {
+            used: Some(usd(31_245)),
+            limit: Some(usd(50_000)),
+            stated_percent: None,
+            enabled: None,
+            resets_at: Some(NOW + 3 * DAY + 4 * HOUR),
+        };
+        let budget = spend_metric(&spend, false, NOW).expect("budget");
+        assert_eq!(budget.note, "resets in 3d 4h");
+        assert!((budget.fraction.expect("fill") - 0.6249).abs() < 1e-9);
+        let extra = spend_metric(&spend, true, NOW).expect("extra");
+        assert_eq!(
+            extra.note,
+            "spend past the plan's limits \u{b7} resets in 3d 4h"
+        );
+
+        // Its share was true of a period that has since rolled over.
+        for at in [NOW, NOW - 600] {
+            let gone = Spend {
+                resets_at: Some(at),
+                used: Some(usd(50_000)),
+                ..spend.clone()
+            };
+            let m = spend_metric(&gone, false, NOW).expect("metric");
+            assert_eq!(m.note, "reset since read");
+            assert_eq!((m.fraction, m.color), (None, color::MUTED));
+            assert_eq!(
+                m.value, "$500 / $500 \u{b7} 100%",
+                "the figure is still said"
+            );
+        }
     }
 
     #[test]
@@ -867,8 +919,9 @@ mod tests {
             limit: Some(usd(50_000)),
             stated_percent: None,
             enabled: None,
+            resets_at: None,
         };
-        let m = spend_metric(&mixed, false).expect("metric");
+        let m = spend_metric(&mixed, false, NOW).expect("metric");
         assert_eq!(m.value, "1.00 EUR / $500");
         assert_eq!((m.fraction, m.color), (None, color::MUTED));
 
@@ -877,9 +930,10 @@ mod tests {
             limit: Some(usd(0)),
             stated_percent: Some(12.0),
             enabled: None,
+            resets_at: None,
         };
         assert_eq!(
-            spend_metric(&zero_cap, false).expect("metric").value,
+            spend_metric(&zero_cap, false, NOW).expect("metric").value,
             "$1.00 / $0.00 · 12%"
         );
         let only_used = Spend {
@@ -887,9 +941,10 @@ mod tests {
             limit: None,
             stated_percent: None,
             enabled: None,
+            resets_at: None,
         };
         assert_eq!(
-            spend_metric(&only_used, false).expect("metric").value,
+            spend_metric(&only_used, false, NOW).expect("metric").value,
             "$1.00 spent"
         );
     }
@@ -1036,6 +1091,7 @@ mod tests {
                 limit: Some(usd(50_000)),
                 stated_percent: None,
                 enabled: Some(true),
+                resets_at: None,
             }),
         };
         let row = plan_row("Claude", &plan, NOW, NOW, true);

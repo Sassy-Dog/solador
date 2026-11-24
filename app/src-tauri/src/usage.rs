@@ -188,6 +188,17 @@ pub const OPENAI_API_LABEL: &str = "OpenAI API spend (MTD)";
 /// the header line and on the tile. Both answer to the `copilot` scope.
 pub const COPILOT_ORG_ID: &str = "copilot-org";
 pub const COPILOT_PERSONAL_ID: &str = "copilot-personal";
+/// The Copilot source's third row: the token owner's own plan or employer seat,
+/// with the limit GitHub enforces. A **plan row** (it sits in the payload's
+/// `plans` list, after Claude and Codex), read from the same Personal token as
+/// `copilot-personal` but from a different endpoint, so it has its own state,
+/// warning and clock and one never blanks or ages the other. Answers to the
+/// `plans` and `copilot` scopes.
+pub const COPILOT_PLAN_ID: &str = "copilot-plan";
+/// The billing row's label's lead: its figure is what GitHub billed to this
+/// account, which is not the account's plan limit, and an employer's seat is
+/// billed to the employer. See [`COPILOT_PLAN_ID`].
+pub const COPILOT_BILLED_LABEL: &str = "Copilot billed to";
 
 // MARK: - Formatting
 //
@@ -472,6 +483,55 @@ impl CopilotState {
     }
 }
 
+/// The Copilot plan row's published state: the username it was read for, and
+/// the reading of that account's own limit. Read from Personal's token, apart
+/// from [`CopilotState`] (another endpoint, so its own failure, clock and
+/// retained figure), and a figure belongs to its username: another one's is
+/// dropped on sight, never shown under the new one.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CopilotPlanState {
+    pub login: String,
+    pub read: ProviderState<::copilotusage::Seat>,
+}
+
+impl CopilotPlanState {
+    /// The part is not set up: nothing is kept, the login included.
+    pub fn unconfigure(&mut self) {
+        self.login.clear();
+        self.read.unconfigure();
+    }
+
+    /// The username this pass reads for. A different one drops the previous
+    /// figures, as [`CopilotState::note_login`] does for the billing row.
+    pub fn note_login(&mut self, login: &str) {
+        if self.login != login {
+            login.clone_into(&mut self.login);
+            self.read.clear_figures();
+        }
+    }
+
+    /// A finished read. A failure that says nothing about the figure (GitHub
+    /// unreachable, the token refused, a rate limit) keeps the last good one
+    /// beside its reason. One that says the response no longer means what it
+    /// did, or is another account's, drops it: the row reads `—` and says why,
+    /// never a figure that might be wrong.
+    pub fn record(
+        &mut self,
+        result: Result<::copilotusage::Seat, ::copilotusage::SeatError>,
+        at: u64,
+    ) {
+        match result {
+            Ok(seat) => self.read.succeeded(seat, at, None),
+            Err(error) => {
+                if !error.keeps_last_figure() {
+                    self.read.clear_figures();
+                }
+                self.read.failed(error.user_message());
+            }
+        }
+    }
+}
+
 /// How far a pass has got with one provider's key: not read yet, or the reason
 /// it could not be. A key that was read and is simply absent is neither.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -517,6 +577,8 @@ pub struct UsageState {
     /// Actions billing token) and for the operator's own plan (its own token).
     copilot_org: CopilotState,
     copilot_personal: CopilotState,
+    /// The same token's second reading: the owner's own plan or seat limit.
+    copilot_plan: CopilotPlanState,
 }
 
 impl UsageState {
@@ -597,6 +659,17 @@ impl UsageState {
 
     pub fn copilot_personal_mut(&mut self) -> &mut CopilotState {
         &mut self.copilot_personal
+    }
+
+    pub fn copilot_plan_mut(&mut self) -> &mut CopilotPlanState {
+        &mut self.copilot_plan
+    }
+
+    /// Personal's token is gone (or was never there): both of its readings go,
+    /// the billing row and the plan row, on the same frame.
+    pub fn copilot_personal_unconfigure(&mut self) {
+        self.copilot_personal.unconfigure();
+        self.copilot_plan.unconfigure();
     }
 
     /// Local usage was turned off, so nothing from the logs is kept. Back to the
@@ -1155,8 +1228,10 @@ fn copilot_note(usage: &CopilotUsage) -> Option<String> {
 }
 
 /// One Copilot half's row for the AI Usage panel, once a pass has found it set
-/// up: `Copilot · {login}` and the billed USD (`—` when unmeasured), the
-/// note, and the top models under it. **No plan meter**: the API reports no pool.
+/// up: `Copilot · {login}` (the organization) or `Copilot billed to {login}`
+/// (Personal), and the billed USD (`—` when unmeasured), the note, and the top
+/// models under it. **No plan meter**: the billing API reports no pool. The
+/// owner's own limit is the separate `copilot-plan` row ([`copilot_plan_view`]).
 fn copilot_section(
     id: &str,
     state: &CopilotState,
@@ -1167,10 +1242,14 @@ fn copilot_section(
         return None;
     }
     let summary = state.read.summary.as_ref();
-    let label = if state.login.is_empty() {
-        "Copilot".to_owned()
-    } else {
-        format!("Copilot \u{00b7} {}", state.login)
+    let label = match (id, state.login.is_empty()) {
+        // Usage billed to the account, which an employer's seat is not: said in
+        // the label so the `$0.00` an employer seat reads here cannot pass for
+        // "used nothing" beside the plan row.
+        (COPILOT_PERSONAL_ID, true) => format!("{COPILOT_BILLED_LABEL} you"),
+        (COPILOT_PERSONAL_ID, false) => format!("{COPILOT_BILLED_LABEL} {}", state.login),
+        (_, true) => "Copilot".to_owned(),
+        (_, false) => format!("Copilot \u{00b7} {}", state.login),
     };
     let mut section = provider_row(label, usd(summary.and_then(|s| s.credits.billed_usd)));
     section["id"] = json!(id);
@@ -1197,6 +1276,31 @@ fn copilot_section(
             provider_stale_after_secs(cadence_secs),
         ),
         freshness: provider_freshness(id, &state.read, cadence_secs, now),
+    })
+}
+
+/// The Copilot plan row for the AI Usage panel, once a pass has found Personal
+/// set up: `Copilot · Business` and its one spend-cap meter, built by the
+/// viewmodel's `plan_row` so it takes the plan rows' meter, colours and red
+/// rule. Its `⚠` line and clock are its own, attributed to `copilot-plan`.
+fn copilot_plan_view(
+    state: &CopilotPlanState,
+    cadence_secs: u64,
+    now: u64,
+) -> Option<ProviderView> {
+    if !state.read.configured.is_present() {
+        return None;
+    }
+    Some(ProviderView {
+        section: crate::plan_usage::copilot_seat_section(state, now),
+        warning: attributed_status_footer(
+            COPILOT_PLAN_ID,
+            state.read.last_updated,
+            state.read.last_error.as_deref(),
+            now,
+            provider_stale_after_secs(cadence_secs),
+        ),
+        freshness: provider_freshness(COPILOT_PLAN_ID, &state.read, cadence_secs, now),
     })
 }
 
@@ -1271,6 +1375,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     // Copilot's organization half is a flag, read here so that unticking it hides
     // the row on this frame; the personal half goes with its key
     // (`unconfigure_spend`).
+    let copilot_plan = copilot_plan_view(&state.copilot_plan, inputs.spend_cadence_secs, now);
     let copilot_views = [
         (
             COPILOT_ORG_ID,
@@ -1343,6 +1448,35 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
             KeyRead::default(),
         ),
     ];
+    // The Copilot plan row, the third of the plans: it rides Personal's token
+    // like the billing row and is on, loading or unreadable on the same terms,
+    // but its warning and clock are its own.
+    let plan_read = &state.copilot_plan.read;
+    let plan_key = plan_read.key_read();
+    let plan_loading = plan_read.is_loading() || plan_read.is_undecided();
+    let (plan_on, plan_warning, plan_clock, copilot_plan_section) = match copilot_plan {
+        Some(v) => (true, v.warning, v.freshness, Some(v.section)),
+        None => (
+            false,
+            attributed_status_footer(
+                COPILOT_PLAN_ID,
+                None,
+                plan_key.error.as_deref(),
+                now,
+                provider_stale_after_secs(inputs.spend_cadence_secs),
+            ),
+            Value::Null,
+            None,
+        ),
+    };
+    lines.push(ai_line(
+        COPILOT_PLAN_ID,
+        plan_on,
+        plan_warning,
+        plan_clock,
+        plan_loading,
+        plan_key,
+    ));
     for (id, key, view) in [
         (ANTHROPIC_API_ID, &state.anthropic_api, anthropic),
         (OPENAI_API_ID, &state.openai_api, openai),
@@ -1437,13 +1571,19 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     let clocks: Vec<Value> = lines.iter().map(|l| l["clock"].clone()).collect();
     let loading = lines.iter().any(|l| l["loading"] == true);
 
-    let plans: Vec<Value> = claude.sections.into_iter().chain(codex.sections).collect();
+    let plans: Vec<Value> = claude
+        .sections
+        .into_iter()
+        .chain(codex.sections)
+        .chain(copilot_plan_section)
+        .collect();
     // The setup sentence is for no part at all; a rollups line or a plan or
     // spend figure is something to show instead.
     let any_part = logs_on
         || inputs.claude
         || inputs.codex
         || inputs.copilot_org
+        || plan_on
         || !apis.is_empty()
         || !copilot.is_empty();
     let rollups_message = message.clone();
@@ -1474,7 +1614,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         "projects": projects,
         "footer": merged_footer(&warnings),
         "freshness": merged_freshness(&clocks),
-        // Per row, in body order, always all seven: `{id, on, warning, clock,
+        // Per row, in body order, always all eight: `{id, on, warning, clock,
         // loading, undecided, unreadable}`. `on`: the part is set up. `undecided`:
         // the row's key is not read yet. `unreadable`: the credential store would
         // not answer for it, so it has no section and its failure is its warning
@@ -1611,6 +1751,22 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
                 at,
                 None,
             );
+            // The same token's own-limit reading: an invented business seat,
+            // 1,234.56 of 3,900 credits ($12.35 of $39) with the reset counted
+            // from the render's clock, like the plans'.
+            state.copilot_plan.login = "example-user".to_owned();
+            state.copilot_plan.read.succeeded(
+                ::copilotusage::Seat {
+                    plan: Some("business".to_owned()),
+                    used: ::copilotusage::Credits::from_f64(1_234.56).expect("credits"),
+                    allowance: ::copilotusage::Allowance::Capped(
+                        ::copilotusage::Credits::from_f64(3_900.0).expect("credits"),
+                    ),
+                    resets_at: i64::try_from(claude_at + 9 * 86_400 + 5 * 3_600).ok(),
+                },
+                at,
+                None,
+            );
             state.neon.succeeded(
                 NeonUsageSummary::Measured {
                     compute_unit_hours: 12.4,
@@ -1715,6 +1871,9 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
     }
     if state.copilot_org.read.configured.is_unknown() {
         state.copilot_org.unconfigure();
+    }
+    if state.copilot_plan.read.configured.is_unknown() {
+        state.copilot_plan.unconfigure();
     }
     if state.copilot_personal.read.configured.is_unknown() {
         state.copilot_personal.unconfigure();
@@ -1948,7 +2107,7 @@ mod tests {
         let mut state = UsageState::new();
         state.anthropic_api.unconfigure();
         state.openai_api.unconfigure();
-        state.copilot_personal.unconfigure();
+        state.copilot_personal_unconfigure();
         state
     }
 
@@ -2030,7 +2189,11 @@ mod tests {
     #[test]
     fn the_plan_block_is_its_own_reading_beside_the_rollups() {
         let off = ai(&measured());
-        assert_eq!(off["plans"], json!([]));
+        assert_eq!(
+            off["plans"].as_array().unwrap().len(),
+            1,
+            "only Copilot, which rides its own token"
+        );
 
         let on = ai_on(&measured());
         let ids: Vec<&str> = on["plans"]
@@ -2041,7 +2204,11 @@ mod tests {
             .collect();
         assert_eq!(
             ids,
-            [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
+            [
+                crate::plan_usage::CLAUDE_ID,
+                crate::plan_usage::CODEX_ID,
+                COPILOT_PLAN_ID
+            ]
         );
         assert_eq!(on["plans"][0]["label"], "Claude · Ultra");
         assert_eq!(on["windows"], off["windows"], "the rollups do not move");
@@ -2291,7 +2458,11 @@ mod tests {
             .collect();
         assert_eq!(
             ids,
-            [crate::plan_usage::CLAUDE_ID, crate::plan_usage::CODEX_ID]
+            [
+                crate::plan_usage::CLAUDE_ID,
+                crate::plan_usage::CODEX_ID,
+                COPILOT_PLAN_ID
+            ]
         );
         assert!(payload.get("providers").is_none());
         assert!(payload.get("api").is_none(), "the single block is gone");
@@ -2306,6 +2477,7 @@ mod tests {
         state.apply_claude(None, NOW, Some(NO_LOG_ROOT_MESSAGE.to_owned()));
         state.anthropic_api.unconfigure();
         state.openai_api.unconfigure();
+        state.copilot_personal_unconfigure();
         let payload = ai_usage_view(&state, SUBSCRIPTION_ONLY, NOW);
         assert_eq!(payload["plans"].as_array().unwrap().len(), 1);
         assert!(payload["message"].is_null());
@@ -2332,7 +2504,7 @@ mod tests {
         let mut state = UsageState::new();
         state.anthropic_api.unconfigure();
         state.openai_api.unconfigure();
-        state.copilot_personal.unconfigure();
+        state.copilot_personal_unconfigure();
         let payload = ai_usage_view(&state, SUBSCRIPTION_ONLY, NOW);
         assert_ne!(payload["message"]["text"], LOADING_MESSAGE);
         state.plan_mut(Provider::Claude).state.succeeded(
@@ -2429,7 +2601,7 @@ mod tests {
         let mut state = UsageState::new();
         state.anthropic_api.unreadable("keychain locked".to_owned());
         state.openai_api.unconfigure();
-        state.copilot_personal.unconfigure();
+        state.copilot_personal_unconfigure();
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         assert!(payload["message"].is_null());
         assert_eq!(
@@ -2441,7 +2613,7 @@ mod tests {
         let mut state = UsageState::new();
         state.anthropic_api.unconfigure();
         state.openai_api.unreadable("keychain locked".to_owned());
-        state.copilot_personal.unconfigure();
+        state.copilot_personal_unconfigure();
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         assert!(payload["message"].is_null());
         assert_eq!(payload["footer"]["text"], "⚠ openai-api: keychain locked");
@@ -2603,7 +2775,17 @@ mod tests {
     fn ai_usage_with_only_spend_added_has_no_setup_line() {
         let payload = ai_usage_view(&measured(), PlanInputs::OFF, NOW);
         assert!(payload["message"].is_null());
-        assert_eq!(payload["plans"], json!([]));
+        let ids: Vec<&str> = payload["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [COPILOT_PLAN_ID],
+            "Personal's own-limit row is a plan row"
+        );
         assert_eq!(payload["apis"].as_array().unwrap().len(), 2);
         assert_eq!(payload["loading"], false);
     }
@@ -3545,6 +3727,7 @@ mod tests {
             [
                 "claude-plan",
                 "codex-plan",
+                "copilot-plan",
                 "anthropic-api",
                 "openai-api",
                 "copilot-org",
@@ -3563,7 +3746,7 @@ mod tests {
         assert_eq!(org["models"][0]["value"], "600");
         assert_eq!(org["models"].as_array().unwrap().len(), 3);
         let personal = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("personal row");
-        assert_eq!(personal["label"], "Copilot \u{b7} example-user");
+        assert_eq!(personal["label"], "Copilot billed to example-user");
         assert!(
             !personal["note"].as_str().unwrap().contains("premium"),
             "no premium line when that report had none"
@@ -3792,5 +3975,335 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("copilot-personal"));
+    }
+
+    // ---- the Copilot plan row (the owner's own limit) ----
+
+    use copilotusage::{Allowance, Credits, Seat, SeatError, SeatErrorKind};
+
+    fn credits(c: f64) -> Credits {
+        Credits::from_f64(c).expect("credits")
+    }
+
+    /// An invented seat: 1,234.56 of 3,900 credits, resetting in 9 days.
+    fn seat(used: f64, allowance: Allowance) -> Seat {
+        Seat {
+            plan: Some("business".into()),
+            used: credits(used),
+            allowance,
+            resets_at: Some(i64::try_from(NOW).unwrap() + 9 * 86_400),
+        }
+    }
+
+    fn capped() -> Allowance {
+        Allowance::Capped(credits(3_900.0))
+    }
+
+    fn plan_row_of(payload: &Value) -> Option<&Value> {
+        payload["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == COPILOT_PLAN_ID)
+    }
+
+    fn line<'a>(payload: &'a Value, id: &str) -> &'a Value {
+        payload["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == id)
+            .unwrap()
+    }
+
+    /// A state with Personal set up and both of its readings answering.
+    fn both_readings() -> UsageState {
+        let mut state = nothing_added();
+        state.copilot_personal.login = "example-user".into();
+        state
+            .copilot_personal
+            .read
+            .succeeded(copilot_usage(Some(100.0), Some(1.0)), NOW, None);
+        state.copilot_plan.login = "example-user".into();
+        state
+            .copilot_plan
+            .read
+            .succeeded(seat(1_234.56, capped()), NOW, None);
+        state
+    }
+
+    #[test]
+    fn the_copilot_plan_row_is_a_plan_with_one_spend_cap_meter() {
+        let payload = ai_usage_view(&both_readings(), PlanInputs::OFF, NOW);
+        let row = plan_row_of(&payload).expect("a plan row");
+        assert_eq!(row["label"], "Copilot \u{b7} Business");
+        let metrics = row["metrics"].as_array().unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0]["label"], "Budget");
+        // Fractional credits are exact dollars: $12.3456, shown to the cent.
+        assert_eq!(metrics[0]["value"], "$12.35 / $39.00 \u{b7} 32%");
+        assert_eq!(metrics[0]["note"], "resets in 9d 0h");
+        assert_eq!(metrics[0]["color"], color::hex(color::GREEN));
+        // Last of the plans, after Claude and Codex.
+        let state_with_all = {
+            let mut s = both_readings();
+            s.plan_mut(Provider::Claude).state.succeeded(
+                subscription::PlanUsage::default(),
+                NOW,
+                None,
+            );
+            s
+        };
+        let payload = ai_usage_view(&state_with_all, SUBSCRIPTION_ONLY, NOW);
+        let ids: Vec<&str> = payload["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["claude-plan", "copilot-plan"]);
+    }
+
+    #[test]
+    fn amber_and_red_follow_the_other_plan_meters_thresholds() {
+        for (used, shade) in [
+            (1_000.0, color::GREEN),
+            (2_800.0, color::AMBER),
+            (3_900.0, color::RED),
+        ] {
+            let mut state = both_readings();
+            state
+                .copilot_plan
+                .read
+                .succeeded(seat(used, capped()), NOW, None);
+            let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+            let row = plan_row_of(&payload).expect("row");
+            assert_eq!(row["color"], color::hex(shade), "{used}");
+        }
+        let mut state = both_readings();
+        state
+            .copilot_plan
+            .read
+            .succeeded(seat(3_900.0, capped()), NOW, None);
+        let row = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let row = plan_row_of(&row).expect("row");
+        assert_eq!(row["metrics"][0]["value"], "$39.00 / $39.00 \u{b7} 100%");
+        assert_eq!(row["value"], "100% of budget");
+    }
+
+    #[test]
+    fn an_unlimited_seat_says_spent_with_no_fill_and_is_not_red() {
+        let mut state = both_readings();
+        state
+            .copilot_plan
+            .read
+            .succeeded(seat(5_000.0, Allowance::Unlimited), NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let row = plan_row_of(&payload).expect("row");
+        let meter = &row["metrics"][0];
+        assert_eq!(meter["value"], "$50.00 spent");
+        assert!(meter["fraction"].is_null(), "no fill");
+        assert_ne!(row["color"], color::hex(color::RED));
+        assert_ne!(meter["color"], color::hex(color::RED));
+    }
+
+    #[test]
+    fn a_seat_with_no_stated_reset_says_so_and_one_that_passed_is_muted() {
+        let mut state = both_readings();
+        let mut no_reset = seat(1_234.56, capped());
+        no_reset.resets_at = None;
+        state.copilot_plan.read.succeeded(no_reset, NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert_eq!(
+            plan_row_of(&payload).unwrap()["metrics"][0]["note"],
+            "no reset date reported"
+        );
+        let mut gone = seat(3_900.0, capped());
+        gone.resets_at = Some(i64::try_from(NOW).unwrap() - 60);
+        state.copilot_plan.read.succeeded(gone, NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let meter = &plan_row_of(&payload).unwrap()["metrics"][0];
+        assert_eq!(meter["note"], "reset since read");
+        assert_ne!(
+            meter["color"],
+            color::hex(color::RED),
+            "an old 100% is not red"
+        );
+    }
+
+    /// The billing row is named for what it is, so an employer seat's `$0.00`
+    /// beside the plan row cannot read as "used nothing". Its id is unchanged.
+    #[test]
+    fn the_billing_row_says_it_is_billed_to_the_account() {
+        let payload = ai_usage_view(&both_readings(), PlanInputs::OFF, NOW);
+        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing row");
+        assert_eq!(billed["label"], "Copilot billed to example-user");
+        assert!(plan_row_of(&payload).is_some());
+        // Neither row is the other's: two ids, two labels.
+        assert_ne!(billed["label"], plan_row_of(&payload).unwrap()["label"]);
+    }
+
+    /// Each endpoint's failure is its own: the plan row's `⚠` line is under
+    /// `copilot-plan`, the billing row keeps its figure and says nothing, and
+    /// the reverse holds.
+    #[test]
+    fn one_copilot_reading_failing_never_blanks_or_ages_the_other() {
+        let mut state = both_readings();
+        state.copilot_plan.record(
+            Err(SeatError::new(SeatErrorKind::Request(
+                ::copilotusage::ErrorKind::Unreachable,
+            ))),
+            NOW,
+        );
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(line(&payload, COPILOT_PLAN_ID)["warning"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("\u{26a0} copilot-plan: "));
+        assert!(line(&payload, COPILOT_PERSONAL_ID)["warning"].is_null());
+        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing row");
+        assert_eq!(billed["value"], "$1.00", "the billing figure is intact");
+        // The plan row keeps its last good figure beside the reason: GitHub
+        // could not be reached, which says nothing about the figure.
+        assert_eq!(
+            plan_row_of(&payload).unwrap()["metrics"][0]["value"],
+            "$12.35 / $39.00 \u{b7} 32%"
+        );
+
+        // The reverse: the billing read fails, the plan row is untouched.
+        let mut state = both_readings();
+        state
+            .copilot_personal
+            .read
+            .failed("GitHub is failing on its side".into());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(line(&payload, COPILOT_PERSONAL_ID)["warning"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("\u{26a0} copilot-personal: "));
+        assert!(line(&payload, COPILOT_PLAN_ID)["warning"].is_null());
+        assert!(plan_row_of(&payload).unwrap()["metrics"][0]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("$12.35"));
+    }
+
+    /// Its clock is its own: an old plan reading dates `copilot-plan`, and a
+    /// fresh billing reading does not.
+    #[test]
+    fn the_copilot_plan_row_has_its_own_clock() {
+        let mut state = both_readings();
+        state
+            .copilot_plan
+            .read
+            .succeeded(seat(1_234.56, capped()), NOW - 7 * 3_600, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(line(&payload, COPILOT_PLAN_ID)["clock"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("copilot-plan"));
+        assert!(line(&payload, COPILOT_PERSONAL_ID)["warning"].is_null());
+        assert!(!line(&payload, COPILOT_PERSONAL_ID)["clock"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("copilot-plan"));
+    }
+
+    /// A failure that says the response no longer means what it did takes the
+    /// figure with it: the row reads `—` and says why, never a stale or wrong
+    /// figure and never `$0.00`.
+    #[test]
+    fn a_figure_that_cannot_be_trusted_goes_and_the_row_reads_a_dash() {
+        for kind in [
+            SeatErrorKind::NotCreditBilled,
+            SeatErrorKind::MissingFigure,
+            SeatErrorKind::InvalidFigure,
+            SeatErrorKind::WrongAccount,
+            SeatErrorKind::Request(::copilotusage::ErrorKind::Undecodable),
+        ] {
+            let mut state = both_readings();
+            state.copilot_plan.record(Err(SeatError::new(kind)), NOW);
+            let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+            let row = plan_row_of(&payload).expect("the row stays, as a dash");
+            assert_eq!(row["value"], "\u{2014}", "{kind:?}");
+            assert_eq!(row["label"], "Copilot", "{kind:?}");
+            assert!(row["metrics"].as_array().unwrap().is_empty(), "{kind:?}");
+            assert!(
+                !row.to_string().contains("$0"),
+                "{kind:?} must never be a zero"
+            );
+            let warning = line(&payload, COPILOT_PLAN_ID)["warning"]["text"]
+                .as_str()
+                .unwrap();
+            assert!(warning.starts_with("\u{26a0} copilot-plan: "), "{kind:?}");
+            assert!(
+                warning.contains("GitHub"),
+                "{kind:?}: the vocabulary's vendor"
+            );
+        }
+        // A login mismatch says whose token it is.
+        let mut state = both_readings();
+        state
+            .copilot_plan
+            .record(Err(SeatError::new(SeatErrorKind::WrongAccount)), NOW);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(line(&payload, COPILOT_PLAN_ID)["warning"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("different account"));
+        // The billing row's figure is not another endpoint's to remove.
+        assert_eq!(
+            copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["value"],
+            "$1.00"
+        );
+    }
+
+    /// A username change drops the plan row's figures, as it does the billing
+    /// row's: they were another account's.
+    #[test]
+    fn a_username_change_drops_the_plan_figures() {
+        let mut state = both_readings();
+        state.copilot_plan.note_login("example-user");
+        assert!(
+            state.copilot_plan.read.summary.is_some(),
+            "same login keeps"
+        );
+        state.copilot_plan.note_login("someone-else");
+        assert!(state.copilot_plan.read.summary.is_none());
+        assert_eq!(state.copilot_plan.login, "someone-else");
+    }
+
+    /// Removing Personal's token takes both readings, on the same frame.
+    #[test]
+    fn removing_personal_hides_the_plan_row_with_the_billing_row() {
+        let mut state = both_readings();
+        state.copilot_personal_unconfigure();
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(plan_row_of(&payload).is_none());
+        assert!(copilot_row(&payload, COPILOT_PERSONAL_ID).is_none());
+        assert_eq!(line(&payload, COPILOT_PLAN_ID)["on"], false);
+        assert!(state.copilot_plan.login.is_empty());
+    }
+
+    /// A key the store would not hand over is a warning under the row's own id,
+    /// not an absent key and not the setup sentence.
+    #[test]
+    fn an_unreadable_token_warns_under_the_plan_row_too() {
+        let mut state = nothing_added();
+        state.copilot_personal.note_enabled();
+        state.copilot_plan.read.configured = Configured::Unknown;
+        state
+            .copilot_personal
+            .read
+            .unreadable("keychain locked".into());
+        state.copilot_plan.read.unreadable("keychain locked".into());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        assert!(plan_row_of(&payload).is_none());
+        assert!(line(&payload, COPILOT_PLAN_ID)["warning"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("copilot-plan: keychain locked"));
+        assert_eq!(line(&payload, COPILOT_PLAN_ID)["unreadable"], true);
+        assert!(payload["message"].is_null());
     }
 }

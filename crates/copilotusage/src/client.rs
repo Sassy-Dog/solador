@@ -12,6 +12,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::error::{CopilotUsageError, ErrorKind, Level};
 use crate::models::{UsageItem, UsageReport};
+use crate::seat::{interpret, Seat, SeatBody, SeatError, SeatErrorKind};
 use crate::summary::{summarize, Usage};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.github.com";
@@ -150,6 +151,44 @@ impl CopilotUsageClient {
         let parsed: UsageReport = serde_json::from_str(&body)
             .map_err(|_| CopilotUsageError::new(level, ErrorKind::Undecodable))?;
         Ok(parsed.usage_items)
+    }
+
+    /// The token owner's own Copilot limit, from `GET /copilot_internal/user`.
+    ///
+    /// `username` is the account the operator configured: a response for any
+    /// other login is `SeatErrorKind::WrongAccount` and its figures are never
+    /// returned. This endpoint is undocumented, so it is asked for with the
+    /// bearer token only and **no** `X-GitHub-Api-Version` header (the version
+    /// the billing reads pin is not this endpoint's).
+    ///
+    /// # Errors
+    /// [`SeatError`], classified. Never carries the token, the URL or a body.
+    pub async fn seat(&self, username: &str) -> Result<Seat, SeatError> {
+        let response = self
+            .http
+            .get(format!("{}/copilot_internal/user", self.base_url))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::USER_AGENT, "solador")
+            .send()
+            .await
+            .map_err(|_| SeatError::new(SeatErrorKind::Request(ErrorKind::Unreachable)))?;
+        let status = response.status().as_u16();
+        let rate_exhausted = response
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim() == "0");
+        if let Some(kind) = classify(status, rate_exhausted) {
+            return Err(SeatError::new(SeatErrorKind::Request(kind)));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|_| SeatError::new(SeatErrorKind::Request(ErrorKind::Unreachable)))?;
+        let parsed: SeatBody = serde_json::from_str(&body)
+            .map_err(|_| SeatError::new(SeatErrorKind::Request(ErrorKind::Undecodable)))?;
+        interpret(&parsed, username)
     }
 
     async fn get(

@@ -11,7 +11,7 @@ use fault::Fault;
 
 /// The operator-facing name of what failed, and the only thing
 /// [`Fault::message`] interpolates.
-const VENDOR: &str = "GitHub";
+pub(crate) const VENDOR: &str = "GitHub";
 
 /// Which half of Copilot was being read. It decides which permission the hint
 /// names.

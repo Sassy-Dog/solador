@@ -3643,6 +3643,12 @@ async fn poll_copilot_org(app: &Arc<App>) {
 
 /// Copilot's personal half: its own token, read fresh each pass. No key is no
 /// row; a key the credential store will not hand over is not "no key".
+///
+/// The one token feeds two readings, each with its own state: the billing row
+/// (`copilot-personal`, what GitHub billed to this account) and the plan row
+/// (`copilot-plan`, the account's own plan or seat limit). Neither's failure
+/// touches the other's figure, warning or clock. With no key both go, on the
+/// same frame.
 async fn poll_copilot_personal(app: &Arc<App>) {
     let slot: CopilotSlot = UsageState::copilot_personal_mut;
     let username = app
@@ -3656,17 +3662,33 @@ async fn poll_copilot_personal(app: &Arc<App>) {
     match read_credential(&*app.credentials, SecretKey::CopilotPersonalToken) {
         // A token with no username cannot be read for anyone: the save refuses
         // that, so only a hand-edited store gets here, and it is not set up.
-        Credential::Absent => {
-            slot(&mut app.usage.lock().expect("usage state poisoned")).unconfigure()
+        Credential::Absent => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .copilot_personal_unconfigure(),
+        Credential::Present(_) if username.is_empty() => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .copilot_personal_unconfigure(),
+        Credential::Unreadable => {
+            let mut state = app.usage.lock().expect("usage state poisoned");
+            state
+                .copilot_personal_mut()
+                .read
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
+            state
+                .copilot_plan_mut()
+                .read
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
         }
-        Credential::Present(_) if username.is_empty() => {
-            slot(&mut app.usage.lock().expect("usage state poisoned")).unconfigure();
-        }
-        Credential::Unreadable => slot(&mut app.usage.lock().expect("usage state poisoned"))
-            .read
-            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
         Credential::Present(token) => {
-            slot(&mut app.usage.lock().expect("usage state poisoned")).note_login(&username);
+            {
+                let mut state = app.usage.lock().expect("usage state poisoned");
+                state.copilot_personal_mut().note_login(&username);
+                state.copilot_plan_mut().note_login(&username);
+            }
             read_copilot(
                 app,
                 usage::COPILOT_PERSONAL_ID,
@@ -3675,8 +3697,37 @@ async fn poll_copilot_personal(app: &Arc<App>) {
                 copilotusage::Billed::User(&username),
             )
             .await;
+            read_copilot_seat(app, &token, &username).await;
         }
     }
+}
+
+/// The token owner's own plan or seat limit, for the `copilot-plan` row. The
+/// token lives for this call, as in [`read_copilot`]. A mismatched login, a plan
+/// that is not billed in credits and a figure that is not a figure are each a
+/// failure with a reason, never a zero (`crates/copilotusage`'s `seat`).
+async fn read_copilot_seat(app: &Arc<App>, token: &str, username: &str) {
+    // `new` returns `None` only for a blank token, which `Present` excludes.
+    let Some(client) = copilotusage::CopilotUsageClient::new(token) else {
+        return;
+    };
+    app.usage
+        .lock()
+        .expect("usage state poisoned")
+        .copilot_plan_mut()
+        .read
+        .begin();
+    let result = client.seat(username).await;
+    // The crate's errors are a kind and a status code: no token, URL or body.
+    // Before the lock: `eprintln!` panics on a closed stderr.
+    if let Err(e) = &result {
+        eprintln!("{}: {}", usage::COPILOT_PLAN_ID, e.user_message());
+    }
+    app.usage
+        .lock()
+        .expect("usage state poisoned")
+        .copilot_plan_mut()
+        .record(result, panel::now_unix());
 }
 
 /// Walks Claude Code's log root, returning the summary and the shell's own
@@ -5219,7 +5270,7 @@ impl store::source_save::SourceSaveEnv for AppSourceSave<'_> {
                     state.copilot_org_mut().unconfigure();
                 }
             }
-            SpendFigure::CopilotPersonal => state.copilot_personal_mut().unconfigure(),
+            SpendFigure::CopilotPersonal => state.copilot_personal_unconfigure(),
         }
     }
 
@@ -9476,7 +9527,33 @@ mod tests {
                 .read
                 .succeeded(copilot_figure(), panel::now_unix(), None);
         }
+        // The same token's second reading: the owner's own limit, a plan row.
+        {
+            let mut state = app.usage.lock().unwrap();
+            state.copilot_plan_mut().note_login("example-user");
+            state.copilot_plan_mut().read.succeeded(
+                ::copilotusage::Seat {
+                    plan: Some("business".into()),
+                    used: ::copilotusage::Credits::from_f64(1_234.56).unwrap(),
+                    allowance: ::copilotusage::Allowance::Capped(
+                        ::copilotusage::Credits::from_f64(3_900.0).unwrap(),
+                    ),
+                    resets_at: None,
+                },
+                panel::now_unix(),
+                None,
+            );
+        }
+        let plan_ids = |card: &Value| -> Vec<String> {
+            card["plans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
         assert_eq!(copilot_ids(&copilot_card(&app)), ["copilot-personal"]);
+        assert_eq!(plan_ids(&copilot_card(&app)), ["copilot-plan"]);
 
         save_source_in(&app, "copilot", &parts(&[]), None, false).unwrap();
 
@@ -9487,6 +9564,10 @@ mod tests {
             None
         );
         assert!(copilot_ids(&copilot_card(&app)).is_empty());
+        assert!(
+            plan_ids(&copilot_card(&app)).is_empty(),
+            "the plan row goes with the token, on the same frame"
+        );
     }
 
     /// Removing Actions billing takes the organization figure with it on the same
@@ -14168,14 +14249,15 @@ mod tests {
         assert_eq!(dump_local_card()["hostName"], "mac-studio");
     }
 
-    /// The showcase carries both plans on the AI Usage tile and the Vercel
+    /// The showcase carries both plans (and Copilot's) on the AI Usage tile and the Vercel
     /// reading on Usage (#685): the plan condition in `dump_plan_inputs` must
     /// hold for `Showcase`, or the README's full image silently loses its plan
     /// rows.
     #[test]
     fn the_showcase_dumps_have_each_plan_and_three_providers() {
         let ai_usage = dump_ai_usage(usage::Fixture::Showcase, false);
-        assert_eq!(ai_usage["plans"].as_array().expect("plans").len(), 2);
+        // Claude's, Codex's and Copilot's own-limit row.
+        assert_eq!(ai_usage["plans"].as_array().expect("plans").len(), 3);
         let usage = dump_usage(usage::Fixture::Showcase, false, SHOWCASE_USAGE_QUOTA);
         assert_eq!(usage["providers"].as_array().expect("providers").len(), 3);
     }

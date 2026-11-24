@@ -1981,7 +1981,7 @@ fn actions_billing_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[S
             "Hosted minutes, net spend and the Actions budget",
             key != StoredKey::Absent || !s.actions_billing_org.is_empty(),
             "Actions billing",
-            "Powers the Actions billing tile: this month\u{2019}s hosted Actions minutes and net spend by repo and by SKU, and a bar for the organization\u{2019}s Actions budget. This needs its own fine-grained personal access token, separate from your GitHub account\u{2019}s: resource owner is the organization, and Organization permissions \u{2192} Administration: Read, with nothing else. It must be created by an organization admin, because GitHub\u{2019}s billing endpoints require one, and the organization needs GitHub\u{2019}s enhanced billing platform. The token is kept in your OS credential store; the organization\u{2019}s login is not a secret and is stored as a normal preference.",
+            "Powers the Actions billing tile: this month\u{2019}s hosted Actions minutes and net spend by repo and by SKU, and a bar for the organization\u{2019}s Actions budget. This needs its own fine-grained personal access token, separate from your GitHub account\u{2019}s: resource owner is the organization, and Organization permissions \u{2192} Administration: Read, with nothing else (GitHub has no permission named for billing or for Copilot; this is the one that reads both, and the Copilot source\u{2019}s Organization part reuses this token and organization). It must be created by an organization admin, because GitHub\u{2019}s billing endpoints require one, and the organization needs GitHub\u{2019}s enhanced billing platform. The token is kept in your OS credential store; the organization\u{2019}s login is not a secret and is stored as a normal preference.",
         ),
         key,
         "Billing token",
@@ -2071,6 +2071,19 @@ fn openai_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
 /// whose token and organization that half reads, is not set up.
 const COPILOT_NEEDS_BILLING_LABEL: &str = "Needs Actions billing";
 
+/// The organization part's help. It is the whole pool of an organization the
+/// operator **administers**, not their own usage, and it says which permission
+/// reads it: GitHub names none for billing or for Copilot, it is Administration.
+const COPILOT_ORG_HELP: &str = "Month-to-date AI credits for the whole pool of an organization you administer, not your own usage; you need to administer that organization. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first. That token\u{2019}s permission is Organization permissions \u{2192} Administration: Read: no permission named for billing or for Copilot does this. Nothing new is stored, and removing this part leaves that token alone.";
+
+/// The personal part's summary, which no longer says only "your own plan": an
+/// employer's seat is read here too.
+const COPILOT_PERSONAL_SUMMARY: &str = "Your plan or employer seat";
+
+/// The personal part's help: what it covers, which token, and why the plan and
+/// seat figure degrades to an em dash rather than to a wrong number.
+const COPILOT_PERSONAL_HELP: &str = "Your own Copilot plan, or a seat an employer assigns you: its limit and what you\u{2019}ve used of it this period, plus anything billed to you personally. This needs a fine-grained personal access token owned by your own account with User permissions \u{2192} Plan: Read, and nothing else, plus your GitHub username. The token is kept in your OS credential store; the username is not a secret and is stored as a normal preference. The plan and seat figure comes from an endpoint GitHub doesn\u{2019}t document, so if GitHub changes it the row shows \u{2014} rather than a wrong figure.";
+
 /// GitHub Copilot's steps: the organization half, which owns no credential and
 /// reads the Actions billing token and organization, then the personal half,
 /// whose one token is the source's only key. The organization half is refused at
@@ -2090,16 +2103,16 @@ fn copilot_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) 
         &org_summary,
         s.copilot_org_enabled,
         "Organization credits",
-        "Month-to-date AI credits for your organization\u{2019}s Copilot seats. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first; nothing new is stored, and removing this part leaves that token alone.",
+        COPILOT_ORG_HELP,
     );
     let mut personal = with_secret(
         walk_part(
             "personal",
             COPILOT_PERSONAL_PART_TITLE,
-            "Your own Copilot plan",
+            COPILOT_PERSONAL_SUMMARY,
             stored.copilot_personal != StoredKey::Absent,
             "Personal credits",
-            "Month-to-date AI credits for a Copilot Pro or Pro+ plan you bought yourself. This needs a fine-grained personal access token owned by your own account with User permissions \u{2192} Plan: Read, and nothing else, plus your GitHub username. The token is kept in your OS credential store; the username is not a secret and is stored as a normal preference.",
+            COPILOT_PERSONAL_HELP,
         ),
         stored.copilot_personal,
         "Fine-grained PAT",
@@ -2115,7 +2128,7 @@ fn copilot_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) 
     )]);
     json!({
         "kind": "copilot", "title": COPILOT_TITLE,
-        "feeds": "AI credits for an organization or a person",
+        "feeds": "AI credits for an organization you administer, or for your own plan or seat",
         "walk": {"parts": [org, personal], "tile": tile_offer("aiUsage", tile_sources)},
     })
 }
@@ -3021,6 +3034,7 @@ mod tests {
             ("copilot", "copilot"),
             ("item:copilot-org", "copilot"),
             ("item:copilot-personal", "copilot"),
+            ("item:copilot-plan", "copilot"),
         ] {
             assert_eq!(
                 route("aiUsage", scope, &data)["editor"]["kind"],
@@ -3742,6 +3756,28 @@ mod tests {
         assert!(!parts[1]["secret"].is_null());
         assert_eq!(parts[1]["inputs"][0]["id"], "username");
         assert!(parts[1]["help"].as_str().unwrap().contains("Plan: Read"));
+        // What each part says it is, so a member is not sent hunting for a
+        // permission that does not exist: the organization is the whole pool of
+        // one you administer, read with Administration: Read; personal covers an
+        // employer's seat and says its plan figure is from an undocumented endpoint.
+        let org_help = parts[0]["help"].as_str().unwrap();
+        assert!(org_help.contains("Administration: Read"));
+        assert!(org_help.contains("administer"));
+        assert!(org_help.contains("no permission named for billing or for Copilot"));
+        assert!(org_help.contains("not your own usage"));
+        assert!(org_help.contains("Nothing new is stored"));
+        let personal_help = parts[1]["help"].as_str().unwrap();
+        assert!(personal_help.contains("a seat an employer assigns you"));
+        assert!(personal_help.contains("User permissions \u{2192} Plan: Read"));
+        assert!(personal_help.contains("doesn\u{2019}t document"));
+        assert_eq!(parts[1]["summary"], "Your plan or employer seat");
+        // Actions billing's walk says its token's permission feeds Copilot too.
+        let billing = catalog_entry(&fresh, "actionsBilling")["walk"]["parts"][0]["help"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(billing.contains("Administration: Read"));
+        assert!(billing.contains("Copilot"));
 
         let settings = Settings {
             actions_billing_org: "example-org".into(),

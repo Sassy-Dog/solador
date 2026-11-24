@@ -516,9 +516,57 @@ fn mirror_plan(reading: &PlanUsage) -> vm::Plan {
             limit: spend.limit.as_ref().map(mirror_money),
             stated_percent: spend.stated_percent,
             enabled: spend.enabled,
+            resets_at: None,
         }),
     }
 }
+
+/// The Copilot plan row: the token owner's own plan or employer seat, one spend
+/// cap in US dollars (a credit is $0.01). Built by [`vm::plan_row`], the
+/// function Claude's and Codex's rows are built by, so it takes their meter,
+/// their colours and the red rule `dashboard::plan_rows` reads, with no
+/// attention code of its own.
+///
+/// With no reading (loading, or a failure before any figure, or one that took
+/// its figure with it) it is the placeholder row: `Copilot  —`, and the header
+/// line carries the reason. `Copilot · Business` once there is a reading; the
+/// plan's name is GitHub's string with its first letter raised, a display
+/// transform and nothing more.
+pub fn copilot_seat_section(state: &crate::usage::CopilotPlanState, now: u64) -> Value {
+    let id = crate::usage::COPILOT_PLAN_ID;
+    let Some(seat) = state.read.summary.as_ref() else {
+        let label = vm::provider_label(COPILOT_NAME, None);
+        return row_json(id, &vm::placeholder_row(&label, state.read.is_loading()));
+    };
+    let usd = |credits: copilotusage::Credits| vm::Money {
+        minor: credits.usd_minor(),
+        exponent: copilotusage::USD_EXPONENT,
+        currency: Some("USD".to_owned()),
+    };
+    let plan = vm::Plan {
+        name: seat.plan.clone(),
+        windows: Vec::new(),
+        spend: Some(vm::Spend {
+            used: Some(usd(seat.used)),
+            limit: match seat.allowance {
+                copilotusage::Allowance::Capped(limit) => Some(usd(limit)),
+                copilotusage::Allowance::Unlimited => None,
+            },
+            stated_percent: None,
+            enabled: None,
+            resets_at: seat.resets_at,
+        }),
+    };
+    let secs = |at: u64| i64::try_from(at).unwrap_or(i64::MAX);
+    let read_at = state.read.last_updated.unwrap_or(now);
+    row_json(
+        id,
+        &vm::plan_row(COPILOT_NAME, &plan, secs(now), secs(read_at), true),
+    )
+}
+
+/// The provider's name in the Copilot plan row's label.
+const COPILOT_NAME: &str = "Copilot";
 
 fn mirror_window(window: &PlanWindow) -> vm::Window {
     vm::Window {
