@@ -48,7 +48,7 @@ pub const AZURE_TITLE: &str = "Azure Cost";
 pub const ACTIONS_BILLING_TITLE: &str = "Actions billing";
 /// A GitHub account: the repos it fetches and the organizations it watches.
 pub const GITHUB_TITLE: &str = "GitHub";
-/// GitHub Copilot's AI credits, for an organization and for a person.
+/// GitHub's AI credits, for an organization and for a person.
 pub const COPILOT_TITLE: &str = "GitHub Copilot";
 
 /// A provider whose own sign-in a plan opt-in reads.

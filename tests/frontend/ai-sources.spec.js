@@ -193,7 +193,10 @@ test("the three plans lead, then each vendor's spend, then this machine's rollup
 const copilotSection = (page, id) =>
   page.locator(`#aiUsageBody [data-section="copilot"][data-copilot="${id}"]`);
 
-test("each Copilot row paints Rust's billed value, note and top models, and no meter", async ({ page, baseURL }) => {
+test("each Copilot row paints Rust's billed value, note, and products with their models, and no meter", async ({
+  page,
+  baseURL,
+}) => {
   const payload = await gotoAiUsage(page, baseURL);
   expect(payload.copilot).toHaveLength(2);
   for (const half of payload.copilot) {
@@ -203,15 +206,45 @@ test("each Copilot row paints Rust's billed value, note and top models, and no m
     await expect(section.locator(".pv-row .val")).toHaveText(half.value);
     await expect(section.locator(".pv-row .val")).toHaveCSS("color", rgb(half.valueColor));
     await expect(section.locator(".pv-note")).toHaveText(half.note);
-    expect(half.models.length, "the top models are named").toBeGreaterThan(0);
-    await expect(section.locator(".pv-item .name")).toHaveText(half.models.map((m) => m.name));
-    await expect(section.locator(".pv-item .val")).toHaveText(half.models.map((m) => m.value));
+    expect(half.models, "the flat models list is gone").toBeUndefined();
+    expect(half.products.length, "the products are named").toBeGreaterThan(0);
+    // Each product line, then its model lines, in Rust's order.
+    const lines = half.products.flatMap((p) => [
+      { cls: "pv-product", name: p.name, value: p.value },
+      ...p.models.map((m) => ({ cls: "pv-model", name: m.name, value: m.value })),
+    ]);
+    await expect(section.locator(".pv-item")).toHaveCount(lines.length);
+    await expect(section.locator(".pv-item .name")).toHaveText(lines.map((l) => l.name));
+    await expect(section.locator(".pv-item .val")).toHaveText(lines.map((l) => l.value));
+    await expect(section.locator(".pv-item")).toHaveClass(lines.map((l) => new RegExp(`\\b${l.cls}\\b`)));
+    // A model is visibly subordinate to its product: indented past it.
+    const product = await section.locator(".pv-product .name").first().boundingBox();
+    const model = await section.locator(".pv-model .name").first().boundingBox();
+    expect(model.x, "a model line sits to the right of its product line").toBeGreaterThan(product.x);
     // The API reports no pool, so there is nothing for a meter to be a share of.
     await expect(section.locator(".db-meter, .db-meter-fill, .pbar")).toHaveCount(0);
   }
-  // Both vendors' own strings: nothing here is composed by the page.
-  expect(payload.copilot[0].label).toMatch(/^Copilot · /);
-  expect(payload.copilot[1].label, "the billing row says it is billed to the account").toMatch(/^Copilot billed to /);
+  // Rust's strings: the report counts every product billed in AI credits.
+  expect(payload.copilot[0].label).toMatch(/^AI credits · /);
+  expect(payload.copilot[1].label, "the billing row says it is billed to the account").toMatch(
+    /^AI credits billed to /,
+  );
+});
+
+test("a product with no models is one line, and an unnamed product is Rust's words", async ({ page, baseURL }) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  const half = {
+    ...payload.copilot[0],
+    products: [
+      { name: "Code Quality", value: "—", dotColor: "#4a9", models: [] },
+      { name: "Product not named", value: "12", dotColor: "#4a9", models: [] },
+    ],
+  };
+  await render(page, { ...payload, copilot: [half] });
+  const section = copilotSection(page, "copilot-org");
+  await expect(section.locator(".pv-item .name")).toHaveText(["Code Quality", "Product not named"]);
+  await expect(section.locator(".pv-item .val")).toHaveText(["—", "12"]);
+  await expect(section.locator(".pv-model")).toHaveCount(0);
 });
 
 test("the Copilot plan row is a plan: its label, one spend-cap meter and Rust's reset note", async ({
@@ -230,7 +263,7 @@ test("the Copilot plan row is a plan: its label, one spend-cap meter and Rust's 
   expect(meter.fraction).toBeGreaterThan(0);
   // `expectPlan` paints and checks the header, the meter, its fill colour and its note.
   await expectPlan(page, plan);
-  // It is a plan block, not a Copilot billing section, so it has no models list.
+  // It is a plan block, not a Copilot billing section, so it has no product list.
   await expect(planSection(page, "copilot-plan").locator(".pv-item")).toHaveCount(0);
 });
 
@@ -263,14 +296,14 @@ test("an unlimited Copilot seat is a spend with no fill, and a failed one is a d
   await expect(planSection(page, "copilot-plan").locator(".db-metric")).toHaveCount(0);
 });
 
-test("an unmeasured Copilot figure is the em dash, with no note and no models, never a zero", async ({
+test("an unmeasured Copilot figure is the em dash, with no note and no products, never a zero", async ({
   page,
   baseURL,
 }) => {
   const payload = await gotoAiUsage(page, baseURL);
   const unmeasured = {
     ...payload,
-    copilot: [{ ...payload.copilot[0], value: "\u2014", note: null, models: [] }],
+    copilot: [{ ...payload.copilot[0], value: "\u2014", note: null, products: [] }],
   };
   await render(page, unmeasured);
   const section = copilotSection(page, "copilot-org");

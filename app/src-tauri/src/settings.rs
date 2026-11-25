@@ -1065,7 +1065,7 @@ pub const SOURCES_LABEL: &str = "Sources";
 pub const ANTHROPIC_TITLE: &str = store::source_save::ANTHROPIC_TITLE;
 /// Everything read about Codex and the OpenAI API.
 pub const OPENAI_TITLE: &str = store::source_save::OPENAI_TITLE;
-/// GitHub Copilot's AI credits, for an organization and for a person.
+/// GitHub's AI credits, for an organization and for a person.
 pub const COPILOT_TITLE: &str = store::source_save::COPILOT_TITLE;
 /// The AI sources that feed the AI Usage tile, in the order its body lists them.
 /// The sentence below is built from this, so a source added to the tile is named
@@ -2075,7 +2075,7 @@ const COPILOT_NEEDS_BILLING_LABEL: &str = "Needs Actions billing";
 /// operator **administers**, not their own usage, and it says which permission
 /// reads it: it is Administration, and no permission named for billing or for
 /// Copilot does this.
-const COPILOT_ORG_HELP: &str = "Month-to-date AI credits for the whole pool of an organization you administer, not your own usage; you need to administer that organization. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first. That token\u{2019}s permission is Organization permissions \u{2192} Administration: Read: no permission named for billing or for Copilot does this. Nothing new is stored, and removing this part leaves that token alone.";
+const COPILOT_ORG_HELP: &str = "Month-to-date AI credits for the whole pool of an organization you administer, not your own usage. It counts every GitHub product billed in AI credits, Copilot among them, and lists them by product; you need to administer that organization. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first. That token\u{2019}s permission is Organization permissions \u{2192} Administration: Read: no permission named for billing or for Copilot does this. Nothing new is stored, and removing this part leaves that token alone.";
 
 /// The personal part's summary, which no longer says only "your own plan": an
 /// employer's seat is read here too.
@@ -3766,6 +3766,7 @@ mod tests {
         assert!(org_help.contains("administer"));
         assert!(org_help.contains("no permission named for billing or for Copilot"));
         assert!(org_help.contains("not your own usage"));
+        assert!(org_help.contains("every GitHub product billed in AI credits"));
         assert!(org_help.contains("Nothing new is stored"));
         let personal_help = parts[1]["help"].as_str().unwrap();
         assert!(personal_help.contains("a seat an employer assigns you"));

@@ -1,5 +1,9 @@
 //! GitHub Copilot usage reader: month-to-date AI credits (and, where the plan
 //! still bills them, premium requests) for an organization or for a person.
+//! The `ai_credit` report is one shared pool that every GitHub product bills
+//! into, Copilot among them, so [`summarize`] counts all of it and breaks it
+//! down by the product names GitHub sends ([`ProductUse`]); it filters nothing
+//! and matches no product, SKU or unit string.
 //!
 //! One client ([`CopilotUsageClient`]) makes two billing reads per pass and
 //! folds each with a pure function ([`summarize`]). A third, separate read
@@ -36,7 +40,7 @@ pub use client::{Billed, CopilotRead, CopilotUsageClient, API_VERSION, DEFAULT_B
 pub use error::{CopilotUsageError, ErrorKind, Level};
 pub use models::UsageItem;
 pub use seat::{Allowance, Credits, Seat, SeatError, SeatErrorKind, USD_EXPONENT};
-pub use summary::{summarize, ModelUse, Usage, TOP_MODELS};
+pub use summary::{summarize, ModelUse, ProductUse, Usage, TOP_MODELS};
 
 #[cfg(test)]
 mod seat_tests;

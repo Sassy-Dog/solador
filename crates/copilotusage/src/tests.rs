@@ -48,14 +48,183 @@ fn a_report_folds_credits_included_and_billed() {
     assert!(close(usage.billed_usd.expect("billed"), 4.0));
 }
 
+/// One item as JSON: product (`None` leaves the key out), model, gross quantity.
+fn line(product: Option<&str>, model: Option<&str>, gross: Option<f64>) -> String {
+    let mut fields: Vec<String> = Vec::new();
+    if let Some(p) = product {
+        fields.push(format!(r#""product":{p:?}"#));
+    }
+    if let Some(m) = model {
+        fields.push(format!(r#""model":{m:?}"#));
+    }
+    if let Some(g) = gross {
+        fields.push(format!(r#""grossQuantity":{g}"#));
+    }
+    format!("{{{}}}", fields.join(","))
+}
+
+fn report(lines: &[String]) -> Vec<UsageItem> {
+    items(&format!(r#"{{"usageItems":[{}]}}"#, lines.join(",")))
+}
+
+/// `(product, quantity, [(model, quantity)])` per line, in order.
+type Shape = Vec<(Option<String>, Option<f64>, Vec<(String, f64)>)>;
+
+fn shape(usage: &Usage) -> Shape {
+    usage
+        .products
+        .iter()
+        .map(|p| {
+            let models = p.models.iter().map(|m| (m.model.clone(), m.quantity));
+            (p.product.clone(), p.quantity, models.collect())
+        })
+        .collect()
+}
+
+fn named(v: &str) -> Option<String> {
+    Some(v.to_owned())
+}
+
+fn m(name: &str, quantity: f64) -> (String, f64) {
+    (name.to_owned(), quantity)
+}
+
 #[test]
-fn the_top_three_models_are_the_largest_by_gross_quantity() {
+fn the_top_three_models_sit_under_their_product() {
     let usage = summarize(&items(ORG_CREDITS));
-    let names: Vec<&str> = usage.top_models.iter().map(|m| m.model.as_str()).collect();
     // model-alpha appears twice and is summed (600), then beta 300, gamma 120;
-    // delta (80) is cut.
-    assert_eq!(names, ["model-alpha", "model-beta", "model-gamma"]);
-    assert!(close(usage.top_models[0].quantity, 600.0));
+    // delta (80) is cut. One product, so all three sit under it.
+    assert_eq!(
+        shape(&usage),
+        [(
+            named("copilot"),
+            Some(1100.0),
+            vec![
+                m("model-alpha", 600.0),
+                m("model-beta", 300.0),
+                m("model-gamma", 120.0)
+            ]
+        )]
+    );
+}
+
+#[test]
+fn a_report_of_one_non_copilot_product_is_listed_under_its_own_name() {
+    // The live strings the operator's smoke check recorded: no Copilot row.
+    let body = r#"{"usageItems":[{"product":"Code Quality","sku":"Code Quality AI Credits","unitType":"ai-credits","grossQuantity":40,"discountQuantity":0,"netAmount":0.4}]}"#;
+    let usage = summarize(&items(body));
+    assert_eq!(usage.used, Some(40.0));
+    assert_eq!(shape(&usage), [(named("Code Quality"), Some(40.0), vec![])]);
+}
+
+#[test]
+fn products_are_ordered_largest_first_with_ties_by_name() {
+    let usage = summarize(&report(&[
+        line(Some("Zeta"), None, Some(10.0)),
+        line(Some("Beta"), None, Some(10.0)),
+        line(Some("Alpha"), None, Some(5.0)),
+        line(Some("Omega"), None, Some(90.0)),
+    ]));
+    let names: Vec<_> = usage.products.iter().map(|p| p.product.clone()).collect();
+    assert_eq!(
+        names,
+        [named("Omega"), named("Beta"), named("Zeta"), named("Alpha")]
+    );
+}
+
+#[test]
+fn a_missing_or_blank_product_is_one_unnamed_line_and_always_last() {
+    let usage = summarize(&report(&[
+        line(None, None, Some(500.0)),
+        line(Some("   "), None, Some(300.0)),
+        line(Some(""), None, Some(1.0)),
+        line(Some("Code Quality"), None, Some(2.0)),
+    ]));
+    assert_eq!(
+        shape(&usage),
+        [
+            (named("Code Quality"), Some(2.0), vec![]),
+            (None, Some(801.0), vec![])
+        ]
+    );
+}
+
+#[test]
+fn a_product_name_is_trimmed_and_never_merged_by_guesswork() {
+    let usage = summarize(&report(&[
+        line(Some(" Code Quality "), None, Some(1.0)),
+        line(Some("Code Quality"), None, Some(2.0)),
+        line(Some("code quality"), None, Some(4.0)),
+    ]));
+    assert_eq!(
+        shape(&usage),
+        [
+            (named("code quality"), Some(4.0), vec![]),
+            (named("Code Quality"), Some(3.0), vec![])
+        ]
+    );
+}
+
+#[test]
+fn an_unmeasured_product_is_unknown_and_the_others_keep_their_figures() {
+    let usage = summarize(&report(&[
+        line(Some("Alpha"), None, Some(5.0)),
+        line(Some("Gap"), None, Some(900.0)),
+        line(Some("Gap"), None, None),
+        line(Some("Beta"), None, Some(7.0)),
+        line(None, None, None),
+    ]));
+    // Unmeasured after measured among the named; the unnamed line last.
+    assert_eq!(
+        shape(&usage),
+        [
+            (named("Beta"), Some(7.0), vec![]),
+            (named("Alpha"), Some(5.0), vec![]),
+            (named("Gap"), None, vec![]),
+            (None, None, vec![])
+        ]
+    );
+    assert_eq!(usage.used, None);
+}
+
+#[test]
+fn the_same_model_under_two_products_is_two_entries_not_a_sum() {
+    let usage = summarize(&report(&[
+        line(Some("Alpha"), Some("model-x"), Some(30.0)),
+        line(Some("Beta"), Some("model-x"), Some(20.0)),
+    ]));
+    assert_eq!(
+        shape(&usage),
+        [
+            (named("Alpha"), Some(30.0), vec![m("model-x", 30.0)]),
+            (named("Beta"), Some(20.0), vec![m("model-x", 20.0)])
+        ]
+    );
+}
+
+#[test]
+fn at_most_three_models_are_named_across_all_products() {
+    let usage = summarize(&report(&[
+        line(Some("Alpha"), Some("m1"), Some(50.0)),
+        line(Some("Alpha"), Some("m2"), Some(10.0)),
+        line(Some("Beta"), Some("m3"), Some(40.0)),
+        line(Some("Beta"), Some("m4"), Some(30.0)),
+        line(Some("Gamma"), Some("m5"), Some(5.0)),
+    ]));
+    // m1, m3 and m4 are the three largest; every product is still listed, and
+    // its total counts the models that were cut.
+    assert_eq!(
+        shape(&usage),
+        [
+            (
+                named("Beta"),
+                Some(70.0),
+                vec![m("m3", 40.0), m("m4", 30.0)]
+            ),
+            (named("Alpha"), Some(60.0), vec![m("m1", 50.0)]),
+            (named("Gamma"), Some(5.0), vec![])
+        ]
+    );
 }
 
 #[test]
@@ -74,7 +243,12 @@ fn an_empty_month_is_a_measured_zero() {
     assert_eq!(usage.used, Some(0.0));
     assert_eq!(usage.included, Some(0.0));
     assert_eq!(usage.billed_usd, Some(0.0));
-    assert!(usage.top_models.is_empty());
+    // `-0.0 == 0.0`, so the sign needs its own assertion: a negative zero
+    // renders as `$-0.00`.
+    for zero in [usage.used, usage.included, usage.billed_usd] {
+        assert!(zero.expect("measured").is_sign_positive());
+    }
+    assert!(usage.products.is_empty());
 }
 
 #[test]
@@ -82,7 +256,8 @@ fn an_item_with_no_model_is_summed_but_not_attributed() {
     let body = r#"{"usageItems":[{"grossQuantity":5,"discountQuantity":0,"netAmount":0.05}]}"#;
     let usage = summarize(&items(body));
     assert_eq!(usage.used, Some(5.0));
-    assert!(usage.top_models.is_empty());
+    // Summed, listed under no named product, and attributed to no model.
+    assert_eq!(shape(&usage), [(None, Some(5.0), vec![])]);
 }
 
 // ---- the reads ----

@@ -336,10 +336,13 @@
   `copilot-plan` once Personal is set up, built by `plan_usage::copilot_seat_section`
   through `viewmodel::plan_usage::plan_row`), `apis` (always a list: one
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found),
-  `copilot` (always a list: a `Copilot · {login}` row (plain `Copilot` when no login is
-  known, as after Actions billing is removed) for the organization half and a
-  `Copilot billed to {login}` row for the personal half, each when set up,
-  with a `note` and `models`, and no meter), the rollups (`windows`,
+  `copilot` (always a list: an `AI credits · {login}` row (plain `AI credits` when no login is
+  known, as after Actions billing is removed) for the organization half and an
+  `AI credits billed to {login}` row for the personal half, each when set up,
+  with a `note` and `products` (`[{name, value, dotColor, models: [{name, value,
+  dotColor}]}]`: every GitHub product the report names, at most three models
+  across the half beneath their products, `Product not named` last), and no
+  meter), the rollups (`windows`,
   `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
   Claude Code row paints), `message`, `footer`, `freshness` and `loading`. The

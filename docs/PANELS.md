@@ -112,11 +112,13 @@
   `PanelInterval::UsageProviders`, with a note saying how far the figure reaches
   (`counted 3h ago`), which is not when it was read: Anthropic's lag by hours.
   `apis` is always a list, empty when neither key is there.
-  **GitHub Copilot** (`crates/copilotusage`) is month-to-date AI credits, in two
+  **GitHub Copilot** (`crates/copilotusage`) is month-to-date AI credits, **every
+  GitHub product's, Copilot among them** (the `ai_credit` report is one shared
+  pool, and Code Quality, Code Security and others draw on it), in two
   billing halves that answer to the one `copilot` scope: the organization's
   (`copilot-org`: the whole pool of an organization **you administer**, not your
   own usage) and the person's (`copilot-personal`: what GitHub **billed to that
-  account**, labelled `Copilot billed to {login}` so an employer's seat, which is
+  account**, labelled `AI credits billed to {login}` so an employer's seat, which is
   not billed to the person, cannot read as "used nothing"). `copilot` is always a
   list, empty when neither half is set up. A third row, `copilot-plan`, is the
   person's **own plan or employer seat limit** and is described below. The
@@ -139,12 +141,24 @@
   `PanelInterval::UsageProviders`
   (there is no tenth cadence) and read the `ai_credit` usage report and, beside
   it, the `premium_request` one, pinned to API version `2026-03-10` in this crate
-  only. An organization row is `Copilot · {login}` (plain `Copilot` when no login
-  is known, as after Actions billing is removed); the personal row is `Copilot
-  billed to {login}`. Each has the billed USD as its value (`—` when
+  only. An organization row is `AI credits · {login}` (plain `AI credits` when no
+  login is known, as after Actions billing is removed); the personal row is `AI
+  credits billed to {login}` (`… you` with no login). The report is **not
+  filtered to Copilot** and nothing matches a product, SKU or unit string, so a
+  guessed name can never silently read zero; the live Copilot `product` string is
+  still unknown (the one recorded live string is `Code Quality`). Each has the
+  billed USD as its value (`—` when
   any item lacks its net amount, never a zero), a note of `N AI credits used · N
-  included · N premium requests` that names only what was measured, and the top
-  three models by credits underneath. The premium-request line is there only when
+  included · N premium requests` that names only what was measured, and a
+  `products` breakdown underneath (the shape GitHub's billing page uses): **every**
+  product, by GitHub's own string trimmed and never merged by guessing, so, when
+  every item is measured, the lines add up to the note's `N AI credits used` (up
+  to display rounding); its credits are `—` when any of its items lacks a
+  quantity; ordered by credits, ties by name, unmeasured after measured; items
+  with no `product` (absent or blank) are one last line, `Product not named`.
+  At most the three largest models across the whole half are named, each
+  indented under its own product (the same model under two products is two
+  entries). The premium-request line is there only when
   that report has items (an annual Pro/Pro+ plan still bills them); a 404 on it is
   no line and no claim, never an error. **The billing rows have no plan meter**:
   the billing API reports no allowance and no pool, so a bar would be a share of
