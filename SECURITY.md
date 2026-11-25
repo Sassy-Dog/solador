@@ -47,7 +47,11 @@ leave that request, or be modified, is a vulnerability too.
 **Token permissions.** Each GitHub token asks for the narrowest grant its read
 needs, and the docs say so in those words: the Actions billing token is
 **Administration: read** on one organization, and the GitHub Copilot source's
-personal token is the user permission **Plan: read** and nothing else. The
+personal token is the user permission **Plan: read** and nothing else, and it
+is sent to three `api.github.com` endpoints: the two billing usage reports (`ai_credit` and `premium_request`) and
+`/copilot_internal/user` (your own plan or seat limit; undocumented by GitHub,
+decoded to a handful of named fields, with the rest of its body, which lists
+your organizations, never kept). The
 Copilot source's organization part reads the Actions billing token and keeps no
 credential of its own, so removing it never deletes that token. Neither token is
 sent anywhere but `api.github.com`, and neither appears in an error, a log line

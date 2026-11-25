@@ -332,23 +332,26 @@
   `with_source_tile` offers one AI Usage tile and never two. The tile is read by
   one command, `ai_usage` (fixture `sample-ai-usage.json`, dump flag
   `--dump-ai-usage`), whose payload is `usage::ai_usage_view`: `plans` (Claude's
-  then Codex's `plan_usage::view` sections), `apis` (always a list: one
+  then Codex's `plan_usage::view` sections, then Copilot's own-limit row
+  `copilot-plan` once Personal is set up, built by `plan_usage::copilot_seat_section`
+  through `viewmodel::plan_usage::plan_row`), `apis` (always a list: one
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found),
   `copilot` (always a list: a `Copilot · {login}` row (plain `Copilot` when no login is
-  known, as after Actions billing is removed) per half that is set up,
+  known, as after Actions billing is removed) for the organization half and a
+  `Copilot billed to {login}` row for the personal half, each when set up,
   with a `note` and `models`, and no meter), the rollups (`windows`,
   `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
   Claude Code row paints), `message`, `footer`, `freshness` and `loading`. The
-  row ids are `claude-plan`, `codex-plan`, `anthropic-api`, `openai-api`,
-  `copilot-org`, `copilot-personal` and `claude-today` (the Anthropic and OpenAI
+  row ids are `claude-plan`, `codex-plan`, `copilot-plan`, `anthropic-api`,
+  `openai-api`, `copilot-org`, `copilot-personal` and `claude-today` (the Anthropic and OpenAI
   ones unchanged from the two tiles this replaced, so saved `item:` scopes keep
   working); `tile_scope::scope_ai_usage` narrows `plans`, `apis` and `copilot`
   by id and drops the rollups block, `trailing` and `claudeToday` when
   `claude-today` is not kept. `scope_payload` ignores a kind it has no arm for,
   so that arm is what keeps a vendor-scoped tile from showing the other
   vendor's figures. **A scope picks figures only.** The payload's `footer`, the
-  merged all-rows `⚠` line (both plans, both API rows, both Copilot rows,
+  merged all-rows `⚠` line (all three plans, both API rows, both Copilot billing rows,
   `claude-today`, each labelled with its row id, wording and colour as the
   `all` tile's), is on every AI Usage tile, and an overview card's `⚠` entry is
   the source's for every scope; the card's clock entry is the kept rows' clocks,
@@ -356,7 +359,7 @@
   credential store would not read has no section, so
   `ai_usage_view` gives its row a `⚠ anthropic-api: <reason>` segment itself; a
   key merely unread warns of nothing. The payload also carries `lines` (always
-  the seven row ids in body order, each `{id, on, warning, clock, loading,
+  the eight row ids in body order, each `{id, on, warning, clock, loading,
   undecided, unreadable}`: `on` is the part being set up; `warning` its `⚠`
   segment, merged into `footer`; `clock` its freshness segment; `undecided` and
   `unreadable` its own key's read) and `rollupsMessage`. A tile narrowed by any
@@ -372,7 +375,7 @@
   else, only when no relevant part is on, (3) `Anthropic isn’t set up — …` /
   `OpenAI isn’t set up — …` / `GitHub Copilot isn’t set up — …` for each vendor
   with a relevant part off (every relevant key read and absent; `plans` with
-  both plan parts off names both, in body order), else (4) none. A key's failure
+  every plan part off names each vendor with a part off, GitHub Copilot included, in body order), else (4) none. A key's failure
   is said once, as its `⚠` line, never also as a message. The overview's empty
   text (`ai_narrowed_source`, into `empty_state`) comes from the same function as
   the Full view's `message`, so the two cannot disagree; `all` and `attention`
@@ -386,7 +389,22 @@
   while `PlanInputs::copilot_org` (the flag, read at render time) is on, and the
   personal half goes with its key (`unconfigure_spend`). Both are polled by
   `poll_usage_providers` (`poll_copilot_org`, `poll_copilot_personal`), after the
-  two `poll_api_spend` calls.
+  two `poll_api_spend` calls. The personal token feeds a **second reading with
+  its own state**, `UsageState.copilot_plan`, a `CopilotPlanState { login, read:
+  ProviderState<copilotusage::Seat> }` read by `read_copilot_seat` on the same
+  pass: its figures, warning and clock are `copilot-plan`'s alone, so neither
+  endpoint's failure touches the other's row. `copilot_personal_unconfigure`
+  drops both on the same frame (removing the token, or no username), and
+  `note_login` drops the plan figures when the username changes. A failure that
+  makes the figure untrustworthy or no longer true (a 404, a plan not billed in
+  credits, a missing or invalid figure, a login that is not the configured one,
+  an undecodable body) clears the figure with the failure
+  (`SeatError::keeps_last_figure`), so the row reads `—` and the reason; the
+  rest (unreachable, a rate limit, a refused 401/403 token, a 5xx or another
+  unexpected status) keep the last good figure beside its `⚠`. The three
+  sentences for a login mismatch, a plan billed in premium requests (`token_based_billing: false`; an absent field is a missing figure instead) and a 404 are the
+  crate's own, not the vocabulary's: the first two are 200 answers, so nothing was
+  rejected and nothing was unreadable, and a 404 has no account in its path.
   The whole tile's setup sentence waits on every vendor's key (`ProviderState::key_read`,
   `nothing_added_message`): any key undecided is loading, else any key the
   credential store would not read gives no message (its `⚠` line says why),
@@ -410,7 +428,7 @@
   GitHub Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
   maps a panel to a list of sources), Service Health, AI Usage (three: the Claude
   rollups, the plan limits and the metered providers' cadence, which also reads
-  both vendors' API spend and Copilot's two halves, and is shared with Usage),
+  both vendors' API spend and Copilot's two halves and its own-limit row, and is shared with Usage),
   Usage (the metered providers), Azure Cost, Actions billing and Sentry
   Crons — under **Poll cadence**, one control per cadence (a
   source carries a `cadences` list, so a tile fed by two polls shows both), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
@@ -557,6 +575,21 @@
   and has not been run against a live token: the exact `product` and `sku`
   strings are unconfirmed, so it does not branch on them (the endpoints are
   already Copilot-only), and the manual smoke rows in `app/README.md` are owed.
+  The **personal token also goes to `GET https://api.github.com/copilot_internal/user`**
+  (`copilotusage::CopilotUsageClient::seat`), the `copilot-plan` row's read: the
+  owner's own plan or employer-seat limit, which the documented billing
+  endpoints cannot give a member of an organization (they are admin-only, and
+  the user-level one leaves such a seat out). **That endpoint is undocumented**
+  (Copilot's own clients use it), so it is asked for with the bearer token only
+  and no `X-GitHub-Api-Version`, decoded into a typed model that keeps only
+  `login`, `copilot_plan`, `quota_reset_date_utc` / `quota_reset_date` and
+  `quota_snapshots.premium_interactions.{credits_used, entitlement, unlimited,
+  token_based_billing, has_quota}` (the body's organization list, enterprise ids
+  and tracking ids are never decoded), and every rule on it degrades to `—`
+  with a reason rather than to a figure that might be wrong (see `docs/PANELS.md`,
+  AI Usage). Credits are `credits × $0.01`, held as exact thousandths of a credit
+  (`copilotusage::Credits`) so no float reaches the meter. It adds no key, part or
+  cadence: it rides `poll_copilot_personal` on `PanelInterval::UsageProviders`.
 - **Repos / GitHub Runners → accounts**: one token **per account**, each its own
   credential-store item (`SecretKey::VendorToken`, keyed by the account's id). A
   GitHub account is added, changed and removed through the same save table as

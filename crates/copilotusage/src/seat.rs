@@ -1,0 +1,355 @@
+//! The seat read: how much of their own Copilot limit the token's owner has
+//! used this period, from `GET /copilot_internal/user`.
+//!
+//! **That endpoint is undocumented.** Copilot's own clients use it for their
+//! quota display, and it is the only source that answers for a member of an
+//! organization whose seat an employer assigns and pays for: the documented
+//! billing endpoints are admin-only, and the user-level one leaves such a seat
+//! out. Because it can change without notice, every rule here degrades to an
+//! em dash with a reason rather than to a figure that might be wrong.
+//!
+//! The wire model keeps only the fields below. The body also carries the
+//! user's organization list, enterprise ids and tracking ids, and none of it
+//! is decoded, so none of it can be kept, logged or shown.
+//!
+//! # Credits are exact
+//!
+//! Under `token_based_billing` the figures are GitHub AI credits, and one
+//! credit is $0.01. A credit count is kept as [`Credits`], whole thousandths of
+//! a credit, so it is already the minor unit of a US dollar at exponent 5 and
+//! no float reaches the meter. Equal figures stay equal, which is what makes
+//! "used the whole limit" exact.
+//!
+//! # What is never a figure
+//!
+//! `token_based_billing: false` (an annual premium-request plan:
+//! requests, never dollars), a missing figure (a missing `token_based_billing`
+//! included: absent is unknown, never a plan type), a negative or non-finite one,
+//! and a response whose `login` is not the account the operator named. Each is
+//! a [`SeatError`], never a zero. `has_quota` is decoded and never branched
+//! on: it turns `false` once the quota is used up, which is a figure to show,
+//! not an absence of one.
+
+use std::fmt;
+
+use chrono::{DateTime, NaiveDate};
+use fault::Fault;
+use serde::Deserialize;
+
+use crate::error::{ErrorKind, VENDOR};
+
+/// Thousandths of a credit per credit. See the module note.
+const SCALE: f64 = 1_000.0;
+/// The decimal exponent of a US-dollar amount held in [`Credits`] (a credit is
+/// $0.01, so a thousandth of a credit is $0.00001).
+pub const USD_EXPONENT: u8 = 5;
+/// Past this a figure is not a quota: it is refused rather than let to overflow
+/// the scaled integer.
+const MAX_CREDITS: f64 = 1.0e12;
+/// The longest plan name shown. A longer string is not a plan name.
+const MAX_PLAN_CHARS: usize = 40;
+
+/// A credit amount in whole thousandths of a credit.
+///
+/// Also the amount in US dollars at [`USD_EXPONENT`], since 1 credit = $0.01.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Credits(i64);
+
+impl Credits {
+    /// `None` for a negative, non-finite or absurdly large figure.
+    #[must_use]
+    pub fn from_f64(credits: f64) -> Option<Credits> {
+        if !credits.is_finite() || !(0.0..=MAX_CREDITS).contains(&credits) {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        Some(Credits((credits * SCALE).round() as i64))
+    }
+
+    /// The amount as US-dollar minor units at [`USD_EXPONENT`].
+    #[must_use]
+    pub fn usd_minor(self) -> i64 {
+        self.0
+    }
+}
+
+/// What the seat may use this period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Allowance {
+    /// The limit GitHub enforces for this user this period.
+    Capped(Credits),
+    /// No limit. Used is a spend, not a share.
+    Unlimited,
+}
+
+/// One reading of the token owner's own Copilot limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seat {
+    /// `business`, `pro`, … as GitHub sent it. A display string only: nothing
+    /// branches on it.
+    pub plan: Option<String>,
+    pub used: Credits,
+    pub allowance: Allowance,
+    /// When the period resets, Unix seconds.
+    pub resets_at: Option<i64>,
+    /// GitHub sent a reset date and neither field could be read. Then `resets_at`
+    /// is `None`; GitHub sending none at all is `resets_at: None` with this false.
+    pub reset_unreadable: bool,
+}
+
+// ---- wire ----
+
+/// Only the fields this build keeps. Anything else in the body is skipped by
+/// serde and never held.
+#[derive(Debug, Deserialize)]
+pub(crate) struct SeatBody {
+    #[serde(default)]
+    pub(crate) login: Option<String>,
+    #[serde(default)]
+    pub(crate) copilot_plan: Option<String>,
+    #[serde(default)]
+    pub(crate) quota_reset_date_utc: Option<String>,
+    #[serde(default)]
+    pub(crate) quota_reset_date: Option<String>,
+    #[serde(default)]
+    pub(crate) quota_snapshots: Option<Snapshots>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Snapshots {
+    #[serde(default)]
+    pub(crate) premium_interactions: Option<Quota>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Quota {
+    #[serde(default)]
+    pub(crate) credits_used: Option<f64>,
+    #[serde(default)]
+    pub(crate) entitlement: Option<f64>,
+    #[serde(default)]
+    pub(crate) unlimited: Option<bool>,
+    #[serde(default)]
+    pub(crate) token_based_billing: Option<bool>,
+    /// Decoded to say it is known, never read: see the module note.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) has_quota: Option<bool>,
+}
+
+// ---- errors ----
+
+/// Why the seat read produced no figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatErrorKind {
+    /// The request failed or GitHub answered with a failure status.
+    Request(ErrorKind),
+    /// `token_based_billing` was `false`: an annual premium-request plan,
+    /// whose figures are requests and never dollars.
+    NotCreditBilled,
+    /// A field the row needs was absent or null.
+    MissingFigure,
+    /// A figure was negative, non-finite or out of range.
+    InvalidFigure,
+    /// The response named a different account than the configured username.
+    WrongAccount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeatError {
+    pub kind: SeatErrorKind,
+}
+
+impl SeatError {
+    #[must_use]
+    pub fn new(kind: SeatErrorKind) -> Self {
+        SeatError { kind }
+    }
+
+    /// The vocabulary state this failure is, or `None` where the vocabulary has
+    /// no word for it. A login mismatch and a plan billed in premium requests are
+    /// both answers GitHub gave with a 200: nothing was rejected and nothing was
+    /// unreadable, so they keep their own sentences (`user_message`) rather than
+    /// borrowing `CredentialRejected` or `Undecodable`. A 404 keeps its own
+    /// sentence too: the vocabulary's says "no such account", and this endpoint
+    /// has no account in its path.
+    #[must_use]
+    pub fn fault(&self) -> Option<Fault> {
+        match self.kind {
+            // A 404 here is no plan or seat, not a missing account: its own
+            // sentence, like the two 200 answers below.
+            SeatErrorKind::Request(ErrorKind::NotFound) => None,
+            SeatErrorKind::Request(kind) => Some(match kind {
+                ErrorKind::Unauthorized | ErrorKind::Forbidden => Fault::CredentialRejected,
+                ErrorKind::NotFound => unreachable!("matched above"),
+                ErrorKind::RateLimited => Fault::RateLimited,
+                ErrorKind::VendorFailure { .. } => Fault::VendorFailure,
+                ErrorKind::UnexpectedStatus { .. } => Fault::Unexpected,
+                ErrorKind::Undecodable => Fault::Undecodable,
+                ErrorKind::Unreachable => Fault::Unreachable,
+            }),
+            SeatErrorKind::WrongAccount | SeatErrorKind::NotCreditBilled => None,
+            // The body decoded but did not carry a usable figure: the shape is
+            // not the one this build expects.
+            SeatErrorKind::MissingFigure | SeatErrorKind::InvalidFigure => Some(Fault::Undecodable),
+        }
+    }
+
+    /// Whether a figure kept from an earlier good read may stay beside this
+    /// failure. A failure to reach GitHub, a refused token (401/403), a rate
+    /// limit, a 5xx or another unexpected status says nothing about the figure.
+    /// A 404 (the seat or the endpoint is gone), a response that no longer means
+    /// what it did, or one that belongs to someone else, does, and the figure
+    /// goes.
+    #[must_use]
+    pub fn keeps_last_figure(&self) -> bool {
+        match self.kind {
+            SeatErrorKind::Request(kind) => {
+                !matches!(kind, ErrorKind::Undecodable | ErrorKind::NotFound)
+            }
+            _ => false,
+        }
+    }
+
+    /// Operator-facing sentence. Never built from `to_string()`.
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        // The three answers the vocabulary has no word for, said in full.
+        match self.kind {
+            SeatErrorKind::WrongAccount => {
+                return "GitHub answered for a different account than the configured \
+                        username \u{2014} check the token and the username in Settings"
+                    .to_owned();
+            }
+            // The vocabulary's 404 says "no such account \u{2014} check Settings", and
+            // this endpoint has no account in its path.
+            SeatErrorKind::Request(ErrorKind::NotFound) => {
+                return "GitHub reports no Copilot plan or seat for this token's account, \
+                        or it changed this endpoint"
+                    .to_owned();
+            }
+            SeatErrorKind::NotCreditBilled => {
+                return "This Copilot plan is billed in premium requests rather than AI \
+                        credits, so there is no dollar figure to show"
+                    .to_owned();
+            }
+            _ => {}
+        }
+        let stock = self.fault().map_or_else(String::new, |f| f.message(VENDOR));
+        match self.kind {
+            SeatErrorKind::Request(ErrorKind::Unauthorized | ErrorKind::Forbidden) => {
+                format!("{stock} \u{2014} it needs User permissions \u{2192} Plan: Read")
+            }
+            SeatErrorKind::Request(ErrorKind::UnexpectedStatus { status }) => {
+                fault::http_status_message(status, VENDOR)
+            }
+            SeatErrorKind::Request(_) => stock,
+            SeatErrorKind::MissingFigure => {
+                format!("{stock} \u{2014} it left out a field this row needs")
+            }
+            SeatErrorKind::InvalidFigure => {
+                format!("{stock} \u{2014} a credit figure was out of range")
+            }
+            SeatErrorKind::WrongAccount | SeatErrorKind::NotCreditBilled => {
+                unreachable!("answered above")
+            }
+        }
+    }
+}
+
+impl fmt::Display for SeatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            SeatErrorKind::Request(
+                ErrorKind::VendorFailure { status } | ErrorKind::UnexpectedStatus { status },
+            ) => write!(f, "GitHub returned HTTP {status} for the Copilot seat read"),
+            _ => write!(f, "the Copilot seat read failed"),
+        }
+    }
+}
+
+impl std::error::Error for SeatError {}
+
+// ---- the fold ----
+
+/// A body, checked against the account it must belong to and folded into a
+/// [`Seat`].
+///
+/// # Errors
+/// [`SeatError`], never a zero.
+pub(crate) fn interpret(body: &SeatBody, expected_login: &str) -> Result<Seat, SeatError> {
+    // First: another account's figures are never read further, let alone shown
+    // under this username.
+    // A login GitHub did not send is a missing field, not another account.
+    let login = body
+        .login
+        .as_deref()
+        .ok_or(SeatError::new(SeatErrorKind::MissingFigure))?;
+    if !login.trim().eq_ignore_ascii_case(expected_login.trim()) {
+        return Err(SeatError::new(SeatErrorKind::WrongAccount));
+    }
+    let quota = body
+        .quota_snapshots
+        .as_ref()
+        .and_then(|s| s.premium_interactions.as_ref())
+        .ok_or(SeatError::new(SeatErrorKind::MissingFigure))?;
+    if quota.token_based_billing == Some(false) {
+        return Err(SeatError::new(SeatErrorKind::NotCreditBilled));
+    }
+    // Absent (or null) says nothing about the plan: it is a missing field, not a
+    // plan type, and the figures are not known to be credits.
+    if quota.token_based_billing.is_none() {
+        return Err(SeatError::new(SeatErrorKind::MissingFigure));
+    }
+    let used = credits(quota.credits_used)?;
+    // Only a stated `true` is no limit and only a stated `false` is a cap: an
+    // absent `unlimited` is unknown, and asserting either would be inventing it.
+    let allowance = match quota.unlimited {
+        Some(true) => Allowance::Unlimited,
+        Some(false) => Allowance::Capped(credits(quota.entitlement)?),
+        None => return Err(SeatError::new(SeatErrorKind::MissingFigure)),
+    };
+    let (resets_at, reset_unreadable) = reset(body);
+    Ok(Seat {
+        plan: body
+            .copilot_plan
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| {
+                !p.is_empty()
+                    && p.chars().count() <= MAX_PLAN_CHARS
+                    && !p.chars().any(char::is_control)
+            })
+            .map(str::to_owned),
+        used,
+        allowance,
+        resets_at,
+        reset_unreadable,
+    })
+}
+
+fn credits(figure: Option<f64>) -> Result<Credits, SeatError> {
+    let value = figure.ok_or(SeatError::new(SeatErrorKind::MissingFigure))?;
+    Credits::from_f64(value).ok_or(SeatError::new(SeatErrorKind::InvalidFigure))
+}
+
+/// The reset instant (the timestamp when it parses, else the date's midnight
+/// UTC), and whether GitHub sent a reset that could not be read. A reset that
+/// reads as neither is not a failed read: the figure stands, and the note says
+/// the date was unreadable. GitHub sending none is `(None, false)`.
+fn reset(body: &SeatBody) -> (Option<i64>, bool) {
+    let stamp = body
+        .quota_reset_date_utc
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
+        .map(|t| t.timestamp());
+    let at = stamp.or_else(|| {
+        body.quota_reset_date
+            .as_deref()
+            .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|t| t.and_utc().timestamp())
+    });
+    let sent = body.quota_reset_date_utc.is_some() || body.quota_reset_date.is_some();
+    (at, at.is_none() && sent)
+}

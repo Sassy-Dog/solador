@@ -27,7 +27,7 @@ Credential Manager on Windows), never in `store.json`.
 | Vercel API token | Usage | read |
 | Anthropic Admin API key (`sk-ant-admin…`) | AI Usage (Anthropic source) | Admin API, read here only for `GET /v1/organizations/analytics/cost`. Only a Console organization can create one. |
 | OpenAI Admin API key | AI Usage (OpenAI source) | read here only for `GET /v1/organization/costs` |
-| GitHub fine-grained PAT, **Copilot personal** (`copilot_personal_token`) | AI Usage (GitHub Copilot source) | resource owner your own account; User permissions: **Plan: read** only; read here only for `GET /users/{username}/settings/billing/{ai_credit,premium_request}/usage`, and only for a plan you bought yourself. Its own item. **The account name is permanent once shipped** |
+| GitHub fine-grained PAT, **Copilot personal** (`copilot_personal_token`) | AI Usage (GitHub Copilot source) | resource owner your own account; User permissions: **Plan: read** only; read here only for `GET /users/{username}/settings/billing/{ai_credit,premium_request}/usage` (what is billed to you personally) and for `GET /copilot_internal/user` (your own plan or employer-seat limit; an endpoint GitHub does not document, asked for with this token as a bearer header and nothing else). Both go to `api.github.com` only. Its own item. **The account name is permanent once shipped** |
 | OpenClaw bearer + device key | OpenClaw | gateway-dependent |
 
 An Admin API key can do far more than Solador asks of it, and neither vendor

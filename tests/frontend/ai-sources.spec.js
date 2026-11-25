@@ -148,9 +148,9 @@ test("the top-projects list is capped and every row keeps its own figure", async
   await expect(rows.locator(".val")).toHaveText(payload.projects.rows.map((r) => r.value));
 });
 
-test("both plans lead, then each vendor's spend, then this machine's rollups", async ({ page, baseURL }) => {
+test("the three plans lead, then each vendor's spend, then this machine's rollups", async ({ page, baseURL }) => {
   const payload = await gotoAiUsage(page, baseURL);
-  expect(payload.plans.map((p) => p.id), "Claude's plan, then Codex's").toEqual(["claude-plan", "codex-plan"]);
+  expect(payload.plans.map((p) => p.id), "Claude's plan, Codex's, then Copilot's own limit").toEqual(["claude-plan", "codex-plan", "copilot-plan"]);
   expect(payload.apis.map((a) => a.id), "Anthropic's spend, then OpenAI's").toEqual(["anthropic-api", "openai-api"]);
   await expect(page.locator("#aiUsageBody .pv-message"), "and so no setup line").toHaveCount(0);
   expect(
@@ -174,7 +174,7 @@ test("both plans lead, then each vendor's spend, then this machine's rollups", a
     await page
       .locator("#aiUsageBody .ai-plans")
       .evaluate((el) => [...el.children].map((c) => c.dataset.plan ?? c.dataset.api ?? c.dataset.copilot)),
-  ).toEqual(["claude-plan", "codex-plan", "anthropic-api", "openai-api", "copilot-org", "copilot-personal"]);
+  ).toEqual(["claude-plan", "codex-plan", "copilot-plan", "anthropic-api", "openai-api", "copilot-org", "copilot-personal"]);
   expect(await classes("#aiUsageBody .ai-rollups")).toEqual([
     "lbl pv-heading",
     "pv-row window",
@@ -211,6 +211,56 @@ test("each Copilot row paints Rust's billed value, note and top models, and no m
   }
   // Both vendors' own strings: nothing here is composed by the page.
   expect(payload.copilot[0].label).toMatch(/^Copilot · /);
+  expect(payload.copilot[1].label, "the billing row says it is billed to the account").toMatch(/^Copilot billed to /);
+});
+
+test("the Copilot plan row is a plan: its label, one spend-cap meter and Rust's reset note", async ({
+  page,
+  baseURL,
+}) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  const plan = payload.plans.find((p) => p.id === "copilot-plan");
+  expect(plan, "the dump carries an invented business seat").toBeTruthy();
+  expect(plan.label).toBe("Copilot · Business");
+  expect(plan.metrics).toHaveLength(1);
+  const [meter] = plan.metrics;
+  expect(meter.label).toBe("Budget");
+  expect(meter.value, "dollars used of the limit, with the share").toMatch(/^\$[\d,.]+ \/ \$[\d,.]+ · \d+%$/);
+  expect(meter.note, "the reset, not the no-reset sentence").toMatch(/^resets in /);
+  expect(meter.fraction).toBeGreaterThan(0);
+  // `expectPlan` paints and checks the header, the meter, its fill colour and its note.
+  await expectPlan(page, plan);
+  // It is a plan block, not a Copilot billing section, so it has no models list.
+  await expect(planSection(page, "copilot-plan").locator(".pv-item")).toHaveCount(0);
+});
+
+test("an unlimited Copilot seat is a spend with no fill, and a failed one is a dash", async ({ page, baseURL }) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  const unlimited = {
+    ...payload,
+    plans: payload.plans.map((p) =>
+      p.id === "copilot-plan"
+        ? {
+            ...p,
+            metrics: [{ ...p.metrics[0], value: "$50.00 spent", fraction: null, color: "#8b8b8b", note: "resets in 3d 4h" }],
+          }
+        : p,
+    ),
+  };
+  await render(page, unlimited);
+  await expectPlan(page, unlimited.plans.find((p) => p.id === "copilot-plan"));
+  await expect(planSection(page, "copilot-plan").locator(".db-meter-fill")).toHaveCount(0);
+
+  const dash = {
+    ...payload,
+    plans: payload.plans.map((p) =>
+      p.id === "copilot-plan" ? { ...p, label: "Copilot", value: "—", metrics: [] } : p,
+    ),
+  };
+  await render(page, dash);
+  const header = planSection(page, "copilot-plan").locator(".pv-row.plan");
+  await expect(header.locator(".val")).toHaveText("—");
+  await expect(planSection(page, "copilot-plan").locator(".db-metric")).toHaveCount(0);
 });
 
 test("an unmeasured Copilot figure is the em dash, with no note and no models, never a zero", async ({

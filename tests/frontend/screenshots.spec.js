@@ -273,8 +273,9 @@ test.describe("at 2x: the shots people look at", () => {
   // under this machine's, Azure Cost keeps the prior month, projection and
   // resource groups. Usage is 452, ten narrower: it is the one panel shorter
   // than the box's shape, so at 462 `cover` scaled it by its height and cut its
-  // right-aligned values (expectWholeInCrop). AI Usage is 462: both plans lead
-  // it, so the crop keeps both plans' meters, and what lies below (the API
+  // right-aligned values (expectWholeInCrop). AI Usage is 462: three plans lead
+  // it, and at 462 the 311x195 `cover` crop keeps Claude's and Codex's meters
+  // (asserted below) and cuts Copilot's, which the full PNG still holds; what lies below (the API
   // spend, the rollups) is cut.
   // Hosts is one card — this machine's — at 900: the whole host
   // grid at 1800 wide and 2x is a 3500px image for a tile that shows a few

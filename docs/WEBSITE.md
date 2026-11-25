@@ -78,7 +78,7 @@ while Cards would put the second owner past the crop's right edge; the generator
 asserts every owner's name is inside the crop, and the overview keeps the
 default Cards, so the site shows both layouts. The generator asserts that Usage's
 Neon, Sentry and Vercel sections sit inside the crop with the panel's full
-width (a two-column Usage at 908pt fails it) and that the AI Usage crop keeps both plans' sections, and `site.spec.js` asserts every
+width (a two-column Usage at 908pt fails it) and that the AI Usage crop keeps Claude's and Codex's plan sections (three plans lead the panel, but at 462pt the 311x195 `cover` crop cuts Copilot's, which is still in the full PNG), and `site.spec.js` asserts every
 image is anchored top left, which ties the CSS to that assumption. The Hosts alt names only the CPU section ("overall and
 per-core CPU sparklines"), because the CPU section is the one part of the card
 that the crop is certain to show. The generator asserts that the whole CPU

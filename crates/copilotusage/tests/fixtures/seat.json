@@ -1,0 +1,26 @@
+{
+  "login": "Example-User",
+  "copilot_plan": "business",
+  "quota_reset_date_utc": "2026-12-01T00:00:00.000Z",
+  "quota_reset_date": "2026-12-01",
+  "organization_list": [
+    {"login": "example-org", "name": "Example Org", "is_enterprise": false}
+  ],
+  "organization_login_list": ["example-org"],
+  "enterprise_list": [{"id": 424242, "slug": "example-enterprise"}],
+  "analytics_tracking_id": "00000000000000000000000000000000",
+  "assigned_date": "2026-01-15T00:00:00Z",
+  "chat_enabled": true,
+  "quota_snapshots": {
+    "chat": {"unlimited": true, "has_quota": false},
+    "premium_interactions": {
+      "credits_used": 1234.56,
+      "entitlement": 3900,
+      "unlimited": false,
+      "token_based_billing": true,
+      "has_quota": true,
+      "percent_remaining": 68.3,
+      "overage_permitted": false
+    }
+  }
+}

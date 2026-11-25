@@ -262,8 +262,8 @@ impl PanelInterval {
                     "every pass re-reads every session log under ~/.claude/projects, which grow with each conversation",
             },
             // `app/src-tauri/src/usage.rs`'s `PROVIDER_POLL_INTERVAL_SECS = 60 * 60`.
-            // Floor 300s: up to seven vendor APIs (Neon, Sentry, Vercel, both
-            // vendors' cost APIs and Copilot's org and personal usage) on one pass,
+            // Floor 300s: up to eight vendor APIs (Neon, Sentry, Vercel, both
+            // vendors' cost APIs and Copilot's org usage, personal usage and seat limit) on one pass,
             // each with a rate-limit budget. Consumption figures move on the
             // order of hours, so anything under 5 minutes spends quota to learn
             // nothing — the reasoning already written on that constant.
@@ -273,7 +273,7 @@ impl PanelInterval {
                 floor_secs: 300,
                 label: "Metered usage — Neon, Sentry, Vercel, API spend, Copilot",
                 floor_reason:
-                    "up to seven vendor APIs answer on one pass (Copilot's two reads among them), each against a rate-limit budget, and consumption figures move on the order of hours",
+                    "up to eight vendor APIs answer on one pass (Copilot's organization, personal and seat reads among them), each against a rate-limit budget, and consumption figures move on the order of hours",
             },
             // `crates/azurecost/src/lib.rs`'s `POLL_INTERVAL = 4 * 60 * 60`.
             // Floor 3600s, and this is the floor that exists to stop a spend

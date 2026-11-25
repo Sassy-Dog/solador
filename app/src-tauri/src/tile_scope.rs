@@ -250,7 +250,8 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
 /// no `lines` (a setup or error state).
 ///
 /// **A tile's scope picks only which figures it shows.** Every `\u{26a0}` warning
-/// from a configured AI source (both plans, both keys, the Claude Code logs,
+/// from a configured AI source (the three plans, Claude's, Codex's and Copilot's
+/// `copilot-plan`; both Admin keys; both Copilot billing rows; the Claude Code logs,
 /// and a key the credential store would not read) shows on every AI Usage tile,
 /// labelled with its row id: the payload's `footer` and an overview card's `\u{26a0}`
 /// entry are the whole tile's, whatever the scope. Only three things follow
@@ -811,6 +812,7 @@ mod tests {
         let all_ids = [
             "claude-plan",
             "codex-plan",
+            "copilot-plan",
             "anthropic-api",
             "openai-api",
             "copilot-org",
@@ -819,7 +821,10 @@ mod tests {
         ];
         // (scope, the ids whose clock it may carry)
         let cases: [(&str, &[&str]); 6] = [
-            ("copilot", &["copilot-org", "copilot-personal"]),
+            (
+                "copilot",
+                &["copilot-org", "copilot-personal", "copilot-plan"],
+            ),
             ("openai", &["codex-plan", "openai-api"]),
             ("item:openai-api", &["openai-api"]),
             ("item:codex-plan", &["codex-plan"]),
@@ -999,7 +1004,7 @@ mod tests {
         set(state.openai_api_mut(), openai);
         // Copilot's token has been read and is absent, as on a store that never
         // added it: these tests are about the other vendors.
-        state.copilot_personal_mut().unconfigure();
+        state.copilot_personal_unconfigure();
         let inputs = PlanInputs {
             claude,
             codex,
@@ -1019,6 +1024,7 @@ mod tests {
 
     const ANTHROPIC_OFF: &str = "Anthropic isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source";
     const OPENAI_OFF: &str = "OpenAI isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source";
+    const COPILOT_OFF: &str = "GitHub Copilot isn\u{2019}t set up \u{2014} add it in Settings \u{2192} Sources \u{2192} Add source";
 
     /// Every scope: the ids it keeps, and what stays scoped (clocks, loading,
     /// message, lines) beside what does not (every row's warning). The state has
@@ -1029,6 +1035,7 @@ mod tests {
         let all_ids = [
             "claude-plan",
             "codex-plan",
+            "copilot-plan",
             "anthropic-api",
             "openai-api",
             "copilot-org",
@@ -1036,10 +1043,14 @@ mod tests {
             "claude-today",
         ];
         // (scope, the ids it speaks for)
-        let matrix: [(&str, &[&str]); 15] = [
-            ("copilot", &["copilot-org", "copilot-personal"]),
+        let matrix: [(&str, &[&str]); 16] = [
+            (
+                "copilot",
+                &["copilot-org", "copilot-personal", "copilot-plan"],
+            ),
             ("item:copilot-org", &["copilot-org"]),
             ("item:copilot-personal", &["copilot-personal"]),
+            ("item:copilot-plan", &["copilot-plan"]),
             ("all", &all_ids),
             ("attention", &all_ids),
             (
@@ -1048,7 +1059,7 @@ mod tests {
             ),
             ("openai", &["codex-plan", "openai-api"]),
             ("claude", &["claude-today"]),
-            ("plans", &["claude-plan", "codex-plan"]),
+            ("plans", &["claude-plan", "codex-plan", "copilot-plan"]),
             ("item:claude-plan", &["claude-plan"]),
             ("item:codex-plan", &["codex-plan"]),
             ("item:anthropic-api", &["anthropic-api"]),
@@ -1158,10 +1169,14 @@ mod tests {
         assert!(openai["message"].is_null());
 
         // `plans` with both plan parts off names each vendor with a part off,
-        // in body order, and nothing of the whole-tile sentence.
+        // in body order, and nothing of the whole-tile sentence. Copilot's plan
+        // row is one of the plans, so it is named too.
         let p = ai_state(false, false, false, Key::Absent, Key::Absent);
         let out = scoped(&p, "plans");
-        assert_eq!(text(&out), format!("{ANTHROPIC_OFF} {OPENAI_OFF}"));
+        assert_eq!(
+            text(&out),
+            format!("{ANTHROPIC_OFF} {OPENAI_OFF} {COPILOT_OFF}")
+        );
         // The whole tile keeps its own sentence.
         assert_eq!(scoped(&p, "all")["message"]["text"], whole);
     }
@@ -1221,7 +1236,12 @@ mod tests {
     fn a_copilot_tile_keeps_only_copilot() {
         let p = every_line_firing();
         let out = scoped(&p, "copilot");
-        assert_eq!(blocks(&out), ["copilot-org", "copilot-personal"]);
+        // The plan row is a plan, so it is in the `plans` block beside the
+        // billing rows in the `copilot` one.
+        assert_eq!(
+            blocks(&out),
+            ["copilot-plan", "copilot-org", "copilot-personal"]
+        );
         assert_eq!(out["windows"], json!([]));
         assert!(out.get("projects").is_none());
         assert_eq!(out["trailing"], "");
@@ -1234,6 +1254,14 @@ mod tests {
         for scope in ["anthropic", "openai", "plans", "claude"] {
             let other = scoped(&p, scope);
             assert!(other["copilot"].as_array().unwrap().is_empty(), "{scope}");
+        }
+        // The plan row is also the `plans` tile's: `plans` means every plan limit.
+        // No other vendor's tile carries it.
+        let has_plan =
+            |scope: &str| blocks(&scoped(&p, scope)).contains(&"copilot-plan".to_owned());
+        assert!(has_plan("plans"));
+        for scope in ["anthropic", "openai", "claude", "item:copilot-org"] {
+            assert!(!has_plan(scope), "{scope}");
         }
     }
 
@@ -1251,7 +1279,7 @@ mod tests {
         for scope in ["anthropic", "openai"] {
             assert_eq!(scoped(&p, scope)["loading"], false, "{scope}");
         }
-        state.copilot_personal_mut().unconfigure();
+        state.copilot_personal_unconfigure();
         let p = crate::usage::ai_usage_view(&state, crate::plan_usage::PlanInputs::OFF, AI_NOW);
         let out = scoped(&p, "copilot");
         assert_eq!(out["loading"], false);
@@ -1519,6 +1547,8 @@ mod tests {
             "item:anthropic-api",
             "item:codex-plan",
             "item:openai-api",
+            "copilot",
+            "item:copilot-plan",
         ];
         let mut tiles: Vec<DashboardTile> = usage_scopes
             .iter()

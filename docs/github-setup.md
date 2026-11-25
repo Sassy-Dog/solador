@@ -119,12 +119,19 @@ store under its own item, and Remove source forgets it.
 
 The **GitHub Copilot** source has two independent parts on the AI Usage tile.
 
-- **Organization** (Copilot Business) needs no token of its own: it reads with
-  the Actions billing token and organization above, so set **Actions billing** up
-  first. Solador refuses to turn the part on until that is done, and removing the
-  part never deletes the Actions billing token.
-- **Personal** (Copilot Pro or Pro+, bought on your own account) needs a token
-  of its own, created on that account:
+- **Organization** shows the whole pool of an organization **you administer**,
+  not your own usage. It needs no token of its own: it reads with the Actions
+  billing token and organization above, whose permission is **Organization
+  permissions → Administration: Read** (no permission named for billing or
+  Copilot does this), so set **Actions billing** up first. Solador refuses to
+  turn the part on until that is done, and removing the part never deletes the
+  Actions billing token.
+- **Personal** covers your own Copilot plan **or a seat an employer assigns you**
+  (its limit, what you have used of it this period and when it resets), plus
+  anything billed to you personally. The plan and seat figure comes from an
+  endpoint GitHub does not document, so if GitHub changes it the row shows `—`
+  rather than a wrong figure. It needs a token of its own, created on your
+  account:
 
   1. **GitHub → Settings → Developer settings → Personal access tokens →
      Fine-grained tokens → Generate new token**.
@@ -178,8 +185,11 @@ For the **organization** part, the Actions billing token needs **Administration:
 Read** and an organization admin, as above. For the **personal** part, the token
 needs the user permission **Plan: Read**. A **not found** message means the
 organization (and its enhanced billing platform) or the username is wrong. The
-personal usage is only served for a plan you bought yourself, not one a company
-or school provides.
+personal **billing** row only counts usage billed to you personally, so a seat a
+company or school provides shows a measured `$0.00` there; the **Copilot ·
+\<plan\>** row beside it is the seat's own limit. If that row says the token
+belongs to a different account, the token was created on another GitHub account
+than the username you typed.
 
 ### Rate limiting
 Authenticated requests get **5,000/hour per token**. The Repos panel spends

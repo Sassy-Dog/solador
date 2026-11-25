@@ -1,7 +1,8 @@
 //! Every word, colour and figure of the AI Usage panel's **plan** rows: a Claude
-//! or Codex subscription's own limits, as `crates/subscription` reads them.
+//! or Codex subscription's own limits, as `crates/subscription` reads them, and
+//! the Copilot plan or seat's, as `crates/copilotusage` reads it.
 //!
-//! The types here mirror that crate's without depending on it. It carries an
+//! The types here mirror those crates' without depending on them. They carry an
 //! HTTP stack and the view layer needs none, which is the arrangement
 //! [`crate::agent_release`] has with `crates/agentrelease`.
 //!
@@ -26,7 +27,7 @@
 //! like a burn that has slowed. It is not shown until [`PACE_MIN_ELAPSED`] of
 //! the window has passed, nor once the reading is stale.
 //!
-//! A spend cap has no pace: the reply states no reset for it, and a guessed
+//! A spend cap has no pace: [`Spend`] carries no period start, and a guessed
 //! billing period would be a fabricated one.
 //!
 //! # Unknown is not zero, and a past reset is not a present reading
@@ -98,6 +99,14 @@ pub struct Spend {
     pub limit: Option<Money>,
     pub stated_percent: Option<f64>,
     pub enabled: Option<bool>,
+    /// When the spend's period resets, Unix seconds. `None` when the source
+    /// states none (Claude's mirror never does): the meter then says so rather
+    /// than guessing a billing period.
+    pub resets_at: Option<i64>,
+    /// The source sent a reset date and it could not be read. Then `resets_at` is
+    /// `None` and the note says the date was unreadable, not that none was
+    /// reported.
+    pub reset_unreadable: bool,
 }
 
 /// One reading of a plan. Mirrors `subscription::PlanUsage`.
@@ -330,8 +339,12 @@ fn spend_percent(spend: &Spend) -> Option<f64> {
 /// A spend's meter: `Budget` when it is the plan's only limit (an Enterprise
 /// seat), `Extra usage` beside windows. Extra usage that is switched off has
 /// no meter.
+///
+/// `now` dates the reset: a period that has reset since the read is muted with
+/// no fill, as a window's is, because its share was true of a period that has
+/// since rolled over.
 #[must_use]
-pub fn spend_metric(spend: &Spend, beside_windows: bool) -> Option<Metric> {
+pub fn spend_metric(spend: &Spend, beside_windows: bool, now: i64) -> Option<Metric> {
     if beside_windows && spend.enabled == Some(false) {
         return None;
     }
@@ -342,6 +355,23 @@ pub fn spend_metric(spend: &Spend, beside_windows: bool) -> Option<Metric> {
         (None, Some(limit)) => format!("{NO_READING_VALUE} / {}", money(limit)),
         (None, None) => NO_READING_VALUE.to_owned(),
     };
+    let reset_passed = spend.resets_at.is_some_and(|at| at <= now);
+    let reset = spend
+        .resets_at
+        .filter(|at| *at > now)
+        .map(|at| format!("resets in {}", until(at, now)))
+        .or_else(|| {
+            (spend.resets_at.is_none() && spend.reset_unreadable)
+                .then(|| "reset date unreadable".to_owned())
+        });
+    let note = match (beside_windows, reset_passed, reset) {
+        (_, true, _) => "reset since read".to_owned(),
+        (true, false, Some(reset)) => format!("spend past the plan's limits · {reset}"),
+        (true, false, None) => "spend past the plan's limits".to_owned(),
+        (false, false, Some(reset)) => reset,
+        (false, false, None) => "no reset date reported".to_owned(),
+    };
+    let live = percent.filter(|_| !reset_passed);
     Some(Metric {
         label: if beside_windows {
             "Extra usage"
@@ -353,15 +383,10 @@ pub fn spend_metric(spend: &Spend, beside_windows: bool) -> Option<Metric> {
             Some(p) => format!("{amounts} · {p:.0}%"),
             None => amounts,
         },
-        fraction: percent.map(|p| (p / 100.0).clamp(0.0, 1.0)),
-        color: percent.map_or(color::MUTED, color::usage_color),
+        fraction: live.map(|p| (p / 100.0).clamp(0.0, 1.0)),
+        color: live.map_or(color::MUTED, color::usage_color),
         pace: None,
-        note: if beside_windows {
-            "spend past the plan's limits"
-        } else {
-            "no reset date reported"
-        }
-        .to_owned(),
+        note,
         full: true,
     })
 }
@@ -466,7 +491,7 @@ pub fn plan_row(provider: &str, plan: &Plan, now: i64, read_at: i64, fresh: bool
     let spend = plan
         .spend
         .as_ref()
-        .and_then(|s| spend_metric(s, !plan.windows.is_empty()));
+        .and_then(|s| spend_metric(s, !plan.windows.is_empty(), now));
     if let Some(metric) = &spend {
         if metric.fraction.is_some() {
             dot = worse(dot, metric.color);
@@ -835,25 +860,98 @@ mod tests {
             limit: Some(usd(50_000)),
             stated_percent: Some(99.0),
             enabled: Some(true),
+            resets_at: None,
+            reset_unreadable: false,
         };
-        let budget = spend_metric(&spend, false).expect("budget");
+        let budget = spend_metric(&spend, false, NOW).expect("budget");
         assert_eq!(budget.label, "Budget");
         assert_eq!(budget.value, "$312 / $500 · 62%", "amounts win");
         assert_eq!(budget.color, color::GREEN);
         assert_eq!((budget.pace, budget.full), (None, true));
         assert_eq!(budget.note, "no reset date reported");
 
-        let extra = spend_metric(&spend, true).expect("extra");
+        let extra = spend_metric(&spend, true, NOW).expect("extra");
         assert_eq!(extra.label, "Extra usage");
         let off = Spend {
             enabled: Some(false),
             ..spend.clone()
         };
-        assert_eq!(spend_metric(&off, true), None);
+        assert_eq!(spend_metric(&off, true, NOW), None);
         assert!(
-            spend_metric(&off, false).is_some(),
+            spend_metric(&off, false, NOW).is_some(),
             "a budget is shown off or on"
         );
+    }
+
+    #[test]
+    fn a_spend_with_a_reset_says_when_and_one_whose_reset_passed_is_muted() {
+        let spend = Spend {
+            used: Some(usd(31_245)),
+            limit: Some(usd(50_000)),
+            stated_percent: None,
+            enabled: None,
+            resets_at: Some(NOW + 3 * DAY + 4 * HOUR),
+            reset_unreadable: false,
+        };
+        let budget = spend_metric(&spend, false, NOW).expect("budget");
+        assert_eq!(budget.note, "resets in 3d 4h");
+        assert!((budget.fraction.expect("fill") - 0.6249).abs() < 1e-9);
+        let extra = spend_metric(&spend, true, NOW).expect("extra");
+        assert_eq!(
+            extra.note,
+            "spend past the plan's limits \u{b7} resets in 3d 4h"
+        );
+
+        // Its share was true of a period that has since rolled over.
+        for at in [NOW, NOW - 600] {
+            let gone = Spend {
+                resets_at: Some(at),
+                used: Some(usd(50_000)),
+                ..spend.clone()
+            };
+            let m = spend_metric(&gone, false, NOW).expect("metric");
+            assert_eq!(m.note, "reset since read");
+            assert_eq!((m.fraction, m.color), (None, color::MUTED));
+            assert_eq!(
+                m.value, "$500 / $500 \u{b7} 100%",
+                "the figure is still said"
+            );
+        }
+    }
+
+    /// Three states, three true notes: none sent, a readable reset, and one that
+    /// was sent but could not be read. The figure stands in all three.
+    #[test]
+    fn an_unreadable_reset_is_not_reported_as_no_reset() {
+        let base = Spend {
+            used: Some(usd(31_245)),
+            limit: Some(usd(50_000)),
+            stated_percent: None,
+            enabled: None,
+            resets_at: None,
+            reset_unreadable: false,
+        };
+        let note = |spend: &Spend, beside| spend_metric(spend, beside, NOW).expect("m").note;
+        assert_eq!(note(&base, false), "no reset date reported");
+        let unreadable = Spend {
+            reset_unreadable: true,
+            ..base.clone()
+        };
+        assert_eq!(note(&unreadable, false), "reset date unreadable");
+        assert_eq!(
+            note(&unreadable, true),
+            "spend past the plan's limits \u{b7} reset date unreadable"
+        );
+        let m = spend_metric(&unreadable, false, NOW).expect("m");
+        assert_eq!(m.value, "$312 / $500 \u{b7} 62%", "the figure still shows");
+        assert!(m.fraction.is_some());
+        // A readable reset wins over the flag, so the two never contradict.
+        let readable = Spend {
+            resets_at: Some(NOW + DAY),
+            reset_unreadable: true,
+            ..base
+        };
+        assert_eq!(note(&readable, false), "resets in 1d 0h");
     }
 
     #[test]
@@ -867,8 +965,10 @@ mod tests {
             limit: Some(usd(50_000)),
             stated_percent: None,
             enabled: None,
+            resets_at: None,
+            reset_unreadable: false,
         };
-        let m = spend_metric(&mixed, false).expect("metric");
+        let m = spend_metric(&mixed, false, NOW).expect("metric");
         assert_eq!(m.value, "1.00 EUR / $500");
         assert_eq!((m.fraction, m.color), (None, color::MUTED));
 
@@ -877,9 +977,11 @@ mod tests {
             limit: Some(usd(0)),
             stated_percent: Some(12.0),
             enabled: None,
+            resets_at: None,
+            reset_unreadable: false,
         };
         assert_eq!(
-            spend_metric(&zero_cap, false).expect("metric").value,
+            spend_metric(&zero_cap, false, NOW).expect("metric").value,
             "$1.00 / $0.00 · 12%"
         );
         let only_used = Spend {
@@ -887,9 +989,11 @@ mod tests {
             limit: None,
             stated_percent: None,
             enabled: None,
+            resets_at: None,
+            reset_unreadable: false,
         };
         assert_eq!(
-            spend_metric(&only_used, false).expect("metric").value,
+            spend_metric(&only_used, false, NOW).expect("metric").value,
             "$1.00 spent"
         );
     }
@@ -1036,6 +1140,8 @@ mod tests {
                 limit: Some(usd(50_000)),
                 stated_percent: None,
                 enabled: Some(true),
+                resets_at: None,
+                reset_unreadable: false,
             }),
         };
         let row = plan_row("Claude", &plan, NOW, NOW, true);
