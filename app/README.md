@@ -1706,8 +1706,8 @@ vendor's failure from reading as the other's.
     //     `Budget` meter in US dollars (`credits × $0.01`, exact minor units):
     //     {"label": "Budget", "value": "$12.35 / $39.00 · 32%", "span": "full",
     //     "pace": null, "note": "resets in 9d 5h"}; an unlimited seat reads
-    //     "$X spent" with `fraction` null; used up it is red and a Needs
-    //     Attention row. Anything it cannot trust (not credit-billed, a missing
+    //     "$X spent" with `fraction` null; at 90% or more it is red and a Needs
+    //     or negative figure, a missing login or `unlimited`, another account's login) is "—" with `metrics: []`
     //     or negative figure, another account's login) is "—" with `metrics: []`
     //     and the reason as a `⚠ copilot-plan:` line, never a zero.
   ],

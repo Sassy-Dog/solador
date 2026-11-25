@@ -102,6 +102,10 @@ pub struct Spend {
     /// states none (Claude's mirror never does): the meter then says so rather
     /// than guessing a billing period.
     pub resets_at: Option<i64>,
+    /// The source sent a reset date and it could not be read. Then `resets_at` is
+    /// `None` and the note says the date was unreadable, not that none was
+    /// reported.
+    pub reset_unreadable: bool,
 }
 
 /// One reading of a plan. Mirrors `subscription::PlanUsage`.
@@ -354,7 +358,11 @@ pub fn spend_metric(spend: &Spend, beside_windows: bool, now: i64) -> Option<Met
     let reset = spend
         .resets_at
         .filter(|at| *at > now)
-        .map(|at| format!("resets in {}", until(at, now)));
+        .map(|at| format!("resets in {}", until(at, now)))
+        .or_else(|| {
+            (spend.resets_at.is_none() && spend.reset_unreadable)
+                .then(|| "reset date unreadable".to_owned())
+        });
     let note = match (beside_windows, reset_passed, reset) {
         (_, true, _) => "reset since read".to_owned(),
         (true, false, Some(reset)) => format!("spend past the plan's limits · {reset}"),
@@ -852,6 +860,7 @@ mod tests {
             stated_percent: Some(99.0),
             enabled: Some(true),
             resets_at: None,
+            reset_unreadable: false,
         };
         let budget = spend_metric(&spend, false, NOW).expect("budget");
         assert_eq!(budget.label, "Budget");
@@ -881,6 +890,7 @@ mod tests {
             stated_percent: None,
             enabled: None,
             resets_at: Some(NOW + 3 * DAY + 4 * HOUR),
+            reset_unreadable: false,
         };
         let budget = spend_metric(&spend, false, NOW).expect("budget");
         assert_eq!(budget.note, "resets in 3d 4h");
@@ -908,6 +918,41 @@ mod tests {
         }
     }
 
+    /// Three states, three true notes: none sent, a readable reset, and one that
+    /// was sent but could not be read. The figure stands in all three.
+    #[test]
+    fn an_unreadable_reset_is_not_reported_as_no_reset() {
+        let base = Spend {
+            used: Some(usd(31_245)),
+            limit: Some(usd(50_000)),
+            stated_percent: None,
+            enabled: None,
+            resets_at: None,
+            reset_unreadable: false,
+        };
+        let note = |spend: &Spend, beside| spend_metric(spend, beside, NOW).expect("m").note;
+        assert_eq!(note(&base, false), "no reset date reported");
+        let unreadable = Spend {
+            reset_unreadable: true,
+            ..base.clone()
+        };
+        assert_eq!(note(&unreadable, false), "reset date unreadable");
+        assert_eq!(
+            note(&unreadable, true),
+            "spend past the plan's limits \u{b7} reset date unreadable"
+        );
+        let m = spend_metric(&unreadable, false, NOW).expect("m");
+        assert_eq!(m.value, "$312 / $500 \u{b7} 62%", "the figure still shows");
+        assert!(m.fraction.is_some());
+        // A readable reset wins over the flag, so the two never contradict.
+        let readable = Spend {
+            resets_at: Some(NOW + DAY),
+            reset_unreadable: true,
+            ..base
+        };
+        assert_eq!(note(&readable, false), "resets in 1d 0h");
+    }
+
     #[test]
     fn a_spend_without_comparable_amounts_takes_the_stated_share_or_none() {
         let eur = Money {
@@ -920,6 +965,7 @@ mod tests {
             stated_percent: None,
             enabled: None,
             resets_at: None,
+            reset_unreadable: false,
         };
         let m = spend_metric(&mixed, false, NOW).expect("metric");
         assert_eq!(m.value, "1.00 EUR / $500");
@@ -931,6 +977,7 @@ mod tests {
             stated_percent: Some(12.0),
             enabled: None,
             resets_at: None,
+            reset_unreadable: false,
         };
         assert_eq!(
             spend_metric(&zero_cap, false, NOW).expect("metric").value,
@@ -942,6 +989,7 @@ mod tests {
             stated_percent: None,
             enabled: None,
             resets_at: None,
+            reset_unreadable: false,
         };
         assert_eq!(
             spend_metric(&only_used, false, NOW).expect("metric").value,
@@ -1092,6 +1140,7 @@ mod tests {
                 stated_percent: None,
                 enabled: Some(true),
                 resets_at: None,
+                reset_unreadable: false,
             }),
         };
         let row = plan_row("Claude", &plan, NOW, NOW, true);

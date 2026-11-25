@@ -4142,6 +4142,7 @@ mod tests {
                     used: credits(used),
                     allowance,
                     resets_at: Some(i64::try_from(now).unwrap() + 86_400),
+                    reset_unreadable: false,
                 },
                 now,
                 None,

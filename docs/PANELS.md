@@ -160,7 +160,7 @@
   key, part or cadence. It is a **plan row** in `plans`, after Claude's and
   Codex's, built by `viewmodel::plan_usage::plan_row` like theirs, so it takes
   their meter, their colours and the red rule `dashboard::plan_rows` reads, with no
-  attention code of its own: used up (`credits_used` equal to `entitlement`), its
+  attention code of its own: from 90% of its limit (`usage_color`'s edges are 70%/90%, as for the other plan meters; `credits_used` equal to `entitlement` is 100%), its
   meter is red and the row raises attention. It reads `Copilot · Business` (the
   plan's string with its first letter raised, a display transform that nothing
   branches on; plain `Copilot` with no plan name) and carries **one `Budget`
@@ -169,7 +169,8 @@
   no float reaches the meter), so a figure reads `$12.35 / $39.00 · 32%`. An
   `unlimited` seat has no limit: `$X spent` with no fill, never red. The meter's
   note is `resets in …` from `quota_reset_date_utc` (else the date-only
-  `quota_reset_date`), or `no reset date reported` when GitHub states none, and a
+  `quota_reset_date`), `reset date unreadable` when GitHub sent a reset that could
+  not be read (the figure still shows), or `no reset date reported` when it sent none, and a
   reset that has passed since the read mutes the meter (`reset since read`, no
   fill). **`has_quota` is never branched on**: it turns `false` once the quota is
   used up, which is a figure to show. **The endpoint is undocumented**, so it
@@ -183,9 +184,10 @@
   path). The cases are: `token_based_billing: false`
   (an annual premium-request plan, whose figures are requests and never dollars),
   a missing, negative or non-finite figure (a missing or null
-  `token_based_billing` is a missing figure, never a plan type), a body that no
+  `token_based_billing`, `unlimited` or `login` is a missing figure, never a plan
+  type, an uncapped seat or another account; only a stated `false` is a cap), a body that no
   longer decodes, and a
-  `login` that is not the configured username (ASCII case-insensitive; the
+  present `login` that is not the configured username (ASCII case-insensitive; the
   token belongs to a different account, and that account's figures are never
   shown under this username). **Kept:** a failure to reach GitHub, a refused
   token (401/403), a rate limit, a 5xx or another unexpected status keeps the

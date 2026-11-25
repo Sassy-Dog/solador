@@ -1649,9 +1649,9 @@ fn ai_line(id: &str, on: bool, warning: Value, clock: Value, loading: bool, key:
 /// Which rendering `--dump-usage` should produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fixture {
-    /// Everything measured: Claude content, both plans (Claude's an Ultra
+    /// Everything measured: Claude content, the Claude and Codex plans (Claude's an Ultra
     /// plan with no 5-hour window and a Fable week running out early, Codex's
-    /// a session too young to project), both vendors' API spend, Neon figures
+    /// a session too young to project), Copilot's own-limit plan row (a business seat), both vendors' API spend, Neon figures
     /// + last invoice, Sentry count + bar.
     Measured,
     /// [`Fixture::Measured`] with every plan meter green and under pace, plus a
@@ -1763,6 +1763,7 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
                         ::copilotusage::Credits::from_f64(3_900.0).expect("credits"),
                     ),
                     resets_at: i64::try_from(claude_at + 9 * 86_400 + 5 * 3_600).ok(),
+                    reset_unreadable: false,
                 },
                 at,
                 None,
@@ -2116,7 +2117,7 @@ mod tests {
         ai_usage_view(state, LOGS_ONLY, NOW)
     }
 
-    /// The AI Usage panel with both plans on, so a test of the rollups' own
+    /// The AI Usage panel with the Claude and Codex plan opt-ins on, so a test of the rollups' own
     /// empty states reads them where the panel shows them.
     fn ai_on(state: &UsageState) -> Value {
         ai_usage_view(state, FIXTURE_PLANS, NOW)
@@ -2443,10 +2444,10 @@ mod tests {
         }
     }
 
-    /// Both plans appear, Claude's then Codex's, and the panel carries no
+    /// The three plans appear, Claude's, Codex's then Copilot's own limit, and the panel carries no
     /// metered provider section.
     #[test]
-    fn the_ai_usage_view_carries_both_plans_in_order() {
+    fn the_ai_usage_view_carries_three_plans_in_order() {
         let payload = ai_on(&measured());
         assert_eq!(payload["id"], "aiUsage");
         assert_eq!(payload["title"], "AI Usage");
@@ -3992,6 +3993,7 @@ mod tests {
             used: credits(used),
             allowance,
             resets_at: Some(i64::try_from(NOW).unwrap() + 9 * 86_400),
+            reset_unreadable: false,
         }
     }
 

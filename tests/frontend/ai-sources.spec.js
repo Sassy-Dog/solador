@@ -148,7 +148,7 @@ test("the top-projects list is capped and every row keeps its own figure", async
   await expect(rows.locator(".val")).toHaveText(payload.projects.rows.map((r) => r.value));
 });
 
-test("both plans lead, then each vendor's spend, then this machine's rollups", async ({ page, baseURL }) => {
+test("the three plans lead, then each vendor's spend, then this machine's rollups", async ({ page, baseURL }) => {
   const payload = await gotoAiUsage(page, baseURL);
   expect(payload.plans.map((p) => p.id), "Claude's plan, Codex's, then Copilot's own limit").toEqual(["claude-plan", "codex-plan", "copilot-plan"]);
   expect(payload.apis.map((a) => a.id), "Anthropic's spend, then OpenAI's").toEqual(["anthropic-api", "openai-api"]);

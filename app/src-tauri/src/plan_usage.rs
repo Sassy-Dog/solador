@@ -517,6 +517,7 @@ fn mirror_plan(reading: &PlanUsage) -> vm::Plan {
             stated_percent: spend.stated_percent,
             enabled: spend.enabled,
             resets_at: None,
+            reset_unreadable: false,
         }),
     }
 }
@@ -555,6 +556,7 @@ pub fn copilot_seat_section(state: &crate::usage::CopilotPlanState, now: u64) ->
             stated_percent: None,
             enabled: None,
             resets_at: seat.resets_at,
+            reset_unreadable: seat.reset_unreadable,
         }),
     };
     let secs = |at: u64| i64::try_from(at).unwrap_or(i64::MAX);

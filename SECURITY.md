@@ -48,7 +48,7 @@ leave that request, or be modified, is a vulnerability too.
 needs, and the docs say so in those words: the Actions billing token is
 **Administration: read** on one organization, and the GitHub Copilot source's
 personal token is the user permission **Plan: read** and nothing else, and it
-is sent to two `api.github.com` endpoints: the billing usage reports and
+is sent to three `api.github.com` endpoints: the two billing usage reports (`ai_credit` and `premium_request`) and
 `/copilot_internal/user` (your own plan or seat limit; undocumented by GitHub,
 decoded to a handful of named fields, with the rest of its body, which lists
 your organizations, never kept). The

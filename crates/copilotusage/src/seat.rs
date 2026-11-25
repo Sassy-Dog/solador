@@ -92,6 +92,9 @@ pub struct Seat {
     pub allowance: Allowance,
     /// When the period resets, Unix seconds.
     pub resets_at: Option<i64>,
+    /// GitHub sent a reset date and neither field could be read. Then `resets_at`
+    /// is `None`; GitHub sending none at all is `resets_at: None` with this false.
+    pub reset_unreadable: bool,
 }
 
 // ---- wire ----
@@ -275,11 +278,12 @@ impl std::error::Error for SeatError {}
 pub(crate) fn interpret(body: &SeatBody, expected_login: &str) -> Result<Seat, SeatError> {
     // First: another account's figures are never read further, let alone shown
     // under this username.
-    let same = body
+    // A login GitHub did not send is a missing field, not another account.
+    let login = body
         .login
         .as_deref()
-        .is_some_and(|login| login.trim().eq_ignore_ascii_case(expected_login.trim()));
-    if !same {
+        .ok_or(SeatError::new(SeatErrorKind::MissingFigure))?;
+    if !login.trim().eq_ignore_ascii_case(expected_login.trim()) {
         return Err(SeatError::new(SeatErrorKind::WrongAccount));
     }
     let quota = body
@@ -296,11 +300,14 @@ pub(crate) fn interpret(body: &SeatBody, expected_login: &str) -> Result<Seat, S
         return Err(SeatError::new(SeatErrorKind::MissingFigure));
     }
     let used = credits(quota.credits_used)?;
-    let allowance = if quota.unlimited == Some(true) {
-        Allowance::Unlimited
-    } else {
-        Allowance::Capped(credits(quota.entitlement)?)
+    // Only a stated `true` is no limit and only a stated `false` is a cap: an
+    // absent `unlimited` is unknown, and asserting either would be inventing it.
+    let allowance = match quota.unlimited {
+        Some(true) => Allowance::Unlimited,
+        Some(false) => Allowance::Capped(credits(quota.entitlement)?),
+        None => return Err(SeatError::new(SeatErrorKind::MissingFigure)),
     };
+    let (resets_at, reset_unreadable) = reset(body);
     Ok(Seat {
         plan: body
             .copilot_plan
@@ -314,7 +321,8 @@ pub(crate) fn interpret(body: &SeatBody, expected_login: &str) -> Result<Seat, S
             .map(str::to_owned),
         used,
         allowance,
-        resets_at: reset(body),
+        resets_at,
+        reset_unreadable,
     })
 }
 
@@ -323,19 +331,23 @@ fn credits(figure: Option<f64>) -> Result<Credits, SeatError> {
     Credits::from_f64(value).ok_or(SeatError::new(SeatErrorKind::InvalidFigure))
 }
 
-/// The reset instant: the timestamp when it parses, else the date's midnight
-/// UTC. A reset that parses as neither is no reset, not a failed read.
-fn reset(body: &SeatBody) -> Option<i64> {
+/// The reset instant (the timestamp when it parses, else the date's midnight
+/// UTC), and whether GitHub sent a reset that could not be read. A reset that
+/// reads as neither is not a failed read: the figure stands, and the note says
+/// the date was unreadable. GitHub sending none is `(None, false)`.
+fn reset(body: &SeatBody) -> (Option<i64>, bool) {
     let stamp = body
         .quota_reset_date_utc
         .as_deref()
         .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
         .map(|t| t.timestamp());
-    stamp.or_else(|| {
+    let at = stamp.or_else(|| {
         body.quota_reset_date
             .as_deref()
             .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
             .and_then(|d| d.and_hms_opt(0, 0, 0))
             .map(|t| t.and_utc().timestamp())
-    })
+    });
+    let sent = body.quota_reset_date_utc.is_some() || body.quota_reset_date.is_some();
+    (at, at.is_none() && sent)
 }

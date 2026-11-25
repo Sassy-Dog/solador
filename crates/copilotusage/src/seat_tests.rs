@@ -142,6 +142,28 @@ fn unlimited_has_no_limit_and_needs_no_entitlement() {
     assert_eq!(seat_of(&v).expect("seat").allowance, Allowance::Unlimited);
 }
 
+/// Only a stated `true` is no limit and only a stated `false` is a cap.
+#[test]
+fn an_absent_unlimited_is_unknown_not_a_cap() {
+    // `with_quota` removes the key for a null patch; the other is explicit null.
+    let absent = with_quota(&json!({"unlimited": null}));
+    assert!(absent["quota_snapshots"]["premium_interactions"]
+        .get("unlimited")
+        .is_none());
+    let mut explicit_null = fixture();
+    explicit_null["quota_snapshots"]["premium_interactions"]["unlimited"] = Value::Null;
+    for v in [absent, explicit_null] {
+        let error = seat_of(&v).expect_err("unknown allowance");
+        assert_eq!(error.kind, SeatErrorKind::MissingFigure);
+        assert!(!error.keeps_last_figure());
+    }
+    let capped = with_quota(&json!({"unlimited": false}));
+    assert!(matches!(
+        seat_of(&capped).expect("seat").allowance,
+        Allowance::Capped(_)
+    ));
+}
+
 #[test]
 fn has_quota_false_with_valid_figures_still_gives_the_figures() {
     let v = with_quota(&json!({"has_quota": false}));
@@ -157,7 +179,32 @@ fn the_reset_comes_from_the_timestamp_then_the_date() {
     v["quota_reset_date_utc"] = Value::Null;
     assert_eq!(seat_of(&v).expect("seat").resets_at, Some(1_796_083_200));
     v["quota_reset_date"] = json!("not a date");
-    assert_eq!(seat_of(&v).expect("seat").resets_at, None);
+    // Sent, but unreadable: not the same as none sent.
+    let seat = seat_of(&v).expect("seat");
+    assert_eq!((seat.resets_at, seat.reset_unreadable), (None, true));
+    // The timestamp unreadable but the date readable: the date is used.
+    let mut v = fixture();
+    v["quota_reset_date_utc"] = json!("garbage");
+    let seat = seat_of(&v).expect("seat");
+    assert_eq!(
+        (seat.resets_at, seat.reset_unreadable),
+        (Some(1_796_083_200), false)
+    );
+    // Neither sent (absent or null): none reported, and not unreadable.
+    for clear in [true, false] {
+        let mut v = fixture();
+        for key in ["quota_reset_date_utc", "quota_reset_date"] {
+            if clear {
+                v[key] = Value::Null;
+            } else {
+                v.as_object_mut().unwrap().remove(key);
+            }
+        }
+        let seat = seat_of(&v).expect("seat");
+        assert_eq!((seat.resets_at, seat.reset_unreadable), (None, false));
+    }
+    // A readable reset carries no flag.
+    assert!(!seat_of(&fixture()).expect("seat").reset_unreadable);
 }
 
 #[test]
@@ -259,9 +306,12 @@ fn another_accounts_figures_are_never_returned() {
             .kind,
         SeatErrorKind::WrongAccount
     );
+    // GitHub never named another account when it named none: a missing field.
     let mut v = fixture();
     v["login"] = Value::Null;
-    assert_eq!(kind(&v), SeatErrorKind::WrongAccount);
+    assert_eq!(kind(&v), SeatErrorKind::MissingFigure);
+    v.as_object_mut().unwrap().remove("login");
+    assert_eq!(kind(&v), SeatErrorKind::MissingFigure);
     let message = interpret(&body(&fixture()), "someone-else")
         .expect_err("mismatch")
         .user_message();

@@ -9554,6 +9554,7 @@ mod tests {
                         ::copilotusage::Credits::from_f64(3_900.0).unwrap(),
                     ),
                     resets_at: None,
+                    reset_unreadable: false,
                 },
                 panel::now_unix(),
                 None,
