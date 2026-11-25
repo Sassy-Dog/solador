@@ -243,6 +243,11 @@ fn an_empty_month_is_a_measured_zero() {
     assert_eq!(usage.used, Some(0.0));
     assert_eq!(usage.included, Some(0.0));
     assert_eq!(usage.billed_usd, Some(0.0));
+    // `-0.0 == 0.0`, so the sign needs its own assertion: a negative zero
+    // renders as `$-0.00`.
+    for zero in [usage.used, usage.included, usage.billed_usd] {
+        assert!(zero.expect("measured").is_sign_positive());
+    }
     assert!(usage.products.is_empty());
 }
 

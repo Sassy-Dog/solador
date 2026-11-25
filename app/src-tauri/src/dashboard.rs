@@ -1211,7 +1211,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
         "aiUsage" => {
-            "Claude and Codex plan limits, API spend, GitHub Copilot credits and Claude Code logs"
+            "Claude, Codex and Copilot plan limits, API spend, GitHub AI credits and Claude Code logs"
         }
         "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",

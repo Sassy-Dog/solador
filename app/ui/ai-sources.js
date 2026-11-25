@@ -1,5 +1,5 @@
 // The AI Usage panel: each vendor's plan limits, drawn with the Machines tile's
-// meters (`meter.js`), each vendor's API spend, GitHub Copilot's AI credits, and
+// meters (`meter.js`), each vendor's API spend, GitHub's AI credits, and
 // this machine's Claude Code token rollups. Same discipline as every other panel here: each string, colour
 // and figure arrives from Rust (`usage::ai_usage_view`), and this file does
 // layout, wiring, and nothing else.

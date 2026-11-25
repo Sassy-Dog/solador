@@ -581,7 +581,7 @@ pub struct UsageState {
     /// This month's API spend, each from its vendor's Admin key.
     anthropic_api: ProviderState<ApiSpendSummary>,
     openai_api: ProviderState<ApiSpendSummary>,
-    /// This month's Copilot AI credits, for the organization (read with the
+    /// This month's GitHub AI credits, for the organization (read with the
     /// Actions billing token) and for the operator's own plan (its own token).
     copilot_org: CopilotState,
     copilot_personal: CopilotState,
@@ -1339,7 +1339,7 @@ pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
 }
 
 /// The AI Usage panel's payload: Claude's, Codex's and Copilot's plan limits, the
-/// Anthropic and OpenAI API spend, GitHub Copilot's AI credits, and this
+/// Anthropic and OpenAI API spend, GitHub's AI credits, and this
 /// machine's Claude Code rollups, each only if the operator added it.
 ///
 /// The body reads plans (Claude, Codex, then Copilot's own limit), API spend (`apis`, Anthropic then
@@ -4241,13 +4241,18 @@ mod tests {
         assert_eq!(row["products"][1]["value"], "40");
         assert!(row["products"][1]["models"].as_array().unwrap().is_empty());
 
-        let mut empty = copilot_usage(Some(0.0), Some(0.0));
-        empty.credits.products.clear();
+        // An empty report as the reader folds it, not a hand-built zero: its
+        // sums must be positive zeros, or the row reads `$-0.00`.
+        let empty = CopilotUsage {
+            credits: ::copilotusage::summarize(&[]),
+            premium: None,
+        };
         state.copilot_personal.read.succeeded(empty, NOW, None);
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         let row = copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap();
         assert!(row["products"].as_array().unwrap().is_empty());
         assert_eq!(row["value"], "$0.00");
+        assert_eq!(row["note"], "0 AI credits used \u{b7} 0 included");
     }
 
     /// Each endpoint's failure is its own: the plan row's `⚠` line is under

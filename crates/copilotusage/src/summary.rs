@@ -48,9 +48,15 @@ pub struct Usage {
 }
 
 /// `Some(sum)` only if every item carries the figure; an empty list sums to a
-/// measured zero.
-fn sum(items: &[UsageItem], pick: impl Fn(&UsageItem) -> Option<f64>) -> Option<f64> {
-    items.iter().map(pick).sum::<Option<f64>>()
+/// measured zero. A fold from `0.0`, not `.sum()`: an empty float `.sum()` is
+/// `-0.0` on the pinned toolchain, which renders as `$-0.00`.
+fn sum<'a>(
+    items: impl IntoIterator<Item = &'a UsageItem>,
+    pick: impl Fn(&UsageItem) -> Option<f64>,
+) -> Option<f64> {
+    items
+        .into_iter()
+        .try_fold(0.0, |acc, item| pick(item).map(|value| acc + value))
 }
 
 /// A product's key: GitHub's string, trimmed; `None` when absent or blank.
@@ -78,7 +84,8 @@ pub fn summarize(items: &[UsageItem]) -> Usage {
 
     // The largest models across the whole report, each under its own product:
     // the same model under two products is two entries. `by_model` iterates by
-    // (product, model) and the sort is stable, so ties stay by name.
+    // (product, model) and the sort is stable, so ties keep that order, in
+    // which the unnamed product comes first.
     let mut ranked: Vec<((Option<&str>, &str), f64)> = by_model.into_iter().collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
     ranked.truncate(TOP_MODELS);
@@ -87,7 +94,7 @@ pub fn summarize(items: &[UsageItem]) -> Usage {
         .into_iter()
         .map(|(key, group)| ProductUse {
             product: key.map(str::to_owned),
-            quantity: group.iter().map(|i| i.gross_quantity).sum::<Option<f64>>(),
+            quantity: sum(group.iter().copied(), |i| i.gross_quantity),
             models: ranked
                 .iter()
                 .filter(|((product, _), _)| *product == key)

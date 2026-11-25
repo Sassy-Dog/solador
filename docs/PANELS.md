@@ -151,8 +151,9 @@
   any item lacks its net amount, never a zero), a note of `N AI credits used · N
   included · N premium requests` that names only what was measured, and a
   `products` breakdown underneath (the shape GitHub's billing page uses): **every**
-  product, by GitHub's own string trimmed and never merged by guessing, so the
-  lines add up to the row; its credits are `—` when any of its items lacks a
+  product, by GitHub's own string trimmed and never merged by guessing, so, when
+  every item is measured, the lines add up to the note's `N AI credits used` (up
+  to display rounding); its credits are `—` when any of its items lacks a
   quantity; ordered by credits, ties by name, unmeasured after measured; items
   with no `product` (absent or blank) are one last line, `Product not named`.
   At most the three largest models across the whole half are named, each

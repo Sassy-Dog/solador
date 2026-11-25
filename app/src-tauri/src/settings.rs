@@ -1065,7 +1065,7 @@ pub const SOURCES_LABEL: &str = "Sources";
 pub const ANTHROPIC_TITLE: &str = store::source_save::ANTHROPIC_TITLE;
 /// Everything read about Codex and the OpenAI API.
 pub const OPENAI_TITLE: &str = store::source_save::OPENAI_TITLE;
-/// GitHub Copilot's AI credits, for an organization and for a person.
+/// GitHub's AI credits, for an organization and for a person.
 pub const COPILOT_TITLE: &str = store::source_save::COPILOT_TITLE;
 /// The AI sources that feed the AI Usage tile, in the order its body lists them.
 /// The sentence below is built from this, so a source added to the tile is named
