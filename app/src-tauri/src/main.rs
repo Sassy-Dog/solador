@@ -9501,7 +9501,7 @@ mod tests {
                 used: Some(100.0),
                 included: Some(10.0),
                 billed_usd: Some(0.9),
-                top_models: vec![],
+                products: vec![],
             },
             premium: None,
         }
@@ -9626,9 +9626,9 @@ mod tests {
             let row = &card["copilot"][0];
             assert_eq!(row["value"], "\u{2014}");
             // No figure survives, and the organization's name went with it.
-            assert_eq!(row["label"], "Copilot");
+            assert_eq!(row["label"], "AI credits");
             assert!(row["note"].is_null());
-            assert!(row["models"].as_array().unwrap().is_empty());
+            assert!(row["products"].as_array().unwrap().is_empty());
             assert!(card["footer"]["text"].as_str().unwrap().contains(said));
             // Said once, as its warning, never also as the tile's message.
             assert!(card["message"].is_null());

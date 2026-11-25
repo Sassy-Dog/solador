@@ -46,9 +46,10 @@ function valueRow(row, extraClass) {
   return el;
 }
 
-/** A dot-plus-name breakdown line (one project). */
-function itemRow(item) {
-  const el = node("div", "pv-item");
+/** A dot-plus-name breakdown line (one project; a Copilot half's product or,
+ *  indented beneath it, a model: `extraClass` says which). */
+function itemRow(item, extraClass) {
+  const el = node("div", extraClass ? "pv-item " + extraClass : "pv-item");
   const dot = node("span", "dot");
   dot.style.background = item.dotColor;
   el.append(dot, node("span", "name", item.name), node("span", "val", item.value));
@@ -136,11 +137,13 @@ function apiNode(api) {
 
 /**
  * One GitHub Copilot half (the organization's, or the person's): its billed
- * figure under Rust's label (the organization's is `Copilot · login`, the
- * person's `Copilot billed to login`), the note of what was used and
- * included, and the top models, each a dot-and-name line with its credits. No
- * meter: the billing API reports no pool for one to be a share of. Every string is
- * Rust's, and an unmeasured figure arrives as the em dash.
+ * figure under Rust's label (the organization's is `AI credits · login`, the
+ * person's `AI credits billed to login`: the report counts every GitHub
+ * product billed in AI credits), the note of what was used and included, and
+ * the `products`, each a dot-and-name line with its credits and, indented
+ * beneath it, its models. No meter: the billing API reports no pool for one to
+ * be a share of. Every string is Rust's, and an unmeasured figure arrives as
+ * the em dash.
  */
 function copilotNode(half) {
   const el = node("div", "pv-section");
@@ -149,7 +152,10 @@ function copilotNode(half) {
   el.appendChild(node("hr", "pv-divider"));
   el.appendChild(valueRow(half));
   if (half.note) el.appendChild(node("div", "pv-note", half.note));
-  for (const model of half.models || []) el.appendChild(itemRow(model));
+  for (const product of half.products || []) {
+    el.appendChild(itemRow(product, "pv-product"));
+    for (const model of product.models || []) el.appendChild(itemRow(model, "pv-model"));
+  }
   return el;
 }
 

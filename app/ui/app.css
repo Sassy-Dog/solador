@@ -576,6 +576,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   text-overflow:ellipsis; }
 .pv-item .val { margin-left:auto; font-size:10px; color:var(--muted);
   white-space:nowrap; font-variant-numeric:tabular-nums; }
+/* A model under its product (the Copilot rows): indented and quieter, so the
+   line reads as the product's own. Same height as any other item. */
+.pv-item.pv-model { padding-left:12px; }
+.pv-item.pv-model .name { color:var(--muted); }
 /* There is deliberately no `.pv-footer` here any more (#351), and deliberately
    no `.panel-asof` inside a `.pv-section` either (#355). The Usage panel's
    metered sections used to append their warning under their rows in that first

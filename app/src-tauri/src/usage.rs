@@ -198,8 +198,15 @@ pub const COPILOT_PERSONAL_ID: &str = "copilot-personal";
 pub const COPILOT_PLAN_ID: &str = "copilot-plan";
 /// The billing row's label's lead: its figure is what GitHub billed to this
 /// account, which is not the account's plan limit, and an employer's seat is
-/// billed to the employer. See [`COPILOT_PLAN_ID`].
-pub const COPILOT_BILLED_LABEL: &str = "Copilot billed to";
+/// billed to the employer. See [`COPILOT_PLAN_ID`]. The report counts every
+/// GitHub product billed in AI credits, Copilot among them, so the label names
+/// the unit and never one product.
+pub const COPILOT_BILLED_LABEL: &str = "AI credits billed to";
+/// The organization row's label, before its ` · {login}`.
+const COPILOT_ORG_LABEL: &str = "AI credits";
+/// The product line for items whose `product` GitHub left absent or blank. It is
+/// never attributed to a product GitHub did not name.
+const PRODUCT_NOT_NAMED: &str = "Product not named";
 
 // MARK: - Formatting
 //
@@ -1229,10 +1236,12 @@ fn copilot_note(usage: &CopilotUsage) -> Option<String> {
 }
 
 /// One Copilot half's row for the AI Usage panel, once a pass has found it set
-/// up: `Copilot · {login}` (the organization) or `Copilot billed to {login}`
-/// (Personal), and the billed USD (`—` when unmeasured), the note, and the top
-/// models under it. **No plan meter**: the billing API reports no pool. The
-/// owner's own limit is the separate `copilot-plan` row ([`copilot_plan_view`]).
+/// up: `AI credits · {login}` (the organization) or `AI credits billed to
+/// {login}` (Personal), and the billed USD (`—` when unmeasured), the note, and
+/// the `products` under it: every product the report named, each with its share
+/// of the top models beneath it. **No plan meter**: the billing API reports no
+/// pool. The owner's own limit is the separate `copilot-plan` row
+/// ([`copilot_plan_view`]), the one labelled `Copilot`.
 fn copilot_section(
     id: &str,
     state: &CopilotState,
@@ -1249,22 +1258,28 @@ fn copilot_section(
         // "used nothing" beside the plan row.
         (COPILOT_PERSONAL_ID, true) => format!("{COPILOT_BILLED_LABEL} you"),
         (COPILOT_PERSONAL_ID, false) => format!("{COPILOT_BILLED_LABEL} {}", state.login),
-        (_, true) => "Copilot".to_owned(),
-        (_, false) => format!("Copilot \u{00b7} {}", state.login),
+        (_, true) => COPILOT_ORG_LABEL.to_owned(),
+        (_, false) => format!("{COPILOT_ORG_LABEL} \u{00b7} {}", state.login),
     };
     let mut section = provider_row(label, usd(summary.and_then(|s| s.credits.billed_usd)));
     section["id"] = json!(id);
     section["note"] = summary
         .and_then(copilot_note)
         .map_or(Value::Null, Value::String);
-    section["models"] = json!(summary
-        .map(|s| s.credits.top_models.as_slice())
+    section["products"] = json!(summary
+        .map(|s| s.credits.products.as_slice())
         .unwrap_or_default()
         .iter()
-        .map(|m| json!({
-            "name": m.model,
-            "value": quantity(m.quantity),
+        .map(|p| json!({
+            "name": p.product.as_deref().unwrap_or(PRODUCT_NOT_NAMED),
+            // An unmeasured product is `—`, never a partial sum.
+            "value": p.quantity.map_or_else(|| "\u{2014}".to_owned(), quantity),
             "dotColor": color::hex(color::GREEN_DIM),
+            "models": p.models.iter().map(|m| json!({
+                "name": m.model,
+                "value": quantity(m.quantity),
+                "dotColor": color::hex(color::GREEN_DIM),
+            })).collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>());
     Some(ProviderView {
@@ -1733,12 +1748,12 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
             state.copilot_org.read.succeeded(
                 CopilotUsage {
                     credits: fixture_copilot(&[
-                        ("model-alpha", 600.0),
-                        ("model-beta", 300.0),
-                        ("model-gamma", 120.0),
-                        ("model-delta", 80.0),
+                        ("Copilot", "model-alpha", 600.0),
+                        ("Copilot", "model-beta", 300.0),
+                        ("Code Quality", "model-gamma", 120.0),
+                        ("Code Quality", "model-delta", 80.0),
                     ]),
-                    premium: Some(fixture_copilot(&[("model-alpha", 40.0)])),
+                    premium: Some(fixture_copilot(&[("Copilot", "model-alpha", 40.0)])),
                 },
                 at,
                 None,
@@ -1746,7 +1761,10 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
             state.copilot_personal.login = "example-user".to_owned();
             state.copilot_personal.read.succeeded(
                 CopilotUsage {
-                    credits: fixture_copilot(&[("model-alpha", 140.0), ("model-beta", 60.0)]),
+                    credits: fixture_copilot(&[
+                        ("Copilot", "model-alpha", 140.0),
+                        ("Copilot", "model-beta", 60.0),
+                    ]),
                     premium: None,
                 },
                 at,
@@ -1883,25 +1901,25 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
     state
 }
 
-/// A Copilot report folded the way the reader folds one: the gross quantity per
-/// model, a tenth of it included, and billed at a cent a credit over what is
-/// left. Invented figures.
-fn fixture_copilot(models: &[(&str, f64)]) -> ::copilotusage::Usage {
-    let used: f64 = models.iter().map(|(_, quantity)| quantity).sum();
-    let included = (used / 10.0).round();
-    ::copilotusage::Usage {
-        used: Some(used),
-        included: Some(included),
-        billed_usd: Some((used - included) / 100.0),
-        top_models: models
-            .iter()
-            .take(::copilotusage::TOP_MODELS)
-            .map(|(model, quantity)| ::copilotusage::ModelUse {
-                model: (*model).to_owned(),
-                quantity: *quantity,
-            })
-            .collect(),
-    }
+/// A report's `(product, model, gross quantity)` lines folded by the reader's
+/// own `summarize`: a tenth of each is included, and the rest billed at a cent a
+/// credit. Invented figures, product and model names.
+fn fixture_copilot(lines: &[(&str, &str, f64)]) -> ::copilotusage::Usage {
+    let items: Vec<::copilotusage::UsageItem> = lines
+        .iter()
+        .map(|(product, model, quantity)| {
+            let included = (quantity / 10.0).round();
+            serde_json::from_value(json!({
+                "product": product,
+                "model": model,
+                "grossQuantity": quantity,
+                "discountQuantity": included,
+                "netAmount": (quantity - included) / 100.0,
+            }))
+            .expect("a fixture item")
+        })
+        .collect();
+    ::copilotusage::summarize(&items)
 }
 
 fn plan_window(
@@ -3690,16 +3708,20 @@ mod tests {
                 used,
                 included: Some(30.0),
                 billed_usd: billed,
-                top_models: vec![
-                    ::copilotusage::ModelUse {
-                        model: "model-alpha".into(),
-                        quantity: 70.0,
-                    },
-                    ::copilotusage::ModelUse {
-                        model: "model-beta".into(),
-                        quantity: 30.0,
-                    },
-                ],
+                products: vec![::copilotusage::ProductUse {
+                    product: Some("Product-one".into()),
+                    quantity: used,
+                    models: vec![
+                        ::copilotusage::ModelUse {
+                            model: "model-alpha".into(),
+                            quantity: 70.0,
+                        },
+                        ::copilotusage::ModelUse {
+                            model: "model-beta".into(),
+                            quantity: 30.0,
+                        },
+                    ],
+                }],
             },
             premium: None,
         }
@@ -3738,17 +3760,28 @@ mod tests {
             ]
         );
         let org = copilot_row(&payload, COPILOT_ORG_ID).expect("org row");
-        assert_eq!(org["label"], "Copilot \u{b7} example-org");
+        assert_eq!(org["label"], "AI credits \u{b7} example-org");
         assert_eq!(org["value"], "$9.90");
         assert_eq!(
             org["note"],
             "1100 AI credits used \u{b7} 110 included \u{b7} 40 premium requests"
         );
-        assert_eq!(org["models"][0]["name"], "model-alpha");
-        assert_eq!(org["models"][0]["value"], "600");
-        assert_eq!(org["models"].as_array().unwrap().len(), 3);
+        // Products, each with its models beneath; the half has no flat list.
+        assert!(org.get("models").is_none());
+        let products = org["products"].as_array().unwrap();
+        assert_eq!(products.len(), 2);
+        assert_eq!(products[0]["name"], "Copilot");
+        assert_eq!(products[0]["value"], "900");
+        assert_eq!(products[0]["models"][0]["name"], "model-alpha");
+        assert_eq!(products[0]["models"][0]["value"], "600");
+        assert_eq!(products[0]["models"][1]["name"], "model-beta");
+        assert_eq!(products[1]["name"], "Code Quality");
+        assert_eq!(products[1]["value"], "200");
+        assert_eq!(products[1]["models"].as_array().unwrap().len(), 1);
+        assert_eq!(products[1]["models"][0]["name"], "model-gamma");
         let personal = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("personal row");
-        assert_eq!(personal["label"], "Copilot billed to example-user");
+        assert_eq!(personal["label"], "AI credits billed to example-user");
+        assert!(personal.get("models").is_none());
         assert!(
             !personal["note"].as_str().unwrap().contains("premium"),
             "no premium line when that report had none"
@@ -4140,10 +4173,81 @@ mod tests {
     fn the_billing_row_says_it_is_billed_to_the_account() {
         let payload = ai_usage_view(&both_readings(), PlanInputs::OFF, NOW);
         let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing row");
-        assert_eq!(billed["label"], "Copilot billed to example-user");
+        assert_eq!(billed["label"], "AI credits billed to example-user");
         assert!(plan_row_of(&payload).is_some());
         // Neither row is the other's: two ids, two labels.
         assert_ne!(billed["label"], plan_row_of(&payload).unwrap()["label"]);
+    }
+
+    /// Both billing rows are named for the unit they count, with and without a
+    /// login, and the plan row keeps its own `Copilot` name.
+    #[test]
+    fn the_billing_labels_name_the_unit_with_or_without_a_login() {
+        let mut state = nothing_added();
+        state
+            .copilot_org
+            .read
+            .succeeded(copilot_usage(Some(100.0), Some(1.0)), NOW, None);
+        state
+            .copilot_personal
+            .read
+            .succeeded(copilot_usage(Some(100.0), Some(1.0)), NOW, None);
+        let payload = ai_usage_view(&state, COPILOT_ON, NOW);
+        assert_eq!(
+            copilot_row(&payload, COPILOT_ORG_ID).unwrap()["label"],
+            "AI credits"
+        );
+        assert_eq!(
+            copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["label"],
+            "AI credits billed to you"
+        );
+        state.copilot_org.login = "example-org".into();
+        state.copilot_personal.login = "example-user".into();
+        let payload = ai_usage_view(&state, COPILOT_ON, NOW);
+        assert_eq!(
+            copilot_row(&payload, COPILOT_ORG_ID).unwrap()["label"],
+            "AI credits \u{b7} example-org"
+        );
+        assert_eq!(
+            copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["label"],
+            "AI credits billed to example-user"
+        );
+    }
+
+    /// An unnamed product reads `Product not named`, an unmeasured one `—`, and
+    /// a report with no products paints none (and still a measured zero).
+    #[test]
+    fn product_lines_say_when_a_product_is_unnamed_or_unmeasured() {
+        let mut state = nothing_added();
+        let mut usage = copilot_usage(Some(100.0), Some(1.0));
+        usage.credits.products = vec![
+            ::copilotusage::ProductUse {
+                product: Some("Code Quality".into()),
+                quantity: None,
+                models: vec![],
+            },
+            ::copilotusage::ProductUse {
+                product: None,
+                quantity: Some(40.0),
+                models: vec![],
+            },
+        ];
+        state.copilot_personal.read.succeeded(usage, NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let row = copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap();
+        assert_eq!(row["products"][0]["name"], "Code Quality");
+        assert_eq!(row["products"][0]["value"], "\u{2014}");
+        assert_eq!(row["products"][1]["name"], "Product not named");
+        assert_eq!(row["products"][1]["value"], "40");
+        assert!(row["products"][1]["models"].as_array().unwrap().is_empty());
+
+        let mut empty = copilot_usage(Some(0.0), Some(0.0));
+        empty.credits.products.clear();
+        state.copilot_personal.read.succeeded(empty, NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let row = copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap();
+        assert!(row["products"].as_array().unwrap().is_empty());
+        assert_eq!(row["value"], "$0.00");
     }
 
     /// Each endpoint's failure is its own: the plan row's `⚠` line is under

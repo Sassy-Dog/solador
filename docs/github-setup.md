@@ -120,7 +120,8 @@ store under its own item, and Remove source forgets it.
 The **GitHub Copilot** source has two independent parts on the AI Usage tile.
 
 - **Organization** shows the whole pool of an organization **you administer**,
-  not your own usage. It needs no token of its own: it reads with the Actions
+  not your own usage, counting every GitHub product billed in AI credits
+  (Copilot among them) and listing them by product. It needs no token of its own: it reads with the Actions
   billing token and organization above, whose permission is **Organization
   permissions → Administration: Read** (no permission named for billing or
   Copilot does this), so set **Actions billing** up first. Solador refuses to
@@ -185,11 +186,13 @@ For the **organization** part, the Actions billing token needs **Administration:
 Read** and an organization admin, as above. For the **personal** part, the token
 needs the user permission **Plan: Read**. A **not found** message means the
 organization (and its enhanced billing platform) or the username is wrong. The
-personal **billing** row only counts usage billed to you personally, so a seat a
-company or school provides shows a measured `$0.00` there; the **Copilot ·
-\<plan\>** row beside it is the seat's own limit. If that row says the token
-belongs to a different account, the token was created on another GitHub account
-than the username you typed.
+personal **billing** row (`AI credits billed to …`) only counts usage billed to
+you personally, so a seat a company or school provides shows a measured `$0.00`
+there; the **Copilot · \<plan\>** row beside it is the seat's own limit. If that
+row says the token belongs to a different account, the token was created on
+another GitHub account than the username you typed. The **organization** row
+(`AI credits · …`) counts every GitHub product billed in AI credits, Copilot
+among them, and lists them by product.
 
 ### Rate limiting
 Authenticated requests get **5,000/hour per token**. The Repos panel spends
