@@ -4366,6 +4366,12 @@ mod tests {
             empty(&state, none, "plans"),
             "Waiting for the first reading\u{2026}"
         );
+        // Until Copilot's token has been read, only Copilot's tiles wait: no
+        // other vendor's row does.
+        let waiting = "Waiting for the first reading\u{2026}";
+        assert_eq!(empty(&state, none, "copilot"), waiting);
+        assert_eq!(empty(&state, none, "item:copilot-plan"), waiting);
+        assert_eq!(empty(&state, none, "item:claude-plan"), a);
         state.copilot_personal_unconfigure();
         let c = off(crate::settings::COPILOT_TITLE);
         assert_eq!(empty(&state, none, "plans"), format!("{a} {o} {c}"));
@@ -4387,9 +4393,8 @@ mod tests {
         assert_eq!(empty(&state, claude_on, "item:codex-plan"), o);
         assert_eq!(empty(&state, claude_on, "item:openai-api"), o);
         // Copilot's own sentence, once its token has been read and is absent.
-        // (Until then its tile waits, as the `plans` assertion above shows, and
-        // no other vendor's does.)
-        assert_eq!(empty(&state, none, "item:claude-plan"), a);
+        // (Until then its tiles wait, which the assertions before the
+        // unconfigure show.)
         assert_eq!(empty(&state, none, "item:copilot-plan"), c);
         assert_eq!(empty(&state, none, "copilot"), c);
         assert_eq!(empty(&state, none, "item:copilot-personal"), c);

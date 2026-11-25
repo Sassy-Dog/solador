@@ -147,7 +147,7 @@ pub enum SeatErrorKind {
     /// `token_based_billing` was `false`: an annual premium-request plan,
     /// whose figures are requests and never dollars.
     NotCreditBilled,
-    /// A figure the row needs was absent.
+    /// A field the row needs was absent or null.
     MissingFigure,
     /// A figure was negative, non-finite or out of range.
     InvalidFigure,
@@ -170,7 +170,9 @@ impl SeatError {
     /// no word for it. A login mismatch and a plan billed in premium requests are
     /// both answers GitHub gave with a 200: nothing was rejected and nothing was
     /// unreadable, so they keep their own sentences (`user_message`) rather than
-    /// borrowing `CredentialRejected` or `Undecodable`.
+    /// borrowing `CredentialRejected` or `Undecodable`. A 404 keeps its own
+    /// sentence too: the vocabulary's says "no such account", and this endpoint
+    /// has no account in its path.
     #[must_use]
     pub fn fault(&self) -> Option<Fault> {
         match self.kind {
@@ -212,7 +214,7 @@ impl SeatError {
     /// Operator-facing sentence. Never built from `to_string()`.
     #[must_use]
     pub fn user_message(&self) -> String {
-        // The two answers the vocabulary has no word for, said in full.
+        // The three answers the vocabulary has no word for, said in full.
         match self.kind {
             SeatErrorKind::WrongAccount => {
                 return "GitHub answered for a different account than the configured \

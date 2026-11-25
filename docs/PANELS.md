@@ -95,10 +95,11 @@
   since the window opened, judged at the reading's own time (never at render),
   shown as a tick on the track once a tenth of the window has passed and hidden
   once the reading is stale. The row's verdict is the tightest one: `limit
-  reached` (red, the only plan state that raises attention, and the chip reads
-  `AI Usage · N`), else the earliest run-out (`out in ~1d 1h`, amber), else the
+  reached` (red), else the earliest run-out (`out in ~1d 1h`, amber), else the
   busiest window's reset, and `reset since read` when every window rolled over
-  after its read; never blank. A spend cap has no pace: Claude's reply states no
+  after its read; never blank. Attention follows the row's colour, which is its
+  worst live meter's, and not the verdict: a red meter (90% or more) is the only
+  plan state that raises it, and the chip reads `AI Usage · N`. A spend cap has no pace: Claude's reply states no
   reset for it (`no reset date reported`), and where one does (Copilot's) the
   note says `resets in …`, still with no pace. Under `THIS MACHINE`, Claude Code's token rollups (`LAST 5H`, `LAST
   7D`, top projects; their own `PanelInterval::ClaudeRollups`, #615), which the
@@ -169,8 +170,8 @@
   no float reaches the meter), so a figure reads `$12.35 / $39.00 · 32%`. An
   `unlimited` seat has no limit: `$X spent` with no fill, never red. The meter's
   note is `resets in …` from `quota_reset_date_utc` (else the date-only
-  `quota_reset_date`), `reset date unreadable` when GitHub sent a reset that could
-  not be read (the figure still shows), or `no reset date reported` when it sent none, and a
+  `quota_reset_date`), `reset date unreadable` when GitHub sent a reset as text that
+  could not be read (the figure still shows), or `no reset date reported` when it sent none, and a
   reset that has passed since the read mutes the meter (`reset since read`, no
   fill). **`has_quota` is never branched on**: it turns `false` once the quota is
   used up, which is a figure to show. **The endpoint is undocumented**, so it

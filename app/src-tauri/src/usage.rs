@@ -1,13 +1,14 @@
 //! Two panels share this state. **Usage** is the metered Neon, Sentry and
-//! Vercel sections. **AI Usage** shows whichever parts of the Anthropic and
-//! OpenAI sources the operator added: each subscription's limit windows, each
-//! vendor's API spend, and this machine's Claude Code rollups.
+//! Vercel sections. **AI Usage** shows whichever parts of the Anthropic, OpenAI
+//! and GitHub Copilot sources the operator added: each plan's limits (Claude's,
+//! then Codex's, then Copilot's), each vendor's API spend, Copilot's billing
+//! rows, and this machine's Claude Code rollups.
 //!
 //! Those readings are never merged: the rollups are this machine's consumption
 //! from local logs, the plan meters a subscription's utilisation of its own
 //! limits ([`crate::plan_usage`]), and API spend is what an organization was
 //! charged. The plans lead, because a percentage of a limit is the figure an
-//! operator acts on (Claude's, then Codex's); API spend follows (Anthropic's,
+//! operator acts on (Claude's, then Codex's, then Copilot's); API spend follows (Anthropic's,
 //! then OpenAI's); the rollups come last under their own `machineHeading`.
 //!
 //! **A part that is not set up says nothing.** The operator chose to leave it
@@ -1322,7 +1323,7 @@ pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
     state_message(&crate::settings::none_added_message())
 }
 
-/// The AI Usage panel's payload: Claude's and Codex's plan limits, the
+/// The AI Usage panel's payload: Claude's, Codex's and Copilot's plan limits, the
 /// Anthropic and OpenAI API spend, GitHub Copilot's AI credits, and this
 /// machine's Claude Code rollups, each only if the operator added it.
 ///

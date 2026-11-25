@@ -136,9 +136,10 @@ function apiNode(api) {
 
 /**
  * One GitHub Copilot half (the organization's, or the person's): its billed
- * figure under Rust's label (`Copilot · login`), the note of what was used and
+ * figure under Rust's label (the organization's is `Copilot · login`, the
+ * person's `Copilot billed to login`), the note of what was used and
  * included, and the top models, each a dot-and-name line with its credits. No
- * meter: the API reports no pool for one to be a share of. Every string is
+ * meter: the billing API reports no pool for one to be a share of. Every string is
  * Rust's, and an unmeasured figure arrives as the em dash.
  */
 function copilotNode(half) {

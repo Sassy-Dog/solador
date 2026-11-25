@@ -1675,7 +1675,7 @@ vendor's failure from reading as the other's.
   //   ^ this machine's token counts; LAST 5H / LAST 7D, never 5H / WEEK, so
   //     they cannot be read as the plan meters' 5h / Week
   "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
-  "plans": [        // each plan while it is ON, painted FIRST: Claude's, then Codex's
+  "plans": [        // each plan while it is ON, painted FIRST: Claude's, then Codex's, then Copilot's
     {"id": "claude-plan",
      "label": "Claude · Ultra",          // the tool's own plan name, or "Claude"
      "value": "out in ~1d 1h",           // the tightest verdict: "limit reached"
@@ -1707,9 +1707,10 @@ vendor's failure from reading as the other's.
     //     {"label": "Budget", "value": "$12.35 / $39.00 · 32%", "span": "full",
     //     "pace": null, "note": "resets in 9d 5h"}; an unlimited seat reads
     //     "$X spent" with `fraction` null; at 90% or more it is red and a Needs
-    //     or negative figure, a missing login or `unlimited`, another account's login) is "—" with `metrics: []`
-    //     or negative figure, another account's login) is "—" with `metrics: []`
-    //     and the reason as a `⚠ copilot-plan:` line, never a zero.
+    //     Attention row. Anything it cannot trust (not credit-billed, a missing
+    //     or negative figure, a missing `login`, `unlimited` or
+    //     `token_based_billing`, another account's login) is "—" with
+    //     `metrics: []` and the reason as a `⚠ copilot-plan:` line, never a zero.
   ],
   "apis": [         // ALWAYS a list, empty when neither Admin key is there; Anthropic's
                     //   then OpenAI's, each only once a pass has found its key
@@ -2044,11 +2045,12 @@ time (`last_updated`), never at render: dividing a frozen percentage by a clock
 that keeps running would make a stopped poller look like a slowing burn. It is
 shown from a tenth of the window on (30 minutes of a session, about 17 hours of
 a week) as a tick on the track, and hidden once the reading is stale. The row's
-verdict is the tightest: `limit reached` (red, which raises attention), else
-the earliest run-out (`out in ~1d 1h`, amber, which is a forecast and raises
-none), else the busiest window's reset (its share when it states none). It is
-never blank: a plan whose every window rolled over after its read says `reset
-since read`. A spend cap has no pace, because the reply states no reset for it.
+verdict is the tightest: `limit reached` (red), else the earliest run-out (`out
+in ~1d 1h`, amber), else the busiest window's reset (its share when it states
+none). It is never blank: a plan whose every window rolled over after its read
+says `reset since read`. Attention follows the row's colour, which is its worst
+live meter's, not its verdict: only a red meter (90% or more) raises it. A spend
+cap has no pace: no source states when its period began.
 
 **A plan is not an account.** The reading is whichever account each tool is
 signed in as on this machine, it sits in its own block, and it is never merged

@@ -2073,7 +2073,8 @@ const COPILOT_NEEDS_BILLING_LABEL: &str = "Needs Actions billing";
 
 /// The organization part's help. It is the whole pool of an organization the
 /// operator **administers**, not their own usage, and it says which permission
-/// reads it: GitHub names none for billing or for Copilot, it is Administration.
+/// reads it: it is Administration, and no permission named for billing or for
+/// Copilot does this.
 const COPILOT_ORG_HELP: &str = "Month-to-date AI credits for the whole pool of an organization you administer, not your own usage; you need to administer that organization. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first. That token\u{2019}s permission is Organization permissions \u{2192} Administration: Read: no permission named for billing or for Copilot does this. Nothing new is stored, and removing this part leaves that token alone.";
 
 /// The personal part's summary, which no longer says only "your own plan": an

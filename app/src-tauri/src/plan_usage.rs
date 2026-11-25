@@ -1,5 +1,8 @@
-//! The AI Usage panel's **plan** rows (Claude's, then Codex's): a subscription's own limit
-//! windows, read from the sign-in Claude Code or Codex already holds.
+//! The AI Usage panel's **plan** rows (Claude's, then Codex's, then Copilot's).
+//! The gate and schedule described below are Claude's and Codex's: a
+//! subscription's own limit windows, read from the sign-in Claude Code or Codex
+//! already holds. Copilot's reading is taken in `main`'s `poll_copilot_personal`,
+//! and only its row is built here (`copilot_seat_section`).
 //!
 //! Three things live here, and only the first is a decision:
 //!

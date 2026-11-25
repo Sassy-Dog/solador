@@ -1,7 +1,8 @@
 //! Every word, colour and figure of the AI Usage panel's **plan** rows: a Claude
-//! or Codex subscription's own limits, as `crates/subscription` reads them.
+//! or Codex subscription's own limits, as `crates/subscription` reads them, and
+//! the Copilot plan or seat's, as `crates/copilotusage` reads it.
 //!
-//! The types here mirror that crate's without depending on it. It carries an
+//! The types here mirror those crates' without depending on them. They carry an
 //! HTTP stack and the view layer needs none, which is the arrangement
 //! [`crate::agent_release`] has with `crates/agentrelease`.
 //!
@@ -26,7 +27,7 @@
 //! like a burn that has slowed. It is not shown until [`PACE_MIN_ELAPSED`] of
 //! the window has passed, nor once the reading is stale.
 //!
-//! A spend cap has no pace: the reply states no reset for it, and a guessed
+//! A spend cap has no pace: [`Spend`] carries no period start, and a guessed
 //! billing period would be a fabricated one.
 //!
 //! # Unknown is not zero, and a past reset is not a present reading
