@@ -1,8 +1,8 @@
 //! Two panels share this state. **Usage** is the metered Neon, Sentry and
 //! Vercel sections. **AI Usage** shows whichever parts of the Anthropic, OpenAI
 //! and GitHub Copilot sources the operator added: each plan's limits (Claude's,
-//! then Codex's, then Copilot's), each vendor's API spend, Copilot's billing
-//! rows, and this machine's Claude Code rollups.
+//! then Codex's, then Copilot's one card, which also carries its billing
+//! halves), each vendor's API spend, and this machine's Claude Code rollups.
 //!
 //! Those readings are never merged: the rollups are this machine's consumption
 //! from local logs, the plan meters a subscription's utilisation of its own
@@ -185,25 +185,33 @@ pub const OPENAI_API_ID: &str = "openai-api";
 /// label because one panel holds both vendors' spend.
 pub const ANTHROPIC_API_LABEL: &str = "Anthropic API spend (MTD)";
 pub const OPENAI_API_LABEL: &str = "OpenAI API spend (MTD)";
-/// GitHub Copilot's two halves, on the same terms: each id is the row's name in
-/// the header line and on the tile. Both answer to the `copilot` scope.
+/// GitHub Copilot's two billing halves, on the same terms: each id is the
+/// source's name in the header line (its `⚠` warning and clock), and both
+/// answer to the `copilot` scope. They are not rows of their own: each is one
+/// of the Copilot card's `halves` ([`COPILOT_PLAN_ID`]).
 pub const COPILOT_ORG_ID: &str = "copilot-org";
 pub const COPILOT_PERSONAL_ID: &str = "copilot-personal";
-/// The Copilot source's third row: the token owner's own plan or employer seat,
-/// with the limit GitHub enforces. A **plan row** (it sits in the payload's
-/// `plans` list, after Claude and Codex), read from the same Personal token as
-/// `copilot-personal` but from a different endpoint, so it has its own state,
-/// warning and clock and one never blanks or ages the other. Answers to the
-/// `plans` and `copilot` scopes.
+/// The Copilot card's id, and the id of the seat read it carries: the token
+/// owner's own plan or employer seat, with the limit GitHub enforces. **One
+/// card** in the payload's `plans` list, after Claude and Codex, whenever any
+/// Copilot part is set up: the seat's budget meter when there is one, then a
+/// `halves` entry for each billing half that is set up. The seat is read from
+/// the same Personal token as `copilot-personal` but from a different
+/// endpoint, so it has its own state, warning and clock and one never blanks
+/// or ages the other. Answers to the `plans` and `copilot` scopes. A saved
+/// `item:copilot-org` or `item:copilot-personal` (each a row of its own before
+/// the card was one) is rewritten to `item:copilot-plan` when the store is read
+/// (`StoreData::carry_copilot_item_scopes_onto_card`).
 pub const COPILOT_PLAN_ID: &str = "copilot-plan";
-/// The billing row's label's lead: its figure is what GitHub billed to this
-/// account, which is not the account's plan limit, and an employer's seat is
-/// billed to the employer. See [`COPILOT_PLAN_ID`]. The report counts every
-/// GitHub product billed in AI credits, Copilot among them, so the label names
-/// the unit and never one product.
-pub const COPILOT_BILLED_LABEL: &str = "AI credits billed to";
-/// The organization row's label, before its ` · {login}`.
-const COPILOT_ORG_LABEL: &str = "AI credits";
+/// A billing half's label: GitHub's own term for what is billed, on any plan,
+/// with or without included credits.
+pub const COPILOT_HALF_LABEL: &str = "Additional usage";
+/// The person's half says whose bill it is as `billed to {login}`: the figure
+/// is what GitHub billed to this account, which is not the account's plan
+/// limit, and an employer's seat is billed to the employer. The report counts
+/// every GitHub product billed in credits, Copilot among them, so the words
+/// name the bill and never one product.
+const COPILOT_BILLED_TO: &str = "billed to";
 /// The product line for items whose `product` GitHub left absent or blank. It is
 /// never attributed to a product GitHub did not name.
 const PRODUCT_NOT_NAMED: &str = "Product not named";
@@ -491,7 +499,7 @@ impl CopilotState {
     }
 }
 
-/// The Copilot plan row's published state: the username it was read for, and
+/// The Copilot seat read's published state: the username it was read for, and
 /// the reading of that account's own limit. Read from Personal's token, apart
 /// from [`CopilotState`] (another endpoint, so its own failure, clock and
 /// retained figure), and a figure belongs to its username: another one's is
@@ -510,7 +518,7 @@ impl CopilotPlanState {
     }
 
     /// The username this pass reads for. A different one drops the previous
-    /// figures, as [`CopilotState::note_login`] does for the billing row.
+    /// figures, as [`CopilotState::note_login`] does for the billing half.
     pub fn note_login(&mut self, login: &str) {
         if self.login != login {
             login.clone_into(&mut self.login);
@@ -674,7 +682,7 @@ impl UsageState {
     }
 
     /// Personal's token is gone (or was never there): both of its readings go,
-    /// the billing row and the plan row, on the same frame.
+    /// the billing half and the seat meter, on the same frame.
     pub fn copilot_personal_unconfigure(&mut self) {
         self.copilot_personal.unconfigure();
         self.copilot_plan.unconfigure();
@@ -1203,7 +1211,7 @@ fn quantity(n: f64) -> String {
     }
 }
 
-/// The note under a Copilot row: what was used, what the plan covered, and the
+/// The note under a Copilot billing half: what was used, what the plan covered, and the
 /// premium requests, each only if it was measured. `None` when none was, so no
 /// claim is made at all.
 fn copilot_note(usage: &CopilotUsage) -> Option<String> {
@@ -1219,7 +1227,7 @@ fn copilot_note(usage: &CopilotUsage) -> Option<String> {
         parts.push(format!(
             "{} {} used",
             quantity(used),
-            plural(used, "AI credit", "AI credits")
+            plural(used, "credit", "credits")
         ));
     }
     if let Some(included) = usage.credits.included {
@@ -1235,13 +1243,14 @@ fn copilot_note(usage: &CopilotUsage) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" \u{00b7} "))
 }
 
-/// One Copilot half's row for the AI Usage panel, once a pass has found it set
-/// up: `AI credits · {login}` (the organization) or `AI credits billed to
-/// {login}` (Personal), and the billed USD (`—` when unmeasured), the note, and
-/// the `products` under it: every product the report named, each with its share
-/// of the top models beneath it. **No plan meter**: the billing API reports no
-/// pool. The owner's own limit is the separate `copilot-plan` row
-/// ([`copilot_plan_view`]), the one labelled `Copilot`.
+/// One Copilot billing half for the Copilot card's `halves`, once a pass has
+/// found it set up: `Additional usage` (GitHub's term) and the billed USD (`—`
+/// when unmeasured), `owner` (whose bill it is: the organization's login, or
+/// `billed to {login}` for the person), the note, and the `products` under it:
+/// every product the report named, each with its share of the top models
+/// beneath it. The owner is a line of its own so the tile's width can never cut
+/// off the dollars. **No plan meter**: the billing API reports no pool. The
+/// owner's own limit is the card's seat meter ([`copilot_seat_view`]).
 fn copilot_section(
     id: &str,
     state: &CopilotState,
@@ -1252,17 +1261,23 @@ fn copilot_section(
         return None;
     }
     let summary = state.read.summary.as_ref();
-    let label = match (id, state.login.is_empty()) {
-        // Usage billed to the account, which an employer's seat is not: said in
-        // the label so the `$0.00` an employer seat reads here cannot pass for
-        // "used nothing" beside the plan row.
-        (COPILOT_PERSONAL_ID, true) => format!("{COPILOT_BILLED_LABEL} you"),
-        (COPILOT_PERSONAL_ID, false) => format!("{COPILOT_BILLED_LABEL} {}", state.login),
-        (_, true) => COPILOT_ORG_LABEL.to_owned(),
-        (_, false) => format!("{COPILOT_ORG_LABEL} \u{00b7} {}", state.login),
+    // `None` when no login is known: the half says nothing about whose bill it
+    // is rather than guess.
+    let owner = match (id, state.login.is_empty()) {
+        // Usage billed to the account, which an employer's seat is not: said so
+        // the `$0.00` an employer seat reads here cannot pass for "used nothing"
+        // beside the seat's meter.
+        (COPILOT_PERSONAL_ID, true) => Some(format!("{COPILOT_BILLED_TO} you")),
+        (COPILOT_PERSONAL_ID, false) => Some(format!("{COPILOT_BILLED_TO} {}", state.login)),
+        (_, true) => None,
+        (_, false) => Some(state.login.clone()),
     };
-    let mut section = provider_row(label, usd(summary.and_then(|s| s.credits.billed_usd)));
+    let mut section = provider_row(
+        COPILOT_HALF_LABEL.to_owned(),
+        usd(summary.and_then(|s| s.credits.billed_usd)),
+    );
     section["id"] = json!(id);
+    section["owner"] = owner.map_or(Value::Null, Value::String);
     section["note"] = summary
         .and_then(copilot_note)
         .map_or(Value::Null, Value::String);
@@ -1295,11 +1310,11 @@ fn copilot_section(
     })
 }
 
-/// The Copilot plan row for the AI Usage panel, once a pass has found Personal
-/// set up: `Copilot · Business` and its one spend-cap meter, built by the
-/// viewmodel's `plan_row` so it takes the plan rows' meter, colours and red
-/// rule. Its `⚠` line and clock are its own, attributed to `copilot-plan`.
-fn copilot_plan_view(
+/// The Copilot card's seat view, once a pass has found Personal set up:
+/// `Copilot · Business` and its one spend-cap meter, built by the viewmodel's
+/// `plan_row` so it takes the plan rows' meter, colours and red rule. Its `⚠`
+/// line and clock are its own, attributed to `copilot-plan`.
+fn copilot_seat_view(
     state: &CopilotPlanState,
     cadence_secs: u64,
     now: u64,
@@ -1339,14 +1354,14 @@ pub(crate) fn nothing_added_message(reads: &[KeyRead]) -> Value {
 }
 
 /// The AI Usage panel's payload: Claude's, Codex's and Copilot's plan limits, the
-/// Anthropic and OpenAI API spend, GitHub's AI credits, and this
-/// machine's Claude Code rollups, each only if the operator added it.
+/// Anthropic and OpenAI API spend, and this machine's Claude Code rollups, each
+/// only if the operator added it.
 ///
-/// The body reads plans (Claude, Codex, then Copilot's own limit), API spend (`apis`, Anthropic then
-/// OpenAI, always present and empty when neither is on), Copilot (`copilot`,
-/// the organization then the person, always present and empty when neither is
-/// on), then the rollups, and the header's warning and clock lines read in that
-/// same order.
+/// The body reads plans (Claude, Codex, then the one Copilot card: its seat's
+/// limit, then its `halves`, the organization's then the person's additional
+/// usage, each when set up), API spend (`apis`, Anthropic then OpenAI, always
+/// present and empty when neither is on), then the rollups, and the header's
+/// warning and clock lines read in that same order.
 ///
 /// `inputs` is read at render time rather than captured by the poller: taking a
 /// part off must hide it now, not after the next poll has dropped it.
@@ -1391,7 +1406,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
     // Copilot's organization half is a flag, read here so that unticking it hides
     // the row on this frame; the personal half goes with its key
     // (`unconfigure_spend`).
-    let copilot_plan = copilot_plan_view(&state.copilot_plan, inputs.spend_cadence_secs, now);
+    let copilot_plan = copilot_seat_view(&state.copilot_plan, inputs.spend_cadence_secs, now);
     let copilot_views = [
         (
             COPILOT_ORG_ID,
@@ -1464,13 +1479,13 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
             KeyRead::default(),
         ),
     ];
-    // The Copilot plan row, the third of the plans: it rides Personal's token
-    // like the billing row and is on, loading or unreadable on the same terms,
-    // but its warning and clock are its own.
+    // The Copilot card's seat read, the third of the plans: it rides Personal's
+    // token like the personal half and is on, loading or unreadable on the same
+    // terms, but its warning and clock are its own.
     let plan_read = &state.copilot_plan.read;
     let plan_key = plan_read.key_read();
     let plan_loading = plan_read.is_loading() || plan_read.is_undecided();
-    let (plan_on, plan_warning, plan_clock, copilot_plan_section) = match copilot_plan {
+    let (plan_on, plan_warning, plan_clock, copilot_seat_section) = match copilot_plan {
         Some(v) => (true, v.warning, v.freshness, Some(v.section)),
         None => (
             false,
@@ -1523,11 +1538,11 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         };
         lines.push(ai_line(id, on, warning, clock, loading, read));
     }
-    // Copilot, after API spend: a half that is not set up is no row and says
-    // nothing. A configured half's failure, stale clock and unreadable key are
-    // warnings under its own row id, as for the Admin keys, and it is never an
-    // attention row.
-    let mut copilot: Vec<Value> = Vec::new();
+    // Copilot's billing halves, after API spend: a half that is not set up is
+    // no entry and says nothing. A configured half's failure, stale clock and
+    // unreadable key are warnings under its own row id, as for the Admin keys,
+    // and a half never asks for attention. The halves ride the Copilot card.
+    let mut halves: Vec<Value> = Vec::new();
     for (id, half, gated, flagged, view) in copilot_views {
         let on = view.is_some();
         // A ticked organization half with nothing read yet (the part was just
@@ -1547,7 +1562,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         let loading = awaiting || (gated && (half.read.is_loading() || half.read.is_undecided()));
         let (warning, clock) = match view {
             Some(v) => {
-                copilot.push(v.section);
+                halves.push(v.section);
                 (v.warning, v.freshness)
             }
             None if gated => (
@@ -1591,7 +1606,10 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         .sections
         .into_iter()
         .chain(codex.sections)
-        .chain(copilot_plan_section)
+        .chain(crate::plan_usage::copilot_card(
+            copilot_seat_section,
+            halves,
+        ))
         .collect();
     // The setup sentence is for no part at all; a rollups line or a plan or
     // spend figure is something to show instead.
@@ -1601,7 +1619,7 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         || inputs.copilot_org
         || plan_on
         || !apis.is_empty()
-        || !copilot.is_empty();
+        || plans.iter().any(|p| p["id"] == COPILOT_PLAN_ID);
     let rollups_message = message.clone();
     let message = if any_part {
         message
@@ -1640,7 +1658,6 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         "lines": lines,
         "plans": plans,
         "apis": apis,
-        "copilot": copilot,
         "loading": loading,
     })
 }
@@ -3727,18 +3744,24 @@ mod tests {
         }
     }
 
+    /// A billing half, which rides the one Copilot card's `halves`.
     fn copilot_row<'a>(payload: &'a Value, id: &str) -> Option<&'a Value> {
-        payload["copilot"]
+        payload["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == COPILOT_PLAN_ID)?["halves"]
             .as_array()
             .unwrap()
             .iter()
             .find(|row| row["id"] == id)
     }
 
-    /// Copilot comes after API spend in the payload and in the lines, with its
-    /// own row ids, and a half that is not set up is no row at all.
+    /// Copilot's sources keep their own ids in the lines, after API spend, and
+    /// a half that is not set up is no entry at all. The halves ride the one
+    /// card after Codex, and no `copilot` list is left beside it.
     #[test]
-    fn copilot_rows_follow_api_spend_with_their_own_ids() {
+    fn copilot_halves_ride_the_one_card_with_their_own_line_ids() {
         let payload = ai_usage_view(&measured(), FIXTURE_PLANS, NOW);
         let ids: Vec<&str> = payload["lines"]
             .as_array()
@@ -3759,12 +3782,21 @@ mod tests {
                 "claude-today"
             ]
         );
+        assert!(payload.get("copilot").is_none(), "the halves left the list");
+        let plan_ids: Vec<&str> = payload["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(plan_ids, ["claude-plan", "codex-plan", "copilot-plan"]);
         let org = copilot_row(&payload, COPILOT_ORG_ID).expect("org row");
-        assert_eq!(org["label"], "AI credits \u{b7} example-org");
+        assert_eq!(org["label"], "Additional usage");
+        assert_eq!(org["owner"], "example-org");
         assert_eq!(org["value"], "$9.90");
         assert_eq!(
             org["note"],
-            "1100 AI credits used \u{b7} 110 included \u{b7} 40 premium requests"
+            "1100 credits used \u{b7} 110 included \u{b7} 40 premium requests"
         );
         // Products, each with its models beneath; the half has no flat list.
         assert!(org.get("models").is_none());
@@ -3780,7 +3812,8 @@ mod tests {
         assert_eq!(products[1]["models"].as_array().unwrap().len(), 1);
         assert_eq!(products[1]["models"][0]["name"], "model-gamma");
         let personal = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("personal row");
-        assert_eq!(personal["label"], "AI credits billed to example-user");
+        assert_eq!(personal["label"], "Additional usage");
+        assert_eq!(personal["owner"], "billed to example-user");
         assert!(personal.get("models").is_none());
         assert!(
             !personal["note"].as_str().unwrap().contains("premium"),
@@ -3808,6 +3841,35 @@ mod tests {
         state.copilot_personal.read.succeeded(none, NOW, None);
         let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
         assert!(copilot_row(&payload, COPILOT_PERSONAL_ID).expect("row")["note"].is_null());
+    }
+
+    /// A half that is set up but has no reading yet, or whose first read
+    /// failed, is a line in `halves` that reads `—` with no owner-less figure:
+    /// no note, no products, never `$0.00`.
+    #[test]
+    fn a_half_still_loading_or_failed_on_its_first_read_reads_a_dash() {
+        let mut state = nothing_added();
+        state.copilot_personal.login = "example-user".into();
+        state.copilot_personal.read.begin();
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let half = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("half");
+        assert_eq!(half["value"], "\u{2014}");
+        assert!(half["note"].is_null());
+        assert!(half["products"].as_array().unwrap().is_empty());
+        assert_eq!(half["owner"], "billed to example-user");
+        assert_eq!(payload["loading"], true);
+
+        let mut state = nothing_added();
+        state.copilot_personal.login = "example-user".into();
+        state
+            .copilot_personal
+            .read
+            .failed("GitHub is failing".into());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let half = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("half");
+        assert_eq!(half["value"], "\u{2014}");
+        assert!(half["note"].is_null());
+        assert!(half["products"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -4100,6 +4162,61 @@ mod tests {
         assert_eq!(ids, ["claude-plan", "copilot-plan"]);
     }
 
+    /// One Copilot card whatever parts are set up: the seat's meter then the
+    /// halves when both are, a header with no figure of its own when only a
+    /// billing half is (nothing asked of the seat, so nothing said about it),
+    /// and no card at all when no part is. Billing leaves the API spend list.
+    #[test]
+    fn one_copilot_card_carries_the_seat_meter_and_the_halves_that_are_set_up() {
+        // Both: `Copilot · Business`, the Budget meter, then the one half.
+        let payload = ai_usage_view(&both_readings(), PlanInputs::OFF, NOW);
+        let card = plan_row_of(&payload).expect("the card");
+        assert_eq!(card["label"], "Copilot \u{b7} Business");
+        assert_eq!(card["metrics"][0]["label"], "Budget");
+        let halves = card["halves"].as_array().unwrap();
+        assert_eq!(halves.len(), 1);
+        assert_eq!(halves[0]["id"], COPILOT_PERSONAL_ID);
+        assert_eq!(halves[0]["label"], "Additional usage");
+        assert_eq!(halves[0]["value"], "$1.00");
+        assert!(
+            card.get("aliases").is_none(),
+            "one id is the only mechanism"
+        );
+        assert!(payload["apis"].as_array().unwrap().is_empty());
+
+        // Only the organization half: a header, no meter, no value of its own.
+        let mut state = nothing_added();
+        state.copilot_org.login = "example-org".into();
+        state
+            .copilot_org
+            .read
+            .succeeded(copilot_usage(Some(100.0), Some(1.0)), NOW, None);
+        let payload = ai_usage_view(&state, COPILOT_ON, NOW);
+        let card = plan_row_of(&payload).expect("the card");
+        assert_eq!(card["label"], "Copilot");
+        assert_eq!(card["value"], "");
+        assert!(card["metrics"].as_array().unwrap().is_empty());
+        assert_eq!(card["halves"][0]["id"], COPILOT_ORG_ID);
+        assert_eq!(card["halves"][0]["owner"], "example-org");
+        assert!(!line(&payload, COPILOT_PLAN_ID)["on"].as_bool().unwrap());
+
+        // Only the seat: the meter and no halves.
+        let mut state = nothing_added();
+        state.copilot_plan.login = "example-user".into();
+        state
+            .copilot_plan
+            .read
+            .succeeded(seat(1_234.56, capped()), NOW, None);
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let card = plan_row_of(&payload).expect("the card");
+        assert_eq!(card["metrics"].as_array().unwrap().len(), 1);
+        assert!(card["halves"].as_array().unwrap().is_empty());
+
+        // Nothing set up: no card.
+        let payload = ai_usage_view(&nothing_added(), PlanInputs::OFF, NOW);
+        assert!(plan_row_of(&payload).is_none());
+    }
+
     #[test]
     fn amber_and_red_follow_the_other_plan_meters_thresholds() {
         for (used, shade) in [
@@ -4167,22 +4284,27 @@ mod tests {
         );
     }
 
-    /// The billing row is named for what it is, so an employer seat's `$0.00`
-    /// beside the plan row cannot read as "used nothing". Its id is unchanged.
+    /// The personal half says whose bill it is, so an employer seat's `$0.00`
+    /// beside the seat's meter cannot read as "used nothing". Its id is
+    /// unchanged, and it sits in the same card as the seat.
     #[test]
-    fn the_billing_row_says_it_is_billed_to_the_account() {
+    fn the_personal_half_says_it_is_billed_to_the_account() {
         let payload = ai_usage_view(&both_readings(), PlanInputs::OFF, NOW);
-        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing row");
-        assert_eq!(billed["label"], "AI credits billed to example-user");
+        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing half");
+        assert_eq!(billed["label"], "Additional usage");
+        assert_eq!(billed["owner"], "billed to example-user");
         assert!(plan_row_of(&payload).is_some());
-        // Neither row is the other's: two ids, two labels.
+        // The half is GitHub's term, the card is `Copilot`: never the other's label.
         assert_ne!(billed["label"], plan_row_of(&payload).unwrap()["label"]);
     }
 
-    /// Both billing rows are named for the unit they count, with and without a
-    /// login, and the plan row keeps its own `Copilot` name.
+    /// Both halves say GitHub's `Additional usage`, and whose bill it is as a
+    /// line of its own, with and without a login: the dollars never share a
+    /// line with a name a tile's width could cut off. No login, no owner line
+    /// for the organization (it names no one), and `billed to you` for the
+    /// person.
     #[test]
-    fn the_billing_labels_name_the_unit_with_or_without_a_login() {
+    fn the_halves_say_additional_usage_and_whose_bill_it_is_with_or_without_a_login() {
         let mut state = nothing_added();
         state
             .copilot_org
@@ -4193,25 +4315,21 @@ mod tests {
             .read
             .succeeded(copilot_usage(Some(100.0), Some(1.0)), NOW, None);
         let payload = ai_usage_view(&state, COPILOT_ON, NOW);
-        assert_eq!(
-            copilot_row(&payload, COPILOT_ORG_ID).unwrap()["label"],
-            "AI credits"
-        );
-        assert_eq!(
-            copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["label"],
-            "AI credits billed to you"
-        );
+        let org = copilot_row(&payload, COPILOT_ORG_ID).unwrap();
+        assert_eq!(org["label"], "Additional usage");
+        assert!(org["owner"].is_null(), "no login known, none invented");
+        let personal = copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap();
+        assert_eq!(personal["label"], "Additional usage");
+        assert_eq!(personal["owner"], "billed to you");
         state.copilot_org.login = "example-org".into();
         state.copilot_personal.login = "example-user".into();
         let payload = ai_usage_view(&state, COPILOT_ON, NOW);
-        assert_eq!(
-            copilot_row(&payload, COPILOT_ORG_ID).unwrap()["label"],
-            "AI credits \u{b7} example-org"
-        );
-        assert_eq!(
-            copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["label"],
-            "AI credits billed to example-user"
-        );
+        let org = copilot_row(&payload, COPILOT_ORG_ID).unwrap();
+        assert_eq!(org["label"], "Additional usage");
+        assert_eq!(org["owner"], "example-org");
+        let personal = copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap();
+        assert_eq!(personal["label"], "Additional usage");
+        assert_eq!(personal["owner"], "billed to example-user");
     }
 
     /// An unnamed product reads `Product not named`, an unmeasured one `—`, and
@@ -4252,11 +4370,11 @@ mod tests {
         let row = copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap();
         assert!(row["products"].as_array().unwrap().is_empty());
         assert_eq!(row["value"], "$0.00");
-        assert_eq!(row["note"], "0 AI credits used \u{b7} 0 included");
+        assert_eq!(row["note"], "0 credits used \u{b7} 0 included");
     }
 
-    /// Each endpoint's failure is its own: the plan row's `⚠` line is under
-    /// `copilot-plan`, the billing row keeps its figure and says nothing, and
+    /// Each endpoint's failure is its own: the seat's `⚠` line is under
+    /// `copilot-plan`, the billing half keeps its figure and says nothing, and
     /// the reverse holds.
     #[test]
     fn one_copilot_reading_failing_never_blanks_or_ages_the_other() {
@@ -4273,7 +4391,7 @@ mod tests {
             .unwrap()
             .starts_with("\u{26a0} copilot-plan: "));
         assert!(line(&payload, COPILOT_PERSONAL_ID)["warning"].is_null());
-        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing row");
+        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing half");
         assert_eq!(billed["value"], "$1.00", "the billing figure is intact");
         // The plan row keeps its last good figure beside the reason: GitHub
         // could not be reached, which says nothing about the figure.
@@ -4363,7 +4481,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("different account"));
-        // The billing row's figure is not another endpoint's to remove.
+        // The billing half's figure is not another endpoint's to remove.
         assert_eq!(
             copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["value"],
             "$1.00"

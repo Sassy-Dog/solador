@@ -320,6 +320,7 @@ pub(crate) const AI_ROW_IDS: [&str; 8] = [
 /// unread) is exactly what holds a tile loading. `attention` and `all` speak
 /// for every row; an unknown `item:` speaks for none.
 pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
+    use crate::usage::{COPILOT_ORG_ID, COPILOT_PERSONAL_ID, COPILOT_PLAN_ID};
     let vendor = |v: &str| {
         AI_ROW_IDS
             .into_iter()
@@ -327,12 +328,20 @@ pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
             .collect()
     };
     match scope {
-        "plans" => PLAN_ROW_IDS.to_vec(),
+        // The Copilot card is a plan, and it carries both billing halves, so
+        // their sources speak for it too.
+        "plans" => PLAN_ROW_IDS
+            .into_iter()
+            .chain([COPILOT_ORG_ID, COPILOT_PERSONAL_ID])
+            .collect(),
         "claude" => vec![CLAUDE_TODAY_ID],
         "anthropic" => vendor("anthropic"),
         "openai" => vendor("openai"),
         "copilot" => vendor("copilot"),
         other => match other.strip_prefix("item:") {
+            // The one Copilot card carries both billing halves, so all three
+            // of its sources speak for it.
+            Some(COPILOT_PLAN_ID) => vendor("copilot"),
             Some(id) => AI_ROW_IDS.into_iter().filter(|row| *row == id).collect(),
             None => AI_ROW_IDS.to_vec(),
         },
@@ -689,32 +698,6 @@ fn api_rows(p: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// One row per Copilot billing half that is set up, in the payload's order (the
-/// organization, then the person). Only its vendor scope: `all` shows it, `item:`
-/// picks it. **Never an attention row**: the billing reads state spend and no
-/// limit, so there is no figure to be red about, and they cannot raise the red
-/// chip; a failed or stale read is a warning line, which lights the amber one.
-/// The Copilot *plan* row (`copilot-plan`, the owner's own limit) is not one of
-/// these: it is a plan, so [`plan_rows`] reads it and its red meter does ask for
-/// attention.
-fn copilot_rows(p: &Value) -> Vec<Value> {
-    list(p, "copilot")
-        .iter()
-        .map(|half| {
-            let mut r = row(
-                string(half, "id"),
-                string(half, "label"),
-                string(half, "value"),
-                tint(&half["valueColor"]),
-                false,
-            );
-            r["detail"] = json!(string(half, "note"));
-            add_vendor_scope(&mut r);
-            r
-        })
-        .collect()
-}
-
 /// Adds the row's vendor scope, when its id has one.
 fn add_vendor_scope(r: &mut Value) {
     if let Some(vendor) = vendor_of(string(r, "id")) {
@@ -726,10 +709,13 @@ fn add_vendor_scope(r: &mut Value) {
 /// section's, never built from its label, which carries a plan name that can
 /// change (Anthropic renamed Max 20x to Ultra). Only red asks for attention:
 /// amber is a pace, and a pace is a forecast. The plans are Claude's, Codex's
-/// and Copilot's (`copilot-plan`): the last answers to the `plans` scope *and*
-/// the `copilot` vendor scope, so a tile scoped `plans` shows it once Personal is
-/// set up (`plans` means every plan limit), and a Copilot tile shows it beside
-/// the billing rows.
+/// and Copilot's (`copilot-plan`): the one Copilot card, whose seat meter and
+/// billing `halves` are one row. It answers to the `plans` scope *and* the
+/// `copilot` vendor scope, so a tile scoped `plans` shows it once any Copilot
+/// part is set up (`plans` means every plan limit). **Billing halves never ask
+/// for attention**: the billing reads state spend and no limit, so there is no
+/// figure to be red about; only the seat's red meter does, and a failed or
+/// stale read is a warning line, which lights the amber chip.
 fn plan_rows(p: &Value) -> Vec<Value> {
     list(p, "plans")
         .iter()
@@ -744,6 +730,10 @@ fn plan_rows(p: &Value) -> Vec<Value> {
             r["valueColor"] = tint(&plan["valueColor"]);
             r["detail"] = json!(string(plan, "detail"));
             r["metrics"] = plan["metrics"].clone();
+            // The Copilot card's billing halves; absent on a plan with none.
+            if !plan["halves"].is_null() {
+                r["halves"] = plan["halves"].clone();
+            }
             add_scope(&mut r, "plans");
             add_vendor_scope(&mut r);
             r
@@ -960,7 +950,6 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
             // the figure an operator acts on. API spend follows.
             let mut rows = plan_rows(p);
             rows.extend(api_rows(p));
-            rows.extend(copilot_rows(p));
             // This machine's rollups are one line on the tile; the panel
             // keeps the 5-hour and 7-day counts and the projects under its
             // "This machine" heading. The figure is the bare `claudeToday`:
@@ -1211,7 +1200,7 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "sentryCrons" => "Scheduled jobs from your Sentry source",
         "containers" => "Containers and virtual machines on monitored hosts",
         "aiUsage" => {
-            "Claude, Codex and Copilot plan limits, API spend, GitHub AI credits and Claude Code logs"
+            "Claude, Codex and Copilot plan limits, API spend, Copilot's additional usage and Claude Code logs"
         }
         "usage" => "Neon, Sentry and Vercel usage and spend",
         "azureCost" => "Cost exports from your Azure source",
@@ -4193,7 +4182,7 @@ mod tests {
         assert_eq!(row["value"], "$50.00 spent");
     }
 
-    /// The Copilot billing rows are never attention rows, so they cannot raise
+    /// The Copilot billing halves never ask for attention, so they cannot raise
     /// the red chip; a Copilot `⚠` line shows on every AI Usage card whatever its
     /// scope, labelled with its row id, and lights the amber chip like any
     /// warning.
@@ -4217,9 +4206,14 @@ mod tests {
             .iter()
             .filter(|r| string(r, "id").starts_with("copilot-"))
             .collect();
-        assert_eq!(copilot.len(), 1, "the half that is set up is a row");
+        assert_eq!(copilot.len(), 1, "the half that is set up is the one card");
+        assert_eq!(string(copilot[0], "id"), "copilot-plan");
         assert_eq!(copilot[0]["attention"], false);
-        assert_eq!(copilot[0]["scopes"], json!(["copilot"]));
+        assert_eq!(copilot[0]["scopes"], json!(["plans", "copilot"]));
+        assert_eq!(
+            copilot[0]["halves"][0]["id"], "copilot-personal",
+            "the half rides the card"
+        );
 
         assert!(list(&source, "warnings")
             .iter()
@@ -4402,11 +4396,17 @@ mod tests {
     }
 
     /// The plan rows are the first rows of the body, and the `plans` scope
-    /// speaks for exactly them.
+    /// speaks for them and for the two billing sources the Copilot card, one of
+    /// the plans, carries.
     #[test]
     fn plan_row_ids_lead_the_ai_rows() {
         assert_eq!(AI_ROW_IDS[..PLAN_ROW_IDS.len()], PLAN_ROW_IDS);
-        assert_eq!(ai_scope_rows("plans"), PLAN_ROW_IDS.to_vec());
+        let mut want = PLAN_ROW_IDS.to_vec();
+        want.extend([
+            crate::usage::COPILOT_ORG_ID,
+            crate::usage::COPILOT_PERSONAL_ID,
+        ]);
+        assert_eq!(ai_scope_rows("plans"), want);
     }
 
     /// Every AI row carries its vendor's scope, and the fixed scopes the picker
@@ -4418,15 +4418,15 @@ mod tests {
             "plans": [
                 {"id": "claude-plan", "label": "Claude", "value": "ok", "metrics": []},
                 {"id": "codex-plan", "label": "Codex", "value": "ok", "metrics": []},
-                {"id": "copilot-plan", "label": "Copilot", "value": "ok", "metrics": []}
+                {"id": "copilot-plan", "label": "Copilot", "value": "ok", "metrics": [],
+                  "halves": [
+                    {"id": "copilot-org", "label": "Additional usage", "value": "$1"},
+                    {"id": "copilot-personal", "label": "Additional usage", "value": "$1"}
+                 ]}
             ],
             "apis": [
                 {"id": "anthropic-api", "label": "A", "value": "$1"},
                 {"id": "openai-api", "label": "O", "value": "$1"}
-            ],
-            "copilot": [
-                {"id": "copilot-org", "label": "C", "value": "$1"},
-                {"id": "copilot-personal", "label": "C", "value": "$1"}
             ],
         });
         let source = source_view("aiUsage", "AI Usage", &payload);
@@ -4449,8 +4449,6 @@ mod tests {
             ("copilot-plan", &["plans", "copilot"]),
             ("anthropic-api", &["anthropic"]),
             ("openai-api", &["openai"]),
-            ("copilot-org", &["copilot"]),
-            ("copilot-personal", &["copilot"]),
             ("claude-today", &["claude", "anthropic"]),
         ];
         assert_eq!(scopes.len(), want.len());
@@ -4469,6 +4467,66 @@ mod tests {
             }
         }
         assert_eq!(vendor_of("neon:Compute"), None);
+        // The billing halves are not rows: they ride the card.
+        let card = list(&source, "rows")
+            .iter()
+            .find(|r| r["id"] == "copilot-plan")
+            .expect("the card");
+        assert_eq!(card["halves"].as_array().unwrap().len(), 2);
+        for half in ["copilot-org", "copilot-personal"] {
+            assert!(!scopes.iter().any(|(id, _)| id == half), "{half}");
+            assert_eq!(vendor_of(half), Some("copilot"));
+        }
+        assert!(!in_scope(card, "item:codex-plan"));
+    }
+
+    /// `item:copilot-plan`, the one Copilot card's row (a saved
+    /// `item:copilot-org` or `item:copilot-personal` is rewritten to it when the
+    /// store is read), is labelled by the card and speaks for all three Copilot
+    /// sources.
+    #[test]
+    fn the_copilot_card_scope_shows_the_card_under_its_label() {
+        use crate::plan_usage::PlanInputs;
+        use crate::usage::UsageState;
+        let now = 1_700_000_000;
+        let mut state = UsageState::new();
+        state.anthropic_api_mut().unconfigure();
+        state.openai_api_mut().unconfigure();
+        state.copilot_personal_mut().login = "example-user".into();
+        state.copilot_personal_mut().read.succeeded(
+            crate::usage::CopilotUsage {
+                credits: copilotusage::Usage {
+                    used: Some(10.0),
+                    included: None,
+                    billed_usd: Some(1.5),
+                    products: vec![],
+                },
+                premium: None,
+            },
+            now,
+            None,
+        );
+        let payload = crate::usage::ai_usage_view(&state, PlanInputs::OFF, now);
+        let source = source_view("aiUsage", "AI Usage", &payload);
+        let scope = "item:copilot-plan";
+        let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+        let tile = tile_view(&t, &source);
+        assert_eq!(string(&tile, "scopeLabel"), "Copilot");
+        let rows = list(&tile, "rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["halves"][0]["label"], "Additional usage");
+        assert_eq!(rows[0]["halves"][0]["value"], "$1.50");
+        assert_eq!(tile["footer"], "1 shown \u{b7} 0 need attention");
+        assert_eq!(
+            ai_scope_rows(scope),
+            ["copilot-plan", "copilot-org", "copilot-personal"]
+        );
+        // Only the seat's red meter asks for attention, never a half.
+        let all = DashboardTile::new("t", "aiUsage", "AI Usage", "all");
+        assert_eq!(
+            string(&tile_view(&all, &source), "footer"),
+            "1 shown \u{b7} 0 need attention"
+        );
     }
 
     /// A tile's hint is the catalog's one-line description of the source.

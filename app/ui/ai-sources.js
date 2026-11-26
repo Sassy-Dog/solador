@@ -1,6 +1,6 @@
 // The AI Usage panel: each vendor's plan limits, drawn with the Machines tile's
-// meters (`meter.js`), each vendor's API spend, GitHub's AI credits, and
-// this machine's Claude Code token rollups. Same discipline as every other panel here: each string, colour
+// meters (`meter.js`; Copilot's card also carries its additional usage), each
+// vendor's API spend, and this machine's Claude Code token rollups. Same discipline as every other panel here: each string, colour
 // and figure arrives from Rust (`usage::ai_usage_view`), and this file does
 // layout, wiring, and nothing else.
 //
@@ -79,7 +79,8 @@ function headerLine(id, line) {
 
 /**
  * One plan section: a divider, the plan's header row (`Claude · Ultra` and
- * Rust's verdict), then a meter per limit.
+ * Rust's verdict), then a meter per limit. The Copilot card also carries its
+ * billing `halves` under its meter.
  *
  * The meters are the Machines tile's (`meter.js`), so a plan's Week reads the
  * way a machine's RAM does, and each one's reset-and-pace sentence is shown
@@ -99,6 +100,8 @@ function planNode(plan) {
     }
     el.appendChild(stats);
   }
+  // The Copilot card's billing halves, under its seat meter.
+  for (const half of plan.halves || []) el.appendChild(halfNode(half));
   return el;
 }
 
@@ -136,21 +139,20 @@ function apiNode(api) {
 }
 
 /**
- * One GitHub Copilot half (the organization's, or the person's): its billed
- * figure under Rust's label (the organization's is `AI credits · login`, the
- * person's `AI credits billed to login`: the report counts every GitHub
- * product billed in AI credits), the note of what was used and included, and
- * the `products`, each a dot-and-name line with its credits and, indented
- * beneath it, its models. No meter: the billing API reports no pool for one to
- * be a share of. Every string is Rust's, and an unmeasured figure arrives as
- * the em dash.
+ * One GitHub Copilot billing half (the organization's, or the person's), inside
+ * the Copilot card: Rust's label (`Additional usage`, GitHub's term) and its
+ * billed figure, whose bill it is (`owner`) and the note of what was used and
+ * included beneath, then the `products`, each a dot-and-name line with its
+ * credits and, indented beneath it, its models. The owner has a line of its
+ * own so no width can cut the dollars. No meter: the billing API reports no
+ * pool for one to be a share of. Every string is Rust's, and an unmeasured
+ * figure arrives as the em dash.
  */
-function copilotNode(half) {
-  const el = node("div", "pv-section");
-  el.dataset.section = "copilot";
+function halfNode(half) {
+  const el = node("div", "pv-half");
   el.dataset.copilot = half.id;
-  el.appendChild(node("hr", "pv-divider"));
   el.appendChild(valueRow(half));
+  if (half.owner) el.appendChild(node("div", "pv-note pv-owner", half.owner));
   if (half.note) el.appendChild(node("div", "pv-note", half.note));
   for (const product of half.products || []) {
     el.appendChild(itemRow(product, "pv-product"));
@@ -159,13 +161,12 @@ function copilotNode(half) {
   return el;
 }
 
-/** What the vendors cost: the plans, then the API spend, then Copilot, whichever
- *  are set up. A part that is not set up says nothing. */
+/** What the vendors cost: the plans (Copilot's card among them), then the API
+ *  spend, whichever are set up. A part that is not set up says nothing. */
 function plansNode(payload) {
   const el = node("div", "ai-plans");
   for (const plan of payload.plans || []) el.appendChild(planNode(plan));
   for (const api of payload.apis || []) el.appendChild(apiNode(api));
-  for (const half of payload.copilot || []) el.appendChild(copilotNode(half));
   return el.childElementCount ? el : null;
 }
 

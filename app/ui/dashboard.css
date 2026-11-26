@@ -972,6 +972,40 @@
 #dashboardOverview .db-host-stats {
   margin-top: 4px;
 }
+/* The Copilot card's billing halves (Rust's `halves`): the term and its dollars
+   on one line, the dollars never shrinking, then whose bill it is and what was
+   used under it, wrapping rather than ellipsizing so a long organization
+   login is never the only text left of a line. */
+#dashboardOverview .db-halves {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+#dashboardOverview .db-half-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+}
+#dashboardOverview .db-half-label {
+  color: var(--db-muted);
+  min-width: 0;
+}
+#dashboardOverview .db-half-value {
+  flex: none;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#dashboardOverview .db-half-owner,
+#dashboardOverview .db-half-note {
+  margin: 1px 0 0;
+  font-size: 10px;
+  color: var(--db-muted);
+  overflow-wrap: anywhere;
+}
 #dashboardOverview .db-extra-metrics {
   margin-top: 5px;
 }

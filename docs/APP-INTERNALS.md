@@ -332,29 +332,38 @@
   `with_source_tile` offers one AI Usage tile and never two. The tile is read by
   one command, `ai_usage` (fixture `sample-ai-usage.json`, dump flag
   `--dump-ai-usage`), whose payload is `usage::ai_usage_view`: `plans` (Claude's
-  then Codex's `plan_usage::view` sections, then Copilot's own-limit row
-  `copilot-plan` once Personal is set up, built by `plan_usage::copilot_seat_section`
-  through `viewmodel::plan_usage::plan_row`), `apis` (always a list: one
-  `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found),
-  `copilot` (always a list: an `AI credits · {login}` row (plain `AI credits` when no login is
-  known, as after Actions billing is removed) for the organization half and an
-  `AI credits billed to {login}` row for the personal half, each when set up,
-  with a `note` and `products` (`[{name, value, dotColor, models: [{name, value,
-  dotColor}]}]`: every GitHub product the report names, at most three models
-  across the half beneath their products, `Product not named` last), and no
-  meter), the rollups (`windows`,
+  then Codex's `plan_usage::view` sections, then the one Copilot card
+  `copilot-plan` once any Copilot part is set up: `plan_usage::copilot_card`
+  puts the seat section (`plan_usage::copilot_seat_section` through
+  `viewmodel::plan_usage::plan_row`, or a bare `Copilot` header when only a
+  billing half is set up) together with `halves`), `apis` (always a list: one
+  `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found).
+  The card's `halves` (always a list) are one `Additional usage` entry for the
+  organization and one for the person, each when set up, with an `owner` (the
+  organization's login, none when no login is known, as after Actions billing
+  is removed; or `billed to {login}`), a `note` and `products` (`[{name, value,
+  dotColor, models: [{name, value, dotColor}]}]`: every GitHub product the report
+  names, at most three models across the half beneath their products, `Product
+  not named` last), and no meter. The overview tile's one Copilot row carries the
+  same `halves`, and the overview and Detail (table and list) paint each half as its
+  term and dollars on one line with the owner and the note under it. The rollups (`windows`,
   `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
   Claude Code row paints), `message`, `footer`, `freshness` and `loading`. The
-  row ids are `claude-plan`, `codex-plan`, `copilot-plan`, `anthropic-api`,
-  `openai-api`, `copilot-org`, `copilot-personal` and `claude-today` (the Anthropic and OpenAI
-  ones unchanged from the two tiles this replaced, so saved `item:` scopes keep
-  working); `tile_scope::scope_ai_usage` narrows `plans`, `apis` and `copilot`
+  source ids (the header lines' and `lines`' names, and what a scope speaks for)
+  are `claude-plan`, `codex-plan`, `copilot-plan`, `anthropic-api`,
+  `openai-api`, `copilot-org`, `copilot-personal` and `claude-today`; the tile's
+  rows are all of them but the two Copilot halves, which the card carries. The Anthropic and OpenAI
+  ones are unchanged from the two tiles this replaced, so saved `item:` scopes keep
+  working, and a saved `item:copilot-org` or `item:copilot-personal` is rewritten to
+  `item:copilot-plan` when the store is read
+  (`StoreData::carry_copilot_item_scopes_onto_card`, one-shot and idempotent like
+  the other scope carries); `tile_scope::scope_ai_usage` narrows `plans` and `apis`
   by id and drops the rollups block, `trailing` and `claudeToday` when
   `claude-today` is not kept. `scope_payload` ignores a kind it has no arm for,
   so that arm is what keeps a vendor-scoped tile from showing the other
   vendor's figures. **A scope picks figures only.** The payload's `footer`, the
-  merged all-rows `⚠` line (all three plans, both API rows, both Copilot billing rows,
+  merged all-rows `⚠` line (all three plans, both API rows, both Copilot billing halves,
   `claude-today`, each labelled with its row id, wording and colour as the
   `all` tile's), is on every AI Usage tile, and an overview card's `⚠` entry is
   the source's for every scope; the card's clock entry is the kept rows' clocks,
@@ -431,7 +440,7 @@
   GitHub Runners (one `github` cadence, one key, on both tiles: `cadence::source_ids`
   maps a panel to a list of sources), Service Health, AI Usage (three: the Claude
   rollups, the plan limits and the metered providers' cadence, which also reads
-  both vendors' API spend and Copilot's two halves and its own-limit row, and is shared with Usage),
+  both vendors' API spend and the Copilot card's two halves and its seat meter, and is shared with Usage),
   Usage (the metered providers), Azure Cost, Actions billing and Sentry
   Crons — under **Poll cadence**, one control per cadence (a
   source carries a `cadences` list, so a tile fed by two polls shows both), which says it is shared by the tiles it names and the Full view and saves on the click (`panel_interval_save` / `panel_interval_clear`,
@@ -557,7 +566,7 @@
   disagree on one name: its endpoint example and cookbook say a bucket's list is
   `results`, which the reader uses, and its published `UsageTimeBucket` schema
   says `result`.
-- **GitHub Copilot → organization and personal credits**: two halves, one
+- **GitHub Copilot → organization and personal additional usage**: two halves, one
   key. The **personal** half is a fine-grained PAT on the operator's own account
   with the user permission Plan: read and nothing else
   (`SecretKey::CopilotPersonalToken`, item `copilot_personal_token`; **that name
@@ -579,7 +588,7 @@
   strings are unconfirmed, so it does not branch on them (the endpoints are
   already Copilot-only), and the manual smoke rows in `app/README.md` are owed.
   The **personal token also goes to `GET https://api.github.com/copilot_internal/user`**
-  (`copilotusage::CopilotUsageClient::seat`), the `copilot-plan` row's read: the
+  (`copilotusage::CopilotUsageClient::seat`), the Copilot card's seat read (`copilot-plan`): the
   owner's own plan or employer-seat limit, which the documented billing
   endpoints cannot give a member of an organization (they are admin-only, and
   the user-level one leaves such a seat out). **That endpoint is undocumented**

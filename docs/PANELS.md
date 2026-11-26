@@ -77,10 +77,9 @@
   `usage::ai_usage_view`). The **Anthropic**, **OpenAI** and **GitHub Copilot**
   sources in Settings all feed it, so a part is set up in the source that owns it
   and a source adds the one tile, never two. The body reads, in this order: the
-  **plan limits** (Claude's, Codex's, then Copilot's own limit, `copilot-plan`),
-  the **API spend** (`apis`,
-  Anthropic's then OpenAI's, each from its own Admin key), **Copilot's billing
-  rows** (`copilot`, the organization's then the person's), then this machine's
+  **plan limits** (Claude's, Codex's, then Copilot's one card, `copilot-plan`,
+  which carries its billing halves too), the **API spend** (`apis`,
+  Anthropic's then OpenAI's, each from its own Admin key), then this machine's
   Claude Code rollups last.
   Plans are **opt-in and off in a fresh store** (15 min by default, see
   `docs/APP-INTERNALS.md`, **Authentication**).
@@ -112,24 +111,37 @@
   `PanelInterval::UsageProviders`, with a note saying how far the figure reaches
   (`counted 3h ago`), which is not when it was read: Anthropic's lag by hours.
   `apis` is always a list, empty when neither key is there.
-  **GitHub Copilot** (`crates/copilotusage`) is month-to-date AI credits, **every
+  **GitHub Copilot** (`crates/copilotusage`) is **one card**, `copilot-plan`, in
+  `plans` after Codex's, whenever any Copilot part is set up (the organization
+  half, the personal half or the seat read). It is headed `Copilot`, or
+  `Copilot · Business` when the seat read names the plan, and drawn as Claude's
+  and Codex's are in the overview tile and in the Full view. Under its header sit
+  the seat's `Budget` meter when there is one (described below), then a `halves`
+  entry for each billing half that is set up. A card with only a billing half has
+  no meter and no figure of its own in its header (nothing asked of the seat, so
+  nothing said about it; the `—` is for a seat that was asked and is unknown).
+  The billing is month-to-date AI credits, **every
   GitHub product's, Copilot among them** (the `ai_credit` report is one shared
   pool, and Code Quality, Code Security and others draw on it), in two
-  billing halves that answer to the one `copilot` scope: the organization's
+  halves that answer to the one `copilot` scope: the organization's
   (`copilot-org`: the whole pool of an organization **you administer**, not your
   own usage) and the person's (`copilot-personal`: what GitHub **billed to that
-  account**, labelled `AI credits billed to {login}` so an employer's seat, which is
-  not billed to the person, cannot read as "used nothing"). `copilot` is always a
-  list, empty when neither half is set up. A third row, `copilot-plan`, is the
-  person's **own plan or employer seat limit** and is described below. The
+  account**, whose owner line says `billed to {login}` so an employer's seat, which is
+  not billed to the person, cannot read as "used nothing"). Each half is one
+  line labelled `Additional usage` (GitHub's own term for the billed figure, on any
+  plan, with or without included credits) with its dollars as the value; the
+  half's `owner` (the organization's login, or `billed to {login}`) and its note
+  are lines under it, never beside the dollars, so no tile width can cut the
+  dollars off or leave a truncated login as the only text. `halves` is empty when
+  neither half is set up, and the halves are not in `apis`. The
   **organization half owns no credential**: it is a flag
   (`copilot_org_enabled`) that reads the **Actions billing** token and
   organization fresh on every pass and keeps neither, so its part is refused at
   Finish until Actions billing is set up (`store::source_save::Requires`, a
   read-only precondition that never writes or deletes that token). Removing
-  Actions billing drops the figure on the same frame, and the row then reads `—`
+  Actions billing drops the figure on the same frame, and the half then reads `—`
   and says `Actions billing isn't set up` (a `⚠` line under `copilot-org`);
-  unticking the part hides the row on the same frame, because the flag is read at
+  unticking the part removes its half from the card on the same frame, because the flag is read at
   render time. The **personal half** has its own fine-grained token
   (`copilot_personal_token`, user permission Plan: read and nothing else) and a
   username; it is the source's only key, and its billing read covers only
@@ -137,22 +149,22 @@
   `copilot-plan` seat quota below), and the user-level billing endpoint leaves out a seat
   an employer assigns and pays for (GitHub: usage for a license "managed and
   billed through an organization or enterprise" is not in user-level endpoints),
-  which is why that row reads a measured `$0.00` for such a seat. Both halves ride
+  which is why that half reads a measured `$0.00` for such a seat. Both halves ride
   `PanelInterval::UsageProviders`
   (there is no tenth cadence) and read the `ai_credit` usage report and, beside
   it, the `premium_request` one, pinned to API version `2026-03-10` in this crate
-  only. An organization row is `AI credits · {login}` (plain `AI credits` when no
-  login is known, as after Actions billing is removed); the personal row is `AI
-  credits billed to {login}` (`… you` with no login). The report is **not
+  only. The organization half's owner is its login (no owner line when no login is
+  known, as after Actions billing is removed); the personal half's is `billed to
+  {login}` (`billed to you` with no login). The report is **not
   filtered to Copilot** and nothing matches a product, SKU or unit string, so a
   guessed name can never silently read zero; the live Copilot `product` string is
   still unknown (the one recorded live string is `Code Quality`). Each has the
   billed USD as its value (`—` when
-  any item lacks its net amount, never a zero), a note of `N AI credits used · N
+  any item lacks its net amount, never a zero), a note of `N credits used · N
   included · N premium requests` that names only what was measured, and a
   `products` breakdown underneath (the shape GitHub's billing page uses): **every**
   product, by GitHub's own string trimmed and never merged by guessing, so, when
-  every item is measured, the lines add up to the note's `N AI credits used` (up
+  every item is measured, the lines add up to the note's `N credits used` (up
   to display rounding); its credits are `—` when any of its items lacks a
   quantity; ordered by credits, ties by name, unmeasured after measured; items
   with no `product` (absent or blank) are one last line, `Product not named`.
@@ -160,20 +172,22 @@
   indented under its own product (the same model under two products is two
   entries). The premium-request line is there only when
   that report has items (an annual Pro/Pro+ plan still bills them); a 404 on it is
-  no line and no claim, never an error. **The billing rows have no plan meter**:
+  no line and no claim, never an error. **The halves have no plan meter**:
   the billing API reports no allowance and no pool, so a bar would be a share of
   an invented number. A figure belongs to its login: changing the organization or
-  the username drops the previous figures. **The billing rows are never
-  attention rows**, so they cannot raise the red chip; a failed read, a stale
-  clock and a token the credential store would not read are `⚠` lines like any
-  other row's.
-  **`copilot-plan` is the owner's own limit.** It is read from the **same
+  the username drops the previous figures. **The halves never ask for
+  attention**, so they cannot raise the red chip (only the seat's red meter does);
+  a failed read, a stale clock and a token the credential store would not read
+  are `⚠` lines like any other row's, under their own source ids (`copilot-org`,
+  `copilot-personal`).
+  **The card's seat meter is the owner's own limit.** It is read from the **same
   Personal token**, on the pass `poll_copilot_personal` already runs
   (`PanelInterval::UsageProviders`), from `GET /copilot_internal/user`: the one
   source that answers for a member of an organization whose seat an employer
   assigns (the documented usage and budget endpoints are admin-only). It adds no
-  key, part or cadence. It is a **plan row** in `plans`, after Claude's and
-  Codex's, built by `viewmodel::plan_usage::plan_row` like theirs, so it takes
+  key, part or cadence. It is the card's plan section in `plans`, after Claude's and
+  Codex's, built by `viewmodel::plan_usage::plan_row` like theirs (`plan_usage::copilot_card`
+  then adds the halves), so it takes
   their meter, their colours and the red rule `dashboard::plan_rows` reads, with no
   attention code of its own: from 90% of its limit (`usage_color`'s edges are 70%/90%, as for the other plan meters; `credits_used` equal to `entitlement` is 100%), its
   meter is red and the row raises attention. It reads `Copilot · Business` (the
@@ -214,10 +228,10 @@
   is kept. The request carries the bearer token only, no
   `X-GitHub-Api-Version`. **Its state, `⚠` line and clock are its own**
   (`copilot-plan`, apart from `copilot-personal`'s), so one endpoint failing never
-  blanks or ages the other's row. It answers to `plans` *and* `copilot`, so a
-  tile scoped `plans` also shows it once Personal is set up (`plans` means every
-  plan limit); removing Personal's token hides it on the same frame as the
-  billing row, and a username change drops its figures.
+  blanks or ages the other's figure. The card answers to `plans` *and* `copilot`, so a
+  tile scoped `plans` also shows it once any Copilot part is set up (`plans` means
+  every plan limit); removing Personal's token hides the seat meter and the
+  personal half on the same frame, and a username change drops their figures.
   The header's warning and clock lines read in body order and each names its
   row's own id (`claude-plan`, `codex-plan`, `copilot-plan`, `anthropic-api`,
   `openai-api`, `copilot-org`, `copilot-personal`, and the rollups' `claude-today`,
@@ -236,16 +250,20 @@
   `app/src-tauri/src/plan_usage.rs`, `crates/viewmodel/src/plan_usage.rs`): a plan
   is not an account, and its figures never merge into the rollups.
   *Scopes.* Besides `all` and `attention`, a tile can be narrowed to `plans`
-  (every plan limit: Claude's, Codex's and Copilot's own), `claude` (the Claude
+  (every plan limit: Claude's, Codex's and the Copilot card), `claude` (the Claude
   Code row and its rollups), `anthropic` or `openai`
   (that vendor's plan, spend and, for Anthropic, the Claude Code row), `copilot`
-  (all three Copilot rows), or one row (`item:<id>`). The Anthropic and OpenAI row
+  (the one Copilot card), or one row (`item:<id>`). The Anthropic and OpenAI row
   ids are unchanged from the two tiles this one replaced, so a saved `item:`
-  scope keeps working; `copilot-org`, `copilot-personal` and `copilot-plan` are new
-  (`dashboard::vendor_of` maps each row to its vendor scope). A tile that does not keep `claude-today` also drops the
+  scope keeps working. The Copilot card is the one row `copilot-plan`; a saved
+  `item:copilot-org` or `item:copilot-personal` (each a row of its own before the
+  card was one) is rewritten to `item:copilot-plan` when the store is read
+  (`StoreData::carry_copilot_item_scopes_onto_card`), so the one id is the only
+  mechanism (`dashboard::vendor_of` maps each id to its vendor scope, and all
+  three Copilot sources speak for the card's header lines and loading). A tile that does not keep `claude-today` also drops the
   header's Claude Code figure. **A tile's scope picks only which
   figures it shows.** Every `⚠` warning from a configured AI source (all three plans,
-  both keys, each Copilot row, the Claude Code logs, and a key the credential
+  both keys, each Copilot source, the Claude Code logs, and a key the credential
   store would not read) shows on every AI Usage tile, overview card and Full view
   alike, in body order and labelled with its row id (`claude-plan`, `codex-plan`,
   `copilot-plan`, `anthropic-api`, `openai-api`, `copilot-org`, `copilot-personal`,
@@ -268,7 +286,8 @@
   (`anthropic`: the Anthropic vendor, meaning its plan, key and logs; `claude`
   and `item:claude-today`: the logs; `item:claude-plan`, `item:codex-plan`: that
   plan; `item:anthropic-api`, `item:openai-api`: that key; `openai`: the OpenAI
-  vendor; `copilot`: all three Copilot rows and the personal key; `plans`: all
+  vendor; `copilot`, and an `item:` naming any Copilot id: the card's three sources
+  and the personal key; `plans`: all
   three plans (Copilot's included, so a `plans` tile also waits on the personal
   key and, with nothing set up, names GitHub Copilot among the vendors it says
   are not set up);

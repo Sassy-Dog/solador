@@ -3659,9 +3659,9 @@ async fn poll_copilot_org(app: &Arc<App>) {
 /// Copilot's personal half: its own token, read fresh each pass. No key is no
 /// row; a key the credential store will not hand over is not "no key".
 ///
-/// The one token feeds two readings, each with its own state: the billing row
-/// (`copilot-personal`, what GitHub billed to this account) and the plan row
-/// (`copilot-plan`, the account's own plan or seat limit). Neither's failure
+/// The one token feeds two readings, each with its own state: the billing half
+/// (`copilot-personal`, what GitHub billed to this account) and the card's seat
+/// meter (`copilot-plan`, the account's own plan or seat limit). Neither's failure
 /// touches the other's figure, warning or clock. With no key both go, on the
 /// same frame.
 async fn poll_copilot_personal(app: &Arc<App>) {
@@ -9515,10 +9515,19 @@ mod tests {
         )
     }
 
-    fn copilot_ids(card: &Value) -> Vec<String> {
-        card["copilot"]
+    /// The billing halves the one Copilot card carries, in its order.
+    fn copilot_halves(card: &Value) -> Vec<Value> {
+        card["plans"]
             .as_array()
             .unwrap()
+            .iter()
+            .find(|plan| plan["id"] == "copilot-plan")
+            .and_then(|plan| plan["halves"].as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    fn copilot_ids(card: &Value) -> Vec<String> {
+        copilot_halves(card)
             .iter()
             .map(|row| row["id"].as_str().unwrap().to_owned())
             .collect()
@@ -9587,7 +9596,7 @@ mod tests {
     }
 
     /// Removing Actions billing takes the organization figure with it on the same
-    /// frame, and the Copilot flag stays: the row reads a dash and says why at
+    /// frame, and the Copilot flag stays: the half reads a dash and says why at
     /// once, rather than vanishing until the woken pass reaches it.
     #[test]
     fn removing_actions_billing_hides_the_copilot_org_figure_on_the_same_frame() {
@@ -9623,10 +9632,11 @@ mod tests {
         let said = "copilot-org: Actions billing isn't set up";
         let check = |card: &Value| {
             assert_eq!(copilot_ids(card), ["copilot-org"]);
-            let row = &card["copilot"][0];
+            let row = &copilot_halves(card)[0];
             assert_eq!(row["value"], "\u{2014}");
             // No figure survives, and the organization's name went with it.
-            assert_eq!(row["label"], "AI credits");
+            assert_eq!(row["label"], "Additional usage");
+            assert!(row["owner"].is_null());
             assert!(row["note"].is_null());
             assert!(row["products"].as_array().unwrap().is_empty());
             assert!(card["footer"]["text"].as_str().unwrap().contains(said));
@@ -9754,10 +9764,10 @@ mod tests {
         assert!(plan["warning"].is_null());
     }
 
-    /// A token the store will not hand over warns under **both** Copilot rows'
+    /// A token the store will not hand over warns under **both** Copilot sources'
     /// own ids, and neither is the setup sentence.
     #[test]
-    fn an_unreadable_personal_token_warns_under_both_copilot_rows() {
+    fn an_unreadable_personal_token_warns_under_both_copilot_sources() {
         let (_dir, rt, app) = test_app_over(UnreadableCredentialStore);
         let app = Arc::new(app);
         app.store.lock().unwrap().settings_mut().copilot_username = "example-user".into();

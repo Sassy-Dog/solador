@@ -117,7 +117,9 @@ store under its own item, and Remove source forgets it.
 
 ## GitHub Copilot token
 
-The **GitHub Copilot** source has two independent parts on the AI Usage tile.
+The **GitHub Copilot** source has two independent parts, and both land on the one **Copilot**
+card on the AI Usage tile, each as an **Additional usage** line (GitHub's own term for
+the billed figure) with whose bill it is beneath.
 
 - **Organization** shows the whole pool of an organization **you administer**,
   not your own usage, counting every GitHub product billed in AI credits
@@ -186,13 +188,14 @@ For the **organization** part, the Actions billing token needs **Administration:
 Read** and an organization admin, as above. For the **personal** part, the token
 needs the user permission **Plan: Read**. A **not found** message means the
 organization (and its enhanced billing platform) or the username is wrong. The
-personal **billing** row (`AI credits billed to …`) only counts usage billed to
-you personally, so a seat a company or school provides shows a measured `$0.00`
-there; the **Copilot · \<plan\>** row beside it is the seat's own limit. If that
-row says the token belongs to a different account, the token was created on
-another GitHub account than the username you typed. The **organization** row
-(`AI credits · …`) counts every GitHub product billed in AI credits, Copilot
-among them, and lists them by product.
+personal **Additional usage** line (with `billed to …` beneath it) only counts usage
+billed to you personally, so a seat a company or school provides shows a
+measured `$0.00` there; the **Copilot · \<plan\>** budget meter above it is the
+seat's own limit. If the card says the token belongs to a different account, the
+token was created on another GitHub account than the username you typed. The
+**organization**'s **Additional usage** line (with the organization's login beneath it)
+counts every GitHub product billed in AI credits, Copilot among them, and lists
+them by product.
 
 ### Rate limiting
 Authenticated requests get **5,000/hour per token**. The Repos panel spends

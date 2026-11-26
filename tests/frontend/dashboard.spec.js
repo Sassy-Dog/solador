@@ -726,19 +726,21 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   const view = await openDashboard(page, baseURL, false, withAiUsageTile);
   const source = view.sources.find(s => s.id === 'aiUsage');
   const plans = source.rows.filter(r => r.scopes.includes('plans'));
-  expect(plans.map(r => r.id), 'Claude\'s plan, Codex\'s, then Copilot\'s own limit, first').toEqual(['claude-plan', 'codex-plan', 'copilot-plan']);
+  expect(plans.map(r => r.id), 'Claude\'s plan, Codex\'s, then the one Copilot card, first').toEqual(['claude-plan', 'codex-plan', 'copilot-plan']);
   expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, plans.length).map(r => r.id));
-  // Body order: plans, API spend, Copilot, then the Claude Code line last.
-  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'copilot-plan', 'anthropic-api', 'openai-api', 'copilot-org', 'copilot-personal', 'claude-today']);
+  // Body order: plans, API spend, then the Claude Code line last. Copilot's
+  // billing halves are the card's, not rows of their own.
+  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'copilot-plan', 'anthropic-api', 'openai-api', 'claude-today']);
   expect(source.rows.filter(r => r.label === 'Claude Code'), 'the tokens are one line').toHaveLength(1);
   // Every row answers to its vendor, so a tile can be narrowed to one.
   const vendors = Object.fromEntries(source.rows.map(r => [r.id, r.scopes.filter(s => s === 'anthropic' || s === 'openai' || s === 'copilot')]));
   expect(vendors).toEqual({'claude-plan': ['anthropic'], 'codex-plan': ['openai'], 'copilot-plan': ['copilot'], 'anthropic-api': ['anthropic'],
-    'openai-api': ['openai'], 'copilot-org': ['copilot'], 'copilot-personal': ['copilot'], 'claude-today': ['anthropic']});
-  // The Copilot billing rows are never attention rows: they cannot raise the red
-  // chip. Its plan row is a plan, so only a red meter would (this one is green).
-  expect(source.rows.filter(r => r.id === 'copilot-org' || r.id === 'copilot-personal').map(r => r.attention)).toEqual([false, false]);
-  expect(source.rows.find(r => r.id === 'copilot-plan').attention).toBe(false);
+    'openai-api': ['openai'], 'claude-today': ['anthropic']});
+  // The Copilot billing halves never ask for attention: they cannot raise the
+  // red chip. The card is a plan, so only a red seat meter would (this one is green).
+  const copilot = source.rows.find(r => r.id === 'copilot-plan');
+  expect(copilot.attention).toBe(false);
+  expect(copilot.halves.map(h => h.id)).toEqual(['copilot-org', 'copilot-personal']);
   // A row with meters is a card, as a machine is.
   const items = tile(page, 'aiUsage').locator('.db-host');
   await expect(items).toHaveCount(plans.length);
@@ -772,6 +774,95 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
     expect(headers.map(h => h.toLowerCase())).toContain(label.toLowerCase());
   }
 });
+
+// The one Copilot card in the overview: the seat's meter, then each billing half
+// as GitHub's term and its dollars on one line, with whose bill it is and what
+// was used beneath, so the tile's width can never cut the dollars off.
+test('the Copilot card paints each billing half with its dollars intact beside a very long organization login at the tile\'s minimum width', async ({page,baseURL}) => {
+  const login = 'example-organization-with-a-very-long-login-that-used-to-fill-the-whole-line';
+  const view = await openDashboard(page, baseURL, false, (prepared) => {
+    withAiUsageTile(prepared);
+    const row = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'copilot-plan');
+    row.halves[0].owner = login;
+  });
+  const source = view.sources.find(s => s.id === 'aiUsage');
+  const halves = source.rows.find(r => r.id === 'copilot-plan').halves;
+  await page.setViewportSize({ width: 1400, height: 900 });
+  // One atomic read per poll: the poll may replace the tile, so each attempt pins
+  // the live node to AI Usage's `min_width` (340, `PanelKind::min_width`) and
+  // measures in the same evaluation.
+  const measure = () => page.evaluate((login) => {
+    const t = document.querySelector('[data-tile="overview-aiUsage"]');
+    Object.assign(t.style, { width: '340px', maxWidth: '340px', minWidth: '0', justifySelf: 'start' });
+    const frame = t.getBoundingClientRect();
+    const inside = (el) => { const r = el.getBoundingClientRect(); return r.left >= frame.left && r.right <= frame.right; };
+    const card = [...t.querySelectorAll('.db-host')].find(c => c.querySelector('.db-half'));
+    const owner = [...card.querySelectorAll('.db-half-owner')].find(o => o.textContent === login);
+    const lineHeight = parseFloat(getComputedStyle(owner).lineHeight) || 12;
+    return {
+      tile: Math.round(frame.width),
+      dollarsWhole: [...card.querySelectorAll('.db-half-value')].every(v => v.scrollWidth <= v.clientWidth && inside(v)),
+      ownerInside: inside(owner),
+      ownerWraps: owner.getBoundingClientRect().height > lineHeight * 1.5,
+    };
+  }, login);
+  await expect.poll(measure, { message: 'the dollars stay whole and the long login wraps at a 340px tile' })
+    .toEqual({ tile: 340, dollarsWhole: true, ownerInside: true, ownerWraps: true });
+  const card = tile(page, 'aiUsage').locator('.db-host').nth(2);
+  await expect(card.locator('.db-item-name')).toHaveText('Copilot · Business');
+  await expect(card.locator('.db-half')).toHaveCount(halves.length);
+  for (const [i, half] of halves.entries()) {
+    const part = card.locator('.db-half').nth(i);
+    await expect(part.locator('.db-half-label')).toHaveText(half.label);
+    await expect(part.locator('.db-half-value')).toHaveText(half.value);
+    if (half.note) await expect(part.locator('.db-half-note')).toHaveText(half.note);
+  }
+  // The meter and the halves are one card, the seat's meter first.
+  const order = await card.evaluate(el => [...el.children].map(c => c.className));
+  expect(order.indexOf('db-host-stats')).toBeLessThan(order.indexOf('db-halves'));
+});
+
+// A card with only a billing half (no seat read) has no meter, and still gets
+// the card treatment, not the compact row's.
+test('a Copilot card with only the organization half is a card with no meter', async ({page,baseURL}) => {
+  await openDashboard(page, baseURL, false, (prepared) => {
+    withAiUsageTile(prepared);
+    const row = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'copilot-plan');
+    Object.assign(row, { label: 'Copilot', value: '', metrics: [], halves: [row.halves[0]] });
+  });
+  const card = tile(page, 'aiUsage').locator('.db-host').filter({ has: page.locator('.db-half') });
+  await expect(card).toHaveCount(1);
+  await expect(card.locator('.db-item-name')).toHaveText('Copilot');
+  await expect(card.locator('.db-host-stats')).toHaveCount(0);
+  await expect(card.locator('.db-half')).toHaveCount(1);
+  await expect(card.locator('.db-half-value')).toHaveText(/^\$/);
+});
+
+// Detail draws each half under the card's row: the table's expanded row and the
+// list's, with the label, the dollars, the owner and the note.
+for (const view of ['table', 'list']) {
+test(`the tile's ${view} Detail shows the Copilot card's billing halves`, async ({page,baseURL}) => {
+  const prepared = await openDashboard(page, baseURL, false, (v) => {
+    withAiUsageTile(v);
+    v.layout.tiles.find(t => t.id === 'overview-aiUsage').detailView = view;
+    const t = v.tiles.find(t => t.id === 'overview-aiUsage');
+    if (t) t.detailView = view;
+  });
+  const halves = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'copilot-plan').halves;
+  await openDetail(page, 'aiUsage');
+  const resource = page.locator(`#dashboardOverview [data-resource="copilot-plan"]`);
+  if (view === 'table') await resource.first().locator('.db-table-toggle').click();
+  else await page.locator('#dashboardOverview details[data-resource="copilot-plan"] summary').click();
+  const shown = page.locator(`#dashboardOverview .db-detail-extra .db-half`);
+  await expect(shown).toHaveCount(halves.length);
+  for (const [i, half] of halves.entries()) {
+    await expect(shown.nth(i).locator('.db-half-label')).toHaveText(half.label);
+    await expect(shown.nth(i).locator('.db-half-value')).toHaveText(half.value);
+    if (half.owner) await expect(shown.nth(i).locator('.db-half-owner')).toHaveText(half.owner);
+    if (half.note) await expect(shown.nth(i).locator('.db-half-note')).toHaveText(half.note);
+  }
+});
+}
 
 // A tile's Detail warnings are source-level (its rows follow the scope): it
 // paints the source's whole warnings, whatever the tile's scope, so an
