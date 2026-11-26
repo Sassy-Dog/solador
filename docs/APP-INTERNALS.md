@@ -321,10 +321,31 @@
 - Claude and Codex plan limits: `crates/subscription`, one task
   (`plan_usage_loop` in `app/src-tauri/src/main.rs`) on its own cadence
   (`panel_intervals.plan_usage`, 15 min by default, floor 5 min). Each provider
-  keeps its own schedule (a 429's `Retry-After`, capped at a day, pushes only
-  that provider back) and a generation counter, so a reading that lands after
+  keeps its own schedule and a generation counter, so a reading that lands after
   its toggle flipped is dropped rather than painted under the new setting. A
-  provider that is off is never read and never woken.
+  provider that is off is never read and never woken. **A 429 backs the provider
+  off**: after the n-th in a row the next read waits `cadence × 2^n`, capped at
+  `8 × cadence` (30 min, 1 h, 2 h, then 2 h at the default), and a longer
+  `Retry-After` (itself capped at a day by `subscription`) still wins; a success
+  resets n, any other failure leaves it (`plan_usage::record_outcome`,
+  `backoff_secs`). **The schedule survives a relaunch.** Each provider's last
+  attempt, consecutive-429 count and not-before instant, and whether its latest
+  outcome was a 429, are three numbers and a flag in `plan-schedule.json`, beside
+  `store.json` (`subscription::schedule`; its own file because it is rewritten
+  after every read, and `store.json` is the operator's settings). It holds no
+  token and nothing from a response, is loaded once when the loop starts and
+  rewritten after a pass only when it changed, and an absent or unreadable file
+  is "no wait owed". A provider that is off at launch drops what it held, and a
+  restored time no wait could honestly have is dropped with one log line (a
+  `last_attempt` after now, or a `not_before` further ahead than the longer of
+  `8 × cadence` and a `Retry-After`'s day), so a clock set ahead and corrected
+  cannot park a provider. **Turning the Subscription part off and on again is
+  not a relaunch**: any toggle calls `PlanSource::reset`, which clears the count
+  and the wait, so the provider reads at once; a relaunch keeps both. A save
+  that fails is logged once and tried again on the next pass, and once more when
+  it recovers (`plan_usage::SchedulePersistence`).
+  **While Claude's latest read was a 429, its card shows Claude Code's
+  status-line figures** (below).
 - **AI Usage is one tile over three sources.** The Anthropic, OpenAI and GitHub
   Copilot sources (Settings → Sources) each keep their own typed key (the first
   two an Admin key, Copilot a personal token), because a source carries one typed
@@ -550,6 +571,73 @@
   `utilization` is never read: its unit is ambiguous). An amount with no
   currency is a bare number, never dollars, and no reset date is invented for
   it, so it has no pace.
+  **Claude Code's status line fills the card while the plan read is
+  rate-limited.** Anthropic answers this private endpoint with 429s even at the
+  default cadence, so while Claude's opt-in is on and its **latest read outcome
+  is a 429**, the Claude row shows the `five_hour` / `seven_day` utilisation
+  Claude Code hands its status-line command as `rate_limits`
+  (<https://code.claude.com/docs/en/statusline>), until the next successful read
+  replaces it. The figures reach Solador through one small file in its own data
+  directory, `claude-statusline.json` (beside `store.json`: macOS
+  `~/Library/Application Support/app.solador.desktop/`, Linux
+  `${XDG_CONFIG_HOME:-~/.config}/app.solador.desktop/`, Windows
+  `%APPDATA%\app.solador.desktop\`, or `SOLADOR_STORE_DIR`),
+  **which the operator's own status-line command writes**. Solador never edits the
+  operator's status line or `~/.claude/settings.json`, and never writes the file.
+  It is not a credential. The snippet keeps `rate_limits` and the instant it ran
+  and nothing else from the status-line input (which also carries paths and
+  session ids), through a temporary file in the same directory and a rename, so a
+  reader never sees half a file; add it to the status-line script after it has
+  read its input into `input` (`input=$(cat)`). It needs `jq`, and the Solador
+  data directory to exist (it does once the app has run). Tested on macOS with a
+  sample input; **it is untested on Windows, and there is no PowerShell version**.
+  Under Git Bash on Windows `uname -s` is not `Darwin`, so the snippet falls to
+  the `*)` branch, looks in `~/.config/app.solador.desktop`, finds no directory
+  and writes nothing without reporting an error: set `SOLADOR_STORE_DIR` to the
+  Windows directory in the form Git Bash reads
+  (`/c/Users/<you>/AppData/Roaming/app.solador.desktop`) in the status line's
+  environment:
+
+  ```bash
+  if command -v jq >/dev/null 2>&1; then
+    case "$(uname -s)" in
+      Darwin) base="$HOME/Library/Application Support" ;;
+      *) base="${XDG_CONFIG_HOME:-$HOME/.config}" ;;
+    esac
+    dir="${SOLADOR_STORE_DIR:-$base/app.solador.desktop}"
+    if [ -d "$dir" ]; then
+      tmp="$dir/.claude-statusline.json.$$.tmp"
+      if printf '%s' "$input" \
+        | jq -c --argjson now "$(date +%s)" \
+          'select(.rate_limits != null) | {written_at: $now, rate_limits: .rate_limits}' \
+          > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$dir/claude-statusline.json"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  fi
+  ```
+
+  What Solador reads is a typed parse (`subscription::statusline`) that names
+  `written_at` and, in `rate_limits`, `five_hour` / `seven_day` with their
+  `used_percentage` and `resets_at`, and skips every other key unread
+  (`spend_limit` included, and no model-scoped week). Absent is no meter and never
+  0%: an absent file, field or window shows nothing, and a window whose
+  `resets_at` has passed is not shown; a window that states no `resets_at` is
+  shown only while the file is younger than the window's span (under 5 hours for
+  `5h`, under 7 days for `Week`). **A file written more than a day ago
+  (`statusline::MAX_AGE_SECS`, inclusive) is not used**, nor one dated more than a
+  minute ahead of the clock; the card is then the dash with its header, as before.
+  The status line is set aside when the last successful plan read is newer than
+  the file (the retained reading is then the fresher figure). The card says so in
+  Rust's words (`viewmodel::plan_usage::status_line_note`: where the figures are
+  from and how old the file is), shows only `5h` and `Week`, keeps the plan's name
+  from the last reading that had one, judges pace at the file's write time inside
+  the usual stale edge, and the header still carries the rate-limit warning. It is
+  read as the panel is built (`plan_usage::refresh_status_line`), not at the poll,
+  so it is as new as the status line's last write. The Codex card has no such
+  fallback.
 - **Anthropic and OpenAI → API spend**: an **Admin API key the operator gave
   Solador**, kept in the OS credential store (`SecretKey::AnthropicAdminKey`,
   `OpenAiAdminKey`) and never in `store.json`. `crates/usage::api_spend` asks

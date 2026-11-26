@@ -578,3 +578,37 @@ test("a Codex-only scoped payload paints no Claude heading, window rows or Claud
   await expect(page.locator("#aiUsagePanel")).not.toContainText("Claude");
   await expectPlan(page, codex);
 });
+
+// The Claude card while Anthropic refuses the plan read. The payload is Rust's
+// own (`--dump-ai-usage … --plan-statusline`): Claude Code's status-line
+// figures as 5h and Week meters, the sentence that says so, and the header's
+// warning still in place. This file adds no words of its own.
+test("a rate-limited Claude plan row paints the status-line figures, says where they are from, and keeps the header warning", async ({
+  page,
+  baseURL,
+}) => {
+  const payload = await gotoAiUsage(page, baseURL, "sample-ai-usage-statusline.json");
+  const plan = payload.plans.find((p) => p.id === "claude-plan");
+  expect(plan.metrics.map((m) => m.label), "5h and Week, no model week, no spend").toEqual(["5h", "Week"]);
+  expect(plan.source, "Rust's sentence").toMatch(/Claude Code's status line, written \d+m ago/);
+  // The meters, their fills and their notes, as for any plan.
+  await expectPlan(page, plan);
+  const section = planSection(page, "claude-plan");
+  await expect(section.locator(".pv-note")).toHaveCount(1);
+  await expect(section.locator(".pv-note")).toHaveText(plan.source);
+  // The note sits between the header row and the meters.
+  const order = await section.evaluate((el) => [...el.children].map((c) => c.className.split(" ")[0]));
+  expect(order).toEqual(["pv-divider", "pv-row", "pv-note", "db-host-stats"]);
+  // The read is still being refused, and the header says so.
+  await expect(page.locator("#aiUsageStale")).toBeVisible();
+  await expect(page.locator("#aiUsageStale")).toHaveText(payload.footer.text);
+  expect(payload.footer.text).toMatch(/rate-limiting/);
+
+  // A recovered read replaces them: no sentence, the plan read's own meters.
+  const measured = await fixture(baseURL, "sample-ai-usage.json");
+  await render(page, measured);
+  const recovered = measured.plans.find((p) => p.id === "claude-plan");
+  expect(recovered.source).toBeUndefined();
+  await expectPlan(page, recovered);
+  await expect(planSection(page, "claude-plan").locator(".pv-note")).toHaveCount(0);
+});

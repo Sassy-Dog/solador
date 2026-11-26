@@ -1702,6 +1702,10 @@ pub enum Fixture {
     /// windows and no plan name, beside a Codex that failed before any
     /// reading. Claude content, no metered provider.
     PlanEdges,
+    /// Anthropic is refusing the Claude plan read (a 429 after a reading six
+    /// hours ago), so the Claude row shows Claude Code's status-line figures,
+    /// labelled as such. Claude content; Codex and the metered providers off.
+    StatusLine,
 }
 
 /// A hand-made state for the offline fixtures.
@@ -1871,6 +1875,37 @@ pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageS
                 )
                 .user_message(),
             );
+        }
+        Fixture::StatusLine => {
+            state.apply_claude(Some(fixture_summary()), claude_at, None);
+            let [(_, reading), _] = measured_plans(claude_at);
+            let source = state.plan_mut(Provider::Claude);
+            source.state.succeeded(reading, at - 6 * 3_600, None);
+            let throttled = subscription::PlanUsageError::new(
+                Provider::Claude,
+                subscription::PlanErrorKind::RateLimited {
+                    retry_after_secs: None,
+                },
+            );
+            crate::plan_usage::record_outcome(
+                source,
+                Provider::Claude,
+                Some(&throttled),
+                at - 15 * 60,
+                FIXTURE_PLANS.cadence_secs,
+            );
+            source.state.failed(throttled.user_message());
+            let window = |used_percent, resets_in| {
+                Some(subscription::statusline::Window {
+                    used_percent,
+                    resets_at: i64::try_from(at + resets_in).ok(),
+                })
+            };
+            source.status_line = Some(subscription::statusline::StatusLine {
+                written_at: at - 4 * 60,
+                five_hour: window(31.0, 2 * 3_600 + 14 * 60),
+                seven_day: window(47.0, 3 * 86_400 + 4 * 3_600),
+            });
         }
         Fixture::Unmeasured => {
             state.apply_claude(Some(fixture_summary()), claude_at, None);

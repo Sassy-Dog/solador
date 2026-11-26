@@ -9,7 +9,7 @@
 use chrono::{DateTime, Utc};
 
 /// The longest wait a `Retry-After` may impose.
-pub(crate) const MAX_RETRY_AFTER_SECS: u64 = 24 * 60 * 60;
+pub const MAX_RETRY_AFTER_SECS: u64 = 24 * 60 * 60;
 
 /// Seconds to wait, from a `Retry-After` header that is either delta-seconds
 /// or an HTTP-date. Returns `None` for an absent or unparseable header.

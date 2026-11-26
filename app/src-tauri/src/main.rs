@@ -3903,6 +3903,18 @@ fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
     }
 }
 
+/// The directory `store.json` lives in: where the plan schedule and Claude
+/// Code's status-line file are kept. `None` for a store with no path.
+fn data_dir(store: &Mutex<Store>) -> Option<std::path::PathBuf> {
+    assert_store_not_held(store);
+    store
+        .lock()
+        .expect("store poisoned")
+        .path()
+        .parent()
+        .map(std::path::Path::to_path_buf)
+}
+
 /// The plan rows' poll loop.
 ///
 /// Every pass lets [`plan_usage::poll`] decide per provider, and each
@@ -3914,6 +3926,16 @@ fn plan_inputs(store: &Mutex<Store>) -> plan_usage::PlanInputs {
 /// readers run on the blocking pool, and the token they return goes straight
 /// into the one request and is dropped with it.
 async fn plan_usage_loop(app: Arc<App>) {
+    // The schedule outlives a relaunch: a launch inside a 429's wait waits.
+    let (mut schedule, lines) = plan_usage::SchedulePersistence::open(
+        data_dir(&app.store),
+        &app.usage,
+        panel::now_unix(),
+        panel_interval(&app.store, PanelInterval::PlanUsage).as_secs(),
+    );
+    for line in lines {
+        eprintln!("{line}");
+    }
     loop {
         let cadence_secs = panel_interval(&app.store, PanelInterval::PlanUsage).as_secs();
         plan_usage::poll(
@@ -3960,6 +3982,10 @@ async fn plan_usage_loop(app: Arc<App>) {
             },
         )
         .await;
+
+        for line in schedule.persist(&app.usage) {
+            eprintln!("{line}");
+        }
 
         let inputs = plan_inputs(&app.store);
         let wait = {
@@ -4420,9 +4446,19 @@ fn ai_usage_unscoped(state: &App) -> Value {
     // The plan opt-ins, read here rather than by the poller: switching one off
     // must hide its row on this frame, not after the next pass drops it.
     let plans = plan_inputs(&state.store);
+    let now = panel::now_unix();
+    // Claude Code's status-line figures stand in for a plan read that Anthropic
+    // is refusing, so they are read as the panel is built, not as it was last
+    // polled: the status line writes them whenever it runs.
+    plan_usage::refresh_status_line(
+        &state.usage,
+        plans.claude,
+        data_dir(&state.store).as_deref(),
+        now,
+    );
     let payload = {
         let panel = state.usage.lock().expect("usage state poisoned");
-        usage::ai_usage_view(&panel, plans, panel::now_unix())
+        usage::ai_usage_view(&panel, plans, now)
     };
     FIRST_AI_USAGE_REQUEST.call_once(|| {
         let plans = payload["plans"].as_array().map_or(0, Vec::len);
@@ -7014,6 +7050,12 @@ fn local_monitoring_on(store: &Mutex<Store>) -> bool {
 fn dump_plan_inputs(kind: usage::Fixture) -> plan_usage::PlanInputs {
     if matches!(kind, usage::Fixture::Measured | usage::Fixture::Showcase) {
         usage::FIXTURE_PLANS
+    } else if kind == usage::Fixture::StatusLine {
+        // Only Claude's row, on: the dump is about its status-line fallback.
+        plan_usage::PlanInputs {
+            claude: true,
+            ..plan_usage::PlanInputs::OFF
+        }
     } else if kind == usage::Fixture::PlanEdges {
         // Copilot's organization half is ticked only where the fixture carries
         // its reading: ticked with none read, it is waiting, and this dump is
@@ -7674,6 +7716,8 @@ fn run_dump(args: &[String]) -> bool {
             usage::Fixture::Unmeasured
         } else if args.iter().any(|arg| arg == "--plan-edges") {
             usage::Fixture::PlanEdges
+        } else if args.iter().any(|arg| arg == "--plan-statusline") {
+            usage::Fixture::StatusLine
         } else if showcase {
             usage::Fixture::Showcase
         } else {

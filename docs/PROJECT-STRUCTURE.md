@@ -63,7 +63,12 @@
 │   │                       #   name: reads each tool's OWN saved sign-in
 │   │                       #   (read-only, never copied or refreshed), one
 │   │                       #   undocumented usage endpoint each, and one field
-│   │                       #   of ~/.claude.json. APP-ONLY — agent/ must never
+│   │                       #   of ~/.claude.json, plus two small files of
+│   │                       #   Solador's own data directory: the read schedule
+│   │                       #   it keeps across a relaunch (`schedule`) and
+│   │                       #   Claude Code's status-line limits (`statusline`,
+│   │                       #   written by the operator's status line, not a
+│   │                       #   credential). APP-ONLY — agent/ must never
 │   │                       #   resolve it
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
 │   ├── actionsbilling/     # GitHub org billing reader (#768): month-to-date Actions
