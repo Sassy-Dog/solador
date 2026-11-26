@@ -1612,13 +1612,11 @@ mod tests {
         std::fs::write(&blocker, "x").unwrap();
         let target = blocker.join("data");
         let usage = Mutex::new(UsageState::new());
-        let (mut persistence, lines) =
+        // What `open` says about this path is the platform's call, not this
+        // test's: a path through a file reads as unusable on Unix and as
+        // absent on Windows. The unusable line is proved by the test above.
+        let (mut persistence, _) =
             SchedulePersistence::open(Some(target.clone()), &usage, NOW, CADENCE);
-        assert_eq!(
-            lines.len(),
-            1,
-            "a path that cannot be read is said once: {lines:?}"
-        );
         assert!(persistence.persist(&usage).is_empty(), "nothing changed");
 
         pass(
