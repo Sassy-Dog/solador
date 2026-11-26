@@ -51,7 +51,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
-use subscription::schedule::{Schedule, Schedules};
+use subscription::schedule::{Found, Schedule, Schedules};
 use subscription::statusline::{Kind as StatusLineKind, StatusLine};
 use subscription::{
     Money, PlanErrorKind, PlanUsage, PlanUsageError, PlanWindow, Provider, Slot, WindowSpan,
@@ -540,16 +540,24 @@ impl SchedulePersistence {
         now: u64,
         cadence_secs: u64,
     ) -> (Self, Vec<String>) {
-        let saved = dir
+        let (saved, found) = dir
             .as_deref()
-            .map(subscription::schedule::load)
-            .unwrap_or_default();
-        let lines = restore(
+            .map_or((Schedules::default(), Found::Absent), |dir| {
+                subscription::schedule::load_checked(dir)
+            });
+        let mut lines = Vec::new();
+        if found == Found::Unusable {
+            // No wait is owed either way; the line only says the file was there.
+            lines.push(
+                "plan usage: the saved read schedule could not be read, starting fresh".to_owned(),
+            );
+        }
+        lines.extend(restore(
             &mut usage.lock().expect("usage state poisoned"),
             &saved,
             now,
             cadence_secs,
-        );
+        ));
         let persistence = SchedulePersistence {
             dir,
             saved,
@@ -1572,6 +1580,27 @@ mod tests {
         assert_eq!(restored(None, None), (None, None, false));
     }
 
+    #[test]
+    fn an_unreadable_schedule_file_is_said_once_and_an_absent_one_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = Mutex::new(UsageState::new());
+        let (_, lines) =
+            SchedulePersistence::open(Some(dir.path().to_path_buf()), &usage, NOW, CADENCE);
+        assert!(lines.is_empty(), "absent is silent: {lines:?}");
+        std::fs::write(dir.path().join(subscription::schedule::FILE_NAME), "{oops").unwrap();
+        let (_, lines) =
+            SchedulePersistence::open(Some(dir.path().to_path_buf()), &usage, NOW, CADENCE);
+        assert_eq!(
+            lines,
+            ["plan usage: the saved read schedule could not be read, starting fresh"]
+        );
+        assert_eq!(
+            snapshot(&usage.lock().unwrap()),
+            Schedules::default(),
+            "and no wait is owed"
+        );
+    }
+
     /// The loop's load, restore, compare and save, and a failed save tried
     /// again on the next pass. Negative control: set `saved` before the write
     /// succeeds and the retry never happens.
@@ -1585,7 +1614,11 @@ mod tests {
         let usage = Mutex::new(UsageState::new());
         let (mut persistence, lines) =
             SchedulePersistence::open(Some(target.clone()), &usage, NOW, CADENCE);
-        assert!(lines.is_empty());
+        assert_eq!(
+            lines.len(),
+            1,
+            "a path that cannot be read is said once: {lines:?}"
+        );
         assert!(persistence.persist(&usage).is_empty(), "nothing changed");
 
         pass(

@@ -84,10 +84,35 @@ impl Schedules {
 /// default (see the module docs).
 #[must_use]
 pub fn load(dir: &Path) -> Schedules {
-    std::fs::read_to_string(dir.join(FILE_NAME))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    load_checked(dir).0
+}
+
+/// What [`load_checked`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    /// The file was read and parsed.
+    Usable,
+    /// There is no file: a first launch, or nothing was ever waited on.
+    Absent,
+    /// A file is there and could not be read or parsed. The schedules are the
+    /// default, so no wait is owed, but the caller can say so.
+    Unusable,
+}
+
+/// [`load`], and which of the three it was.
+#[must_use]
+pub fn load_checked(dir: &Path) -> (Schedules, Found) {
+    let text = match std::fs::read_to_string(dir.join(FILE_NAME)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Schedules::default(), Found::Absent)
+        }
+        Err(_) => return (Schedules::default(), Found::Unusable),
+    };
+    match serde_json::from_str(&text) {
+        Ok(schedules) => (schedules, Found::Usable),
+        Err(_) => (Schedules::default(), Found::Unusable),
+    }
 }
 
 /// Monotonic per-write suffix, so two writes in one process cannot pick the same
@@ -151,6 +176,27 @@ mod tests {
             std::fs::write(dir.path().join(FILE_NAME), junk).unwrap();
             assert_eq!(load(dir.path()), Schedules::default(), "{junk:?}");
         }
+    }
+
+    #[test]
+    fn load_checked_tells_an_absent_file_from_one_that_is_there_and_unusable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_checked(dir.path()),
+            (Schedules::default(), Found::Absent)
+        );
+        std::fs::write(dir.path().join(FILE_NAME), "not json").unwrap();
+        assert_eq!(
+            load_checked(dir.path()),
+            (Schedules::default(), Found::Unusable)
+        );
+        std::fs::remove_file(dir.path().join(FILE_NAME)).unwrap();
+        // A directory where the file should be is present and cannot be read.
+        std::fs::create_dir(dir.path().join(FILE_NAME)).unwrap();
+        assert_eq!(load_checked(dir.path()).1, Found::Unusable);
+        std::fs::remove_dir(dir.path().join(FILE_NAME)).unwrap();
+        save(dir.path(), &Schedules::default()).unwrap();
+        assert_eq!(load_checked(dir.path()).1, Found::Usable);
     }
 
     #[test]

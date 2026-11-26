@@ -92,7 +92,8 @@
   read from a file the operator's status line writes, `claude-statusline.json`):
   a line under the row says the figures are from Claude Code's status line and how
   old they are, the header keeps its rate-limit warning, a window whose reset has
-  passed is not shown, a file older than a day is not used, and the next successful
+  passed is not shown (nor one that states no reset, once the file is as old as
+  the window: 5 hours for `5h`, 7 days for `Week`), a file older than a day is not used, and the next successful
   read replaces them (`docs/APP-INTERNALS.md` has the snippet and the rules).
   Turning Subscription off and on again clears the count and the wait and reads at
   once (any toggle resets the provider); a relaunch does not.

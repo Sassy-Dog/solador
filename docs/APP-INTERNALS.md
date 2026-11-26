@@ -615,7 +615,9 @@
   `used_percentage` and `resets_at`, and skips every other key unread
   (`spend_limit` included, and no model-scoped week). Absent is no meter and never
   0%: an absent file, field or window shows nothing, and a window whose
-  `resets_at` has passed is not shown. **A file written more than a day ago
+  `resets_at` has passed is not shown; a window that states no `resets_at` is
+  shown only while the file is younger than the window's span (under 5 hours for
+  `5h`, under 7 days for `Week`). **A file written more than a day ago
   (`statusline::MAX_AGE_SECS`, inclusive) is not used**, nor one dated more than a
   minute ahead of the clock; the card is then the dash with its header, as before.
   The status line is set aside when the last successful plan read is newer than
