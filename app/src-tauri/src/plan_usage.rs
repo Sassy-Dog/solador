@@ -81,6 +81,15 @@ pub fn backoff_secs(consecutive: u32, cadence_secs: u64) -> u64 {
     cadence_secs.saturating_mul(factor.min(BACKOFF_CAP_FACTOR))
 }
 
+/// The longest a wait can honestly be: the backoff's cap, or the longest
+/// `Retry-After` the crate passes on, whichever is more.
+#[must_use]
+pub fn longest_wait_secs(cadence_secs: u64) -> u64 {
+    cadence_secs
+        .saturating_mul(BACKOFF_CAP_FACTOR)
+        .max(subscription::MAX_RETRY_AFTER_SECS)
+}
+
 /// This source's own recommendation, mirrored by `PanelInterval::PlanUsage`'s
 /// default (orca's 15 minutes). `cfg(test)` for the reason
 /// `usage::PROVIDER_POLL_INTERVAL_SECS` gives: the loop reads the store, and
@@ -164,10 +173,27 @@ impl PlanSource {
 
     /// Puts a persisted schedule back, at launch. A latest outcome of 429 comes
     /// back as the failure it was, so the card says so before the first read.
-    pub fn restore(&mut self, provider: Provider, schedule: Schedule) {
-        self.last_attempt = schedule.last_attempt;
+    ///
+    /// A time the file cannot honestly hold is dropped, because [`gate`] would
+    /// otherwise wait on it forever (a clock set ahead and corrected, a VM
+    /// resume, a hand edit): a `last_attempt` after `now`, and a `not_before`
+    /// further ahead than any wait can be ([`longest_wait_secs`]). Returns
+    /// whether either was dropped.
+    pub fn restore(
+        &mut self,
+        provider: Provider,
+        schedule: Schedule,
+        now: u64,
+        cadence_secs: u64,
+    ) -> bool {
+        let last_attempt = schedule.last_attempt.filter(|at| *at <= now);
+        let not_before = schedule
+            .not_before
+            .filter(|at| *at <= now.saturating_add(longest_wait_secs(cadence_secs)));
+        let dropped = last_attempt != schedule.last_attempt || not_before != schedule.not_before;
+        self.last_attempt = last_attempt;
         self.rate_limited = schedule.rate_limited;
-        self.not_before = schedule.not_before;
+        self.not_before = not_before;
         if schedule.last_was_rate_limited {
             let throttled = PlanUsageError::new(
                 provider,
@@ -178,6 +204,7 @@ impl PlanSource {
             self.last_failure = Some(kind_label(&throttled.kind));
             self.state.failed(throttled.user_message());
         }
+        dropped
     }
 
     /// Whether the latest read's outcome was a 429.
@@ -472,12 +499,91 @@ pub fn snapshot(usage: &UsageState) -> Schedules {
 }
 
 /// Puts persisted schedules back, once, at launch. A provider that is off drops
-/// what this restores at its first pass ([`gate`] says [`Gate::Off`]).
-pub fn restore(usage: &mut UsageState, schedules: &Schedules) {
+/// what this restores at its first pass ([`gate`] says [`Gate::Off`]). Returns
+/// the log lines for any wait it dropped as impossible.
+pub fn restore(
+    usage: &mut UsageState,
+    schedules: &Schedules,
+    now: u64,
+    cadence_secs: u64,
+) -> Vec<String> {
+    let mut lines = Vec::new();
     for provider in [Provider::Claude, Provider::Codex] {
-        usage
+        if usage
             .plan_mut(provider)
-            .restore(provider, schedules.get(provider));
+            .restore(provider, schedules.get(provider), now, cadence_secs)
+        {
+            lines.push(format!(
+                "plan usage: {} saved wait was dated past any possible wait, dropped",
+                section_id(provider)
+            ));
+        }
+    }
+    lines
+}
+
+/// The schedule file as the poll loop keeps it: loaded and restored once at
+/// launch, rewritten after a pass only when it changed. A failed write is kept
+/// as unsaved and tried again on the next pass.
+#[derive(Debug)]
+pub struct SchedulePersistence {
+    dir: Option<std::path::PathBuf>,
+    saved: Schedules,
+    failing: bool,
+}
+
+impl SchedulePersistence {
+    /// Loads the file in `dir` and restores it into `usage`. The lines to log.
+    pub fn open(
+        dir: Option<std::path::PathBuf>,
+        usage: &Mutex<UsageState>,
+        now: u64,
+        cadence_secs: u64,
+    ) -> (Self, Vec<String>) {
+        let saved = dir
+            .as_deref()
+            .map(subscription::schedule::load)
+            .unwrap_or_default();
+        let lines = restore(
+            &mut usage.lock().expect("usage state poisoned"),
+            &saved,
+            now,
+            cadence_secs,
+        );
+        let persistence = SchedulePersistence {
+            dir,
+            saved,
+            failing: false,
+        };
+        (persistence, lines)
+    }
+
+    /// Writes the schedules if they differ from what was last saved. Logs once
+    /// when saving starts failing and once when it recovers, never the path or
+    /// the error's text.
+    pub fn persist(&mut self, usage: &Mutex<UsageState>) -> Vec<String> {
+        let now = snapshot(&usage.lock().expect("usage state poisoned"));
+        let Some(dir) = self.dir.as_deref() else {
+            return Vec::new();
+        };
+        if now == self.saved {
+            return Vec::new();
+        }
+        match subscription::schedule::save(dir, &now) {
+            Ok(()) => {
+                self.saved = now;
+                if std::mem::take(&mut self.failing) {
+                    vec!["plan usage: the read schedule is saving again".to_owned()]
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(_) if self.failing => Vec::new(),
+            Err(_) => {
+                self.failing = true;
+                vec!["plan usage: could not save the read schedule".to_owned()]
+            }
+        }
     }
 }
 
@@ -1162,6 +1268,8 @@ mod tests {
     async fn a_relaunch_inside_a_429s_backoff_waits_it_out() {
         let dir = tempfile::tempdir().unwrap();
         let first = Mutex::new(UsageState::new());
+        let (mut persistence, _) =
+            SchedulePersistence::open(Some(dir.path().to_path_buf()), &first, NOW, CADENCE);
         let calls = Calls::new();
         pass(
             &first,
@@ -1175,14 +1283,17 @@ mod tests {
             }),
         )
         .await;
-        subscription::schedule::save(dir.path(), &snapshot(&first.lock().unwrap())).unwrap();
+        assert!(persistence.persist(&first).is_empty());
 
         // The app is quit and started again, a cadence later.
         let relaunched = Mutex::new(UsageState::new());
-        restore(
-            &mut relaunched.lock().unwrap(),
-            &subscription::schedule::load(dir.path()),
+        let (_, lines) = SchedulePersistence::open(
+            Some(dir.path().to_path_buf()),
+            &relaunched,
+            NOW + CADENCE,
+            CADENCE,
         );
+        assert!(lines.is_empty(), "{lines:?}");
         let calls = Calls::new();
         let inside = pass(
             &relaunched,
@@ -1272,7 +1383,7 @@ mod tests {
                 last_was_rate_limited: true,
             },
         );
-        restore(&mut usage.lock().unwrap(), &schedules);
+        restore(&mut usage.lock().unwrap(), &schedules, NOW, CADENCE);
         let gate = pass(
             &usage,
             Provider::Claude,
@@ -1382,6 +1493,134 @@ mod tests {
         assert_eq!(
             usage.lock().unwrap().plan(Provider::Claude).last_failure,
             None
+        );
+    }
+
+    /// Negative control: restore both times unchecked and the gate waits a
+    /// year; drop only `not_before`'s check and it still waits on the other.
+    #[tokio::test]
+    async fn a_restored_wait_dated_impossibly_far_ahead_is_dropped_and_reads_at_once() {
+        let year = 365 * 24 * 3_600;
+        let usage = Mutex::new(UsageState::new());
+        let mut schedules = Schedules::default();
+        schedules.set(
+            Provider::Claude,
+            Schedule {
+                last_attempt: Some(NOW + year),
+                rate_limited: 3,
+                not_before: Some(NOW + year),
+                last_was_rate_limited: true,
+            },
+        );
+        let lines = restore(&mut usage.lock().unwrap(), &schedules, NOW, CADENCE);
+        assert_eq!(
+            lines,
+            ["plan usage: claude-plan saved wait was dated past any possible wait, dropped"]
+        );
+        {
+            let state = usage.lock().unwrap();
+            let claude = state.plan(Provider::Claude);
+            assert_eq!(gate(true, claude, NOW, CADENCE), Gate::Due);
+            assert_eq!(claude.rate_limited, 3, "the count is not a time");
+        }
+        let calls = Calls::new();
+        let gate = pass(
+            &usage,
+            Provider::Claude,
+            true,
+            NOW,
+            &calls,
+            Ok("token"),
+            Ok(reading()),
+        )
+        .await;
+        assert_eq!(gate, Gate::Due);
+        assert_eq!(calls.fetches.load(Ordering::SeqCst), 1);
+    }
+
+    /// Each field alone, and the edges: a wait up to the longest honest one is
+    /// kept, one second past it is not.
+    #[test]
+    fn a_restored_time_is_kept_up_to_the_longest_honest_wait() {
+        let longest = longest_wait_secs(CADENCE);
+        assert_eq!(longest, 24 * 3_600, "a day beats 8 cadences at 15 minutes");
+        assert_eq!(
+            longest_wait_secs(4 * 3_600),
+            32 * 3_600,
+            "8 cadences beat a day at 4 hours"
+        );
+        let restored = |last_attempt, not_before| {
+            let mut source = PlanSource::default();
+            let dropped = source.restore(
+                Provider::Claude,
+                Schedule {
+                    last_attempt,
+                    not_before,
+                    ..Schedule::default()
+                },
+                NOW,
+                CADENCE,
+            );
+            (source.last_attempt, source.not_before, dropped)
+        };
+        assert_eq!(
+            restored(Some(NOW), Some(NOW + longest)),
+            (Some(NOW), Some(NOW + longest), false)
+        );
+        assert_eq!(restored(Some(NOW + 1), None), (None, None, true));
+        assert_eq!(restored(None, Some(NOW + longest + 1)), (None, None, true));
+        assert_eq!(restored(None, None), (None, None, false));
+    }
+
+    /// The loop's load, restore, compare and save, and a failed save tried
+    /// again on the next pass. Negative control: set `saved` before the write
+    /// succeeds and the retry never happens.
+    #[tokio::test]
+    async fn the_schedule_is_saved_only_when_it_changed_and_a_failed_save_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file where the directory should be: creating it fails.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let target = blocker.join("data");
+        let usage = Mutex::new(UsageState::new());
+        let (mut persistence, lines) =
+            SchedulePersistence::open(Some(target.clone()), &usage, NOW, CADENCE);
+        assert!(lines.is_empty());
+        assert!(persistence.persist(&usage).is_empty(), "nothing changed");
+
+        pass(
+            &usage,
+            Provider::Claude,
+            true,
+            NOW,
+            &Calls::new(),
+            Ok("token"),
+            Err(PlanErrorKind::RateLimited {
+                retry_after_secs: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            persistence.persist(&usage),
+            ["plan usage: could not save the read schedule"]
+        );
+        assert!(
+            persistence.persist(&usage).is_empty(),
+            "still failing: said once, not every pass"
+        );
+
+        // The directory becomes writable: the next pass saves it and says so.
+        std::fs::remove_file(&blocker).unwrap();
+        assert_eq!(
+            persistence.persist(&usage),
+            ["plan usage: the read schedule is saving again"]
+        );
+        let loaded = subscription::schedule::load(&target);
+        assert_eq!(loaded.claude.rate_limited, 1);
+        assert!(loaded.claude.last_was_rate_limited);
+        assert!(
+            persistence.persist(&usage).is_empty(),
+            "unchanged, no write"
         );
     }
 

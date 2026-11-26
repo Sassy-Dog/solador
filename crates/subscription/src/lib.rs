@@ -73,6 +73,7 @@ pub mod statusline;
 use chrono::{DateTime, Utc};
 use fault::Fault;
 
+pub use retry::MAX_RETRY_AFTER_SECS;
 pub use secret::{AccessToken, SecretText};
 
 /// The `User-Agent` both clients send. It is honest on purpose: orca sends

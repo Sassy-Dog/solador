@@ -94,6 +94,8 @@
   old they are, the header keeps its rate-limit warning, a window whose reset has
   passed is not shown, a file older than a day is not used, and the next successful
   read replaces them (`docs/APP-INTERNALS.md` has the snippet and the rules).
+  Turning Subscription off and on again clears the count and the wait and reads at
+  once (any toggle resets the provider); a relaunch does not.
   A plan is one row named by its provider and plan (`Claude · Ultra`,
   `Codex · Plus`; the name is the one the tool itself displays, never mapped from
   a tier code) carrying one meter per limit: `5h`, `Week`, a per-model weekly

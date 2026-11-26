@@ -329,13 +329,21 @@
   `Retry-After` (itself capped at a day by `subscription`) still wins; a success
   resets n, any other failure leaves it (`plan_usage::record_outcome`,
   `backoff_secs`). **The schedule survives a relaunch.** Each provider's last
-  attempt, consecutive-429 count, not-before instant and whether its latest
-  outcome was a 429 are four numbers and a flag in `plan-schedule.json`, beside
+  attempt, consecutive-429 count and not-before instant, and whether its latest
+  outcome was a 429, are three numbers and a flag in `plan-schedule.json`, beside
   `store.json` (`subscription::schedule`; its own file because it is rewritten
   after every read, and `store.json` is the operator's settings). It holds no
   token and nothing from a response, is loaded once when the loop starts and
   rewritten after a pass only when it changed, and an absent or unreadable file
-  is "no wait owed". A provider that is off at launch drops what it held.
+  is "no wait owed". A provider that is off at launch drops what it held, and a
+  restored time no wait could honestly have is dropped with one log line (a
+  `last_attempt` after now, or a `not_before` further ahead than the longer of
+  `8 × cadence` and a `Retry-After`'s day), so a clock set ahead and corrected
+  cannot park a provider. **Turning the Subscription part off and on again is
+  not a relaunch**: any toggle calls `PlanSource::reset`, which clears the count
+  and the wait, so the provider reads at once; a relaunch keeps both. A save
+  that fails is logged once and tried again on the next pass, and once more when
+  it recovers (`plan_usage::SchedulePersistence`).
   **While Claude's latest read was a 429, its card shows Claude Code's
   status-line figures** (below).
 - **AI Usage is one tile over three sources.** The Anthropic, OpenAI and GitHub
@@ -563,7 +571,8 @@
   replaces it. The figures reach Solador through one small file in its own data
   directory, `claude-statusline.json` (beside `store.json`: macOS
   `~/Library/Application Support/app.solador.desktop/`, Linux
-  `${XDG_CONFIG_HOME:-~/.config}/app.solador.desktop/`, or `SOLADOR_STORE_DIR`),
+  `${XDG_CONFIG_HOME:-~/.config}/app.solador.desktop/`, Windows
+  `%APPDATA%\app.solador.desktop\`, or `SOLADOR_STORE_DIR`),
   **which the operator's own status-line command writes**. Solador never edits the
   operator's status line or `~/.claude/settings.json`, and never writes the file.
   It is not a credential. The snippet keeps `rate_limits` and the instant it ran
@@ -572,7 +581,13 @@
   reader never sees half a file; add it to the status-line script after it has
   read its input into `input` (`input=$(cat)`). It needs `jq`, and the Solador
   data directory to exist (it does once the app has run). Tested on macOS with a
-  sample input; **it is untested on Windows, and there is no PowerShell version**:
+  sample input; **it is untested on Windows, and there is no PowerShell version**.
+  Under Git Bash on Windows `uname -s` is not `Darwin`, so the snippet falls to
+  the `*)` branch, looks in `~/.config/app.solador.desktop`, finds no directory
+  and writes nothing without reporting an error: set `SOLADOR_STORE_DIR` to the
+  Windows directory in the form Git Bash reads
+  (`/c/Users/<you>/AppData/Roaming/app.solador.desktop`) in the status line's
+  environment:
 
   ```bash
   if command -v jq >/dev/null 2>&1; then

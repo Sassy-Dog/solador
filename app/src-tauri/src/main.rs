@@ -3927,12 +3927,15 @@ fn data_dir(store: &Mutex<Store>) -> Option<std::path::PathBuf> {
 /// into the one request and is dropped with it.
 async fn plan_usage_loop(app: Arc<App>) {
     // The schedule outlives a relaunch: a launch inside a 429's wait waits.
-    let dir = data_dir(&app.store);
-    let mut saved = dir
-        .as_deref()
-        .map(subscription::schedule::load)
-        .unwrap_or_default();
-    plan_usage::restore(&mut app.usage.lock().expect("usage state poisoned"), &saved);
+    let (mut schedule, lines) = plan_usage::SchedulePersistence::open(
+        data_dir(&app.store),
+        &app.usage,
+        panel::now_unix(),
+        panel_interval(&app.store, PanelInterval::PlanUsage).as_secs(),
+    );
+    for line in lines {
+        eprintln!("{line}");
+    }
     loop {
         let cadence_secs = panel_interval(&app.store, PanelInterval::PlanUsage).as_secs();
         plan_usage::poll(
@@ -3980,16 +3983,8 @@ async fn plan_usage_loop(app: Arc<App>) {
         )
         .await;
 
-        let now_schedules = plan_usage::snapshot(&app.usage.lock().expect("usage state poisoned"));
-        if now_schedules != saved {
-            if let Some(dir) = dir.as_deref() {
-                // Only the fact of the failure is logged, never the path or the
-                // error's text.
-                match subscription::schedule::save(dir, &now_schedules) {
-                    Ok(()) => saved = now_schedules,
-                    Err(_) => eprintln!("plan usage: could not save the read schedule"),
-                }
-            }
+        for line in schedule.persist(&app.usage) {
+            eprintln!("{line}");
         }
 
         let inputs = plan_inputs(&app.store);

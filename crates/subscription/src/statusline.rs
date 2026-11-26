@@ -74,6 +74,17 @@ pub enum Kind {
     SevenDay,
 }
 
+impl Kind {
+    /// The window's length in seconds.
+    #[must_use]
+    pub const fn span_secs(self) -> u64 {
+        match self {
+            Kind::FiveHour => 5 * 60 * 60,
+            Kind::SevenDay => 7 * 24 * 60 * 60,
+        }
+    }
+}
+
 /// What the file holds, and when it was written.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StatusLine {
@@ -92,20 +103,22 @@ impl StatusLine {
     }
 
     /// The windows still open at `now`: the 5-hour one, then the week, each only
-    /// when present and not yet reset.
+    /// when present and not yet reset. A window that states no reset is kept only
+    /// while the file is younger than the window's own length ([`Kind::span_secs`]):
+    /// nothing else says it has not rolled over.
     #[must_use]
     pub fn windows(&self, now: u64) -> Vec<(Kind, Window)> {
-        let open = |window: &Window| {
-            window
-                .resets_at
-                .is_none_or(|at| i64::try_from(now).is_ok_and(|now| at > now))
+        let age = self.age_secs(now);
+        let open = |kind: Kind, window: &Window| match window.resets_at {
+            Some(at) => i64::try_from(now).is_ok_and(|now| at > now),
+            None => age < kind.span_secs(),
         };
         [
             (Kind::FiveHour, self.five_hour),
             (Kind::SevenDay, self.seven_day),
         ]
         .into_iter()
-        .filter_map(|(kind, window)| window.filter(open).map(|window| (kind, window)))
+        .filter_map(|(kind, window)| window.filter(|w| open(kind, w)).map(|w| (kind, w)))
         .collect()
     }
 }
@@ -306,10 +319,27 @@ mod tests {
     }
 
     #[test]
-    fn a_window_that_states_no_reset_is_shown_as_stated() {
-        let text = file(NOW - 5, r#"{"five_hour":{"used_percentage":12}}"#);
-        let line = parse(&text, NOW).unwrap();
-        assert_eq!(line.windows(NOW)[0].1.resets_at, None);
+    fn a_window_that_states_no_reset_is_kept_only_while_the_file_is_younger_than_it() {
+        let both = r#"{"five_hour":{"used_percentage":12},"seven_day":{"used_percentage":30}}"#;
+        let young = parse(&file(NOW - 5, both), NOW).unwrap();
+        assert_eq!(young.windows(NOW)[0].1.resets_at, None);
+        assert_eq!(kinds(&young, NOW), [Kind::FiveHour, Kind::SevenDay]);
+
+        let five_hours = Kind::FiveHour.span_secs();
+        let old = parse(&file(NOW - five_hours + 1, both), NOW).unwrap();
+        assert_eq!(kinds(&old, NOW), [Kind::FiveHour, Kind::SevenDay]);
+        let older = parse(&file(NOW - five_hours, both), NOW).unwrap();
+        assert_eq!(
+            kinds(&older, NOW),
+            [Kind::SevenDay],
+            "a 5h window that states no reset is gone once the file is 5h old"
+        );
+        // A stated reset in the future is its own evidence, at any age.
+        let stated = file(
+            NOW - 20 * 3_600,
+            r#"{"five_hour":{"used_percentage":12,"resets_at":1792850000}}"#,
+        );
+        assert_eq!(kinds(&parse(&stated, NOW).unwrap(), NOW), [Kind::FiveHour]);
     }
 
     #[test]
