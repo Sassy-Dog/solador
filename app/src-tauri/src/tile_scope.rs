@@ -463,6 +463,33 @@ mod tests {
         );
     }
 
+    /// Same guard for the Copilot halves: `store` writes `item:copilot-plan` by
+    /// literal, so renaming an id in `usage` fails here, not as an empty tile.
+    #[test]
+    fn the_store_migration_lands_copilot_half_scopes_on_the_card_this_crate_emits() {
+        use crate::usage::{COPILOT_ORG_ID, COPILOT_PERSONAL_ID, COPILOT_PLAN_ID};
+        let mut data = store::StoreData {
+            dashboard: Some(DashboardLayout {
+                tiles: vec![
+                    tile("aiUsage", &format!("item:{COPILOT_ORG_ID}")),
+                    tile("aiUsage", &format!("item:{COPILOT_PERSONAL_ID}")),
+                ],
+                ..default_layout()
+            }),
+            ..store::StoreData::default()
+        };
+        data.carry_copilot_item_scopes_onto_card();
+        let scopes: Vec<String> = data
+            .dashboard
+            .expect("layout")
+            .tiles
+            .into_iter()
+            .map(|t| t.scope)
+            .collect();
+        let card = format!("item:{COPILOT_PLAN_ID}");
+        assert_eq!(scopes, [card.clone(), card]);
+    }
+
     fn rows(p: &Value, key: &str) -> Vec<String> {
         p["rows"]
             .as_array()

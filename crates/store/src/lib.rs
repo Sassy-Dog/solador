@@ -525,8 +525,13 @@ impl StoreData {
     /// id is `copilot-plan`, so the saved scope becomes `item:copilot-plan`.
     /// Only an `aiUsage` tile is read, and the rewrite is idempotent.
     ///
+    /// One-way: two ids become one, and the next save persists it. A build from
+    /// before this change opening the file afterwards finds `item:copilot-plan`
+    /// and shows that tile as the card's seat row, not the half it was scoped to.
+    ///
     /// The ids are the app's (`usage::COPILOT_*_ID`), spelled out here because
-    /// this crate cannot see that module.
+    /// this crate cannot see that module; `tile_scope.rs` has the test that
+    /// keeps them equal.
     pub fn carry_copilot_item_scopes_onto_card(&mut self) {
         let Some(dashboard) = self.dashboard.as_mut() else {
             return;

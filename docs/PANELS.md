@@ -139,9 +139,9 @@
   organization fresh on every pass and keeps neither, so its part is refused at
   Finish until Actions billing is set up (`store::source_save::Requires`, a
   read-only precondition that never writes or deletes that token). Removing
-  Actions billing drops the figure on the same frame, and the row then reads `—`
+  Actions billing drops the figure on the same frame, and the half then reads `—`
   and says `Actions billing isn't set up` (a `⚠` line under `copilot-org`);
-  unticking the part hides the row on the same frame, because the flag is read at
+  unticking the part removes its half from the card on the same frame, because the flag is read at
   render time. The **personal half** has its own fine-grained token
   (`copilot_personal_token`, user permission Plan: read and nothing else) and a
   username; it is the source's only key, and its billing read covers only
@@ -149,7 +149,7 @@
   `copilot-plan` seat quota below), and the user-level billing endpoint leaves out a seat
   an employer assigns and pays for (GitHub: usage for a license "managed and
   billed through an organization or enterprise" is not in user-level endpoints),
-  which is why that row reads a measured `$0.00` for such a seat. Both halves ride
+  which is why that half reads a measured `$0.00` for such a seat. Both halves ride
   `PanelInterval::UsageProviders`
   (there is no tenth cadence) and read the `ai_credit` usage report and, beside
   it, the `premium_request` one, pinned to API version `2026-03-10` in this crate

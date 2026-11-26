@@ -397,7 +397,7 @@ pub struct PlanInputs {
     /// dated against.
     pub spend_cadence_secs: u64,
     /// The Copilot source's organization half is on. Read at render time, so
-    /// unticking it hides the row on this frame; the half owns no key to go
+    /// unticking it removes its half from the card on this frame; the half owns no key to go
     /// missing.
     pub copilot_org: bool,
 }
