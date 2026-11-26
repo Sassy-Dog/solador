@@ -363,6 +363,23 @@
       }
       wrap.append(stats);
     }
+    // The Copilot card's billing halves, under its seat meter: GitHub's term and
+    // the dollars on one line, whose bill it is and what was used under it, so
+    // the tile's width can never cut the dollars off.
+    if (row.halves?.length) {
+      const halves = node("div", "db-halves");
+      for (const half of row.halves) {
+        const part = node("div", "db-half");
+        part.dataset.half = half.id;
+        const line = node("div", "db-half-line");
+        line.append(node("span", "db-half-label", half.label), colored("span", "db-half-value", half.value, half.valueColor));
+        part.append(line);
+        if (half.owner) part.append(node("p", "db-half-owner", half.owner));
+        if (half.note) part.append(node("p", "db-half-note", half.note));
+        halves.append(part);
+      }
+      wrap.append(halves);
+    }
     const description = detail ? row.detail : row.compactDetail;
     if (detail || row.grouped || t.source === "sentryCrons") {
       const copy = node("p", "db-sub db-row-description", description || "");

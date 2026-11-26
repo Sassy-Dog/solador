@@ -165,16 +165,17 @@ test("the three plans lead, then each vendor's spend, then this machine's rollup
   const classes = (selector) =>
     page.locator(selector).evaluate((el) => [...el.children].map((c) => c.className));
   expect(await classes("#aiUsageBody")).toEqual(["ai-plans", "ai-rollups"]);
-  // Plans, then spend, then Copilot, in that order, inside the one block.
-  expect(payload.copilot.map((c) => c.id), "the organization's Copilot, then the person's").toEqual([
-    "copilot-org",
-    "copilot-personal",
-  ]);
+  // Plans (Copilot's one card among them), then spend, in that order, inside the one block.
+  expect(payload.copilot, "the billing halves ride the Copilot card, not a list of their own").toBeUndefined();
+  expect(
+    payload.plans.find((p) => p.id === "copilot-plan").halves.map((h) => h.id),
+    "the organization's half, then the person's",
+  ).toEqual(["copilot-org", "copilot-personal"]);
   expect(
     await page
       .locator("#aiUsageBody .ai-plans")
-      .evaluate((el) => [...el.children].map((c) => c.dataset.plan ?? c.dataset.api ?? c.dataset.copilot)),
-  ).toEqual(["claude-plan", "codex-plan", "copilot-plan", "anthropic-api", "openai-api", "copilot-org", "copilot-personal"]);
+      .evaluate((el) => [...el.children].map((c) => c.dataset.plan ?? c.dataset.api)),
+  ).toEqual(["claude-plan", "codex-plan", "copilot-plan", "anthropic-api", "openai-api"]);
   expect(await classes("#aiUsageBody .ai-rollups")).toEqual([
     "lbl pv-heading",
     "pv-row window",
@@ -190,22 +191,34 @@ test("the three plans lead, then each vendor's spend, then this machine's rollup
   await expect(page.locator("#aiUsageBody .ai-plans .pv-section:last-child .pv-divider"), "the API spend's is").toBeVisible();
 });
 
+/** One billing half, inside the Copilot card. */
 const copilotSection = (page, id) =>
-  page.locator(`#aiUsageBody [data-section="copilot"][data-copilot="${id}"]`);
+  page.locator(`#aiUsageBody .pv-section[data-plan="copilot-plan"] .pv-half[data-copilot="${id}"]`);
 
-test("each Copilot row paints Rust's billed value, note, and products with their models, and no meter", async ({
+const copilotHalves = (payload) => payload.plans.find((p) => p.id === "copilot-plan").halves;
+
+/** The payload with the Copilot card's halves replaced. */
+const withHalves = (payload, halves) => ({
+  ...payload,
+  plans: payload.plans.map((p) => (p.id === "copilot-plan" ? { ...p, halves } : p)),
+});
+
+test("each Copilot half paints Rust's billed value, owner, note, and products with their models, and no meter", async ({
   page,
   baseURL,
 }) => {
   const payload = await gotoAiUsage(page, baseURL);
-  expect(payload.copilot).toHaveLength(2);
-  for (const half of payload.copilot) {
+  const halves = copilotHalves(payload);
+  expect(halves).toHaveLength(2);
+  for (const half of halves) {
     const section = copilotSection(page, half.id);
     await expect(section).toHaveCount(1);
     await expect(section.locator(".pv-row .lbl")).toHaveText(half.label);
     await expect(section.locator(".pv-row .val")).toHaveText(half.value);
     await expect(section.locator(".pv-row .val")).toHaveCSS("color", rgb(half.valueColor));
-    await expect(section.locator(".pv-note")).toHaveText(half.note);
+    // Whose bill it is has a line of its own, so no width can cut the dollars.
+    await expect(section.locator(".pv-owner")).toHaveText(half.owner);
+    await expect(section.locator(".pv-note:not(.pv-owner)")).toHaveText(half.note);
     expect(half.models, "the flat models list is gone").toBeUndefined();
     expect(half.products.length, "the products are named").toBeGreaterThan(0);
     // Each product line, then its model lines, in Rust's order.
@@ -224,23 +237,59 @@ test("each Copilot row paints Rust's billed value, note, and products with their
     // The API reports no pool, so there is nothing for a meter to be a share of.
     await expect(section.locator(".db-meter, .db-meter-fill, .pbar")).toHaveCount(0);
   }
-  // Rust's strings: the report counts every product billed in AI credits.
-  expect(payload.copilot[0].label).toMatch(/^AI credits · /);
-  expect(payload.copilot[1].label, "the billing row says it is billed to the account").toMatch(
-    /^AI credits billed to /,
-  );
+  // Rust's strings: GitHub's own term, then whose bill it is.
+  expect(halves.map((h) => h.label)).toEqual(["Additional usage", "Additional usage"]);
+  expect(halves[0].owner, "the organization's login").not.toMatch(/billed to/);
+  expect(halves[1].owner, "the person's half says it is billed to the account").toMatch(/^billed to /);
+  expect(halves[0].note, "the note drops the AI").toMatch(/^[\d.]+ credits? used/);
+});
+
+test("the Copilot card is one card: the seat's budget meter, then each half, in the plans", async ({
+  page,
+  baseURL,
+}) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  const card = planSection(page, "copilot-plan");
+  await expect(card).toHaveCount(1);
+  await expect(card.locator(".pv-row.plan .lbl")).toHaveText("Copilot · Business");
+  // The meter first, then the halves, in the card's own order.
+  const kinds = await card.evaluate((el) => [...el.children].map((c) => c.className.split(" ")[0]));
+  expect(kinds).toEqual(["pv-divider", "pv-row", "db-host-stats", "pv-half", "pv-half"]);
+  await expect(card.locator(".db-metric")).toHaveCount(1);
+  await expect(card.locator(".pv-half")).toHaveCount(copilotHalves(payload).length);
+  // Nothing else in the plans is a Copilot section.
+  await expect(page.locator('#aiUsageBody [data-section="copilot"]')).toHaveCount(0);
+});
+
+test("a Copilot card with only a billing half has no meter and no figure of its own", async ({ page, baseURL }) => {
+  const payload = await gotoAiUsage(page, baseURL);
+  const card = payload.plans.find((p) => p.id === "copilot-plan");
+  const only = {
+    ...payload,
+    plans: payload.plans.map((p) =>
+      p.id === "copilot-plan"
+        ? { ...p, label: "Copilot", value: "", metrics: [], halves: [card.halves[0]] }
+        : p,
+    ),
+  };
+  await render(page, only);
+  const section = planSection(page, "copilot-plan");
+  await expect(section.locator(".pv-row.plan .lbl")).toHaveText("Copilot");
+  await expect(section.locator(".pv-row.plan .val")).toHaveText("");
+  await expect(section.locator(".db-metric")).toHaveCount(0);
+  await expect(section.locator(".pv-half")).toHaveCount(1);
 });
 
 test("a product with no models is one line, and an unnamed product is Rust's words", async ({ page, baseURL }) => {
   const payload = await gotoAiUsage(page, baseURL);
   const half = {
-    ...payload.copilot[0],
+    ...copilotHalves(payload)[0],
     products: [
       { name: "Code Quality", value: "—", dotColor: "#4a9", models: [] },
       { name: "Product not named", value: "12", dotColor: "#4a9", models: [] },
     ],
   };
-  await render(page, { ...payload, copilot: [half] });
+  await render(page, withHalves(payload, [half]));
   const section = copilotSection(page, "copilot-org");
   await expect(section.locator(".pv-item .name")).toHaveText(["Code Quality", "Product not named"]);
   await expect(section.locator(".pv-item .val")).toHaveText(["—", "12"]);
@@ -263,8 +312,8 @@ test("the Copilot plan row is a plan: its label, one spend-cap meter and Rust's 
   expect(meter.fraction).toBeGreaterThan(0);
   // `expectPlan` paints and checks the header, the meter, its fill colour and its note.
   await expectPlan(page, plan);
-  // It is a plan block, not a Copilot billing section, so it has no product list.
-  await expect(planSection(page, "copilot-plan").locator(".pv-item")).toHaveCount(0);
+  // The seat's meter has no product list of its own: the lines under the card are its halves'.
+  await expect(planSection(page, "copilot-plan").locator(".db-metric .pv-item")).toHaveCount(0);
 });
 
 test("an unlimited Copilot seat is a spend with no fill, and a failed one is a dash", async ({ page, baseURL }) => {
@@ -301,14 +350,13 @@ test("an unmeasured Copilot figure is the em dash, with no note and no products,
   baseURL,
 }) => {
   const payload = await gotoAiUsage(page, baseURL);
-  const unmeasured = {
-    ...payload,
-    copilot: [{ ...payload.copilot[0], value: "\u2014", note: null, products: [] }],
-  };
+  const unmeasured = withHalves(payload, [
+    { ...copilotHalves(payload)[0], value: "\u2014", note: null, products: [] },
+  ]);
   await render(page, unmeasured);
   const section = copilotSection(page, "copilot-org");
   await expect(section.locator(".pv-row .val")).toHaveText("\u2014");
-  await expect(section.locator(".pv-note")).toHaveCount(0);
+  await expect(section.locator(".pv-note:not(.pv-owner)")).toHaveCount(0);
   await expect(section.locator(".pv-item")).toHaveCount(0);
   await expect(copilotSection(page, "copilot-personal")).toHaveCount(0);
 });

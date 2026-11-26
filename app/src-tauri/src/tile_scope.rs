@@ -194,7 +194,6 @@ fn plan_id(plan: &Value) -> String {
 fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     retain_in(payload, "plans", plan_id, kept);
     retain_in(payload, "apis", plan_id, kept);
-    retain_in(payload, "copilot", plan_id, kept);
     // The scope picks figures only. `footer` (every row's warning) is left as the
     // whole tile has it; `freshness`, `loading` and the body `message` are the
     // scope's rows' alone, and so is what the payload carries per row: `lines` is
@@ -237,7 +236,7 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
     if narrowed {
         return;
     }
-    let shows_a_block = ["plans", "apis", "copilot"]
+    let shows_a_block = ["plans", "apis"]
         .into_iter()
         .any(|key| array_mut(payload, key).is_some_and(|rows| !rows.is_empty()));
     if shows_a_block {
@@ -649,13 +648,25 @@ mod tests {
                 {"id":"codex-plan","label":"Codex · Plus","value":"ok","metrics":[]}]})
     }
 
-    /// The ids of a payload's plans, spend and Copilot blocks, in order.
+    /// The ids of a payload's plans and spend blocks, in order, then the
+    /// billing halves the Copilot card carries (they are the card's, not
+    /// blocks of their own, but each is a source a scope speaks for).
     fn blocks(v: &Value) -> Vec<String> {
-        ["plans", "apis", "copilot"]
+        let id = |b: &Value| b["id"].as_str().unwrap().to_owned();
+        let mut ids: Vec<String> = ["plans", "apis"]
             .iter()
             .flat_map(|key| v[*key].as_array().into_iter().flatten())
-            .map(|b| b["id"].as_str().unwrap().to_owned())
-            .collect()
+            .map(id)
+            .collect();
+        ids.extend(
+            v["plans"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|plan| plan["halves"].as_array().into_iter().flatten())
+                .map(id),
+        );
+        ids
     }
 
     /// The plan's real id, `claude-plan`, starts with `claude-`. Matching the
@@ -1048,9 +1059,20 @@ mod tests {
                 "copilot",
                 &["copilot-org", "copilot-personal", "copilot-plan"],
             ),
-            ("item:copilot-org", &["copilot-org"]),
-            ("item:copilot-personal", &["copilot-personal"]),
-            ("item:copilot-plan", &["copilot-plan"]),
+            // Each was a row of its own once; all three now show the one card,
+            // so all three sources speak for it.
+            (
+                "item:copilot-org",
+                &["copilot-org", "copilot-personal", "copilot-plan"],
+            ),
+            (
+                "item:copilot-personal",
+                &["copilot-org", "copilot-personal", "copilot-plan"],
+            ),
+            (
+                "item:copilot-plan",
+                &["copilot-org", "copilot-personal", "copilot-plan"],
+            ),
             ("all", &all_ids),
             ("attention", &all_ids),
             (
@@ -1059,7 +1081,16 @@ mod tests {
             ),
             ("openai", &["codex-plan", "openai-api"]),
             ("claude", &["claude-today"]),
-            ("plans", &["claude-plan", "codex-plan", "copilot-plan"]),
+            (
+                "plans",
+                &[
+                    "claude-plan",
+                    "codex-plan",
+                    "copilot-plan",
+                    "copilot-org",
+                    "copilot-personal",
+                ],
+            ),
             ("item:claude-plan", &["claude-plan"]),
             ("item:codex-plan", &["codex-plan"]),
             ("item:anthropic-api", &["anthropic-api"]),
@@ -1230,14 +1261,13 @@ mod tests {
         assert_eq!(scoped(&p, "all")["loading"], true);
     }
 
-    /// A Copilot tile keeps only Copilot: both halves' rows and their clocks,
-    /// none of another vendor's, and not the Claude Code rollups.
+    /// A Copilot tile keeps only Copilot: the one card with both halves and
+    /// their clocks, none of another vendor's, and not the Claude Code rollups.
     #[test]
     fn a_copilot_tile_keeps_only_copilot() {
         let p = every_line_firing();
         let out = scoped(&p, "copilot");
-        // The plan row is a plan, so it is in the `plans` block beside the
-        // billing rows in the `copilot` one.
+        // One card, in the `plans` block, and its halves inside it.
         assert_eq!(
             blocks(&out),
             ["copilot-plan", "copilot-org", "copilot-personal"]
@@ -1245,23 +1275,27 @@ mod tests {
         assert_eq!(out["windows"], json!([]));
         assert!(out.get("projects").is_none());
         assert_eq!(out["trailing"], "");
+        assert!(out.get("copilot").is_none(), "no list beside the card");
+        // A saved selection of one half shows the same card.
         let one = scoped(&p, "item:copilot-personal");
-        assert_eq!(blocks(&one), ["copilot-personal"]);
+        assert_eq!(
+            blocks(&one),
+            ["copilot-plan", "copilot-org", "copilot-personal"]
+        );
         // The scope picks figures only: every other row's warning is still here.
         assert_eq!(out["footer"], p["footer"]);
         assert!(header_text(&out, "footer").contains("anthropic-api"));
-        // And another vendor's tile never carries Copilot's rows.
-        for scope in ["anthropic", "openai", "plans", "claude"] {
-            let other = scoped(&p, scope);
-            assert!(other["copilot"].as_array().unwrap().is_empty(), "{scope}");
-        }
-        // The plan row is also the `plans` tile's: `plans` means every plan limit.
-        // No other vendor's tile carries it.
+        // The card is also the `plans` tile's: `plans` means every plan limit.
+        // No other vendor's tile carries it, or its halves.
         let has_plan =
             |scope: &str| blocks(&scoped(&p, scope)).contains(&"copilot-plan".to_owned());
         assert!(has_plan("plans"));
-        for scope in ["anthropic", "openai", "claude", "item:copilot-org"] {
+        for scope in ["anthropic", "openai", "claude"] {
             assert!(!has_plan(scope), "{scope}");
+            assert!(
+                !blocks(&scoped(&p, scope)).contains(&"copilot-org".to_owned()),
+                "{scope}"
+            );
         }
     }
 

@@ -576,7 +576,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   text-overflow:ellipsis; }
 .pv-item .val { margin-left:auto; font-size:10px; color:var(--muted);
   white-space:nowrap; font-variant-numeric:tabular-nums; }
-/* A model under its product (the Copilot rows): indented and quieter, so the
+/* A Copilot billing half inside the card: ruled off from the seat meter or the
+   half above it, its owner and note quiet and wrapping. */
+.pv-half { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0;
+  border-top:1px solid var(--line); padding-top:8px; margin-top:8px; }
+.pv-half .pv-note { overflow-wrap:anywhere; }
+/* A model under its product (the Copilot halves): indented and quieter, so the
    line reads as the product's own. Same height as any other item. */
 .pv-item.pv-model { padding-left:12px; }
 .pv-item.pv-model .name { color:var(--muted); }

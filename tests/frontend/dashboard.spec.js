@@ -726,19 +726,22 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   const view = await openDashboard(page, baseURL, false, withAiUsageTile);
   const source = view.sources.find(s => s.id === 'aiUsage');
   const plans = source.rows.filter(r => r.scopes.includes('plans'));
-  expect(plans.map(r => r.id), 'Claude\'s plan, Codex\'s, then Copilot\'s own limit, first').toEqual(['claude-plan', 'codex-plan', 'copilot-plan']);
+  expect(plans.map(r => r.id), 'Claude\'s plan, Codex\'s, then the one Copilot card, first').toEqual(['claude-plan', 'codex-plan', 'copilot-plan']);
   expect(plans.map(r => r.id), 'one row per plan, first').toEqual(source.rows.slice(0, plans.length).map(r => r.id));
-  // Body order: plans, API spend, Copilot, then the Claude Code line last.
-  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'copilot-plan', 'anthropic-api', 'openai-api', 'copilot-org', 'copilot-personal', 'claude-today']);
+  // Body order: plans, API spend, then the Claude Code line last. Copilot's
+  // billing halves are the card's, not rows of their own.
+  expect(source.rows.map(r => r.id)).toEqual(['claude-plan', 'codex-plan', 'copilot-plan', 'anthropic-api', 'openai-api', 'claude-today']);
   expect(source.rows.filter(r => r.label === 'Claude Code'), 'the tokens are one line').toHaveLength(1);
   // Every row answers to its vendor, so a tile can be narrowed to one.
   const vendors = Object.fromEntries(source.rows.map(r => [r.id, r.scopes.filter(s => s === 'anthropic' || s === 'openai' || s === 'copilot')]));
   expect(vendors).toEqual({'claude-plan': ['anthropic'], 'codex-plan': ['openai'], 'copilot-plan': ['copilot'], 'anthropic-api': ['anthropic'],
-    'openai-api': ['openai'], 'copilot-org': ['copilot'], 'copilot-personal': ['copilot'], 'claude-today': ['anthropic']});
-  // The Copilot billing rows are never attention rows: they cannot raise the red
-  // chip. Its plan row is a plan, so only a red meter would (this one is green).
-  expect(source.rows.filter(r => r.id === 'copilot-org' || r.id === 'copilot-personal').map(r => r.attention)).toEqual([false, false]);
-  expect(source.rows.find(r => r.id === 'copilot-plan').attention).toBe(false);
+    'openai-api': ['openai'], 'claude-today': ['anthropic']});
+  // The Copilot billing halves never ask for attention: they cannot raise the
+  // red chip. The card is a plan, so only a red seat meter would (this one is green).
+  const copilot = source.rows.find(r => r.id === 'copilot-plan');
+  expect(copilot.attention).toBe(false);
+  expect(copilot.halves.map(h => h.id)).toEqual(['copilot-org', 'copilot-personal']);
+  expect(copilot.aliases, 'a saved item: scope of either half still finds the card').toEqual(['copilot-org', 'copilot-personal']);
   // A row with meters is a card, as a machine is.
   const items = tile(page, 'aiUsage').locator('.db-host');
   await expect(items).toHaveCount(plans.length);
@@ -771,6 +774,43 @@ test('the AI Usage tile leads with its plans as rows of the Machines tile\'s met
   for (const label of new Set(plans.flatMap(r => r.metrics.map(m => m.label)))) {
     expect(headers.map(h => h.toLowerCase())).toContain(label.toLowerCase());
   }
+});
+
+// The one Copilot card in the overview: the seat's meter, then each billing half
+// as GitHub's term and its dollars on one line, with whose bill it is and what
+// was used beneath, so the tile's width can never cut the dollars off.
+test('the Copilot card paints each billing half with its dollars intact beside a very long organization login', async ({page,baseURL}) => {
+  const login = 'example-organization-with-a-very-long-login-that-used-to-fill-the-whole-line';
+  const view = await openDashboard(page, baseURL, false, (prepared) => {
+    withAiUsageTile(prepared);
+    const row = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'copilot-plan');
+    row.halves[0].owner = login;
+  });
+  const source = view.sources.find(s => s.id === 'aiUsage');
+  const halves = source.rows.find(r => r.id === 'copilot-plan').halves;
+  const card = tile(page, 'aiUsage').locator('.db-host').nth(2);
+  await expect(card.locator('.db-item-name')).toHaveText('Copilot · Business');
+  await expect(card.locator('.db-half')).toHaveCount(halves.length);
+  for (const [i, half] of halves.entries()) {
+    const part = card.locator('.db-half').nth(i);
+    await expect(part.locator('.db-half-label')).toHaveText(half.label);
+    await expect(part.locator('.db-half-value')).toHaveText(half.value);
+    if (half.note) await expect(part.locator('.db-half-note')).toHaveText(half.note);
+  }
+  await expect(card.locator('.db-half-owner').first()).toHaveText(login);
+  // The dollars are whole and inside the tile, however long the login: the owner is
+  // a line of its own, and it wraps rather than pushing the figure out.
+  const frame = await tile(page, 'aiUsage').boundingBox();
+  for (const value of await card.locator('.db-half-value').all()) {
+    const box = await value.boundingBox();
+    expect(box.x + box.width, 'the dollars end inside the tile').toBeLessThanOrEqual(frame.x + frame.width);
+    expect(await value.evaluate(el => el.scrollWidth <= el.clientWidth), 'and are not cut').toBe(true);
+  }
+  const owner = await card.locator('.db-half-owner').first().boundingBox();
+  expect(owner.x + owner.width, 'the long login wraps inside the tile').toBeLessThanOrEqual(frame.x + frame.width);
+  // The meter and the halves are one card, the seat's meter first.
+  const order = await card.evaluate(el => [...el.children].map(c => c.className));
+  expect(order.indexOf('db-host-stats')).toBeLessThan(order.indexOf('db-halves'));
 });
 
 // A tile's Detail warnings are source-level (its rows follow the scope): it

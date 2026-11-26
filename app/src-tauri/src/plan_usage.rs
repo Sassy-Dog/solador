@@ -525,11 +525,11 @@ fn mirror_plan(reading: &PlanUsage) -> vm::Plan {
     }
 }
 
-/// The Copilot plan row: the token owner's own plan or employer seat, one spend
-/// cap in US dollars (a credit is $0.01). Built by [`vm::plan_row`], the
-/// function Claude's and Codex's rows are built by, so it takes their meter,
-/// their colours and the red rule `dashboard::plan_rows` reads, with no
-/// attention code of its own.
+/// The Copilot card's seat section: the token owner's own plan or employer
+/// seat, one spend cap in US dollars (a credit is $0.01). Built by
+/// [`vm::plan_row`], the function Claude's and Codex's rows are built by, so it
+/// takes their meter, their colours and the red rule `dashboard::plan_rows`
+/// reads, with no attention code of its own. [`copilot_card`] adds the halves.
 ///
 /// With no reading (loading, or a failure before any figure, or one that took
 /// its figure with it) it is the placeholder row: `Copilot  —`, and the header
@@ -570,8 +570,40 @@ pub fn copilot_seat_section(state: &crate::usage::CopilotPlanState, now: u64) ->
     )
 }
 
-/// The provider's name in the Copilot plan row's label.
+/// The provider's name in the Copilot card's label.
 const COPILOT_NAME: &str = "Copilot";
+
+/// The one Copilot card: the seat's section (its budget meter and
+/// `Copilot · Business` label) with the billing halves that are set up under
+/// it as `halves`, and the other two sources' ids as `aliases`, so a saved
+/// `item:copilot-org` or `item:copilot-personal` scope still finds it. `None`
+/// when no Copilot part is set up at all.
+///
+/// With no seat read set up (only the organization half, say) the card is
+/// just `Copilot` with no figure of its own: nothing was asked of the seat, so
+/// nothing is said about it, which is not the `—` of a seat that was asked and
+/// is unknown.
+pub fn copilot_card(seat: Option<Value>, halves: Vec<Value>) -> Option<Value> {
+    if seat.is_none() && halves.is_empty() {
+        return None;
+    }
+    let mut card = seat.unwrap_or_else(|| {
+        row_json(
+            crate::usage::COPILOT_PLAN_ID,
+            &vm::PlanRow {
+                label: COPILOT_NAME.to_owned(),
+                value: String::new(),
+                value_color: color::MUTED,
+                color: color::MUTED,
+                detail: String::new(),
+                metrics: Vec::new(),
+            },
+        )
+    });
+    card["halves"] = Value::Array(halves);
+    card["aliases"] = json!(crate::usage::COPILOT_CARD_ALIASES);
+    Some(card)
+}
 
 fn mirror_window(window: &PlanWindow) -> vm::Window {
     vm::Window {

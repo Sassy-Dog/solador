@@ -9515,10 +9515,19 @@ mod tests {
         )
     }
 
-    fn copilot_ids(card: &Value) -> Vec<String> {
-        card["copilot"]
+    /// The billing halves the one Copilot card carries, in its order.
+    fn copilot_halves(card: &Value) -> Vec<Value> {
+        card["plans"]
             .as_array()
             .unwrap()
+            .iter()
+            .find(|plan| plan["id"] == "copilot-plan")
+            .and_then(|plan| plan["halves"].as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    fn copilot_ids(card: &Value) -> Vec<String> {
+        copilot_halves(card)
             .iter()
             .map(|row| row["id"].as_str().unwrap().to_owned())
             .collect()
@@ -9623,10 +9632,11 @@ mod tests {
         let said = "copilot-org: Actions billing isn't set up";
         let check = |card: &Value| {
             assert_eq!(copilot_ids(card), ["copilot-org"]);
-            let row = &card["copilot"][0];
+            let row = &copilot_halves(card)[0];
             assert_eq!(row["value"], "\u{2014}");
             // No figure survives, and the organization's name went with it.
-            assert_eq!(row["label"], "AI credits");
+            assert_eq!(row["label"], "Additional usage");
+            assert!(row["owner"].is_null());
             assert!(row["note"].is_null());
             assert!(row["products"].as_array().unwrap().is_empty());
             assert!(card["footer"]["text"].as_str().unwrap().contains(said));
