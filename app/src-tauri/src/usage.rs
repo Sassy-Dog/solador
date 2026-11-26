@@ -1403,9 +1403,9 @@ pub fn ai_usage_view(state: &UsageState, inputs: PlanInputs, now: u64) -> Value 
         now,
     );
 
-    // Copilot's organization half is a flag, read here so that unticking it hides
-    // the row on this frame; the personal half goes with its key
-    // (`unconfigure_spend`).
+    // Copilot's organization half is a flag, read here so that unticking it
+    // removes its half from the card on this frame; the personal half goes with
+    // its key (`unconfigure_spend`).
     let copilot_plan = copilot_seat_view(&state.copilot_plan, inputs.spend_cadence_secs, now);
     let copilot_views = [
         (
@@ -3925,8 +3925,8 @@ mod tests {
         assert_eq!(payload["message"], Value::Null);
     }
 
-    /// Unticking the organization half hides its row on the same frame, before
-    /// any pass has dropped the figure.
+    /// Unticking the organization part removes its half from the card, and its
+    /// warning, on the same frame, before any pass has dropped the figure.
     #[test]
     fn unticking_org_hides_its_row_and_its_warning_at_once() {
         let mut state = nothing_added();

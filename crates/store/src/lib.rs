@@ -529,9 +529,10 @@ impl StoreData {
     /// before this change opening the file afterwards finds `item:copilot-plan`
     /// and shows that tile as the card's seat row, not the half it was scoped to.
     ///
-    /// The ids are the app's (`usage::COPILOT_*_ID`), spelled out here because
-    /// this crate cannot see that module; `tile_scope.rs` has the test that
-    /// keeps them equal.
+    /// The id written, `copilot-plan`, is the app's (`usage::COPILOT_PLAN_ID`),
+    /// spelled out here because this crate cannot see that module;
+    /// `tile_scope.rs` has the test that keeps it equal. The two ids read are
+    /// what earlier builds saved and never change.
     pub fn carry_copilot_item_scopes_onto_card(&mut self) {
         let Some(dashboard) = self.dashboard.as_mut() else {
             return;
