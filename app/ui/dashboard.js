@@ -302,13 +302,32 @@
     heading.append(title, subtitle);
     return heading;
   }
+  // The Copilot card's billing halves (Rust's `halves`): GitHub's term and the
+  // dollars on one line, whose bill it is and what was used under it, so the
+  // tile's width can never cut the dollars off. One builder for the overview
+  // card and for Detail's table and list, or `null` for a row with none.
+  function halvesNode(row) {
+    if (!row.halves?.length) return null;
+    const halves = node("div", "db-halves");
+    for (const half of row.halves) {
+      const part = node("div", "db-half");
+      part.dataset.half = half.id;
+      const line = node("div", "db-half-line");
+      line.append(node("span", "db-half-label", half.label), colored("span", "db-half-value", half.value, half.valueColor));
+      part.append(line);
+      if (half.owner) part.append(node("p", "db-half-owner", half.owner));
+      if (half.note) part.append(node("p", "db-half-note", half.note));
+      halves.append(part);
+    }
+    return halves;
+  }
   // `cardCounts`: in a Repos owner card, the count slots Rust names for a card
   // (null everywhere else). The status word is not a card column; the dot
   // carries it there, and the accessible name below still says it.
   function makeRow(row, t, detail = false, interactive = true, cardCounts = null) {
     const wrap = node(
       "div",
-      row.metrics?.length ? "db-host" : "db-compact-row",
+      row.metrics?.length || row.halves?.length ? "db-host" : "db-compact-row",
     );
     const b = interactive ? button("", row.grouped ? "runner-group" : "row", row.id, "db-item") : node("div", "db-item");
     if (row.grouped) wrap.classList.add("db-runner-group");
@@ -363,23 +382,9 @@
       }
       wrap.append(stats);
     }
-    // The Copilot card's billing halves, under its seat meter: GitHub's term and
-    // the dollars on one line, whose bill it is and what was used under it, so
-    // the tile's width can never cut the dollars off.
-    if (row.halves?.length) {
-      const halves = node("div", "db-halves");
-      for (const half of row.halves) {
-        const part = node("div", "db-half");
-        part.dataset.half = half.id;
-        const line = node("div", "db-half-line");
-        line.append(node("span", "db-half-label", half.label), colored("span", "db-half-value", half.value, half.valueColor));
-        part.append(line);
-        if (half.owner) part.append(node("p", "db-half-owner", half.owner));
-        if (half.note) part.append(node("p", "db-half-note", half.note));
-        halves.append(part);
-      }
-      wrap.append(halves);
-    }
+    // Under the seat meter, when the card has halves.
+    const halves = halvesNode(row);
+    if (halves) wrap.append(halves);
     const description = detail ? row.detail : row.compactDetail;
     if (detail || row.grouped || t.source === "sentryCrons") {
       const copy = node("p", "db-sub db-row-description", description || "");
@@ -1963,6 +1968,8 @@
       const extra = node("div", "db-detail-extra"), metrics = node("dl", "db-detail-fields");
       for (const m of row.details || []) metrics.append(field(m));
       if (metrics.childElementCount) extra.append(metrics);
+      const listHalves = halvesNode(row);
+      if (listHalves) extra.append(listHalves);
       extra.append(...volumeSection(row));
       extra.append(warningControls(row));
       const actions = node("div", "db-detail-actions");
@@ -2061,6 +2068,8 @@
       const cell = node("td"), content = node("div", "db-detail-extra");
       cell.colSpan = columns.length;
       if (row.explanation || row.detail) content.append(node("p", "db-detail-copy", row.explanation || row.detail));
+      const tableHalves = halvesNode(row);
+      if (tableHalves) content.append(tableHalves);
       content.append(...volumeSection(row));
       content.append(warningControls(row));
       const actions = node("div", "db-detail-actions");

@@ -188,8 +188,7 @@ pub const OPENAI_API_LABEL: &str = "OpenAI API spend (MTD)";
 /// GitHub Copilot's two billing halves, on the same terms: each id is the
 /// source's name in the header line (its `⚠` warning and clock), and both
 /// answer to the `copilot` scope. They are not rows of their own: each is one
-/// of the Copilot card's `halves` ([`COPILOT_PLAN_ID`]), and a saved `item:`
-/// scope naming one shows that card.
+/// of the Copilot card's `halves` ([`COPILOT_PLAN_ID`]).
 pub const COPILOT_ORG_ID: &str = "copilot-org";
 pub const COPILOT_PERSONAL_ID: &str = "copilot-personal";
 /// The Copilot card's id, and the id of the seat read it carries: the token
@@ -199,12 +198,11 @@ pub const COPILOT_PERSONAL_ID: &str = "copilot-personal";
 /// `halves` entry for each billing half that is set up. The seat is read from
 /// the same Personal token as `copilot-personal` but from a different
 /// endpoint, so it has its own state, warning and clock and one never blanks
-/// or ages the other. Answers to the `plans` and `copilot` scopes, and the
-/// other two sources' ids ([`COPILOT_CARD_ALIASES`]) are its aliases.
+/// or ages the other. Answers to the `plans` and `copilot` scopes. A saved
+/// `item:copilot-org` or `item:copilot-personal` (each a row of its own before
+/// the card was one) is rewritten to `item:copilot-plan` when the store is read
+/// (`StoreData::carry_copilot_item_scopes_onto_card`).
 pub const COPILOT_PLAN_ID: &str = "copilot-plan";
-/// The ids a saved `item:` scope may still name for the Copilot card: before
-/// the card was one, each billing half was a row of its own.
-pub const COPILOT_CARD_ALIASES: [&str; 2] = [COPILOT_ORG_ID, COPILOT_PERSONAL_ID];
 /// A billing half's label: GitHub's own term for what is billed, on any plan,
 /// with or without included credits.
 pub const COPILOT_HALF_LABEL: &str = "Additional usage";
@@ -501,7 +499,7 @@ impl CopilotState {
     }
 }
 
-/// The Copilot plan row's published state: the username it was read for, and
+/// The Copilot seat read's published state: the username it was read for, and
 /// the reading of that account's own limit. Read from Personal's token, apart
 /// from [`CopilotState`] (another endpoint, so its own failure, clock and
 /// retained figure), and a figure belongs to its username: another one's is
@@ -520,7 +518,7 @@ impl CopilotPlanState {
     }
 
     /// The username this pass reads for. A different one drops the previous
-    /// figures, as [`CopilotState::note_login`] does for the billing row.
+    /// figures, as [`CopilotState::note_login`] does for the billing half.
     pub fn note_login(&mut self, login: &str) {
         if self.login != login {
             login.clone_into(&mut self.login);
@@ -684,7 +682,7 @@ impl UsageState {
     }
 
     /// Personal's token is gone (or was never there): both of its readings go,
-    /// the billing row and the plan row, on the same frame.
+    /// the billing half and the seat meter, on the same frame.
     pub fn copilot_personal_unconfigure(&mut self) {
         self.copilot_personal.unconfigure();
         self.copilot_plan.unconfigure();
@@ -3845,6 +3843,35 @@ mod tests {
         assert!(copilot_row(&payload, COPILOT_PERSONAL_ID).expect("row")["note"].is_null());
     }
 
+    /// A half that is set up but has no reading yet, or whose first read
+    /// failed, is a line in `halves` that reads `—` with no owner-less figure:
+    /// no note, no products, never `$0.00`.
+    #[test]
+    fn a_half_still_loading_or_failed_on_its_first_read_reads_a_dash() {
+        let mut state = nothing_added();
+        state.copilot_personal.login = "example-user".into();
+        state.copilot_personal.read.begin();
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let half = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("half");
+        assert_eq!(half["value"], "\u{2014}");
+        assert!(half["note"].is_null());
+        assert!(half["products"].as_array().unwrap().is_empty());
+        assert_eq!(half["owner"], "billed to example-user");
+        assert_eq!(payload["loading"], true);
+
+        let mut state = nothing_added();
+        state.copilot_personal.login = "example-user".into();
+        state
+            .copilot_personal
+            .read
+            .failed("GitHub is failing".into());
+        let payload = ai_usage_view(&state, PlanInputs::OFF, NOW);
+        let half = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("half");
+        assert_eq!(half["value"], "\u{2014}");
+        assert!(half["note"].is_null());
+        assert!(half["products"].as_array().unwrap().is_empty());
+    }
+
     #[test]
     fn the_org_row_says_actions_billing_is_not_set_up_and_reads_a_dash() {
         let mut state = nothing_added();
@@ -4151,7 +4178,10 @@ mod tests {
         assert_eq!(halves[0]["id"], COPILOT_PERSONAL_ID);
         assert_eq!(halves[0]["label"], "Additional usage");
         assert_eq!(halves[0]["value"], "$1.00");
-        assert_eq!(card["aliases"], json!(["copilot-org", "copilot-personal"]));
+        assert!(
+            card.get("aliases").is_none(),
+            "one id is the only mechanism"
+        );
         assert!(payload["apis"].as_array().unwrap().is_empty());
 
         // Only the organization half: a header, no meter, no value of its own.
@@ -4343,8 +4373,8 @@ mod tests {
         assert_eq!(row["note"], "0 credits used \u{b7} 0 included");
     }
 
-    /// Each endpoint's failure is its own: the plan row's `⚠` line is under
-    /// `copilot-plan`, the billing row keeps its figure and says nothing, and
+    /// Each endpoint's failure is its own: the seat's `⚠` line is under
+    /// `copilot-plan`, the billing half keeps its figure and says nothing, and
     /// the reverse holds.
     #[test]
     fn one_copilot_reading_failing_never_blanks_or_ages_the_other() {
@@ -4361,7 +4391,7 @@ mod tests {
             .unwrap()
             .starts_with("\u{26a0} copilot-plan: "));
         assert!(line(&payload, COPILOT_PERSONAL_ID)["warning"].is_null());
-        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing row");
+        let billed = copilot_row(&payload, COPILOT_PERSONAL_ID).expect("billing half");
         assert_eq!(billed["value"], "$1.00", "the billing figure is intact");
         // The plan row keeps its last good figure beside the reason: GitHub
         // could not be reached, which says nothing about the figure.
@@ -4451,7 +4481,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("different account"));
-        // The billing row's figure is not another endpoint's to remove.
+        // The billing half's figure is not another endpoint's to remove.
         assert_eq!(
             copilot_row(&payload, COPILOT_PERSONAL_ID).unwrap()["value"],
             "$1.00"

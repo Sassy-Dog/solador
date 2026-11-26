@@ -250,7 +250,7 @@ fn scope_ai_usage(payload: &mut Value, kept: &BTreeSet<String>, scope: &str) {
 ///
 /// **A tile's scope picks only which figures it shows.** Every `\u{26a0}` warning
 /// from a configured AI source (the three plans, Claude's, Codex's and Copilot's
-/// `copilot-plan`; both Admin keys; both Copilot billing rows; the Claude Code logs,
+/// `copilot-plan`; both Admin keys; both Copilot billing halves; the Claude Code logs,
 /// and a key the credential store would not read) shows on every AI Usage tile,
 /// labelled with its row id: the payload's `footer` and an overview card's `\u{26a0}`
 /// entry are the whole tile's, whatever the scope. Only three things follow
@@ -1054,21 +1054,14 @@ mod tests {
             "claude-today",
         ];
         // (scope, the ids it speaks for)
-        let matrix: [(&str, &[&str]); 16] = [
+        let matrix: [(&str, &[&str]); 14] = [
             (
                 "copilot",
                 &["copilot-org", "copilot-personal", "copilot-plan"],
             ),
-            // Each was a row of its own once; all three now show the one card,
-            // so all three sources speak for it.
-            (
-                "item:copilot-org",
-                &["copilot-org", "copilot-personal", "copilot-plan"],
-            ),
-            (
-                "item:copilot-personal",
-                &["copilot-org", "copilot-personal", "copilot-plan"],
-            ),
+            // The one card's row speaks for all three of its sources. The
+            // halves' own ids are retired rows: the store rewrites a saved
+            // one to this (`carry_copilot_item_scopes_onto_card`).
             (
                 "item:copilot-plan",
                 &["copilot-org", "copilot-personal", "copilot-plan"],
@@ -1276,12 +1269,14 @@ mod tests {
         assert!(out.get("projects").is_none());
         assert_eq!(out["trailing"], "");
         assert!(out.get("copilot").is_none(), "no list beside the card");
-        // A saved selection of one half shows the same card.
-        let one = scoped(&p, "item:copilot-personal");
+        // The card's own row shows the same card; a half's retired id is not a
+        // row (the store rewrites a saved one to `item:copilot-plan`).
+        let one = scoped(&p, "item:copilot-plan");
         assert_eq!(
             blocks(&one),
             ["copilot-plan", "copilot-org", "copilot-personal"]
         );
+        assert!(blocks(&scoped(&p, "item:copilot-personal")).is_empty());
         // The scope picks figures only: every other row's warning is still here.
         assert_eq!(out["footer"], p["footer"]);
         assert!(header_text(&out, "footer").contains("anthropic-api"));
@@ -1481,7 +1476,7 @@ mod tests {
             ("item:claude-today", true),
             ("openai", false),
             ("copilot", false),
-            ("item:copilot-org", false),
+            ("item:copilot-plan", false),
             ("plans", false),
             ("item:claude-plan", false),
             ("item:anthropic-api", false),

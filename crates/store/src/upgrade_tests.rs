@@ -470,6 +470,46 @@ fn a_usage_tile_scoped_to_a_retired_row_keeps_the_row_that_replaced_it() {
     assert_eq!(data, once, "a second pass changes nothing");
 }
 
+/// Copilot's billing halves were rows of their own and are now parts of the one
+/// Copilot card, so a saved scope naming one lands on the card's row.
+#[test]
+fn an_ai_usage_tile_scoped_to_a_copilot_half_lands_on_the_card() {
+    let ai = |id: &str, scope: &str| {
+        let mut t = tile(id, "aiUsage");
+        t["scope"] = json!(scope);
+        t
+    };
+    let mut store = old_store(json!({}), None, json!({}));
+    let tiles_json = store["dashboard"]["tiles"].as_array_mut().unwrap();
+    tiles_json.extend([
+        ai("org", "item:copilot-org"),
+        ai("me", "item:copilot-personal"),
+        ai("seat", "item:copilot-plan"),
+        ai("all", "all"),
+        // Another source's look-alike id is not a Copilot row.
+        {
+            let mut t = tile("gh", "ghWorkflows");
+            t["scope"] = json!("item:copilot-org");
+            t
+        },
+    ]);
+    let (_dir, opened) = open(&store);
+    for (id, scope) in [
+        ("org", "item:copilot-plan"),
+        ("me", "item:copilot-plan"),
+        ("seat", "item:copilot-plan"),
+        ("all", "all"),
+        ("gh", "item:copilot-org"),
+    ] {
+        assert_eq!(by_id(&opened, id).scope, scope, "{id}");
+    }
+
+    let mut data = opened.data().clone();
+    let once = data.clone();
+    data.carry_copilot_item_scopes_onto_card();
+    assert_eq!(data, once, "a second pass changes nothing");
+}
+
 /// A saved tile of the one Usage source that held Claude, Codex and cloud
 /// billing together.
 fn old_usage(id: &str, scope: &str, title: &str) -> Value {

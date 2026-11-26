@@ -257,9 +257,10 @@
   ids are unchanged from the two tiles this one replaced, so a saved `item:`
   scope keeps working. The Copilot card is the one row `copilot-plan`; a saved
   `item:copilot-org` or `item:copilot-personal` (each a row of its own before the
-  card was one) finds the same card through its `aliases`, shows it whole and is
-  labelled by it (`dashboard::vendor_of` maps each id to its vendor scope, and
-  all three Copilot sources speak for the card's header lines and loading). A tile that does not keep `claude-today` also drops the
+  card was one) is rewritten to `item:copilot-plan` when the store is read
+  (`StoreData::carry_copilot_item_scopes_onto_card`), so the one id is the only
+  mechanism (`dashboard::vendor_of` maps each id to its vendor scope, and all
+  three Copilot sources speak for the card's header lines and loading). A tile that does not keep `claude-today` also drops the
   header's Claude Code figure. **A tile's scope picks only which
   figures it shows.** Every `⚠` warning from a configured AI source (all three plans,
   both keys, each Copilot source, the Claude Code logs, and a key the credential

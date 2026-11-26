@@ -2075,7 +2075,7 @@ const COPILOT_NEEDS_BILLING_LABEL: &str = "Needs Actions billing";
 /// operator **administers**, not their own usage, and it says which permission
 /// reads it: it is Administration, and no permission named for billing or for
 /// Copilot does this.
-const COPILOT_ORG_HELP: &str = "Month-to-date additional usage for the whole pool of an organization you administer, not your own usage, shown on the Copilot card as an Additional usage line under the organization\u{2019}s login. It counts every GitHub product billed in AI credits, Copilot among them, and lists them by product; you need to administer that organization. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first. That token\u{2019}s permission is Organization permissions \u{2192} Administration: Read: no permission named for billing or for Copilot does this. Nothing new is stored, and removing this part leaves that token alone.";
+const COPILOT_ORG_HELP: &str = "Month-to-date additional usage for the whole pool of an organization you administer, not your own usage, shown on the Copilot card as an Additional usage line with the organization\u{2019}s login beneath it. It counts every GitHub product billed in AI credits, Copilot among them, and lists them by product; you need to administer that organization. This reads with the Actions billing source\u{2019}s token and organization, so set Actions billing up first. That token\u{2019}s permission is Organization permissions \u{2192} Administration: Read: no permission named for billing or for Copilot does this. Nothing new is stored, and removing this part leaves that token alone.";
 
 /// The personal part's summary, which no longer says only "your own plan": an
 /// employer's seat is read here too.
@@ -3766,6 +3766,7 @@ mod tests {
         assert!(org_help.contains("administer"));
         assert!(org_help.contains("no permission named for billing or for Copilot"));
         assert!(org_help.contains("not your own usage"));
+        assert!(org_help.contains("with the organization\u{2019}s login beneath it"));
         assert!(org_help.contains("every GitHub product billed in AI credits"));
         assert!(org_help.contains("Nothing new is stored"));
         let personal_help = parts[1]["help"].as_str().unwrap();

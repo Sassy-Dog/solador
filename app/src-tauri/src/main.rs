@@ -3659,9 +3659,9 @@ async fn poll_copilot_org(app: &Arc<App>) {
 /// Copilot's personal half: its own token, read fresh each pass. No key is no
 /// row; a key the credential store will not hand over is not "no key".
 ///
-/// The one token feeds two readings, each with its own state: the billing row
-/// (`copilot-personal`, what GitHub billed to this account) and the plan row
-/// (`copilot-plan`, the account's own plan or seat limit). Neither's failure
+/// The one token feeds two readings, each with its own state: the billing half
+/// (`copilot-personal`, what GitHub billed to this account) and the card's seat
+/// meter (`copilot-plan`, the account's own plan or seat limit). Neither's failure
 /// touches the other's figure, warning or clock. With no key both go, on the
 /// same frame.
 async fn poll_copilot_personal(app: &Arc<App>) {
@@ -9596,7 +9596,7 @@ mod tests {
     }
 
     /// Removing Actions billing takes the organization figure with it on the same
-    /// frame, and the Copilot flag stays: the row reads a dash and says why at
+    /// frame, and the Copilot flag stays: the half reads a dash and says why at
     /// once, rather than vanishing until the woken pass reaches it.
     #[test]
     fn removing_actions_billing_hides_the_copilot_org_figure_on_the_same_frame() {
@@ -9764,10 +9764,10 @@ mod tests {
         assert!(plan["warning"].is_null());
     }
 
-    /// A token the store will not hand over warns under **both** Copilot rows'
+    /// A token the store will not hand over warns under **both** Copilot sources'
     /// own ids, and neither is the setup sentence.
     #[test]
-    fn an_unreadable_personal_token_warns_under_both_copilot_rows() {
+    fn an_unreadable_personal_token_warns_under_both_copilot_sources() {
         let (_dir, rt, app) = test_app_over(UnreadableCredentialStore);
         let app = Arc::new(app);
         app.store.lock().unwrap().settings_mut().copilot_username = "example-user".into();

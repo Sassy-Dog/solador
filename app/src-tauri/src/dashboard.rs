@@ -320,7 +320,7 @@ pub(crate) const AI_ROW_IDS: [&str; 8] = [
 /// unread) is exactly what holds a tile loading. `attention` and `all` speak
 /// for every row; an unknown `item:` speaks for none.
 pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
-    use crate::usage::COPILOT_CARD_ALIASES;
+    use crate::usage::{COPILOT_ORG_ID, COPILOT_PERSONAL_ID, COPILOT_PLAN_ID};
     let vendor = |v: &str| {
         AI_ROW_IDS
             .into_iter()
@@ -332,16 +332,16 @@ pub(crate) fn ai_scope_rows(scope: &str) -> Vec<&'static str> {
         // their sources speak for it too.
         "plans" => PLAN_ROW_IDS
             .into_iter()
-            .chain(COPILOT_CARD_ALIASES)
+            .chain([COPILOT_ORG_ID, COPILOT_PERSONAL_ID])
             .collect(),
         "claude" => vec![CLAUDE_TODAY_ID],
         "anthropic" => vendor("anthropic"),
         "openai" => vendor("openai"),
         "copilot" => vendor("copilot"),
         other => match other.strip_prefix("item:") {
-            // The one Copilot card is also what a saved selection of either
-            // billing half shows, so all three of its sources speak for it.
-            Some(id) if vendor_of(id) == Some("copilot") => vendor("copilot"),
+            // The one Copilot card carries both billing halves, so all three
+            // of its sources speak for it.
+            Some(COPILOT_PLAN_ID) => vendor("copilot"),
             Some(id) => AI_ROW_IDS.into_iter().filter(|row| *row == id).collect(),
             None => AI_ROW_IDS.to_vec(),
         },
@@ -715,8 +715,7 @@ fn add_vendor_scope(r: &mut Value) {
 /// part is set up (`plans` means every plan limit). **Billing halves never ask
 /// for attention**: the billing reads state spend and no limit, so there is no
 /// figure to be red about; only the seat's red meter does, and a failed or
-/// stale read is a warning line, which lights the amber chip. The card's
-/// `aliases` are the ids a saved `item:` scope may still name.
+/// stale read is a warning line, which lights the amber chip.
 fn plan_rows(p: &Value) -> Vec<Value> {
     list(p, "plans")
         .iter()
@@ -731,12 +730,9 @@ fn plan_rows(p: &Value) -> Vec<Value> {
             r["valueColor"] = tint(&plan["valueColor"]);
             r["detail"] = json!(string(plan, "detail"));
             r["metrics"] = plan["metrics"].clone();
-            // The Copilot card's billing halves and the ids a saved scope may
-            // still name for it; absent on a plan with neither.
-            for key in ["halves", "aliases"] {
-                if !plan[key].is_null() {
-                    r[key] = plan[key].clone();
-                }
+            // The Copilot card's billing halves; absent on a plan with none.
+            if !plan["halves"].is_null() {
+                r["halves"] = plan["halves"].clone();
             }
             add_scope(&mut r, "plans");
             add_vendor_scope(&mut r);
@@ -1306,9 +1302,9 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
 fn in_scope(row: &Value, scope: &str) -> bool {
     scope == "all"
         || (scope == "attention" && row["attention"] == true)
-        || scope.strip_prefix("item:").is_some_and(|id| {
-            row["id"] == id || list(row, "aliases").iter().any(|alias| alias == id)
-        })
+        || scope
+            .strip_prefix("item:")
+            .is_some_and(|id| row["id"] == id)
         || list(row, "scopes").iter().any(|s| s == scope)
 }
 
@@ -1862,14 +1858,6 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .iter()
         .find(|s| s["value"] == tile.scope)
         .map(|s| string(s, "label").to_owned())
-        // A saved `item:` scope naming a row by an alias (the Copilot card's
-        // old billing rows) is that row, not a resource that went away.
-        .or_else(|| {
-            list(source, "rows")
-                .iter()
-                .find(|r| tile.scope.starts_with("item:") && in_scope(r, &tile.scope))
-                .map(|r| string(r, "label").to_owned())
-        })
         .unwrap_or_else(|| "Resource no longer available".into());
     let narrowed = ai_narrowed_source(tile, source);
     let (empty, empty_action) = empty_state(
@@ -4414,7 +4402,10 @@ mod tests {
     fn plan_row_ids_lead_the_ai_rows() {
         assert_eq!(AI_ROW_IDS[..PLAN_ROW_IDS.len()], PLAN_ROW_IDS);
         let mut want = PLAN_ROW_IDS.to_vec();
-        want.extend(crate::usage::COPILOT_CARD_ALIASES);
+        want.extend([
+            crate::usage::COPILOT_ORG_ID,
+            crate::usage::COPILOT_PERSONAL_ID,
+        ]);
         assert_eq!(ai_scope_rows("plans"), want);
     }
 
@@ -4428,8 +4419,7 @@ mod tests {
                 {"id": "claude-plan", "label": "Claude", "value": "ok", "metrics": []},
                 {"id": "codex-plan", "label": "Codex", "value": "ok", "metrics": []},
                 {"id": "copilot-plan", "label": "Copilot", "value": "ok", "metrics": [],
-                 "aliases": ["copilot-org", "copilot-personal"],
-                 "halves": [
+                  "halves": [
                     {"id": "copilot-org", "label": "Additional usage", "value": "$1"},
                     {"id": "copilot-personal", "label": "Additional usage", "value": "$1"}
                  ]}
@@ -4477,27 +4467,25 @@ mod tests {
             }
         }
         assert_eq!(vendor_of("neon:Compute"), None);
-        // The billing halves are not rows: they ride the card, and the ids a
-        // saved scope may still name for them are the card's aliases.
+        // The billing halves are not rows: they ride the card.
         let card = list(&source, "rows")
             .iter()
             .find(|r| r["id"] == "copilot-plan")
             .expect("the card");
         assert_eq!(card["halves"].as_array().unwrap().len(), 2);
-        for alias in ["copilot-org", "copilot-personal"] {
-            assert!(!scopes.iter().any(|(id, _)| id == alias), "{alias}");
-            assert!(in_scope(card, &format!("item:{alias}")), "{alias}");
-            assert_eq!(vendor_of(alias), Some("copilot"));
+        for half in ["copilot-org", "copilot-personal"] {
+            assert!(!scopes.iter().any(|(id, _)| id == half), "{half}");
+            assert_eq!(vendor_of(half), Some("copilot"));
         }
         assert!(!in_scope(card, "item:codex-plan"));
     }
 
-    /// A saved `item:copilot-org` or `item:copilot-personal` (each was a row of
-    /// its own before the card) finds the one Copilot card, is labelled by it
-    /// rather than reading as a resource that went away, and speaks for all three
-    /// Copilot sources.
+    /// `item:copilot-plan`, the one Copilot card's row (a saved
+    /// `item:copilot-org` or `item:copilot-personal` is rewritten to it when the
+    /// store is read), is labelled by the card and speaks for all three Copilot
+    /// sources.
     #[test]
-    fn a_saved_copilot_half_scope_shows_the_card_under_its_label() {
+    fn the_copilot_card_scope_shows_the_card_under_its_label() {
         use crate::plan_usage::PlanInputs;
         use crate::usage::UsageState;
         let now = 1_700_000_000;
@@ -4520,25 +4508,19 @@ mod tests {
         );
         let payload = crate::usage::ai_usage_view(&state, PlanInputs::OFF, now);
         let source = source_view("aiUsage", "AI Usage", &payload);
-        for scope in [
-            "item:copilot-org",
-            "item:copilot-personal",
-            "item:copilot-plan",
-        ] {
-            let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
-            let tile = tile_view(&t, &source);
-            assert_eq!(string(&tile, "scopeLabel"), "Copilot", "{scope}");
-            let rows = list(&tile, "rows");
-            assert_eq!(rows.len(), 1, "{scope}");
-            assert_eq!(rows[0]["halves"][0]["label"], "Additional usage", "{scope}");
-            assert_eq!(rows[0]["halves"][0]["value"], "$1.50", "{scope}");
-            assert_eq!(tile["footer"], "1 shown \u{b7} 0 need attention", "{scope}");
-            assert_eq!(
-                ai_scope_rows(scope),
-                ["copilot-plan", "copilot-org", "copilot-personal"],
-                "{scope}"
-            );
-        }
+        let scope = "item:copilot-plan";
+        let t = DashboardTile::new("t", "aiUsage", "AI Usage", scope);
+        let tile = tile_view(&t, &source);
+        assert_eq!(string(&tile, "scopeLabel"), "Copilot");
+        let rows = list(&tile, "rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["halves"][0]["label"], "Additional usage");
+        assert_eq!(rows[0]["halves"][0]["value"], "$1.50");
+        assert_eq!(tile["footer"], "1 shown \u{b7} 0 need attention");
+        assert_eq!(
+            ai_scope_rows(scope),
+            ["copilot-plan", "copilot-org", "copilot-personal"]
+        );
         // Only the seat's red meter asks for attention, never a half.
         let all = DashboardTile::new("t", "aiUsage", "AI Usage", "all");
         assert_eq!(

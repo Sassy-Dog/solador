@@ -575,9 +575,7 @@ const COPILOT_NAME: &str = "Copilot";
 
 /// The one Copilot card: the seat's section (its budget meter and
 /// `Copilot · Business` label) with the billing halves that are set up under
-/// it as `halves`, and the other two sources' ids as `aliases`, so a saved
-/// `item:copilot-org` or `item:copilot-personal` scope still finds it. `None`
-/// when no Copilot part is set up at all.
+/// it as `halves`. `None` when no Copilot part is set up at all.
 ///
 /// With no seat read set up (only the organization half, say) the card is
 /// just `Copilot` with no figure of its own: nothing was asked of the seat, so
@@ -601,7 +599,6 @@ pub fn copilot_card(seat: Option<Value>, halves: Vec<Value>) -> Option<Value> {
         )
     });
     card["halves"] = Value::Array(halves);
-    card["aliases"] = json!(crate::usage::COPILOT_CARD_ALIASES);
     Some(card)
 }
 

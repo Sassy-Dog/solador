@@ -576,10 +576,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   text-overflow:ellipsis; }
 .pv-item .val { margin-left:auto; font-size:10px; color:var(--muted);
   white-space:nowrap; font-variant-numeric:tabular-nums; }
-/* A Copilot billing half inside the card: ruled off from the seat meter or the
-   half above it, its owner and note quiet and wrapping. */
+/* A Copilot billing half inside the card: separated from the seat meter or the
+   half above it by spacing only, so the plan divider above the card is the one
+   rule that sets Copilot off from the plans around it. Its owner and note are
+   quiet and wrapping. */
 .pv-half { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0;
-  border-top:1px solid var(--line); padding-top:8px; margin-top:8px; }
+  margin-top:12px; }
 .pv-half .pv-note { overflow-wrap:anywhere; }
 /* A model under its product (the Copilot halves): indented and quieter, so the
    line reads as the product's own. Same height as any other item. */

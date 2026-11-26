@@ -522,7 +522,6 @@ for (const { name, block, mutate } of [
     mutate: (payload) => {
       payload.plans = [];
       payload.apis = [];
-      payload.copilot = [];
     },
   },
   {

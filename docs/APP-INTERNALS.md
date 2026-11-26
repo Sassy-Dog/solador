@@ -336,7 +336,7 @@
   `copilot-plan` once any Copilot part is set up: `plan_usage::copilot_card`
   puts the seat section (`plan_usage::copilot_seat_section` through
   `viewmodel::plan_usage::plan_row`, or a bare `Copilot` header when only a
-  billing half is set up) together with `halves` and `aliases`), `apis` (always a list: one
+  billing half is set up) together with `halves`), `apis` (always a list: one
   `Anthropic API spend (MTD)` / `OpenAI API spend (MTD)` section per key found).
   The card's `halves` (always a list) are one `Additional usage` entry for the
   organization and one for the person, each when set up, with an `owner` (the
@@ -345,8 +345,8 @@
   dotColor, models: [{name, value, dotColor}]}]`: every GitHub product the report
   names, at most three models across the half beneath their products, `Product
   not named` last), and no meter. The overview tile's one Copilot row carries the
-  same `halves` and `aliases`, and the overview paints each half as its term and
-  dollars on one line with the owner and the note under it. The rollups (`windows`,
+  same `halves`, and the overview and Detail (table and list) paint each half as its
+  term and dollars on one line with the owner and the note under it. The rollups (`windows`,
   `projects`, `machineHeading`), `trailing`
   (`Claude Code · 1.2M today`), `claudeToday` (the bare figure the overview's
   Claude Code row paints), `message`, `footer`, `freshness` and `loading`. The
@@ -355,8 +355,10 @@
   `openai-api`, `copilot-org`, `copilot-personal` and `claude-today`; the tile's
   rows are all of them but the two Copilot halves, which the card carries. The Anthropic and OpenAI
   ones are unchanged from the two tiles this replaced, so saved `item:` scopes keep
-  working, and a saved `item:copilot-org` or `item:copilot-personal` finds the Copilot
-  card through its `aliases`; `tile_scope::scope_ai_usage` narrows `plans` and `apis`
+  working, and a saved `item:copilot-org` or `item:copilot-personal` is rewritten to
+  `item:copilot-plan` when the store is read
+  (`StoreData::carry_copilot_item_scopes_onto_card`, one-shot and idempotent like
+  the other scope carries); `tile_scope::scope_ai_usage` narrows `plans` and `apis`
   by id and drops the rollups block, `trailing` and `claudeToday` when
   `claude-today` is not kept. `scope_payload` ignores a kind it has no arm for,
   so that arm is what keeps a vendor-scoped tile from showing the other
