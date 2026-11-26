@@ -464,15 +464,17 @@ mod tests {
     }
 
     /// Same guard for the Copilot halves: `store` writes `item:copilot-plan` by
-    /// literal, so renaming an id in `usage` fails here, not as an empty tile.
+    /// literal, so renaming `COPILOT_PLAN_ID` in `usage` fails here, not as an
+    /// empty tile. The inputs are literals, the ids earlier builds saved, which
+    /// must never change.
     #[test]
     fn the_store_migration_lands_copilot_half_scopes_on_the_card_this_crate_emits() {
-        use crate::usage::{COPILOT_ORG_ID, COPILOT_PERSONAL_ID, COPILOT_PLAN_ID};
+        use crate::usage::COPILOT_PLAN_ID;
         let mut data = store::StoreData {
             dashboard: Some(DashboardLayout {
                 tiles: vec![
-                    tile("aiUsage", &format!("item:{COPILOT_ORG_ID}")),
-                    tile("aiUsage", &format!("item:{COPILOT_PERSONAL_ID}")),
+                    tile("aiUsage", "item:copilot-org"),
+                    tile("aiUsage", "item:copilot-personal"),
                 ],
                 ..default_layout()
             }),

@@ -2067,8 +2067,9 @@ fn openai_entry(s: &Settings, stored: &StoredSecrets, tile_sources: &[String]) -
     })
 }
 
-/// What the Copilot card's organization half and the organization part say while Actions billing,
-/// whose token and organization that half reads, is not set up.
+/// What the Copilot source's status in Settings → Sources says while Actions billing, whose
+/// token and organization its organization part reads, is not set up. The organization part's
+/// own summary opens with the same text.
 const COPILOT_NEEDS_BILLING_LABEL: &str = "Needs Actions billing";
 
 /// The organization part's help. It is the whole pool of an organization the
