@@ -83,6 +83,7 @@ app/ui/sample-ai-usage.json
 app/ui/sample-ai-usage-empty.json
 app/ui/sample-ai-usage-stale.json
 app/ui/sample-ai-usage-plans.json
+app/ui/sample-ai-usage-statusline.json
 app/ui/sample-azure.json
 app/ui/sample-azure-fallback.json
 app/ui/sample-azure-error.json

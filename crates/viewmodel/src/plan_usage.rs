@@ -604,6 +604,18 @@ pub fn plan_row(provider: &str, plan: &Plan, now: i64, read_at: i64, fresh: bool
     }
 }
 
+/// What the Claude card says when its figures are Claude Code's status line's and
+/// not the plan read's, which Anthropic is refusing: where they come from and how
+/// old they are. `age_secs` is the age of the file the status line wrote, at the
+/// render. Shown beside the figures, never in place of the header's own warning.
+#[must_use]
+pub fn status_line_note(age_secs: u64) -> String {
+    format!(
+        "Figures from Claude Code's status line, written {} ago. Anthropic is rate-limiting Solador's own read.",
+        countdown(age_secs)
+    )
+}
+
 /// A plan's single row while it has nothing to show.
 #[must_use]
 pub fn placeholder_row(label: &str, loading: bool) -> PlanRow {
@@ -638,6 +650,16 @@ mod tests {
             used_percent: used,
             resets_at,
         }
+    }
+
+    #[test]
+    fn the_status_line_note_names_its_source_and_the_files_age() {
+        assert_eq!(
+            status_line_note(12 * 60),
+            "Figures from Claude Code's status line, written 12m ago. Anthropic is rate-limiting Solador's own read."
+        );
+        assert!(status_line_note(45).contains("written 45s ago"));
+        assert!(status_line_note(3 * 3_600 + 5 * 60).contains("written 3h 5m ago"));
     }
 
     /// A week read at `NOW` with `days_left` to its reset.

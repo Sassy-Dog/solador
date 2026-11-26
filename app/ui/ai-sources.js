@@ -92,6 +92,9 @@ function planNode(plan) {
   el.dataset.plan = plan.id;
   el.appendChild(node("hr", "pv-divider"));
   el.appendChild(valueRow(plan, "plan"));
+  // Rust's sentence on where the figures are from, when they are not the plan
+  // read's: Claude Code's status line, while Anthropic refuses the read.
+  if (plan.source) el.appendChild(node("div", "pv-note", plan.source));
   if (plan.metrics?.length) {
     const stats = node("div", "db-host-stats");
     for (const m of plan.metrics) {

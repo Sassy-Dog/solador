@@ -83,7 +83,17 @@
   rows** (`copilot`, the organization's then the person's), then this machine's
   Claude Code rollups last.
   Plans are **opt-in and off in a fresh store** (15 min by default, see
-  `docs/APP-INTERNALS.md`, **Authentication**).
+  `docs/APP-INTERNALS.md`, **Authentication**). **A 429 backs a plan's read off**
+  (Claude's and Codex's alike): after the n-th in a row the next read waits
+  `cadence × 2^n`, at most `8 × cadence` (30 min, 1 h, 2 h at the default), a
+  longer `Retry-After` still wins, a success resets the count, and the wait
+  survives a relaunch (`plan-schedule.json`). **While Claude's latest read was a
+  429, its row shows Claude Code's status-line figures** (`5h` and `Week` only,
+  read from a file the operator's status line writes, `claude-statusline.json`):
+  a line under the row says the figures are from Claude Code's status line and how
+  old they are, the header keeps its rate-limit warning, a window whose reset has
+  passed is not shown, a file older than a day is not used, and the next successful
+  read replaces them (`docs/APP-INTERNALS.md` has the snippet and the rules).
   A plan is one row named by its provider and plan (`Claude · Ultra`,
   `Codex · Plus`; the name is the one the tool itself displays, never mapped from
   a tier code) carrying one meter per limit: `5h`, `Week`, a per-model weekly

@@ -16,13 +16,19 @@
 //!    is the failure this gate exists to make impossible.
 //! 2. **The schedule.** One cadence for both providers
 //!    (`PanelInterval::PlanUsage`, 15 minutes by default, floor 5), tracked per
-//!    provider so turning one on never spends a request on the other. A 429's
-//!    `Retry-After` pushes that provider's next read out; a refused keychain
-//!    **parks** Claude until the toggle is flipped, so a "Deny" is not asked
-//!    again every 15 minutes.
+//!    provider so turning one on never spends a request on the other. A 429
+//!    **backs the provider off**: after the n-th in a row the next read waits
+//!    `cadence × 2^n`, capped at `8 × cadence` ([`backoff_secs`]), and a longer
+//!    `Retry-After` still wins; a success resets n and any other failure leaves
+//!    it. The schedule outlives a relaunch (`subscription::schedule`, written by
+//!    the poll loop beside `store.json`), so a launch inside a wait waits. A
+//!    refused keychain **parks** Claude until the toggle is flipped, so a
+//!    "Deny" is not asked again every 15 minutes.
 //! 3. **The rows.** Words, colours and pace come from `viewmodel::plan_usage`;
 //!    this module only assembles them into the panel's payload: one row per
-//!    plan (`Claude · Ultra`), carrying a meter per limit.
+//!    plan (`Claude · Ultra`), carrying a meter per limit. While Claude's latest
+//!    read was a 429, its row shows Claude Code's status-line figures instead
+//!    (`subscription::statusline`), labelled as such, until a read succeeds.
 //!
 //! # Never the token
 //!
@@ -41,12 +47,15 @@
 //! one figure.
 
 use std::future::Future;
+use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
+use subscription::schedule::{Schedule, Schedules};
+use subscription::statusline::{Kind as StatusLineKind, StatusLine};
 use subscription::{
     Money, PlanErrorKind, PlanUsage, PlanUsageError, PlanWindow, Provider, Slot, WindowSpan,
-    NO_WINDOWS_MESSAGE,
+    NO_WINDOWS_MESSAGE, SESSION_MINUTES, WEEK_MINUTES,
 };
 use viewmodel::color;
 use viewmodel::freshness::Freshness;
@@ -59,6 +68,18 @@ use crate::usage::{ProviderState, UsageState};
 pub const CLAUDE_ID: &str = "claude-plan";
 /// The Codex plan section's id.
 pub const CODEX_ID: &str = "codex-plan";
+
+/// The longest a run of 429s backs a provider off, as a multiple of the cadence.
+pub const BACKOFF_CAP_FACTOR: u64 = 8;
+
+/// How long the next read waits after the `consecutive`-th 429 in a row:
+/// `cadence × 2^n`, capped at [`BACKOFF_CAP_FACTOR`] × the cadence. At the
+/// default 15 minutes that is 30m, 1h, 2h, then 2h.
+#[must_use]
+pub fn backoff_secs(consecutive: u32, cadence_secs: u64) -> u64 {
+    let factor = 1_u64 << consecutive.min(BACKOFF_CAP_FACTOR.trailing_zeros());
+    cadence_secs.saturating_mul(factor.min(BACKOFF_CAP_FACTOR))
+}
 
 /// This source's own recommendation, mirrored by `PanelInterval::PlanUsage`'s
 /// default (orca's 15 minutes). `cfg(test)` for the reason
@@ -93,8 +114,15 @@ pub struct PlanSource {
     parked: bool,
     /// When the last read was started, for the cadence.
     last_attempt: Option<u64>,
-    /// No read before this instant: the service's `Retry-After`.
+    /// No read before this instant: the backoff after a 429, or the service's
+    /// longer `Retry-After`.
     not_before: Option<u64>,
+    /// Consecutive 429s since the last success. Other failures leave it alone.
+    rate_limited: u32,
+    /// Claude Code's status-line figures, held only while the latest read was a
+    /// 429 ([`refresh_status_line`]). A success, a reset or any other outcome
+    /// drops them.
+    pub(crate) status_line: Option<StatusLine>,
     /// The kind of the last read's failure, or `None` after a success (or a
     /// reset). The memory the failure-transition log line is decided against.
     last_failure: Option<String>,
@@ -123,12 +151,50 @@ impl PlanSource {
         self.parked = true;
     }
 
+    /// The part of this schedule that outlives a relaunch.
+    #[must_use]
+    pub fn schedule(&self) -> Schedule {
+        Schedule {
+            last_attempt: self.last_attempt,
+            rate_limited: self.rate_limited,
+            not_before: self.not_before,
+            last_was_rate_limited: self.is_rate_limited(),
+        }
+    }
+
+    /// Puts a persisted schedule back, at launch. A latest outcome of 429 comes
+    /// back as the failure it was, so the card says so before the first read.
+    pub fn restore(&mut self, provider: Provider, schedule: Schedule) {
+        self.last_attempt = schedule.last_attempt;
+        self.rate_limited = schedule.rate_limited;
+        self.not_before = schedule.not_before;
+        if schedule.last_was_rate_limited {
+            let throttled = PlanUsageError::new(
+                provider,
+                PlanErrorKind::RateLimited {
+                    retry_after_secs: None,
+                },
+            );
+            self.last_failure = Some(kind_label(&throttled.kind));
+            self.state.failed(throttled.user_message());
+        }
+    }
+
+    /// Whether the latest read's outcome was a 429.
+    #[must_use]
+    pub fn is_rate_limited(&self) -> bool {
+        self.last_failure.as_deref() == Some(RATE_LIMITED_LABEL)
+    }
+
     /// Whether this provider is on and still waiting on its first answer.
     #[must_use]
     pub fn is_loading(&self, enabled: bool) -> bool {
         enabled && self.state.summary.is_none() && self.state.last_error.is_none()
     }
 }
+
+/// [`kind_label`] of a 429.
+const RATE_LIMITED_LABEL: &str = "rate-limited";
 
 /// A name for a failure kind that is safe to write to the log: a fixed word per
 /// variant, never the `Unreachable` / `Undecodable` detail (which can carry
@@ -143,7 +209,7 @@ fn kind_label(kind: &PlanErrorKind) -> String {
         PlanErrorKind::CredentialUnreadable => "credential-unreadable",
         PlanErrorKind::SignInExpired => "sign-in-expired",
         PlanErrorKind::MissingScope => "missing-scope",
-        PlanErrorKind::RateLimited { .. } => "rate-limited",
+        PlanErrorKind::RateLimited { .. } => RATE_LIMITED_LABEL,
         PlanErrorKind::Http { status } => return format!("http-status {status}"),
         PlanErrorKind::Unreachable(_) => "unreachable",
         PlanErrorKind::Undecodable(_) => "undecodable",
@@ -154,11 +220,12 @@ fn kind_label(kind: &PlanErrorKind) -> String {
 /// Records one read's outcome on `source` and returns the log lines it earns:
 /// one when the failure kind changes (ok to failed, failed to a different
 /// kind, failed to ok), one when this outcome parks the provider, and one when
-/// it defers the next read past the cadence by a `Retry-After` (a shorter one
-/// moves nothing, so it is not news). Polls the gate skips never get
-/// here, so a parked or waiting provider logs nothing more. The lines name the
-/// provider and fixed words only.
-fn record_outcome(
+/// it backs the provider off after a 429: one line per 429, naming the wait and
+/// whether it is the service's `Retry-After` (when that is longer than the
+/// backoff) or the backoff. Polls the gate skips never get here, so a parked or
+/// waiting provider logs nothing more. The lines name the provider and fixed
+/// words only.
+pub(crate) fn record_outcome(
     source: &mut PlanSource,
     provider: Provider,
     failure: Option<&PlanUsageError>,
@@ -188,20 +255,30 @@ fn record_outcome(
                 "plan usage: {id} parked until Subscription is removed and added back"
             ));
         }
-        source.not_before = error
-            .retry_after_secs()
-            .map(|secs| now.saturating_add(secs));
-        // The cadence's own due time, as `gate` computes it.
-        let cadence_due = source
-            .last_attempt
-            .map_or(now, |at| at.saturating_add(cadence_secs));
-        if let (Some(secs), Some(not_before)) = (error.retry_after_secs(), source.not_before) {
-            if not_before > cadence_due {
-                lines.push(format!("plan usage: {id} retry-after {secs}s"));
-            }
+        if matches!(error.kind, PlanErrorKind::RateLimited { .. }) {
+            source.rate_limited = source.rate_limited.saturating_add(1);
+            let backoff = backoff_secs(source.rate_limited, cadence_secs);
+            let retry_after = error.retry_after_secs();
+            // The service's own word wins when it asks for longer.
+            let wait = backoff.max(retry_after.unwrap_or(0));
+            source.not_before = Some(now.saturating_add(wait));
+            lines.push(match retry_after.filter(|secs| *secs > backoff) {
+                Some(secs) => format!("plan usage: {id} retry-after {secs}s"),
+                None => format!(
+                    "plan usage: {id} backing off {wait}s after {} rate limit(s) in a row",
+                    source.rate_limited
+                ),
+            });
+        } else {
+            // Another failure waits only the cadence, and leaves the count.
+            source.not_before = None;
         }
     } else {
         source.not_before = None;
+        source.rate_limited = 0;
+    }
+    if !source.is_rate_limited() {
+        source.status_line = None;
     }
     lines
 }
@@ -384,6 +461,48 @@ pub fn next_wake(
     std::time::Duration::from_secs(soonest.clamp(1, cadence_secs.max(1)))
 }
 
+/// Both providers' schedules, as the poll loop persists them.
+#[must_use]
+pub fn snapshot(usage: &UsageState) -> Schedules {
+    let mut schedules = Schedules::default();
+    for provider in [Provider::Claude, Provider::Codex] {
+        schedules.set(provider, usage.plan(provider).schedule());
+    }
+    schedules
+}
+
+/// Puts persisted schedules back, once, at launch. A provider that is off drops
+/// what this restores at its first pass ([`gate`] says [`Gate::Off`]).
+pub fn restore(usage: &mut UsageState, schedules: &Schedules) {
+    for provider in [Provider::Claude, Provider::Codex] {
+        usage
+            .plan_mut(provider)
+            .restore(provider, schedules.get(provider));
+    }
+}
+
+/// Brings Claude's held status-line figures up to date for a render at `now`:
+/// read from `dir` while the opt-in is on and the latest read was a 429, dropped
+/// otherwise. The file is read outside the usage lock. Called by whatever builds
+/// the panel, so the figures are as new as the status line's last write and not
+/// as old as the last poll.
+pub fn refresh_status_line(usage: &Mutex<UsageState>, enabled: bool, dir: Option<&Path>, now: u64) {
+    let wanted = enabled
+        && usage
+            .lock()
+            .expect("usage state poisoned")
+            .plan(Provider::Claude)
+            .is_rate_limited();
+    let line = dir
+        .filter(|_| wanted)
+        .and_then(|dir| subscription::statusline::read(dir, now));
+    usage
+        .lock()
+        .expect("usage state poisoned")
+        .plan_mut(Provider::Claude)
+        .status_line = line;
+}
+
 /// What the AI Usage panel reads at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanInputs {
@@ -483,6 +602,11 @@ fn section(
 ) -> Value {
     let id = section_id(provider);
     let name = plain_name(provider);
+    if provider == Provider::Claude && source.is_rate_limited() {
+        if let Some(row) = status_line_section(source, now, cadence_secs) {
+            return row;
+        }
+    }
     let reading = source
         .state
         .summary
@@ -508,6 +632,67 @@ fn section(
     let secs = |at: u64| i64::try_from(at).unwrap_or(i64::MAX);
     let row = vm::plan_row(name, &mirror_plan(reading), secs(now), secs(read_at), fresh);
     row_json(id, &row)
+}
+
+/// The Claude row while Anthropic is refusing the plan read: Claude Code's
+/// status-line figures (5h and Week only), the plan's name from the last reading
+/// that had one, and the sentence that says where the figures are from and how
+/// old they are. `None` when there is nothing to show, which leaves the card as
+/// it was: a dash under the header's warning, or the older reading kept.
+///
+/// The status line is used only when it is the newer of the two: a plan read
+/// that landed after the file was written is the fresher figure. Pace is judged
+/// at the file's write time, inside the same stale edge the header warns at.
+fn status_line_section(source: &PlanSource, now: u64, cadence_secs: u64) -> Option<Value> {
+    let line = source.status_line?;
+    if source
+        .state
+        .last_updated
+        .is_some_and(|read| read > line.written_at)
+    {
+        return None;
+    }
+    let windows: Vec<vm::Window> = line
+        .windows(now)
+        .into_iter()
+        .map(|(kind, window)| vm::Window {
+            span: vm::Span::Minutes(match kind {
+                StatusLineKind::FiveHour => SESSION_MINUTES,
+                StatusLineKind::SevenDay => WEEK_MINUTES,
+            }),
+            scope: None,
+            used_percent: window.used_percent,
+            resets_at: window.resets_at,
+        })
+        .collect();
+    if windows.is_empty() {
+        return None;
+    }
+    let plan = vm::Plan {
+        name: source
+            .state
+            .summary
+            .as_ref()
+            .and_then(|reading| reading.plan.clone()),
+        windows,
+        spend: None,
+    };
+    let age = line.age_secs(now);
+    let fresh = age <= cadence_secs.saturating_mul(2);
+    let secs = |at: u64| i64::try_from(at).unwrap_or(i64::MAX);
+    let read_at = line.written_at.min(now);
+    let row = vm::plan_row(
+        plain_name(Provider::Claude),
+        &plan,
+        secs(now),
+        secs(read_at),
+        fresh,
+    );
+    let note = vm::status_line_note(age);
+    let mut json = row_json(CLAUDE_ID, &row);
+    json["detail"] = json!(format!("{} {note}", row.detail));
+    json["source"] = json!(note);
+    Some(json)
 }
 
 fn mirror_plan(reading: &PlanUsage) -> vm::Plan {
@@ -808,48 +993,301 @@ mod tests {
         assert_eq!(lines, ["plan usage: codex-plan read failed (unreachable)"]);
     }
 
-    /// Negative control: log the `retry-after` line unconditionally and the
-    /// short-Retry-After half fails.
+    fn throttled(retry_after_secs: Option<u64>) -> PlanUsageError {
+        failure(PlanErrorKind::RateLimited { retry_after_secs })
+    }
+
+    /// Records `n` 429s in a row at `NOW` and returns the source.
+    fn after_throttles(n: u32, retry_after_secs: Option<u64>) -> PlanSource {
+        let mut source = PlanSource::default();
+        for _ in 0..n {
+            record_outcome(
+                &mut source,
+                Provider::Claude,
+                Some(&throttled(retry_after_secs)),
+                NOW,
+                CADENCE,
+            );
+        }
+        source
+    }
+
+    /// Negative control: cap at `4 *` and the fourth rung reads 1h; drop the
+    /// cap and the sixth reads 8h.
     #[test]
-    fn a_retry_after_logs_only_when_it_defers_past_the_cadence() {
+    fn consecutive_429s_back_off_cadence_times_two_to_the_n_capped_at_eight_cadences() {
+        let ladder: Vec<u64> = (1..=6).map(|n| backoff_secs(n, CADENCE)).collect();
+        assert_eq!(
+            ladder,
+            [30 * 60, 60 * 60, 120 * 60, 120 * 60, 120 * 60, 120 * 60],
+            "30m, 1h, 2h, then 2h at the default 15 minutes"
+        );
+        assert_eq!(backoff_secs(1, 5 * 60), 10 * 60, "it follows the cadence");
+        assert_eq!(
+            backoff_secs(u32::MAX, CADENCE),
+            8 * CADENCE,
+            "never overflows"
+        );
+
+        // The source walks the same ladder, and the gate enforces it.
+        let mut source = PlanSource::default();
+        for (n, wait) in [(1, 30 * 60), (2, 60 * 60), (3, 120 * 60), (4, 120 * 60)] {
+            record_outcome(
+                &mut source,
+                Provider::Claude,
+                Some(&throttled(None)),
+                NOW,
+                CADENCE,
+            );
+            assert_eq!(source.rate_limited, n);
+            assert_eq!(source.not_before, Some(NOW + wait), "after {n}");
+            source.last_attempt = Some(NOW);
+            assert_eq!(gate(true, &source, NOW + wait - 1, CADENCE), Gate::Wait(1));
+            assert_eq!(gate(true, &source, NOW + wait, CADENCE), Gate::Due);
+        }
+    }
+
+    /// A 429 with no `Retry-After` used to leave the next read at the cadence,
+    /// which is what kept spending requests.
+    #[test]
+    fn the_first_429_without_a_retry_after_already_waits_past_the_cadence() {
+        let source = after_throttles(1, None);
+        assert_eq!(source.not_before, Some(NOW + 2 * CADENCE));
+    }
+
+    /// Negative control: use `retry_after` instead of the larger of the two and
+    /// the 60s case waits 60s; use `backoff` alone and the 3-cadence case waits 2.
+    #[test]
+    fn a_longer_retry_after_wins_and_a_shorter_one_shortens_nothing() {
+        assert_eq!(
+            after_throttles(1, Some(3 * CADENCE)).not_before,
+            Some(NOW + 3 * CADENCE)
+        );
+        assert_eq!(
+            after_throttles(1, Some(60)).not_before,
+            Some(NOW + 2 * CADENCE),
+            "the backoff is a floor"
+        );
+        assert_eq!(
+            after_throttles(3, Some(60)).not_before,
+            Some(NOW + 8 * CADENCE)
+        );
+        assert_eq!(
+            after_throttles(3, Some(9 * CADENCE)).not_before,
+            Some(NOW + 9 * CADENCE),
+            "the service may ask for more than the cap"
+        );
+    }
+
+    /// The log says which of the two set the wait. Negative control: log the
+    /// `retry-after` line whenever one is sent and the 60s half fails.
+    #[test]
+    fn a_429_logs_its_wait_and_says_retry_after_only_when_that_is_what_set_it() {
         let p = Provider::Codex;
-        let throttled = |secs| {
-            failure(PlanErrorKind::RateLimited {
-                retry_after_secs: Some(secs),
-            })
-        };
-        // Read started at NOW; the cadence is due again at NOW + CADENCE.
-        let mut source = PlanSource {
-            last_attempt: Some(NOW),
-            ..PlanSource::default()
-        };
-        let lines = record_outcome(&mut source, p, Some(&throttled(60)), NOW, CADENCE);
-        assert_eq!(lines, ["plan usage: codex-plan read failed (rate-limited)"]);
-        assert_eq!(source.not_before, Some(NOW + 60), "still recorded");
-
-        // Exactly the cadence: due at the same instant either way, so a
-        // deferral that changes nothing is not news. Negative control: `>=`.
-        let mut source = PlanSource {
-            last_attempt: Some(NOW),
-            ..PlanSource::default()
-        };
-        let lines = record_outcome(&mut source, p, Some(&throttled(CADENCE)), NOW, CADENCE);
-        assert_eq!(lines, ["plan usage: codex-plan read failed (rate-limited)"]);
-        assert_eq!(source.not_before, Some(NOW + CADENCE), "still recorded");
-
-        let mut source = PlanSource {
-            last_attempt: Some(NOW),
-            ..PlanSource::default()
-        };
-        let lines = record_outcome(&mut source, p, Some(&throttled(CADENCE + 90)), NOW, CADENCE);
+        let mut source = PlanSource::default();
+        let lines = record_outcome(&mut source, p, Some(&throttled(Some(60))), NOW, CADENCE);
         assert_eq!(
             lines,
             [
                 "plan usage: codex-plan read failed (rate-limited)",
-                &format!("plan usage: codex-plan retry-after {}s", CADENCE + 90)
+                "plan usage: codex-plan backing off 1800s after 1 rate limit(s) in a row"
             ]
         );
-        assert_eq!(source.not_before, Some(NOW + CADENCE + 90));
+        let lines = record_outcome(
+            &mut source,
+            p,
+            Some(&throttled(Some(5 * CADENCE))),
+            NOW,
+            CADENCE,
+        );
+        assert_eq!(
+            lines,
+            [format!(
+                "plan usage: codex-plan retry-after {}s",
+                5 * CADENCE
+            )],
+            "an unchanged failure kind adds no `read failed` line"
+        );
+    }
+
+    /// Negative control: leave `rate_limited` alone on success and the next 429
+    /// waits 2h, not 30m.
+    #[test]
+    fn a_success_resets_the_count_and_the_wait() {
+        let mut source = after_throttles(2, None);
+        assert_eq!(source.rate_limited, 2);
+        record_outcome(&mut source, Provider::Claude, None, NOW + 1, CADENCE);
+        assert_eq!(source.rate_limited, 0);
+        assert_eq!(source.not_before, None);
+        record_outcome(
+            &mut source,
+            Provider::Claude,
+            Some(&throttled(None)),
+            NOW + 2,
+            CADENCE,
+        );
+        assert_eq!(source.not_before, Some(NOW + 2 + 2 * CADENCE), "30m again");
+    }
+
+    /// Negative control: zero the count in the other-failure arm and the final
+    /// 429 waits 1h, not 2h.
+    #[test]
+    fn other_failures_leave_the_count_and_wait_only_the_cadence() {
+        let mut source = after_throttles(2, None);
+        let unavailable = failure(PlanErrorKind::Http { status: 503 });
+        record_outcome(
+            &mut source,
+            Provider::Claude,
+            Some(&unavailable),
+            NOW + 10,
+            CADENCE,
+        );
+        assert_eq!(source.rate_limited, 2, "a 503 is not a success");
+        assert_eq!(source.not_before, None, "and not a 429's backoff either");
+        record_outcome(
+            &mut source,
+            Provider::Claude,
+            Some(&throttled(None)),
+            NOW + 20,
+            CADENCE,
+        );
+        assert_eq!(source.rate_limited, 3);
+        assert_eq!(source.not_before, Some(NOW + 20 + 8 * CADENCE));
+    }
+
+    /// A relaunch inside the wait waits. Negative controls: skip `restore` and
+    /// the second launch reads at once; drop `not_before` from `Schedule` and it
+    /// reads at the cadence, 15 minutes in.
+    #[tokio::test]
+    async fn a_relaunch_inside_a_429s_backoff_waits_it_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Mutex::new(UsageState::new());
+        let calls = Calls::new();
+        pass(
+            &first,
+            Provider::Claude,
+            true,
+            NOW,
+            &calls,
+            Ok("token"),
+            Err(PlanErrorKind::RateLimited {
+                retry_after_secs: None,
+            }),
+        )
+        .await;
+        subscription::schedule::save(dir.path(), &snapshot(&first.lock().unwrap())).unwrap();
+
+        // The app is quit and started again, a cadence later.
+        let relaunched = Mutex::new(UsageState::new());
+        restore(
+            &mut relaunched.lock().unwrap(),
+            &subscription::schedule::load(dir.path()),
+        );
+        let calls = Calls::new();
+        let inside = pass(
+            &relaunched,
+            Provider::Claude,
+            true,
+            NOW + CADENCE,
+            &calls,
+            Ok("token"),
+            Ok(reading()),
+        )
+        .await;
+        assert_eq!(inside, Gate::Wait(CADENCE), "30m from the 429, 15m gone");
+        assert_eq!(calls.reads.load(Ordering::SeqCst), 0, "no sign-in read");
+        assert_eq!(calls.fetches.load(Ordering::SeqCst), 0, "no request");
+        {
+            let state = relaunched.lock().unwrap();
+            let claude = state.plan(Provider::Claude);
+            assert!(claude.is_rate_limited(), "the 429 is remembered");
+            assert_eq!(claude.rate_limited, 1);
+            assert!(
+                claude.state.last_error.is_some(),
+                "and the header says so before any read"
+            );
+        }
+
+        // Past the wait it reads, and a second launch with no file would have
+        // read at once.
+        let after = pass(
+            &relaunched,
+            Provider::Claude,
+            true,
+            NOW + 2 * CADENCE,
+            &calls,
+            Ok("token"),
+            Ok(reading()),
+        )
+        .await;
+        assert_eq!(after, Gate::Due);
+        assert_eq!(calls.fetches.load(Ordering::SeqCst), 1);
+        let fresh = Mutex::new(UsageState::new());
+        assert_eq!(
+            gate(
+                true,
+                fresh.lock().unwrap().plan(Provider::Claude),
+                NOW,
+                CADENCE
+            ),
+            Gate::Due
+        );
+    }
+
+    #[tokio::test]
+    async fn the_schedule_that_is_saved_holds_no_token_and_nothing_of_the_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = Mutex::new(UsageState::new());
+        pass(
+            &usage,
+            Provider::Claude,
+            true,
+            NOW,
+            &Calls::new(),
+            Ok("token"),
+            Err(PlanErrorKind::Unreachable(
+                "https://example.test/?t=SECRET".into(),
+            )),
+        )
+        .await;
+        subscription::schedule::save(dir.path(), &snapshot(&usage.lock().unwrap())).unwrap();
+        let text =
+            std::fs::read_to_string(dir.path().join(subscription::schedule::FILE_NAME)).unwrap();
+        for forbidden in ["token", "SECRET", "example.test", "unreachable"] {
+            assert!(!text.contains(forbidden), "{forbidden} in {text}");
+        }
+    }
+
+    /// A provider that is off at launch drops what the file restored.
+    #[tokio::test]
+    async fn a_restored_schedule_for_a_provider_that_is_off_is_dropped() {
+        let usage = Mutex::new(UsageState::new());
+        let mut schedules = Schedules::default();
+        schedules.set(
+            Provider::Claude,
+            Schedule {
+                last_attempt: Some(NOW),
+                rate_limited: 2,
+                not_before: Some(NOW + 3_600),
+                last_was_rate_limited: true,
+            },
+        );
+        restore(&mut usage.lock().unwrap(), &schedules);
+        let gate = pass(
+            &usage,
+            Provider::Claude,
+            false,
+            NOW,
+            &Calls::new(),
+            Ok("token"),
+            Ok(reading()),
+        )
+        .await;
+        assert_eq!(gate, Gate::Off);
+        assert_eq!(
+            snapshot(&usage.lock().unwrap()).get(Provider::Claude),
+            Schedule::default()
+        );
     }
 
     #[test]
@@ -943,6 +1381,294 @@ mod tests {
         assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(
             usage.lock().unwrap().plan(Provider::Claude).last_failure,
+            None
+        );
+    }
+
+    // ---- the status-line fallback ----------------------------------------
+
+    const CLAUDE_ON: PlanInputs = PlanInputs {
+        claude: true,
+        ..PlanInputs::OFF
+    };
+
+    /// A status line written `age` ago with both windows open.
+    fn status_line(age: u64) -> StatusLine {
+        use subscription::statusline::Window;
+        StatusLine {
+            written_at: NOW - age,
+            five_hour: Some(Window {
+                used_percent: 23.5,
+                resets_at: i64::try_from(NOW + 2 * 3600).ok(),
+            }),
+            seven_day: Some(Window {
+                used_percent: 41.2,
+                resets_at: i64::try_from(NOW + 3 * 86_400).ok(),
+            }),
+        }
+    }
+
+    /// Claude whose latest read was a 429, holding `line`.
+    fn throttled_with(line: Option<StatusLine>) -> PlanSource {
+        let mut source = PlanSource::default();
+        source.state.begin();
+        let error = failure(PlanErrorKind::RateLimited {
+            retry_after_secs: None,
+        });
+        record_outcome(
+            &mut source,
+            Provider::Claude,
+            Some(&error),
+            NOW - 600,
+            CADENCE,
+        );
+        source.state.failed(error.user_message());
+        source.status_line = line;
+        source
+    }
+
+    fn claude_section(source: &PlanSource) -> Value {
+        view(Provider::Claude, source, CLAUDE_ON, NOW)
+            .sections
+            .remove(0)
+    }
+
+    fn labels(section: &Value) -> Vec<String> {
+        section["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["label"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Negative control: drop the `is_rate_limited` guard in `section` and the
+    /// 503 half shows the status line too.
+    #[test]
+    fn the_claude_card_shows_the_status_line_only_while_its_latest_read_was_a_429() {
+        let throttled = throttled_with(Some(status_line(120)));
+        let section = claude_section(&throttled);
+        assert_eq!(
+            labels(&section),
+            ["5h", "Week"],
+            "5h and Week, nothing else"
+        );
+        assert_eq!(section["metrics"][0]["value"], "24%");
+        assert_eq!(section["metrics"][1]["value"], "41%");
+        assert_eq!(section["label"], "Claude");
+
+        // A 503 is not a 429: the figures held are not shown.
+        let mut unavailable = PlanSource::default();
+        record_outcome(
+            &mut unavailable,
+            Provider::Claude,
+            Some(&failure(PlanErrorKind::Http { status: 503 })),
+            NOW - 600,
+            CADENCE,
+        );
+        unavailable.status_line = Some(status_line(120));
+        let section = claude_section(&unavailable);
+        assert_eq!(labels(&section), Vec::<String>::new());
+        assert!(section.get("source").is_none());
+    }
+
+    /// The words are Rust's: where the figures come from, and how old.
+    #[test]
+    fn the_card_says_the_figures_are_claude_codes_and_how_old_and_the_header_still_warns() {
+        let source = throttled_with(Some(status_line(12 * 60)));
+        let plan = view(Provider::Claude, &source, CLAUDE_ON, NOW);
+        let section = &plan.sections[0];
+        let note = section["source"].as_str().unwrap();
+        assert!(note.contains("Claude Code's status line"), "{note}");
+        assert!(note.contains("written 12m ago"), "{note}");
+        assert!(
+            section["detail"].as_str().unwrap().ends_with(note),
+            "the tile's detail carries it too"
+        );
+        let header = plan.warnings[0]["text"].as_str().unwrap();
+        assert!(
+            header.contains("rate-limit"),
+            "the header still says: {header}"
+        );
+    }
+
+    /// Negative control: stop dropping the held figures in `record_outcome`'s
+    /// success path and the second half still shows the status line.
+    #[test]
+    fn a_successful_read_replaces_the_status_line_and_the_card_goes_back_to_the_plan() {
+        let mut source = throttled_with(Some(status_line(120)));
+        assert!(claude_section(&source).get("source").is_some());
+
+        record_outcome(&mut source, Provider::Claude, None, NOW, CADENCE);
+        source.state.succeeded(reading(), NOW, None);
+        let section = claude_section(&source);
+        assert!(section.get("source").is_none(), "no status-line label");
+        assert_eq!(
+            labels(&section),
+            ["5h", "Week · Fable"],
+            "the plan read's own figures"
+        );
+        assert_eq!(source.status_line, None);
+    }
+
+    /// Negative control: show a window whose `resets_at` has passed and the
+    /// 5h meter appears.
+    #[test]
+    fn an_expired_window_is_not_shown_and_a_card_with_none_left_is_the_dash() {
+        let mut line = status_line(120);
+        line.five_hour.as_mut().unwrap().resets_at = i64::try_from(NOW - 1).ok();
+        let section = claude_section(&throttled_with(Some(line)));
+        assert_eq!(labels(&section), ["Week"]);
+
+        line.seven_day.as_mut().unwrap().resets_at = i64::try_from(NOW).ok();
+        let section = claude_section(&throttled_with(Some(line)));
+        assert_eq!(labels(&section), Vec::<String>::new());
+        assert_eq!(section["value"], vm::NO_READING_VALUE);
+        assert!(section.get("source").is_none());
+    }
+
+    /// Absent is no meter, never 0%.
+    #[test]
+    fn an_absent_window_is_no_meter() {
+        let mut line = status_line(120);
+        line.five_hour = None;
+        let section = claude_section(&throttled_with(Some(line)));
+        assert_eq!(labels(&section), ["Week"]);
+        assert!(!section.to_string().contains("\"0%\""));
+        let section = claude_section(&throttled_with(None));
+        assert_eq!(labels(&section), Vec::<String>::new());
+        assert_eq!(section["value"], vm::NO_READING_VALUE);
+    }
+
+    /// The plan's name is kept when a reading had one, and a plan read that
+    /// landed after the file was written is the fresher figure.
+    #[test]
+    fn the_plan_name_stays_and_a_newer_plan_read_outranks_an_older_file() {
+        let mut source = throttled_with(Some(status_line(120)));
+        source.state.summary = Some(PlanUsage {
+            plan: Some("Ultra".into()),
+            ..reading()
+        });
+        source.state.last_updated = Some(NOW - 3_600);
+        assert_eq!(claude_section(&source)["label"], "Claude · Ultra");
+
+        // The plan read was 1 minute ago; the file is 2 minutes old.
+        source.state.last_updated = Some(NOW - 60);
+        let section = claude_section(&source);
+        assert!(section.get("source").is_none());
+        assert_eq!(labels(&section), ["5h", "Week · Fable"]);
+    }
+
+    /// Codex has no status line, whatever it holds.
+    #[test]
+    fn codex_never_shows_a_status_line() {
+        let mut source = PlanSource::default();
+        source.state.begin();
+        record_outcome(
+            &mut source,
+            Provider::Codex,
+            Some(&PlanUsageError::new(
+                Provider::Codex,
+                PlanErrorKind::RateLimited {
+                    retry_after_secs: None,
+                },
+            )),
+            NOW - 600,
+            CADENCE,
+        );
+        source.status_line = Some(status_line(60));
+        let inputs = PlanInputs {
+            codex: true,
+            ..PlanInputs::OFF
+        };
+        let section = view(Provider::Codex, &source, inputs, NOW)
+            .sections
+            .remove(0);
+        assert_eq!(labels(&section), Vec::<String>::new());
+    }
+
+    /// The file is read only while the opt-in is on and the latest read was a
+    /// 429, and what was held is dropped otherwise.
+    #[test]
+    fn the_file_is_read_only_while_on_and_throttled_and_dropped_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "{{\"written_at\":{},\"rate_limits\":{{\"seven_day\":{{\"used_percentage\":41.2,\"resets_at\":{}}}}}}}",
+            NOW - 30,
+            NOW + 86_400
+        );
+        std::fs::write(dir.path().join(subscription::statusline::FILE_NAME), text).unwrap();
+        let usage = Mutex::new(UsageState::new());
+        usage
+            .lock()
+            .unwrap()
+            .plan_mut(Provider::Claude)
+            .state
+            .begin();
+
+        // Not throttled yet: nothing is read.
+        refresh_status_line(&usage, true, Some(dir.path()), NOW);
+        assert_eq!(
+            usage.lock().unwrap().plan(Provider::Claude).status_line,
+            None
+        );
+
+        let error = failure(PlanErrorKind::RateLimited {
+            retry_after_secs: None,
+        });
+        record_outcome(
+            usage.lock().unwrap().plan_mut(Provider::Claude),
+            Provider::Claude,
+            Some(&error),
+            NOW,
+            CADENCE,
+        );
+        refresh_status_line(&usage, true, Some(dir.path()), NOW);
+        let held = usage.lock().unwrap().plan(Provider::Claude).status_line;
+        assert_eq!(held.map(|line| line.written_at), Some(NOW - 30));
+
+        // The opt-in turned off, a missing directory, a recovery: all drop it.
+        refresh_status_line(&usage, false, Some(dir.path()), NOW);
+        assert_eq!(
+            usage.lock().unwrap().plan(Provider::Claude).status_line,
+            None
+        );
+        refresh_status_line(&usage, true, Some(dir.path()), NOW);
+        refresh_status_line(&usage, true, None, NOW);
+        assert_eq!(
+            usage.lock().unwrap().plan(Provider::Claude).status_line,
+            None
+        );
+        refresh_status_line(&usage, true, Some(dir.path()), NOW);
+        record_outcome(
+            usage.lock().unwrap().plan_mut(Provider::Claude),
+            Provider::Claude,
+            None,
+            NOW + 1,
+            CADENCE,
+        );
+        assert_eq!(
+            usage.lock().unwrap().plan(Provider::Claude).status_line,
+            None
+        );
+
+        // Too old to use: not held.
+        let stale = format!(
+            "{{\"written_at\":{},\"rate_limits\":{{\"seven_day\":{{\"used_percentage\":41.2,\"resets_at\":{}}}}}}}",
+            NOW - subscription::statusline::MAX_AGE_SECS - 1,
+            NOW + 86_400
+        );
+        std::fs::write(dir.path().join(subscription::statusline::FILE_NAME), stale).unwrap();
+        record_outcome(
+            usage.lock().unwrap().plan_mut(Provider::Claude),
+            Provider::Claude,
+            Some(&error),
+            NOW + 2,
+            CADENCE,
+        );
+        refresh_status_line(&usage, true, Some(dir.path()), NOW);
+        assert_eq!(
+            usage.lock().unwrap().plan(Provider::Claude).status_line,
             None
         );
     }

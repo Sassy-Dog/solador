@@ -66,7 +66,9 @@ pub mod codex;
 mod http;
 pub mod keychain;
 mod retry;
+pub mod schedule;
 mod secret;
+pub mod statusline;
 
 use chrono::{DateTime, Utc};
 use fault::Fault;
