@@ -3890,8 +3890,8 @@ mod tests {
         assert_eq!(payload["message"], Value::Null);
     }
 
-    /// Unticking the organization half hides its row on the same frame, before
-    /// any pass has dropped the figure.
+    /// Unticking the organization part removes its half from the card, and its
+    /// warning, on the same frame, before any pass has dropped the figure.
     #[test]
     fn unticking_org_hides_its_row_and_its_warning_at_once() {
         let mut state = nothing_added();
