@@ -929,6 +929,10 @@ test(`the tile's ${view} Detail paints the Claude card's status-line note`, asyn
   else await page.locator('#dashboardInspector details[data-resource="claude-plan"] summary').click();
   expect(times(await rowText()), 'once, expanded').toBe(1);
   if (view === 'table') {
+    // The name cell's hover title stays the name, never the sentence.
+    const title = await page.locator('#dashboardInspector tr[data-resource="claude-plan"] th').first().getAttribute('title');
+    expect(title).toContain(claude.label);
+    expect(title).not.toContain(claude.source);
     // A narrow inspector: the note wraps inside its cell instead of running
     // over the meter columns.
     await page.setViewportSize({ width: 700, height: 900 });

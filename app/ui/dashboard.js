@@ -2055,6 +2055,8 @@
           dot.setAttribute("aria-hidden", "true");
           toggle.append(arrow, dot, node("span", "db-table-name", row.label));
           cell.append(toggle);
+          // The hover title is the name alone, as before the note was here.
+          title = cell.textContent;
           // Under the name, where the row's meters are columns: visible
           // without expanding the row.
           const tableSource = sourceNote(row);
