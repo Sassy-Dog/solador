@@ -321,6 +321,14 @@
     }
     return halves;
   }
+  // Rust's sentence on where a plan card's figures are from when they are not
+  // the plan read's (Claude Code's status line, while Anthropic refuses the
+  // read), as one note line in the style of a half's note; `null` for a row
+  // with none. One builder for the overview card and for Detail's list and
+  // table, and the words are Rust's.
+  function sourceNote(row) {
+    return row.source ? node("p", "db-source-note", row.source) : null;
+  }
   // `cardCounts`: in a Repos owner card, the count slots Rust names for a card
   // (null everywhere else). The status word is not a card column; the dot
   // carries it there, and the accessible name below still says it.
@@ -382,6 +390,9 @@
       }
       wrap.append(stats);
     }
+    // Under the meters, when the figures are not the plan read's.
+    const sourced = sourceNote(row);
+    if (sourced) wrap.append(sourced);
     // Under the seat meter, when the card has halves.
     const halves = halvesNode(row);
     if (halves) wrap.append(halves);
@@ -1964,6 +1975,8 @@
       };
       for (const m of [...(row.metrics || []), ...(row.counts || [])]) primary.append(field(m));
       if (primary.childElementCount) summary.append(primary);
+      const listSource = sourceNote(row);
+      if (listSource) summary.append(listSource);
       summary.append(node("span", "db-detail-disclosure", L("expandDetails")));
       const extra = node("div", "db-detail-extra"), metrics = node("dl", "db-detail-fields");
       for (const m of row.details || []) metrics.append(field(m));
@@ -2042,6 +2055,10 @@
           dot.setAttribute("aria-hidden", "true");
           toggle.append(arrow, dot, node("span", "db-table-name", row.label));
           cell.append(toggle);
+          // Under the name, where the row's meters are columns: visible
+          // without expanding the row.
+          const tableSource = sourceNote(row);
+          if (tableSource) cell.append(tableSource);
         } else if (column.key === "value") {
           cell.append(colored("span", "", row.value, row.valueColor));
         } else if (column.key === "context") {

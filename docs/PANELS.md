@@ -89,8 +89,10 @@
   survives a relaunch (`plan-schedule.json`). **While Claude's latest read was a
   429, its row shows Claude Code's status-line figures** (`5h` and `Week` only,
   read from a file the operator's status line writes, `claude-statusline.json`):
-  a line under the row says the figures are from Claude Code's status line and how
-  old they are, the header keeps its rate-limit warning, a window whose reset has
+  a note line says the figures are from Claude Code's status line and how
+  old they are (under the meters on the overview tile's card, in the tile's Detail
+  list and table, and on the Full view: one Rust sentence, `plan.source`, copied
+  onto the overview row by `dashboard::plan_rows`), the header keeps its rate-limit warning, a window whose reset has
   passed is not shown (nor one that states no reset, once the file is as old as
   the window: 5 hours for `5h`, 7 days for `Week`), a file older than a day is not used, and the next successful
   read replaces them (`docs/APP-INTERNALS.md` has the snippet and the rules).

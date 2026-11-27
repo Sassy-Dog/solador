@@ -1000,7 +1000,8 @@
   font-variant-numeric: tabular-nums;
 }
 #dashboardOverview .db-half-owner,
-#dashboardOverview .db-half-note {
+#dashboardOverview .db-half-note,
+#dashboardOverview .db-source-note {
   margin: 1px 0 0;
   font-size: 10px;
   color: var(--db-muted);

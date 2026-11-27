@@ -7478,7 +7478,18 @@ fn dump_dashboard() -> Value {
 /// The same readings under another layout, so a fixture can hold a Rust-authored
 /// attention chip target for a layout the default does not have.
 fn dump_dashboard_of(layout: &store::DashboardLayout) -> Value {
-    dump_dashboard_with(layout, dump_github(false, false))
+    dump_dashboard_with(layout, dump_github(false, false), usage::Fixture::Measured)
+}
+
+/// The default overview over the AI Usage `--plan-statusline` reading
+/// (`--dump-dashboard --plan-statusline`, #808): Claude's plan read refused,
+/// its card filled from Claude Code's status line and saying so in `source`.
+fn dump_statusline_dashboard() -> Value {
+    dump_dashboard_with(
+        &dashboard::default_layout(),
+        dump_github(false, false),
+        usage::Fixture::StatusLine,
+    )
 }
 
 /// The overview over the three-owner Repos fixture (`--dump-dashboard
@@ -7493,10 +7504,14 @@ fn dump_owners_dashboard() -> Value {
     five.width = "medium".into();
     five.row_limit = "5".into();
     layout.tiles = vec![all, five];
-    dump_dashboard_with(&layout, dump_github_owners())
+    dump_dashboard_with(&layout, dump_github_owners(), usage::Fixture::Measured)
 }
 
-fn dump_dashboard_with(layout: &store::DashboardLayout, repos: Value) -> Value {
+fn dump_dashboard_with(
+    layout: &store::DashboardLayout,
+    repos: Value,
+    ai_usage: usage::Fixture,
+) -> Value {
     let mut hosts = dump_cockpit(1200.0, 3, HostOverflowMode::Stack);
     hosts["id"] = json!("hosts");
     // The Machines tile's GPU meters need a GPU to draw: ubu-01 serves a local
@@ -7526,7 +7541,7 @@ fn dump_dashboard_with(layout: &store::DashboardLayout, repos: Value) -> Value {
         dump_containers(false),
         services::view(&services::fixture_statuses(), true),
         dump_crons(crons::Fixture::Alerting, false),
-        dump_ai_usage(usage::Fixture::Measured, false),
+        dump_ai_usage(ai_usage, false),
         dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
         dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
         dump_actions_billing(actions_billing::Fixture::Measured, false),
@@ -7588,6 +7603,8 @@ fn run_dump(args: &[String]) -> bool {
             dump_dashboard_of(&chips_layout())
         } else if args.iter().any(|arg| arg == "--owners") {
             dump_owners_dashboard()
+        } else if args.iter().any(|arg| arg == "--plan-statusline") {
+            dump_statusline_dashboard()
         } else {
             dump_dashboard()
         };

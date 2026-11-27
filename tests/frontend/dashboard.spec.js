@@ -5,7 +5,7 @@ import { boxes, lastArgs, swapReport } from "./tile-full.js";
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
 async function openDashboard(page, baseURL, expanded = false, prepare = null) {
   const names = {
-    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded === "owners" ? "dashboard-owners" : expanded ? "dashboard-expanded" : "dashboard",
+    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded === "owners" ? "dashboard-owners" : expanded === "statusline" ? "dashboard-statusline" : expanded ? "dashboard-expanded" : "dashboard",
     cockpit: "cockpit",
     settings_view: "settings",
     repos: "repos",
@@ -861,6 +861,67 @@ test(`the tile's ${view} Detail shows the Copilot card's billing halves`, async 
     if (half.owner) await expect(shown.nth(i).locator('.db-half-owner')).toHaveText(half.owner);
     if (half.note) await expect(shown.nth(i).locator('.db-half-note')).toHaveText(half.note);
   }
+});
+}
+
+// While Anthropic refuses the plan read, the Claude card shows Claude Code's
+// status-line figures and Rust says so in the row's `source` (#808).
+// `sample-dashboard-statusline.json` is Rust's own view of that state
+// (`--dump-dashboard … --plan-statusline`). The card, Detail's list and its
+// table each paint the note under the Claude card, in Rust's words.
+const STATUS_LINE_NOTE = /^Figures from Claude Code's status line, written \d+m ago\.$/;
+
+test('the AI Usage overview tile paints the Claude card\'s status-line note under its meters, inside a minimum-width tile', async ({page,baseURL}) => {
+  const view = await openDashboard(page, baseURL, 'statusline', withAiUsageTile);
+  const claude = view.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'claude-plan');
+  expect(claude.source, "Rust's sentence").toMatch(STATUS_LINE_NOTE);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const card = tile(page, 'aiUsage').locator('.db-host').first();
+  await expect(card.locator('.db-item-name')).toHaveText(claude.label);
+  const note = card.locator('.db-source-note');
+  await expect(note).toHaveText(claude.source);
+  await expect(note).toBeVisible();
+  const order = await card.evaluate(el => [...el.children].map(c => c.className));
+  expect(order.indexOf('db-host-stats'), 'the note is under the meters').toBeLessThan(order.indexOf('db-source-note'));
+  // AI Usage's `min_width` is 340 (`PanelKind::min_width`): the note wraps inside it.
+  await expect.poll(() => page.evaluate(() => {
+    const t = document.querySelector('[data-tile="overview-aiUsage"]');
+    Object.assign(t.style, { width: '340px', maxWidth: '340px', minWidth: '0', justifySelf: 'start' });
+    const frame = t.getBoundingClientRect();
+    const n = t.querySelector('.db-host .db-source-note');
+    const stats = t.querySelector('.db-host .db-host-stats').getBoundingClientRect();
+    const r = n.getBoundingClientRect();
+    return { tile: Math.round(frame.width), inside: r.left >= frame.left && r.right <= frame.right, whole: n.scrollWidth <= n.clientWidth,
+      below: r.top >= stats.bottom };
+  }), { message: 'the note sits whole inside a 340px tile, below the meters' })
+    .toEqual({ tile: 340, inside: true, whole: true, below: true });
+  await tile(page, 'aiUsage').screenshot({ path: '../../tmp/statusline-overview.png' });
+});
+
+test('a plan row without a source note paints none on the overview tile', async ({page,baseURL}) => {
+  await openDashboard(page, baseURL, false, withAiUsageTile);
+  await expect(tile(page, 'aiUsage').locator('.db-host').first()).toBeVisible();
+  await expect(tile(page, 'aiUsage').locator('.db-source-note')).toHaveCount(0);
+});
+
+for (const view of ['list', 'table']) {
+test(`the tile's ${view} Detail paints the Claude card's status-line note`, async ({page,baseURL}) => {
+  const prepared = await openDashboard(page, baseURL, 'statusline', (v) => {
+    withAiUsageTile(v);
+    v.layout.tiles.find(t => t.id === 'overview-aiUsage').detailView = view;
+    const t = v.tiles.find(t => t.id === 'overview-aiUsage');
+    if (t) t.detailView = view;
+  });
+  const claude = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'claude-plan');
+  expect(claude.source).toMatch(STATUS_LINE_NOTE);
+  await openDetail(page, 'aiUsage');
+  const note = page.locator('#dashboardInspector .db-source-note');
+  await expect(note).toHaveCount(1);
+  await expect(note).toHaveText(claude.source);
+  await expect(note).toBeVisible();
+  // It belongs to the Claude card's own row.
+  await expect(page.locator('#dashboardInspector [data-resource="claude-plan"] .db-source-note').first()).toHaveText(claude.source);
+  await page.locator('#dashboardInspector').screenshot({ path: `../../tmp/statusline-detail-${view}.png` });
 });
 }
 

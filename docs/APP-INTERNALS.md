@@ -632,7 +632,10 @@
   The status line is set aside when the last successful plan read is newer than
   the file (the retained reading is then the fresher figure). The card says so in
   Rust's words (`viewmodel::plan_usage::status_line_note`: where the figures are
-  from and how old the file is), shows only `5h` and `Week`, keeps the plan's name
+  from and how old the file is; the plan payload's `source`, which
+  `dashboard::plan_rows` copies onto the overview row, so it is painted as a note
+  line on the overview tile's Claude card (under its meters) and in the tile's
+  Detail, list and table, as well as on the Full view; #808), shows only `5h` and `Week`, keeps the plan's name
   from the last reading that had one, judges pace at the file's write time inside
   the usual stale edge, and the header still carries the rate-limit warning. It is
   read as the panel is built (`plan_usage::refresh_status_line`), not at the poll,
