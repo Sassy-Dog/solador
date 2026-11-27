@@ -758,6 +758,7 @@
 :is(#dashboardOverview, #fullView) .db-detail-table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:12px; line-height:18px; }
 :is(#dashboardOverview, #fullView) .db-detail-table th, :is(#dashboardOverview, #fullView) .db-detail-table td { padding:5px 10px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--db-line); font-weight:400; }
 :is(#dashboardOverview, #fullView) .db-detail-table th:first-child, :is(#dashboardOverview, #fullView) .db-detail-table td:first-child { padding-left:0; }
+#dashboardOverview .db-detail-table .db-source-note { white-space: normal; }
 :is(#dashboardOverview, #fullView) .db-detail-table thead th { color:var(--db-muted); font-size:10px; padding-top:3px; }
 :is(#dashboardOverview, #fullView) .db-detail-table .db-numeric { text-align:right; font-variant-numeric:tabular-nums; }
 :is(#dashboardOverview, #fullView) .db-detail-table button.db-table-toggle { display:flex; align-items:center; gap:6px; padding:0; min-height:0; background:none; border:0; font:inherit; color:var(--db-text); max-width:26ch; }
@@ -1000,7 +1001,8 @@
   font-variant-numeric: tabular-nums;
 }
 #dashboardOverview .db-half-owner,
-#dashboardOverview .db-half-note {
+#dashboardOverview .db-half-note,
+#dashboardOverview .db-source-note {
   margin: 1px 0 0;
   font-size: 10px;
   color: var(--db-muted);

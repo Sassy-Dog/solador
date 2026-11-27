@@ -734,6 +734,12 @@ fn plan_rows(p: &Value) -> Vec<Value> {
             if !plan["halves"].is_null() {
                 r["halves"] = plan["halves"].clone();
             }
+            // Rust's sentence on where the figures are from when they are not
+            // the plan read's (Claude Code's status line, while Anthropic
+            // refuses the read); absent on a plan with none (#808).
+            if !plan["source"].is_null() {
+                r["source"] = plan["source"].clone();
+            }
             add_scope(&mut r, "plans");
             add_vendor_scope(&mut r);
             r
@@ -4106,6 +4112,53 @@ mod tests {
                 .expect("an unreadable key lights a chip");
             assert_eq!(chip["color"], color::hex(color::AMBER));
             assert_eq!(chip["label"], "AI Usage \u{b7} check readings");
+        }
+    }
+
+    /// A plan's `source` sentence (Claude Code's status line, while Anthropic
+    /// refuses the plan read) is carried onto its overview row, verbatim, so the
+    /// tile and Detail say where the figures are from (#808); a plan with none
+    /// gets a row without the key.
+    #[test]
+    fn a_plan_row_carries_the_status_line_source_note_only_when_the_plan_has_one() {
+        let rows_of = |kind: crate::usage::Fixture| {
+            let payload = crate::dump_ai_usage(kind, false);
+            let source = source_view("aiUsage", "AI Usage", &payload);
+            (payload, list(&source, "rows").to_vec())
+        };
+
+        let (payload, rows) = rows_of(crate::usage::Fixture::StatusLine);
+        let plan = list(&payload, "plans")
+            .iter()
+            .find(|p| string(p, "id") == "claude-plan")
+            .expect("the Claude plan");
+        let note = string(plan, "source");
+        assert!(
+            note.starts_with("Figures from Claude Code's status line, written "),
+            "the plan carries Rust's sentence: {note}"
+        );
+        let row = rows
+            .iter()
+            .find(|r| string(r, "id") == "claude-plan")
+            .expect("the Claude row");
+        assert_eq!(row["source"], plan["source"], "carried verbatim");
+
+        let (_, rows) = rows_of(crate::usage::Fixture::Measured);
+        let plans: Vec<_> = rows
+            .iter()
+            .filter(|r| {
+                r["scopes"]
+                    .as_array()
+                    .is_some_and(|s| s.contains(&json!("plans")))
+            })
+            .collect();
+        assert!(!plans.is_empty());
+        for row in plans {
+            assert!(
+                row.get("source").is_none(),
+                "{} has no source note, so its row has no key",
+                string(row, "id")
+            );
         }
     }
 

@@ -5,7 +5,7 @@ import { boxes, lastArgs, swapReport } from "./tile-full.js";
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
 async function openDashboard(page, baseURL, expanded = false, prepare = null) {
   const names = {
-    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded === "owners" ? "dashboard-owners" : expanded ? "dashboard-expanded" : "dashboard",
+    dashboard_view: expanded === "chips" ? "dashboard-chips" : expanded === "owners" ? "dashboard-owners" : expanded === "statusline" ? "dashboard-statusline" : expanded ? "dashboard-expanded" : "dashboard",
     cockpit: "cockpit",
     settings_view: "settings",
     repos: "repos",
@@ -863,6 +863,101 @@ test(`the tile's ${view} Detail shows the Copilot card's billing halves`, async 
   }
 });
 }
+
+// While Anthropic refuses the plan read, the Claude card shows Claude Code's
+// status-line figures and Rust says so in the row's `source` (#808).
+// `sample-dashboard-statusline.json` is Rust's own view of that state
+// (`--dump-dashboard … --plan-statusline`). The card, Detail's list and its
+// table each paint the note under the Claude card, in Rust's words.
+const STATUS_LINE_NOTE = /^Figures from Claude Code's status line, written \d+m ago\.$/;
+
+test('the AI Usage overview tile paints the Claude card\'s status-line note under its meters, inside a minimum-width tile', async ({page,baseURL}) => {
+  const view = await openDashboard(page, baseURL, 'statusline', withAiUsageTile);
+  const claude = view.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'claude-plan');
+  expect(claude.source, "Rust's sentence").toMatch(STATUS_LINE_NOTE);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const card = tile(page, 'aiUsage').locator('.db-host').first();
+  await expect(card.locator('.db-item-name')).toHaveText(claude.label);
+  const note = card.locator('.db-source-note');
+  await expect(note).toHaveText(claude.source);
+  await expect(note).toBeVisible();
+  const order = await card.evaluate(el => [...el.children].map(c => c.className));
+  expect(order.indexOf('db-host-stats'), 'the note is under the meters').toBeLessThan(order.indexOf('db-source-note'));
+  // AI Usage's `min_width` is 340 (`PanelKind::min_width`): the note wraps inside it.
+  await expect.poll(() => page.evaluate(() => {
+    const t = document.querySelector('[data-tile="overview-aiUsage"]');
+    Object.assign(t.style, { width: '340px', maxWidth: '340px', minWidth: '0', justifySelf: 'start' });
+    const frame = t.getBoundingClientRect();
+    const n = t.querySelector('.db-host .db-source-note');
+    const stats = t.querySelector('.db-host .db-host-stats').getBoundingClientRect();
+    const r = n.getBoundingClientRect();
+    return { tile: Math.round(frame.width), inside: r.left >= frame.left && r.right <= frame.right, whole: n.scrollWidth <= n.clientWidth,
+      below: r.top >= stats.bottom };
+  }), { message: 'the note sits whole inside a 340px tile, below the meters' })
+    .toEqual({ tile: 340, inside: true, whole: true, below: true });
+});
+
+test('a plan row without a source note paints none on the overview tile', async ({page,baseURL}) => {
+  await openDashboard(page, baseURL, false, withAiUsageTile);
+  await expect(tile(page, 'aiUsage').locator('.db-host').first()).toBeVisible();
+  await expect(tile(page, 'aiUsage').locator('.db-source-note')).toHaveCount(0);
+});
+
+for (const view of ['list', 'table']) {
+test(`the tile's ${view} Detail paints the Claude card's status-line note`, async ({page,baseURL}) => {
+  const prepared = await openDashboard(page, baseURL, 'statusline', (v) => {
+    withAiUsageTile(v);
+    v.layout.tiles.find(t => t.id === 'overview-aiUsage').detailView = view;
+    const t = v.tiles.find(t => t.id === 'overview-aiUsage');
+    if (t) t.detailView = view;
+  });
+  const claude = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'claude-plan');
+  expect(claude.source).toMatch(STATUS_LINE_NOTE);
+  await openDetail(page, 'aiUsage');
+  const note = page.locator('#dashboardInspector .db-source-note');
+  await expect(note).toHaveCount(1);
+  await expect(note).toHaveText(claude.source);
+  await expect(note).toBeVisible();
+  // It belongs to the Claude card's own row.
+  await expect(page.locator('#dashboardInspector [data-resource="claude-plan"] .db-source-note').first()).toHaveText(claude.source);
+  // The sentence is `source` alone, so it reads once in the row's text, also
+  // with the row expanded (`detail` no longer carries it).
+  const rowText = async () => (await page.locator('#dashboardInspector [data-resource="claude-plan"]').allInnerTexts()).join('\n');
+  const times = (text) => text.split(claude.source).length - 1;
+  expect(times(await rowText()), 'once, collapsed').toBe(1);
+  if (view === 'table') await page.locator('#dashboardInspector [data-resource="claude-plan"] .db-table-toggle').click();
+  else await page.locator('#dashboardInspector details[data-resource="claude-plan"] summary').click();
+  expect(times(await rowText()), 'once, expanded').toBe(1);
+  if (view === 'table') {
+    // The name cell's hover title stays the name, never the sentence.
+    const title = await page.locator('#dashboardInspector tr[data-resource="claude-plan"] th').first().getAttribute('title');
+    expect(title).toContain(claude.label);
+    expect(title).not.toContain(claude.source);
+    // A narrow inspector: the note wraps inside its cell instead of running
+    // over the meter columns.
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect.poll(() => page.evaluate(() => {
+      const n = document.querySelector('#dashboardInspector tr[data-resource="claude-plan"] .db-source-note');
+      const cell = n.closest('th').getBoundingClientRect(), r = n.getBoundingClientRect();
+      return { inside: r.left >= cell.left - 0.5 && r.right <= cell.right + 0.5, whole: n.scrollWidth <= n.clientWidth };
+    }), { message: 'the note stays inside its name cell at 700px' }).toEqual({ inside: true, whole: true });
+  }
+});
+}
+
+test('the overview card in the detailed presentation paints the status-line note once', async ({page,baseURL}) => {
+  const prepared = await openDashboard(page, baseURL, 'statusline', (v) => {
+    withAiUsageTile(v);
+    v.layout.tiles.find(t => t.id === 'overview-aiUsage').presentation = 'detailed';
+    const t = v.tiles.find(t => t.id === 'overview-aiUsage');
+    if (t) t.presentation = 'detailed';
+  });
+  const claude = prepared.sources.find(s => s.id === 'aiUsage').rows.find(r => r.id === 'claude-plan');
+  const card = tile(page, 'aiUsage').locator('.db-host').first();
+  await expect(card.locator('.db-source-note')).toHaveText(claude.source);
+  const text = await card.innerText();
+  expect(text.split(claude.source).length - 1, 'once in the card').toBe(1);
+});
 
 // A tile's Detail warnings are source-level (its rows follow the scope): it
 // paints the source's whole warnings, whatever the tile's scope, so an

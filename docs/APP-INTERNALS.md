@@ -634,7 +634,11 @@
   Rust's words (`viewmodel::plan_usage::status_line_note`: where the figures are
   from and how old the file is), shows only `5h` and `Week`, keeps the plan's name
   from the last reading that had one, judges pace at the file's write time inside
-  the usual stale edge, and the header still carries the rate-limit warning. It is
+  the usual stale edge, and the header still carries the rate-limit warning. The
+  sentence is the plan payload's `source` and nowhere else (never folded into
+  `detail`): `dashboard::plan_rows` copies it onto the overview row, and it is
+  painted once as a note line under the meters of the overview tile's Claude card,
+  in the tile's Detail (list and table) and on the Full view (#808). It is
   read as the panel is built (`plan_usage::refresh_status_line`), not at the poll,
   so it is as new as the status line's last write. The Codex card has no such
   fallback.
