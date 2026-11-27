@@ -804,7 +804,8 @@ fn status_line_section(source: &PlanSource, now: u64, cadence_secs: u64) -> Opti
     );
     let note = vm::status_line_note(age);
     let mut json = row_json(CLAUDE_ID, &row);
-    json["detail"] = json!(format!("{} {note}", row.detail));
+    // The sentence is the row's `source` alone: every surface paints that one
+    // field, so folding it into `detail` as well showed it twice (#808).
     json["source"] = json!(note);
     Some(json)
 }
@@ -1781,8 +1782,8 @@ mod tests {
         assert!(note.contains("Claude Code's status line"), "{note}");
         assert!(note.contains("written 12m ago"), "{note}");
         assert!(
-            section["detail"].as_str().unwrap().ends_with(note),
-            "the tile's detail carries it too"
+            !section["detail"].as_str().unwrap().contains(note),
+            "the note is `source` alone, never folded into `detail` as well"
         );
         let header = plan.warnings[0]["text"].as_str().unwrap();
         assert!(
